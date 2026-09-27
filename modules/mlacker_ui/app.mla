@@ -52,6 +52,14 @@ use mlacker_ui::audio_clip::base_name;
 mod mlacker_ui::bpm_dialog;
 mod mlacker_ui::curve_dialog;
 mod mlacker_ui::dialog_buttons;
+mod mlacker_ui::actions;
+mod mlacker_ui::keymap;
+use mlacker_ui::actions::Action;
+use mlacker_ui::actions::is_track_action;
+use mlacker_ui::keymap::KeyBinding;
+use mlacker_ui::keymap::default_keymap;
+use mlacker_ui::keymap::action_for;
+use mlacker_ui::keymap::shortcut_for;
 mod mlacker_ui::note_playback;
 use mlacker_ui::note_playback::NotePlayback;
 mod mlacker_ui::audio_controller;
@@ -89,130 +97,134 @@ use std::io::read_keycode_nonblocking;
 use std::time::sleep_ms;
 use std::time::now_ms;
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool) -> MenuBar {
+/// A menu item for `action`, showing the key bound to it in `keymap`.
+fn menu_item(label: str8, action: Action, enabled: bool, keymap: &list<KeyBinding>) -> MenuItem {
+    return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: shortcut_for(keymap, action) };
+}
+
+fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, keymap: &list<KeyBinding>) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
     var bar: MenuBar = MenuBar::new([
                     Menu {title: "File", items: [
-                                MenuItem { label: "New session", action: 1, enabled: true },
-                                MenuItem { label: "Open session", action: 2, enabled: true },
-                                MenuItem { label: "Open project", action: 164, enabled: true },
+                                menu_item("New session", Action::NewSession, true, keymap),
+                                menu_item("Open session", Action::OpenSession, true, keymap),
+                                menu_item("Open project", Action::OpenProject, true, keymap),
                                 MenuItem::submenu("Recent sessions", [
-                                                MenuItem { label: "Blue hour", action: 8, enabled: true },
+                                                menu_item("Blue hour", Action::RecentBlueHour, true, keymap),
                                                 MenuItem::submenu("Templates", [
-                                                                MenuItem { label: "Ambient", action: 9, enabled: true },
-                                                                MenuItem { label: "Dance", action: 10, enabled: true }
+                                                                menu_item("Ambient", Action::TemplateAmbient, true, keymap),
+                                                                menu_item("Dance", Action::TemplateDance, true, keymap)
                                                         ])
                                         ]),
-                                MenuItem { label: "Save session", action: 3, enabled: !fixture },
-                                MenuItem { label: "Save session as", action: 96, enabled: !fixture },
-                                MenuItem { label: "Save project", action: 165, enabled: !fixture },
-                                MenuItem { label: "Save project as", action: 166, enabled: !fixture },
-                                MenuItem { label: "Settings", action: 90, enabled: true },
-                                MenuItem { label: "Quit", action: 99, enabled: true }] },
+                                menu_item("Save session", Action::SaveSession, !fixture, keymap),
+                                menu_item("Save session as", Action::SaveSessionAs, !fixture, keymap),
+                                menu_item("Save project", Action::SaveProject, !fixture, keymap),
+                                menu_item("Save project as", Action::SaveProjectAs, !fixture, keymap),
+                                menu_item("Settings", Action::Settings, true, keymap),
+                                menu_item("Quit", Action::Quit, true, keymap)] },
                     Menu {title: "Edit", items: [
-                                MenuItem { label: "Undo", action: 4, enabled: true },
-                                MenuItem { label: "Redo", action: 5, enabled: true },
-                                MenuItem { label: "Copy clip", action: 61, enabled: true },
-                                MenuItem { label: "Cut clip", action: 62, enabled: true },
-                                MenuItem { label: "Paste clip", action: 63, enabled: true }] },
+                                menu_item("Undo", Action::Undo, true, keymap),
+                                menu_item("Redo", Action::Redo, true, keymap),
+                                menu_item("Copy clip", Action::CopyClip, true, keymap),
+                                menu_item("Cut clip", Action::CutClip, true, keymap),
+                                menu_item("Paste clip", Action::PasteClip, true, keymap)] },
                     Menu {title: "View", items: [
-                                MenuItem { label: "Patterns", action: 42, enabled: true },
-                                MenuItem { label: "Song matrix", action: 43, enabled: true },
-                                MenuItem { label: "Audio", action: 44, enabled: true },
-                                MenuItem { label: "Instruments", action: 45, enabled: plugins },
+                                menu_item("Patterns", Action::ViewPatterns, true, keymap),
+                                menu_item("Song matrix", Action::ViewSongMatrix, true, keymap),
+                                menu_item("Audio", Action::ViewAudio, true, keymap),
+                                menu_item("Instruments", Action::ViewInstruments, plugins, keymap),
                                 MenuItem::submenu("Sample view", [
-                                                MenuItem { label: "Normal", action: 70, enabled: true },
-                                                MenuItem { label: "Grainy", action: 71, enabled: true },
+                                                menu_item("Normal", Action::SampleViewNormal, true, keymap),
+                                                menu_item("Grainy", Action::SampleViewGrainy, true, keymap),
                                                 MenuItem::submenu("Type", [
-                                                                MenuItem { label: "Filled blocks", action: 72, enabled: true },
-                                                                MenuItem { label: "Wave (osc)", action: 73, enabled: true }])]),
+                                                                menu_item("Filled blocks", Action::SampleViewFilled, true, keymap),
+                                                                menu_item("Wave (osc)", Action::SampleViewWave, true, keymap)])]),
                                 MenuItem::submenu("Meter", [
-                                                MenuItem { label: "Solid bars", action: 40, enabled: true },
-                                                MenuItem { label: "Grainy (osc)", action: 41, enabled: true },
-                                                MenuItem { label: "Set update rate", action: 74, enabled: true }]),
-                                MenuItem { label: spectrum ? "[x] Show spectrum analyzer" : "[ ] Show spectrum analyzer", action: 160, enabled: true },
+                                                menu_item("Solid bars", Action::MeterSolid, true, keymap),
+                                                menu_item("Grainy (osc)", Action::MeterGrainy, true, keymap),
+                                                menu_item("Set update rate", Action::MeterUpdateRate, true, keymap)]),
+                                menu_item(spectrum ? "[x] Show spectrum analyzer" : "[ ] Show spectrum analyzer", Action::ToggleSpectrum, true, keymap),
                                 MenuItem::submenu("Spectrum analyzer", [
-                                                MenuItem { label: "Change details", action: 161, enabled: true },
-                                                MenuItem { label: "Update rate", action: 162, enabled: true }]),
-                                MenuItem { label: keyboard ? "[x] Show virtual keyboard" : "[ ] Show virtual keyboard", action: 163, enabled: true },
-                                MenuItem { label: "Reset layout", action: 6, enabled: true },
-                                MenuItem { label: "Show details", action: 7, enabled: true }] },
+                                                menu_item("Change details", Action::SpectrumDetails, true, keymap),
+                                                menu_item("Update rate", Action::SpectrumUpdateRate, true, keymap)]),
+                                menu_item(keyboard ? "[x] Show virtual keyboard" : "[ ] Show virtual keyboard", Action::ToggleVirtualKeyboard, true, keymap),
+                                menu_item("Reset layout", Action::ResetLayout, true, keymap),
+                                menu_item("Show details", Action::ShowDetails, true, keymap)] },
                     Menu {title: "Track", items: [
                                 // Plain entries, not a submenu: a submenu as the first
                                 // item would swallow the Right key that walks the menu bar.
-                                MenuItem { label: "Create MIDI track", action: 21, enabled: true },
-                                MenuItem { label: "Create AUDIO track", action: 28, enabled: true },
-                                MenuItem { label: "Create Instrument track", action: 29, enabled: plugins },
-                                MenuItem { label: "Rename", action: 20, enabled: true },
-                                MenuItem { label: "Duplicate", action: 23, enabled: true },
-                                MenuItem { label: "Mute / unmute", action: 25, enabled: true },
-                                MenuItem { label: "Set output channel", action: 30, enabled: true },
+                                menu_item("Create MIDI track", Action::CreateMidiTrack, true, keymap),
+                                menu_item("Create AUDIO track", Action::CreateAudioTrack, true, keymap),
+                                menu_item("Create Instrument track", Action::CreateInstrumentTrack, plugins, keymap),
+                                menu_item("Rename", Action::RenameTrack, true, keymap),
+                                menu_item("Duplicate", Action::DuplicateTrack, true, keymap),
+                                menu_item("Mute / unmute", Action::MuteTrack, true, keymap),
+                                menu_item("Set output channel", Action::SetOutputChannel, true, keymap),
                                 MenuItem::submenu("Note lines", [
-                                                MenuItem { label: "Add note line", action: 80, enabled: true },
-                                                MenuItem { label: "Duplicate note line", action: 82, enabled: true },
-                                                MenuItem { label: "Remove note line", action: 81, enabled: true },
-                                                MenuItem { label: "Collapse all", action: 83, enabled: true },
-                                                MenuItem { label: "Expand all", action: 84, enabled: true }]),
+                                                menu_item("Add note line", Action::AddNoteLine, true, keymap),
+                                                menu_item("Duplicate note line", Action::DuplicateNoteLine, true, keymap),
+                                                menu_item("Remove note line", Action::RemoveNoteLine, true, keymap),
+                                                menu_item("Collapse all", Action::CollapseNoteLines, true, keymap),
+                                                menu_item("Expand all", Action::ExpandNoteLines, true, keymap)]),
                                 MenuItem::submenu("Automation", [
-                                                MenuItem { label: "Add CC column", action: 27, enabled: true },
-                                                MenuItem { label: "Configure CC column", action: 26, enabled: true },
-                                                MenuItem { label: "Remove CC column", action: 85, enabled: true }]),
-                                MenuItem { label: "Clear pattern", action: 24, enabled: true },
-                                MenuItem { label: "Delete", action: 22, enabled: true }] },
+                                                menu_item("Add CC column", Action::AddCcColumn, true, keymap),
+                                                menu_item("Configure CC column", Action::ConfigureCcColumn, true, keymap),
+                                                menu_item("Remove CC column", Action::RemoveCcColumn, true, keymap)]),
+                                menu_item("Clear pattern", Action::ClearTrack, true, keymap),
+                                menu_item("Delete", Action::DeleteTrack, true, keymap)] },
                     Menu {title: "Pattern", items: [
-                                MenuItem { label: "Add pattern", action: 50, enabled: true },
-                                MenuItem { label: "Clone pattern", action: 53, enabled: true },
-                                MenuItem { label: "Rename pattern", action: 51, enabled: true },
-                                MenuItem { label: "Set length", action: 54, enabled: true },
-                                MenuItem { label: follow_matrix ? "[x] Follow matrix patterns" : "[ ] Follow matrix patterns",
-                                    action: 55, enabled: true },
-                                MenuItem { label: "Set matrix row length", action: 56, enabled: true },
-                                MenuItem { label: "Remove pattern", action: 52, enabled: true },
-                                MenuItem { label: "Save pattern", action: 57, enabled: true },
-                                MenuItem { label: "Load pattern", action: 58, enabled: true }] },
+                                menu_item("Add pattern", Action::AddPattern, true, keymap),
+                                menu_item("Clone pattern", Action::ClonePattern, true, keymap),
+                                menu_item("Rename pattern", Action::RenamePattern, true, keymap),
+                                menu_item("Set length", Action::SetPatternLength, true, keymap),
+                                menu_item(follow_matrix ? "[x] Follow matrix patterns" : "[ ] Follow matrix patterns", Action::FollowMatrix, true, keymap),
+                                menu_item("Set matrix row length", Action::SetMatrixRowLength, true, keymap),
+                                menu_item("Remove pattern", Action::RemovePattern, true, keymap),
+                                menu_item("Save pattern", Action::SavePattern, true, keymap),
+                                menu_item("Load pattern", Action::LoadPattern, true, keymap)] },
                     Menu {title: "Audio", items: [
-                                MenuItem { label: "Add audio", action: 60, enabled: true },
-                                MenuItem { label: "Edit sample (destructive)", action: 107, enabled: true },
+                                menu_item("Add audio", Action::AddAudio, true, keymap),
+                                menu_item("Edit sample (destructive)", Action::EditSample, true, keymap),
                                 MenuItem::submenu("Clip", [
-                                                MenuItem { label: "Move clip up", action: 103, enabled: true },
-                                                MenuItem { label: "Move clip down", action: 104, enabled: true },
-                                                MenuItem { label: "Trim to selection", action: 105, enabled: true },
-                                                MenuItem { label: "Slice selection", action: 106, enabled: true },
-                                                MenuItem { label: "Reverse clip", action: 102, enabled: true }]),
-                                MenuItem { label: "Remove audio", action: 120, enabled: true }] },
+                                                menu_item("Move clip up", Action::MoveClipUp, true, keymap),
+                                                menu_item("Move clip down", Action::MoveClipDown, true, keymap),
+                                                menu_item("Trim to selection", Action::TrimClip, true, keymap),
+                                                menu_item("Slice selection", Action::SliceClip, true, keymap),
+                                                menu_item("Reverse clip", Action::ReverseClip, true, keymap)]),
+                                menu_item("Remove audio", Action::RemoveAudio, true, keymap)] },
                     Menu {title: "Instrument", items: [
-                                MenuItem { label: "Add instrument", action: 93, enabled: plugins },
-                                MenuItem { label: "Open VST3 editor", action: 94, enabled: plugins },
+                                menu_item("Add instrument", Action::AddInstrument, plugins, keymap),
+                                menu_item("Open VST3 editor", Action::OpenPluginEditor, plugins, keymap),
                                 MenuItem::submenu("Drum pads", [
-                                                MenuItem { label: "Send audio sample to pad", action: 117, enabled: plugins },
-                                                MenuItem { label: "Load pad sample from file", action: 118, enabled: plugins }]),
+                                                menu_item("Send audio sample to pad", Action::SendSampleToPad, plugins, keymap),
+                                                menu_item("Load pad sample from file", Action::LoadPadFromFile, plugins, keymap)]),
                                 MenuItem::submenu("Presets", [
-                                                MenuItem { label: "Save plugin preset", action: 100, enabled: plugins },
-                                                MenuItem { label: "Load plugin preset", action: 101, enabled: plugins }]),
+                                                menu_item("Save plugin preset", Action::SaveInstrumentPreset, plugins, keymap),
+                                                menu_item("Load plugin preset", Action::LoadInstrumentPreset, plugins, keymap)]),
                                 MenuItem::submenu("MIDI learn", [
-                                                MenuItem { label: "Save MIDI learn", action: 97, enabled: plugins },
-                                                MenuItem { label: "Load MIDI learn", action: 98, enabled: plugins }]),
-                                MenuItem { label: "Remove instrument", action: 95, enabled: plugins }] },
+                                                menu_item("Save MIDI learn", Action::SaveMidiLearn, plugins, keymap),
+                                                menu_item("Load MIDI learn", Action::LoadMidiLearn, plugins, keymap)]),
+                                menu_item("Remove instrument", Action::RemoveInstrument, plugins, keymap)] },
                     Menu {title: "Effect", items: [
-                                MenuItem { label: "Add effect channel", action: 110, enabled: plugins },
-                                MenuItem { label: "Load effect plugin", action: 111, enabled: plugins },
-                                MenuItem { label: "Edit effect plugin", action: 112, enabled: plugins },
-                                MenuItem { label: "Set track send", action: 113, enabled: plugins },
+                                menu_item("Add effect channel", Action::AddEffectChannel, plugins, keymap),
+                                menu_item("Load effect plugin", Action::LoadEffectPlugin, plugins, keymap),
+                                menu_item("Edit effect plugin", Action::EditEffectPlugin, plugins, keymap),
+                                menu_item("Set track send", Action::SetTrackSend, plugins, keymap),
                                 MenuItem::submenu("Master", [
-                                                MenuItem { label: "Load master VST3", action: 91, enabled: plugins },
-                                                MenuItem { label: "Unload master VST3", action: 92, enabled: plugins }]),
-                                MenuItem { label: "Remove effect plugin", action: 114, enabled: plugins },
+                                                menu_item("Load master VST3", Action::LoadMasterPlugin, plugins, keymap),
+                                                menu_item("Unload master VST3", Action::UnloadMasterPlugin, plugins, keymap)]),
+                                menu_item("Remove effect plugin", Action::RemoveEffectPlugin, plugins, keymap),
                                 MenuItem::submenu("Presets", [
-                                                MenuItem { label: "Load plugin preset", action: 140, enabled: plugins },
-                                                MenuItem { label: "Save plugin preset", action: 141, enabled: plugins }])] },
+                                                menu_item("Load plugin preset", Action::LoadEffectPreset, plugins, keymap),
+                                                menu_item("Save plugin preset", Action::SaveEffectPreset, plugins, keymap)])] },
                     Menu { title: "Record", items: [
-                        MenuItem { label: metronome ? "[x] Play metronome" : "[ ] Play metronome", action: 150, enabled: true },
-                        MenuItem { label: extend ? "[x] Extend pattern when playing" : "[ ] Extend pattern when playing", action: 151, enabled: true },
+                        menu_item(metronome ? "[x] Play metronome" : "[ ] Play metronome", Action::ToggleMetronome, true, keymap),
+                        menu_item(extend ? "[x] Extend pattern when playing" : "[ ] Extend pattern when playing", Action::ToggleExtendRecording, true, keymap),
                         MenuItem::submenu("Metronome", [
-                            MenuItem { label: !metronome_always ? "[x] On recording" : "[ ] On recording", action: 152, enabled: true },
-                            MenuItem { label: metronome_always ? "[x] Always" : "[ ] Always", action: 153, enabled: true }])] }
+                            menu_item(!metronome_always ? "[x] On recording" : "[ ] On recording", Action::MetronomeOnRecording, true, keymap),
+                            menu_item(metronome_always ? "[x] Always" : "[ ] Always", Action::MetronomeAlways, true, keymap)])] }
             ]);
     // F1 File, F2 Edit, ... F9 Record, shown before each title.
     bar.shortcuts = true;
@@ -323,7 +335,9 @@ pub fn run() -> i32 {
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
     // Computer-keyboard piano in the same pane (View menu / Shift+P).
     var keyboard: VirtualKeyboard = VirtualKeyboard {};
-    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible);
+    // Shortcuts for menu actions; the menus label their items from it.
+    let keymap: list<KeyBinding> = default_keymap();
+    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
     var input: InputDecoder = InputDecoder::new();
@@ -339,10 +353,10 @@ pub fn run() -> i32 {
     // The open document is a .mlaproj project folder (session_path names it);
     // saving_project picks the project format for the save chooser.
     var project_open: bool = false; var saving_project: bool = false;
-    var pattern_action: i32 = 0; var last_pattern_dir: str8 = clone("");
-    var learn_action: i32 = 0; var learn_slot: i64 = 0;
+    var pattern_action: Action = Action::None; var last_pattern_dir: str8 = clone("");
+    var learn_action: Action = Action::None; var learn_slot: i64 = 0;
     // Sampler pads: 117 = from the Audio list, 118 = from a file.
-    var pad_action: i32 = 0; var pad_slot: i32 = 0; var pad_sample: i32 = -1; var pad_index: i32 = 0;
+    var pad_action: Action = Action::None; var pad_slot: i32 = 0; var pad_sample: i32 = -1; var pad_index: i32 = 0;
     var adding_pad_file: bool = false;
     // Audio file dialogs: the file Ctrl+P is previewing on the master output.
     var preview_path: str8 = clone("");
@@ -350,7 +364,7 @@ pub fn run() -> i32 {
     var preview_sample: i32 = -1;
     var accept_pending: bool = false;
     var transport_request: bool = false;
-    var preset_request: i32 = 0; var preset_path: str8 = clone(""); var preset_worker: bool = false;
+    var preset_request: Action = Action::None; var preset_path: str8 = clone(""); var preset_worker: bool = false;
     // Last directory browsed per kind, so each chooser reopens where it was.
     var last_session_dir: str8 = clone(""); var last_audio_dir: str8 = clone("");
     var last_plugin_dir: str8 = clone("/Library/Audio/Plug-Ins/VST3"); var last_preset_dir: str8 = clone("");
@@ -429,7 +443,7 @@ pub fn run() -> i32 {
     var previous_width: i32 = 0;
     var previous_height: i32 = 0;
     var escape_ticks: i32 = 0;
-    var confirm_track_action: i32 = 0;
+    var confirm_track_action: Action = Action::None;
     var last_processor_errors: i64 = 0;
     var prev_sample_row: i32 = -1;
     let no_hardware: str8 = __env_get_var("MLANG_TUI_NO_HARDWARE");
@@ -500,7 +514,7 @@ pub fn run() -> i32 {
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
-                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible);
+                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
                             frame_rate.set(v.meter_fps, now_ms()); note_playback = NotePlayback {}; play_pattern = library.active_id;
                             instrument_editor.release();
                             instrument_editor.slot = v.editor_slot;
@@ -666,14 +680,14 @@ pub fn run() -> i32 {
             accept_pending = false;
             let paths: list<str8> = dialog.accepted_paths;
             let first: str8 = dialog.accepted_path;
-            if pattern_action != 0 { free(last_pattern_dir); last_pattern_dir = clone(dialog.directory); }
+            if pattern_action != Action::None { free(last_pattern_dir); last_pattern_dir = clone(dialog.directory); }
             else if adding_audio || adding_pad_file { free(last_audio_dir); last_audio_dir = clone(dialog.directory); }
             else if adding_plugin || adding_instrument || adding_effect >= 0 || adding_insert_track >= 0 { free(last_plugin_dir); last_plugin_dir = clone(dialog.directory); }
-            else if learn_action != 0 { free(last_preset_dir); last_preset_dir = clone(dialog.directory); }
+            else if learn_action != Action::None { free(last_preset_dir); last_preset_dir = clone(dialog.directory); }
             else { free(last_session_dir); last_session_dir = clone(dialog.directory); }
             free(message);
-            if pattern_action != 0 {
-                if pattern_action == 57 {
+            if pattern_action != Action::None {
+                if pattern_action == Action::SavePattern {
                     let saved: bool = SessionCodec::save_pattern(first, library.active_name(), library.table);
                     message = clone(saved ? "Saved pattern (.mlapatt)" : "Cannot save pattern");
                 } else {
@@ -686,7 +700,7 @@ pub fn run() -> i32 {
                         data.release();
                     }
                 }
-                pattern_action = 0;
+                pattern_action = Action::None;
             }
             else if adding_audio {
                 // The first sample lands on the selected audio track; the rest
@@ -731,13 +745,13 @@ pub fn run() -> i32 {
                 adding_insert_track = -1;
             }
             else if adding_effect >= 0 { message = midi.load_effect(adding_effect, first); adding_effect = -1; }
-            else if learn_action != 0 {
-                if learn_action >= 100 {
+            else if learn_action != Action::None {
+                if learn_action == Action::SaveInstrumentPreset || learn_action == Action::LoadInstrumentPreset || learn_action == Action::LoadEffectPreset || learn_action == Action::SaveEffectPreset {
                     // Handled below; kit presets also touch the Audio list.
                     free(preset_path); preset_path = clone(first); preset_request = learn_action; preset_worker = midi.midi.worker.raw != 0;
                     message = clone("");
-                } else { message = SessionCodec::learn_file(first, midi.output, learn_slot, learn_action == 97); }
-                learn_action = 0;
+                } else { message = SessionCodec::learn_file(first, midi.output, learn_slot, learn_action == Action::SaveMidiLearn); }
+                learn_action = Action::None;
             }
             else if adding_instrument {
                 // Each chosen bundle becomes its own instance.
@@ -764,12 +778,12 @@ pub fn run() -> i32 {
             }
             dirty = true;
         }
-        if preset_request != 0 {
+        if preset_request != Action::None {
             // Instrument presets may carry pads; FX presets contain parameters only.
-            let effect_preset: bool = preset_request == 140 || preset_request == 141;
-            let saving_preset: bool = preset_request == 100 || preset_request == 141;
+            let effect_preset: bool = preset_request == Action::LoadEffectPreset || preset_request == Action::SaveEffectPreset;
+            let saving_preset: bool = preset_request == Action::SaveInstrumentPreset || preset_request == Action::SaveEffectPreset;
             var kit_pads: list<i32> = []; var kit_clips: list<AudioClip> = [];
-            if preset_request == 100 {
+            if preset_request == Action::SaveInstrumentPreset {
                 let assigned: list<PadAssignment> = midi.pads;
                 for entry in assigned { if entry.slot == learn_slot { kit_pads.push(entry.pad); kit_clips.push(library.audio.samples[entry.sample]); } }
             }
@@ -808,7 +822,7 @@ pub fn run() -> i32 {
                 midi.resume_midi(preset_worker);
                 if preset.ok && instrument_editor.active && instrument_editor.slot == learn_slot { instrument_editor.open(midi.output, learn_slot); }
             }
-            preset_request = 0; dirty = true;
+            preset_request = Action::None; dirty = true;
         }
         let now: i64 = now_ms(); let delta: i32 = i32(now - last_tick > 1000 ? 1000 : now - last_tick); last_tick = now;
         // MIDI dispatch is independent of modal keyboard focus.
@@ -1123,12 +1137,12 @@ pub fn run() -> i32 {
             if question.active && question.pressed_button >= 0 {
                 question.tick(); dirty = true;
                 if !question.active {
-                    if confirm_track_action != 0 {
+                    if confirm_track_action != Action::None {
                         if question.result == 1 {
-                            if confirm_track_action == 54 { library.table.set_length(length_target, terminal_bounds()); }
+                            if confirm_track_action == Action::SetPatternLength { library.table.set_length(length_target, terminal_bounds()); }
                             else { library.table.track_action(confirm_track_action, terminal_bounds()); }
                         }
-                        confirm_track_action = 0;
+                        confirm_track_action = Action::None;
                         free(message); message = clone("Track action finished.");
                     } else {free(message); message = clone(question.result == 1 ? "New session confirmed." : "New session cancelled."); if question.result == 1 && !fixture { session_request = 3; } }
                 }
@@ -1139,7 +1153,7 @@ pub fn run() -> i32 {
             if library.table.length_truncates_data(length_target) {
                 question.title = "Set length";
                 question.question = "Are you sure, data will be truncated";
-                confirm_track_action = 54; question.open();
+                confirm_track_action = Action::SetPatternLength; question.open();
             } else {library.table.set_length(length_target, terminal_bounds());}
             dirty = true;
         }
@@ -1252,12 +1266,16 @@ pub fn run() -> i32 {
                    event.code != 103 || event.modifiers != 1 { library.table.top_pending = false; }
             }
             escape_ticks = 0;
-            var command: i32 = 0;
+            var command: Action = Action::None;
+            // Keymap shortcuts: global ones (C-s) work over dialogs and text
+            // fields; the rest only reach the main view further below.
+            let global_key: Action = action_for(keymap, event, true);
+            let view_key: Action = action_for(keymap, event, false);
             if library.table.paste_error {
                 paste_error.question = library.table.error; paste_error.open(); library.table.paste_error = false; dirty = true;
             }
             if paste_error.active { paste_error.on_event(event); dirty = true; }
-            else if (event.code == 19 && event.modifiers == 1) || (event.code == 115 && event.modifiers == 5) { command = 3; dirty = true; }
+            else if global_key != Action::None { command = global_key; dirty = true; }
             // Space starts/stops from every pane, including the mixer and the
             // VST3 editor. Text entry and modal dialogs keep it for themselves.
             // Ctrl+P plays the matrix. Terminals send it as the control byte
@@ -1350,7 +1368,7 @@ pub fn run() -> i32 {
             else if piano.active {
                 if event.kind != InputKind::None || event.code != 0 {
                     piano.on_event(event); dirty = true;
-                    if !piano.active { command = piano.result == 2 ? 0 : 119; }
+                    if !piano.active { command = piano.result == 2 ? Action::None : Action::ApplyPadChoice; }
                 }
             }
             else if settings.active {
@@ -1389,7 +1407,7 @@ pub fn run() -> i32 {
                     else if picker.result == 3 {
                         free(message);
                         message = library.set_song_at(matrix.row, matrix.lane, 0) ? clone("Matrix cell cleared") : clone("No cell here");
-                    } else { command = 121; }
+                    } else { command = Action::PlaceMatrixPattern; }
                 }
                 dirty = true;
             }
@@ -1397,7 +1415,7 @@ pub fn run() -> i32 {
                 outputs.on_event(event);
                 if !outputs.active {
                     if outputs.result == 2 { free(message); message = clone("Cancelled."); }
-                    else { command = 31; }
+                    else { command = Action::ApplyOutputChannel; }
                 }
                 dirty = true;
             }
@@ -1418,7 +1436,7 @@ pub fn run() -> i32 {
             }
             else if question.active {
                 question.on_event(event);
-                if !question.active { confirm_track_action = 0; free(message); message = clone("Cancelled."); }
+                if !question.active { confirm_track_action = Action::None; free(message); message = clone("Cancelled."); }
                 dirty = true;
             }
             else if dialog.active {
@@ -1496,22 +1514,9 @@ pub fn run() -> i32 {
             else if ((event.code == 26 && event.modifiers == 1) || (event.code == 122 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible {
                 library.table.cycle_vertical_zoom(panes[1].bounds.inset(1)); dirty = true;
             }
-            // Ctrl+Shift+M (kitty/CSI-u); plain Ctrl+M is Enter on most terminals.
-            else if (event.code == 109 || event.code == 77) && event.modifiers == 6 { command = 160; }
-            // Shift+P: legacy terminals send "P", kitty/CSI-u a shifted "p".
-            else if (event.code == 80 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 112 || event.code == 80)) { command = 163; }
+            else if view_key != Action::None { command = view_key; dirty = true; }
             else if event.code == 109 && event.modifiers == 1 {
                 mixer.visible = !mixer.visible; dirty = true;
-            }
-            else if (event.code == 77 && event.modifiers == 1) || (event.modifiers == 2 && event.code == 109) {
-                matrix.visible = !matrix.visible;
-                // A session with no song yet opens on one empty row to edit.
-                if matrix.visible && library.song.len() == 0 { library.matrix_insert_row(0, false); }
-                if matrix.visible { focus.selected = 1; }
-                free(message);
-                message = clone(matrix.visible ? "Song matrix: Enter places the pattern selected in the sidebar; parallel lanes play together"
-                    : "Song matrix closed");
-                dirty = true;
             }
             else if event.kind == InputKind::Menu && function_number(event.key) > 0 {
                 menus.on_function_key(event.key);
@@ -1589,7 +1594,7 @@ pub fn run() -> i32 {
                     } else if event.kind == InputKind::Menu && event.key == Key::Right {
                         if mixer.selected_effect + 1 < midi.effects.len() { mixer.selected_effect = mixer.selected_effect + 1; } dirty = true;
                     } else if event.kind == InputKind::Menu && event.key == Key::Enter {
-                        let effect: EffectChannel = midi.effects[mixer.selected_effect]; command = effect.path == "" ? 111 : 112;
+                        let effect: EffectChannel = midi.effects[mixer.selected_effect]; command = effect.path == "" ? Action::LoadEffectPlugin : Action::EditEffectPlugin;
                     } else {
                         let down: bool = (event.code == 74 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 106 || event.code == 74));
                         let up: bool = (event.code == 75 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 107 || event.code == 75));
@@ -1697,7 +1702,7 @@ pub fn run() -> i32 {
                 }
                 else if action == 9 {
                     if matrix.clipboard > 0 && library.song_row_clashes(matrix.row, matrix.lane, matrix.clipboard) > 0 {
-                        command = 122;
+                        command = Action::PasteMatrixCell;
                     } else {
                         free(message);
                         message = library.set_song_at(matrix.row, matrix.lane, matrix.clipboard)
@@ -1733,7 +1738,7 @@ pub fn run() -> i32 {
                     free(message); message = sidebar_clipboard.error == "" ? format!("Duplicated {} list item(s)", count) : format!("Duplicated {}: {}", count, sidebar_clipboard.error);
                     playback_dirty = true; dirty = true;
                 }
-                else if library.audio_mode && event.code == 101 && event.modifiers == 1 { command = 107; }
+                else if library.audio_mode && event.code == 101 && event.modifiers == 1 { command = Action::EditSample; }
                 else if library.on_event(event, panes[0].bounds.inset(1)) { dirty = true; }
                 if library.share_request > 0 {
                     share_id = library.share_request; library.share_request = 0;
@@ -1746,26 +1751,26 @@ pub fn run() -> i32 {
                     share_question.open(); focus.set_menu_active(true); dirty = true;
                 }
             }
-            if command > 0 { dirty = true; pattern_action = 0; }
-            if command > 0 && command != 115 { adding_insert_track = -1; }
-            if command == 99 { running = false; }
-            else if command == 90 {
+            if command != Action::None { dirty = true; pattern_action = Action::None; }
+            if command != Action::None && command != Action::LoadInsert { adding_insert_track = -1; }
+            if command == Action::Quit { running = false; }
+            else if command == Action::Settings {
                 transport.playing = false; settings.open_audio(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate); focus.set_menu_active(true);
             }
-            else if command == 1 {
+            else if command == Action::NewSession {
                 question.title = "New session"; question.question = "Start a new session?";
-                confirm_track_action = 0; question.open(); focus.set_menu_active(true);
+                confirm_track_action = Action::None; question.open(); focus.set_menu_active(true);
             }
-            else if (command == 3 || command == 165) && session_path != "" && (project_open || command == 3) {
+            else if (command == Action::SaveSession || command == Action::SaveProject) && session_path != "" && (project_open || command == Action::SaveSession) {
                 // Ctrl+S saves the open document, project or session, in place.
                 free(request_path); request_path = clone(session_path); session_request = project_open ? 4 : 2;
             }
-            else if command == 164 || command == 165 || command == 166 {
+            else if command == Action::OpenProject || command == Action::SaveProject || command == Action::SaveProjectAs {
                 // Projects are folders, picked like .vst3 bundles.
                 adding_effect = -1;
-                learn_action = 0;
+                learn_action = Action::None;
                 adding_audio = false; adding_plugin = false; adding_instrument = false;
-                saving_session = command != 164; saving_project = true; dialog.save_mode = saving_session; dialog.multi_select = false;
+                saving_session = command != Action::OpenProject; saving_project = true; dialog.save_mode = saving_session; dialog.multi_select = false;
                 dialog.bundle_pattern = ".*\\.[mM][lL][aA][pP][rR][oO][jJ]";
                 dialog.file_pattern = saving_session ? "" : dialog.bundle_pattern;
                 dialog.title = saving_session ? "Save project (.mlaproj)" : "Open project (.mlaproj)";
@@ -1773,35 +1778,35 @@ pub fn run() -> i32 {
                 if saving_session && project_open { let name: str8 = base_name(session_path); dialog.path_field.set_text(name); free(name); }
                 focus.set_menu_active(true);
             }
-            else if command == 2 || command == 3 || command == 96 {
+            else if command == Action::OpenSession || command == Action::SaveSession || command == Action::SaveSessionAs {
                 adding_effect = -1;
-                learn_action = 0;
+                learn_action = Action::None;
                 adding_audio = false; adding_plugin = false; adding_instrument = false; dialog.bundle_pattern = "";
-                saving_session = command != 2; saving_project = false; dialog.save_mode = saving_session; dialog.multi_select = false;
+                saving_session = command != Action::OpenSession; saving_project = false; dialog.save_mode = saving_session; dialog.multi_select = false;
                 dialog.title = saving_session ? "Save session (.mlack)" : "Open session"; dialog.file_pattern = fixture ? "" : ".*\\.[mM][lL][aA][cC][kK]";
                 dialog.open(last_session_dir);
                 focus.set_menu_active(true);
             }
-            else if command == 60 {
+            else if command == Action::AddAudio {
                 adding_effect = -1;
-                learn_action = 0;
+                learn_action = Action::None;
                 dialog.save_mode = false; saving_session = false;
                 adding_audio = true; adding_plugin = false; adding_instrument = false; dialog.bundle_pattern = ""; dialog.title = "Add audio"; dialog.multi_select = true;
                 dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
                 dialog.open(last_audio_dir); focus.set_menu_active(true);
                 if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
             }
-            else if command == 91 || command == 93 {
+            else if command == Action::LoadMasterPlugin || command == Action::AddInstrument {
                 adding_effect = -1;
-                learn_action = 0;
+                learn_action = Action::None;
                 dialog.save_mode = false; saving_session = false;
-                transport.playing = false; adding_audio = false; adding_plugin = command == 91; adding_instrument = command == 93;
+                transport.playing = false; adding_audio = false; adding_plugin = command == Action::LoadMasterPlugin; adding_instrument = command == Action::AddInstrument;
                 dialog.multi_select = adding_instrument;
                 dialog.title = adding_instrument ? "Add VST3 instrument" : "Load master VST3"; dialog.file_pattern = ".*\\.[vV][sS][tT]3";
                 dialog.bundle_pattern = dialog.file_pattern;
                 dialog.open(last_plugin_dir); focus.set_menu_active(true);
             }
-            else if command == 97 || command == 98 || command == 100 || command == 101 {
+            else if command == Action::SaveMidiLearn || command == Action::LoadMidiLearn || command == Action::SaveInstrumentPreset || command == Action::LoadInstrumentPreset {
                 adding_effect = -1;
                 learn_slot = library.selected_instrument();
                 if learn_slot < 1 || midi.output.parameter_info(learn_slot, 0, 0) < 0.0 {
@@ -1809,23 +1814,23 @@ pub fn run() -> i32 {
                 } else {
                     learn_action = command; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
                     midi.output.midi_learn(-1, 0, 0);
-                    if command == 101 { transport.playing = false; }
-                    dialog.save_mode = command == 97 || command == 100; dialog.bundle_pattern = ""; dialog.multi_select = false;
-                    dialog.title = command == 97 ? "Save MIDI learn (.mlalearn)" : "Load MIDI learn (.mlalearn)";
-                    dialog.file_pattern = command == 97 ? "" : ".*\\.[mM][lL][aA][lL][eE][aA][rR][nN]";
-                    if command >= 100 {
-                        dialog.title = command == 100 ? "Save plugin preset (.mlapre)" : "Load plugin preset (.mlapre)";
-                        dialog.file_pattern = command == 100 ? "" : ".*\\.[mM][lL][aA][pP][rR][eE]";
+                    if command == Action::LoadInstrumentPreset { transport.playing = false; }
+                    dialog.save_mode = command == Action::SaveMidiLearn || command == Action::SaveInstrumentPreset; dialog.bundle_pattern = ""; dialog.multi_select = false;
+                    dialog.title = command == Action::SaveMidiLearn ? "Save MIDI learn (.mlalearn)" : "Load MIDI learn (.mlalearn)";
+                    dialog.file_pattern = command == Action::SaveMidiLearn ? "" : ".*\\.[mM][lL][aA][lL][eE][aA][rR][nN]";
+                    if command == Action::SaveInstrumentPreset || command == Action::LoadInstrumentPreset {
+                        dialog.title = command == Action::SaveInstrumentPreset ? "Save plugin preset (.mlapre)" : "Load plugin preset (.mlapre)";
+                        dialog.file_pattern = command == Action::SaveInstrumentPreset ? "" : ".*\\.[mM][lL][aA][pP][rR][eE]";
                     }
                     dialog.open(last_preset_dir);
-                    if command == 97 || command == 100 {
+                    if command == Action::SaveMidiLearn || command == Action::SaveInstrumentPreset {
                         let suggested: str8 = SessionCodec::learn_suggestion(learn_slot == 0 ? midi.output.processor_name() : midi.output.instrument_name(learn_slot));
                         dialog.path_field.set_text(suggested); free(suggested);
                     }
                     focus.set_menu_active(true);
                 }
             }
-            else if command == 140 || command == 141 {
+            else if command == Action::LoadEffectPreset || command == Action::SaveEffectPreset {
                 learn_slot = -1;
                 if instrument_editor.active && (instrument_editor.slot == 0 || instrument_editor.slot >= 33) { learn_slot = instrument_editor.slot; }
                 else if focus.selected == 1 && library.table.group_detail_rows > 0 {
@@ -1841,60 +1846,60 @@ pub fn run() -> i32 {
                 } else {
                     learn_action = command; adding_effect = -1; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
                     midi.output.midi_learn(-1, 0, 0);
-                    if command == 140 { transport.playing = false; }
-                    dialog.save_mode = command == 141; dialog.bundle_pattern = ""; dialog.multi_select = false;
-                    dialog.title = command == 141 ? "Save plugin preset (.mlafxpre)" : "Load plugin preset (.mlafxpre)";
-                    dialog.file_pattern = command == 141 ? "" : ".*\\.[mM][lL][aA][fF][xX][pP][rR][eE]";
+                    if command == Action::LoadEffectPreset { transport.playing = false; }
+                    dialog.save_mode = command == Action::SaveEffectPreset; dialog.bundle_pattern = ""; dialog.multi_select = false;
+                    dialog.title = command == Action::SaveEffectPreset ? "Save plugin preset (.mlafxpre)" : "Load plugin preset (.mlafxpre)";
+                    dialog.file_pattern = command == Action::SaveEffectPreset ? "" : ".*\\.[mM][lL][aA][fF][xX][pP][rR][eE]";
                     dialog.open(last_preset_dir);
-                    if command == 141 {
+                    if command == Action::SaveEffectPreset {
                         let suggested: str8 = SessionCodec::learn_suggestion(learn_slot == 0 ? midi.output.processor_name() : midi.output.instrument_name(learn_slot));
                         dialog.path_field.set_text(suggested); free(suggested);
                     }
                     focus.set_menu_active(true);
                 }
             }
-            else if command == 110 {
+            else if command == Action::AddEffectChannel {
                 if midi.add_effect() {
                     mixer.visible = true; sample.visible = false; focus.selected = 2; mixer.bus_focus = true; mixer.selected_effect = i32(midi.effects.len()) - 1;
                     mixer.update_effects(midi.output, midi.effects, 0);
                     free(message); message = clone("Effect channel added. Enter loads plugin; Effect > Set track send routes the selected track.");
                 } else { free(message); message = clone("Maximum 8 effect channels"); }
             }
-            else if command == 115 || command == 116 || (command == 112 && focus.selected == 1 && library.table.group_detail_rows > 0) {
+            else if command == Action::LoadInsert || command == Action::RemoveInsert || (command == Action::EditEffectPlugin && focus.selected == 1 && library.table.group_detail_rows > 0) {
                 let index: i32 = library.table.active_track();
                 if index >= 0 {
                     let track: SequenceTrack = library.table.tracks[index];
                     let position: i32 = library.table.selected_group_detail;
                     let id: i32 = track.insert_id(position);
-                    if command == 116 { library.table.set_insert(index, position, 0); }
+                    if command == Action::RemoveInsert { library.table.set_insert(index, position, 0); }
                     else if id > 0 { instrument_editor.open(midi.output, id + 40); }
-                    else if command == 112 { free(message); message = clone("Select a loaded insert effect first"); }
+                    else if command == Action::EditEffectPlugin { free(message); message = clone("Select a loaded insert effect first"); }
                     else {
                         adding_insert_track = index; adding_insert_position = position;
-                        adding_effect = -1; learn_action = 0; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
+                        adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
                         transport.playing = false; dialog.save_mode = false; dialog.multi_select = false; dialog.title = "Load VST3 insert effect";
                         dialog.file_pattern = ".*\\.[vV][sS][tT]3"; dialog.bundle_pattern = dialog.file_pattern;
                         dialog.open(last_plugin_dir); focus.set_menu_active(true);
                     }
                 }
             }
-            else if command >= 111 && command <= 114 {
+            else if command == Action::LoadEffectPlugin || command == Action::EditEffectPlugin || command == Action::SetTrackSend || command == Action::RemoveEffectPlugin {
                 if mixer.selected_effect < 0 || mixer.selected_effect >= midi.effects.len() { free(message); message = clone("Add/select an effect channel in Mixer first"); }
-                else if command == 111 {
-                    adding_effect = mixer.selected_effect; learn_action = 0; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
+                else if command == Action::LoadEffectPlugin {
+                    adding_effect = mixer.selected_effect; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
                     transport.playing = false; dialog.save_mode = false; dialog.multi_select = false; dialog.title = "Load VST3 effect";
                     dialog.file_pattern = ".*\\.[vV][sS][tT]3"; dialog.bundle_pattern = dialog.file_pattern;
                     dialog.open(last_plugin_dir); focus.set_menu_active(true);
-                } else if command == 112 {
+                } else if command == Action::EditEffectPlugin {
                     if !instrument_editor.open(midi.output, mixer.selected_effect + 33) { free(message); message = clone("Load an effect plugin first"); }
-                } else if command == 114 { free(message); message = midi.load_effect(mixer.selected_effect, ""); }
+                } else if command == Action::RemoveEffectPlugin { free(message); message = midi.load_effect(mixer.selected_effect, ""); }
                 else {
                     send_track = library.table.active_track(); send_fx = mixer.selected_effect;
                     if send_track >= 0 { let track: SequenceTrack = library.table.tracks[send_track]; bpm_dialog.open_send(track.send_level(send_fx)); }
                     else { free(message); message = clone("Select a source track in Pattern view first"); }
                 }
             }
-            else if command == 117 || command == 118 {
+            else if command == Action::SendSampleToPad || command == Action::LoadPadFromFile {
                 // The selected Instrument track decides which instance gets the
                 // pad; the Instruments list is the fallback for other tracks.
                 let track_slot: i32 = library.table.active_instrument();
@@ -1903,7 +1908,7 @@ pub fn run() -> i32 {
                 let root: i64 = slot < 1 ? -1 : midi.output.instrument_sampler(slot, 0);
                 if root < 0 {
                     free(message); message = clone("Select a loaded sampler instrument (e.g. Mla Drum) in Instruments first");
-                } else if command == 117 && (selected < 0 || selected >= library.audio.samples.len()) {
+                } else if command == Action::SendSampleToPad && (selected < 0 || selected >= library.audio.samples.len()) {
                     free(message); message = clone("Select a sample in Audio first (View > Audio)");
                 } else {
                     pad_action = command; pad_slot = slot; pad_sample = selected;
@@ -1914,18 +1919,18 @@ pub fn run() -> i32 {
                         if used >= 0 && used < library.audio.samples.len() { let clip: AudioClip = library.audio.samples[used]; names.push(base_name(clip.source)); }
                         else { names.push(clone("")); }
                     }
-                    let title: str8 = format!("{} | {} #{}", command == 117 ? "Send sample to drum key" : "Load drum key from file", midi.output.instrument_name(slot), slot);
+                    let title: str8 = format!("{} | {} #{}", command == Action::SendSampleToPad ? "Send sample to drum key" : "Load drum key from file", midi.output.instrument_name(slot), slot);
                     piano.open(title, i32(root), i32(pads),
-                        midi.output.instrument_sampler(slot, 2), names, command == 117 ? "Insert sample" : "Choose file");
+                        midi.output.instrument_sampler(slot, 2), names, command == Action::SendSampleToPad ? "Insert sample" : "Choose file");
                     focus.set_menu_active(true);
                 }
             }
-            else if command == 119 {
+            else if command == Action::ApplyPadChoice {
                 pad_index = piano.pad();
                 if piano.result == 3 {
                     let error: str8 = midi.clear_pad(pad_slot, pad_index);
                     free(message); message = error == "" ? format!("Pad {} cleared", pad_index + 1) : error;
-                } else if pad_action == 117 {
+                } else if pad_action == Action::SendSampleToPad {
                     let clip: AudioClip = library.audio.samples[pad_sample];
                     let name: str8 = base_name(clip.source);
                     let error: str8 = midi.assign_pad(pad_slot, pad_index, pad_sample, clip.samples, clip.channels, clip.sample_rate, name);
@@ -1933,7 +1938,7 @@ pub fn run() -> i32 {
                     message = error == "" ? format!("Pad {}: {}", pad_index + 1, name) : error;
                     free(name);
                 } else {
-                    adding_effect = -1; learn_action = 0; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
+                    adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
                     adding_pad_file = true; dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
                     dialog.title = format!("Load sample for pad {}", pad_index + 1);
                     dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
@@ -1941,7 +1946,7 @@ pub fn run() -> i32 {
                     if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
                 }
             }
-            else if command == 107 {
+            else if command == Action::EditSample {
                 let index: i32 = library.audio.view.selected;
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
                 else {
@@ -1951,13 +1956,13 @@ pub fn run() -> i32 {
                     free(message); message = clone("Editing a copy: Save writes it to the session and drum pads");
                 }
             }
-            else if command == 94 {
+            else if command == Action::OpenPluginEditor {
                 if !instrument_editor.open(midi.output, library.selected_instrument()) {
                     free(message); message = clone("Select a loaded instrument in Instruments first");
                 }
             }
-            else if command == 121 || command == 122 {
-                let id: i32 = command == 122 ? matrix.clipboard : picker.chosen();
+            else if command == Action::PlaceMatrixPattern || command == Action::PasteMatrixCell {
+                let id: i32 = command == Action::PasteMatrixCell ? matrix.clipboard : picker.chosen();
                 if id <= 0 { free(message); message = clone("Select a pattern in the sidebar first (View > Patterns)"); }
                 else {
                     let blocked: i32 = library.song_placement_blocked(matrix.row, matrix.lane, id);
@@ -1981,7 +1986,7 @@ pub fn run() -> i32 {
                     }
                 }
             }
-            else if command == 120 {
+            else if command == Action::RemoveAudio {
                 let index: i32 = library.audio.view.selected;
                 let uses: i32 = library.sample_usage(index);
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
@@ -1997,7 +2002,7 @@ pub fn run() -> i32 {
                     free(name);
                 }
             }
-            else if command == 95 {
+            else if command == Action::RemoveInstrument {
                 let id: i32 = library.selected_instrument();
                 let uses: i32 = library.instrument_usage(id);
                 if id < 1 { free(message); message = clone("Select a loaded instrument in Instruments first"); }
@@ -2011,10 +2016,10 @@ pub fn run() -> i32 {
                     remove_question.open(); focus.set_menu_active(true);
                 }
             }
-            else if command == 92 {
+            else if command == Action::UnloadMasterPlugin {
                 transport.playing = false; free(message); message = midi.set_processor("");
             }
-            else if command == 30 {
+            else if command == Action::SetOutputChannel {
                 // A MIDI track chooses the instrument it plays; an audio or
                 // instrument track chooses the channel it feeds.
                 let index: i32 = library.table.active_track();
@@ -2054,7 +2059,7 @@ pub fn run() -> i32 {
                     }
                 }
             }
-            else if command == 31 {
+            else if command == Action::ApplyOutputChannel {
                 let choice: i32 = outputs.chosen();
                 let index: i32 = output_track;
                 free(message);
@@ -2071,13 +2076,13 @@ pub fn run() -> i32 {
                 else { message = choice == 0 ? clone("Output channel: master") : format!("Output channel: A{}", choice); }
                 playback_dirty = true;
             }
-            else if command == 22 || command == 24 {
+            else if command == Action::DeleteTrack || command == Action::ClearTrack {
                 confirm_track_action = command;
-                question.title = command == 22 ? "Delete track" : "Clear track";
-                question.question = command == 22 ? "Delete the selected track and its pattern?" : "Clear all rows of the selected track?";
+                question.title = command == Action::DeleteTrack ? "Delete track" : "Clear track";
+                question.question = command == Action::DeleteTrack ? "Delete the selected track and its pattern?" : "Clear all rows of the selected track?";
                 question.open(); focus.set_menu_active(true);
             }
-            else if command == 85 {
+            else if command == Action::RemoveCcColumn {
                 let slot: i32 = library.table.automation_slot_at(library.table.selected_column);
                 free(message);
                 if slot == 0 { message = clone("Select a CC column first (expand the track with z)"); }
@@ -2089,17 +2094,21 @@ pub fn run() -> i32 {
                     question.open(); focus.set_menu_active(true);
                 }
             }
-            else if command == 42 {
+            else if command == Action::ViewPatterns {
                 matrix.visible = false; library.show_patterns();
             }
-            else if command == 43 {
-                if library.song.len() == 0 { library.matrix_insert_row(0, false); }
-                matrix.visible = true; focus.selected = 1;
-                free(message); message = clone("Song matrix: Enter chooses a pattern for the cell; parallel lanes play together");
+            else if command == Action::ViewSongMatrix {
+                matrix.visible = !matrix.visible;
+                // A session with no song yet opens on one empty row to edit.
+                if matrix.visible && library.song.len() == 0 { library.matrix_insert_row(0, false); }
+                if matrix.visible { focus.selected = 1; }
+                free(message);
+                message = clone(matrix.visible ? "Song matrix: Enter places the pattern selected in the sidebar; parallel lanes play together"
+                    : "Song matrix closed");
             }
-            else if command == 44 { library.show_audio(); }
-            else if command == 45 { library.show_instruments(); }
-            else if command == 29 {
+            else if command == Action::ViewAudio { library.show_audio(); }
+            else if command == Action::ViewInstruments { library.show_instruments(); }
+            else if command == Action::CreateInstrumentTrack {
                 // Never join an instance another track already plays through: two
                 // tracks on one instance share its pads, fader and meters. Sharing
                 // stays available explicitly (Enter in Instruments, Track > Duplicate).
@@ -2111,131 +2120,131 @@ pub fn run() -> i32 {
                 message = shared ? format!("Instrument track created unassigned (instance {} is used by another track). Add > Instrument loads a new one; Enter in Instruments shares it.", candidate)
                     : clone("Instrument track created. Add > Instrument loads a plugin; Enter in Instruments assigns it.");
             }
-            else if command == 57 || command == 58 {
-                pattern_action = command; learn_action = 0; adding_audio = false; adding_plugin = false;
+            else if command == Action::SavePattern || command == Action::LoadPattern {
+                pattern_action = command; learn_action = Action::None; adding_audio = false; adding_plugin = false;
                 adding_instrument = false; adding_effect = -1; adding_insert_track = -1; adding_pad_file = false;
-                transport.playing = false; dialog.save_mode = command == 57; dialog.multi_select = false; dialog.bundle_pattern = "";
-                dialog.title = command == 57 ? "Save pattern (.mlapatt)" : "Load pattern (.mlapatt)";
-                dialog.file_pattern = command == 57 ? "" : ".*\\.[mM][lL][aA][pP][aA][tT][tT]";
+                transport.playing = false; dialog.save_mode = command == Action::SavePattern; dialog.multi_select = false; dialog.bundle_pattern = "";
+                dialog.title = command == Action::SavePattern ? "Save pattern (.mlapatt)" : "Load pattern (.mlapatt)";
+                dialog.file_pattern = command == Action::SavePattern ? "" : ".*\\.[mM][lL][aA][pP][aA][tT][tT]";
                 dialog.open(last_pattern_dir);
-                if command == 57 { dialog.path_field.set_text(library.active_name()); }
+                if command == Action::SavePattern { dialog.path_field.set_text(library.active_name()); }
                 focus.set_menu_active(true);
             }
-            else if command >= 150 && command <= 153 {
-                if command == 150 { play_metronome = !play_metronome; }
-                else if command == 151 { extend_recording = !extend_recording; }
-                else { metronome_always = command == 153; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible);
+            else if command == Action::ToggleMetronome || command == Action::ToggleExtendRecording || command == Action::MetronomeOnRecording || command == Action::MetronomeAlways {
+                if command == Action::ToggleMetronome { play_metronome = !play_metronome; }
+                else if command == Action::ToggleExtendRecording { extend_recording = !extend_recording; }
+                else { metronome_always = command == Action::MetronomeAlways; }
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
             }
-            else if command == 50 || command == 53 { library.add(command == 53); }
-            else if command == 51 {
+            else if command == Action::AddPattern || command == Action::ClonePattern { library.add(command == Action::ClonePattern); }
+            else if command == Action::RenamePattern {
                 library.editor.set_text(library.active_name()); library.renaming = true; library.error = "";
             }
-            else if command == 56 {
+            else if command == Action::SetMatrixRowLength {
                 transport.playing = false; song_playing = false;
                 bpm_dialog.open_matrix_steps(library.matrix_steps);
                 focus.set_menu_active(true);
             }
-            else if command == 55 {
+            else if command == Action::FollowMatrix {
                 follow_matrix = !follow_matrix;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
                 free(message);
                 if follow_matrix {
                     if song_playing { library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id; }
                     message = clone("Follow matrix patterns: on. The editor and mixer show the row the matrix browses or plays.");
                 } else { message = clone("Follow matrix patterns: off. The editor and mixer stay on the selected pattern."); }
             }
-            else if command == 52 { library.remove_active(panes[0].bounds.inset(1)); }
-            else if command == 54 {
+            else if command == Action::RemovePattern { library.remove_active(panes[0].bounds.inset(1)); }
+            else if command == Action::SetPatternLength {
                 transport.playing = false;
                 bpm_dialog.open_pattern_length(i32(library.table.rows.len()));
             }
-            else if command == 70 || command == 71 { sample.grainy = command == 71; }
-            else if command == 72 || command == 73 { sample.wave = command == 73; }
-            else if command == 74 { bpm_dialog.open_meter_rate(frame_rate.fps); }
-            else if command == 160 {
+            else if command == Action::SampleViewNormal || command == Action::SampleViewGrainy { sample.grainy = command == Action::SampleViewGrainy; }
+            else if command == Action::SampleViewFilled || command == Action::SampleViewWave { sample.wave = command == Action::SampleViewWave; }
+            else if command == Action::MeterUpdateRate { bpm_dialog.open_meter_rate(frame_rate.fps); }
+            else if command == Action::ToggleSpectrum {
                 spectrum.visible = !spectrum.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
             }
-            else if command == 163 {
+            else if command == Action::ToggleVirtualKeyboard {
                 keyboard.visible = !keyboard.visible;
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
                 // Keys only play while the pane has focus.
                 if keyboard.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
                 message = keyboard.visible ? clone("Keyboard: z-m and q-p play the selected track; Left/Right or -/= change octave; Space plays")
                     : clone("Virtual keyboard closed");
             }
-            else if command == 161 {
+            else if command == Action::SpectrumDetails {
                 spectrum.detail = (spectrum.detail + 1) % 3; spectrum.levels = []; spectrum.peaks = [];
                 free(message); message = format!("Spectrum detail: {}", spectrum.detail_name());
             }
-            else if command == 162 { bpm_dialog.open_spectrum_rate(spectrum.fps); }
-            else if command == 40 || command == 41 {
-                mixer.grainy = command == 41;
+            else if command == Action::SpectrumUpdateRate { bpm_dialog.open_spectrum_rate(spectrum.fps); }
+            else if command == Action::MeterSolid || command == Action::MeterGrainy {
+                mixer.grainy = command == Action::MeterGrainy;
                 free(message); message = clone(mixer.grainy ? "Meter style: grainy (osc)": "Meter style: solid bars");
             }
-            else if command == 61 {
+            else if command == Action::CopyClip {
                 free(message);
                 message = library.table.copy_audio()
                     ? clone("Copied audio tail to clipboard.")
                     : clone(library.table.error);
             }
-            else if command == 62 {
+            else if command == Action::CutClip {
                 free(message);
                 message = library.table.cut_audio(panes[1].bounds.inset(1))
                     ? clone("Cut audio tail to clipboard.")
                     : clone(library.table.error);
             }
-            else if command == 63 {
+            else if command == Action::PasteClip {
                 free(message);
                 message = library.table.paste_audio(panes[1].bounds.inset(1))
                     ? clone("Pasted audio from clipboard.")
                     : clone(library.table.error);
             }
-            else if command == 102 {
+            else if command == Action::ReverseClip {
                 free(message);
                 message = library.table.reverse_audio(panes[1].bounds.inset(1))
                     ? clone("Reversed audio clip.")
                     : clone(library.table.error);
             }
-            else if command == 105 {
+            else if command == Action::TrimClip {
                 free(message);
                 message = library.table.trim_audio(sample.sel_start, sample.sel_end, panes[1].bounds.inset(1))
                     ? clone("Trimmed audio clip to selection.")
                     : clone(library.table.error);
             }
-            else if command == 106 {
+            else if command == Action::SliceClip {
                 free(message);
                 message = library.table.slice_audio(panes[1].bounds.inset(1))
                     ? clone("Sliced audio clip into three parts.")
                     : clone(library.table.error);
             }
-            else if command == 103 {
+            else if command == Action::MoveClipUp {
                 free(message);
                 message = library.table.move_audio(-1, panes[1].bounds.inset(1))
                     ? clone("Moved audio clip up.")
                     : clone(library.table.error);
             }
-            else if command == 104 {
+            else if command == Action::MoveClipDown {
                 free(message);
                 message = library.table.move_audio(1, panes[1].bounds.inset(1))
                     ? clone("Moved audio clip down.")
                     : clone(library.table.error);
             }
-            else if(command >= 20 && command <= 28) ||(command >= 80 && command <= 84) {
+            else if is_track_action(command) {
                 library.table.error = "";
                 library.table.track_action(command, panes[1].bounds.inset(1));
                 free(message);
                 message = library.table.error != "" ? clone(library.table.error) : clone("Track updated. Mute affects demo state only.");
             }
-            else if command > 0 {
+            else if command != Action::None {
                 free(message); message = clone("Command selected. Ready for the application handler.");
             }
             if pending_length > 0 {
@@ -2243,7 +2252,7 @@ pub fn run() -> i32 {
                 if library.table.length_truncates_data(length_target) {
                     question.title = "Set length";
                     question.question = "Are you sure, data will be truncated";
-                    confirm_track_action = 54; question.open();
+                    confirm_track_action = Action::SetPatternLength; question.open();
                 } else {library.table.set_length(length_target, panes[1].bounds.inset(1));}
                 dirty = true;
             }
@@ -2298,7 +2307,7 @@ pub fn run() -> i32 {
                 }
                 else if question.active {
                     question.on_event(event);
-                    if !question.active { confirm_track_action = 0; free(message); message = clone("Cancelled."); }
+                    if !question.active { confirm_track_action = Action::None; free(message); message = clone("Cancelled."); }
                     dirty = true;
                 }
                 else if dialog.active {

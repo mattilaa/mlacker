@@ -233,6 +233,17 @@ function key switches to that menu and the open menu's own key closes it. Each
 menu starts with what it creates, then what it changes, then what it removes;
 related entries live in submenus.
 
+Items that have a keyboard shortcut show it right-aligned in the menu, in the
+same color as the function keys: `C-` is Ctrl, `S-` Shift and `C+S-` both, so
+**Save session** shows `C-s` and **Show spectrum analyzer** `C+S-m`.
+
+For developers: every command is an `Action` in
+`modules/mlacker_ui/actions.mla`, and shortcuts are bound to actions in
+`modules/mlacker_ui/keymap.mla` (`default_keymap()`). The key handling and the
+menu labels both read the keymap, so changing a binding there changes the key
+and what the menu shows. A `global` binding (like `C-s`) also works while a
+dialog or text field has the keyboard.
+
 | Menu | Contents |
 |------|----------|
 | File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |

@@ -1,4 +1,6 @@
 """F1-F9 open the nine menus directly; the bar shows [F1]File  [F2]Edit ..."""
+import re
+
 from session_tui_smoke import Terminal
 
 # SS3 spellings for F1-F4, CSI n~ for F5-F9.
@@ -16,6 +18,14 @@ def main():
         for key, item in zip(KEYS, FIRST):
             frame = tui.send(key)
             assert item in frame, (key, frame[-3000:])
+        # Items with a keymap shortcut show it right-aligned, at least three
+        # cells after the menu's longest label.
+        frame = tui.send(KEYS[0])
+        assert re.search(rb"Save session {3,}C-s", frame), frame[-3000:]
+        frame = tui.send(KEYS[2])
+        for label, key in ((rb"Song matrix", rb"S-m"), (rb"Show spectrum analyzer", rb"C\+S-m"), (rb"Show virtual keyboard", rb"S-p")):
+            assert re.search(label + rb" {3,}" + key, frame), (label, frame[-3000:])
+        tui.send(KEYS[2])
         # The open menu's key closes it; another key switches menus.
         tui.send(KEYS[8])
         frame = tui.send(KEYS[1])

@@ -1,0 +1,56 @@
+/// Every command the tracker runs: menu items, keyboard shortcuts (see
+/// keymap.mla) and follow-ups of dialogs. Menu items carry `i32(action)`, and
+/// `MenuBar::on_key` hands that value back.
+pub enum Action : i32 {
+    None = 0,
+    // File
+    NewSession = 1, OpenSession = 2, SaveSession = 3, SaveSessionAs = 96,
+    OpenProject = 164, SaveProject = 165, SaveProjectAs = 166,
+    RecentBlueHour = 8, TemplateAmbient = 9, TemplateDance = 10,
+    Settings = 90, Quit = 99,
+    // Edit
+    Undo = 4, Redo = 5, CopyClip = 61, CutClip = 62, PasteClip = 63,
+    // View
+    ViewPatterns = 42, ViewSongMatrix = 43, ViewAudio = 44, ViewInstruments = 45,
+    SampleViewNormal = 70, SampleViewGrainy = 71, SampleViewFilled = 72, SampleViewWave = 73,
+    MeterSolid = 40, MeterGrainy = 41, MeterUpdateRate = 74,
+    ToggleSpectrum = 160, SpectrumDetails = 161, SpectrumUpdateRate = 162,
+    ToggleVirtualKeyboard = 163, ResetLayout = 6, ShowDetails = 7,
+    // Track
+    RenameTrack = 20, CreateMidiTrack = 21, DeleteTrack = 22, DuplicateTrack = 23,
+    ClearTrack = 24, MuteTrack = 25, ConfigureCcColumn = 26, AddCcColumn = 27,
+    CreateAudioTrack = 28, CreateInstrumentTrack = 29, SetOutputChannel = 30,
+    AddNoteLine = 80, RemoveNoteLine = 81, DuplicateNoteLine = 82,
+    CollapseNoteLines = 83, ExpandNoteLines = 84, RemoveCcColumn = 85,
+    // Pattern
+    AddPattern = 50, RenamePattern = 51, RemovePattern = 52, ClonePattern = 53,
+    SetPatternLength = 54, FollowMatrix = 55, SetMatrixRowLength = 56,
+    SavePattern = 57, LoadPattern = 58,
+    // Audio
+    AddAudio = 60, ReverseClip = 102, MoveClipUp = 103, MoveClipDown = 104,
+    TrimClip = 105, SliceClip = 106, EditSample = 107, RemoveAudio = 120,
+    // Instrument
+    LoadMasterPlugin = 91, UnloadMasterPlugin = 92, AddInstrument = 93,
+    OpenPluginEditor = 94, RemoveInstrument = 95, SaveMidiLearn = 97, LoadMidiLearn = 98,
+    SaveInstrumentPreset = 100, LoadInstrumentPreset = 101,
+    SendSampleToPad = 117, LoadPadFromFile = 118,
+    // Effect
+    AddEffectChannel = 110, LoadEffectPlugin = 111, EditEffectPlugin = 112,
+    SetTrackSend = 113, RemoveEffectPlugin = 114,
+    LoadEffectPreset = 140, SaveEffectPreset = 141,
+    // Record
+    ToggleMetronome = 150, ToggleExtendRecording = 151, MetronomeOnRecording = 152, MetronomeAlways = 153,
+    // Follow-ups, not in a menu: an insert slot's Enter / Backspace, a chosen
+    // output channel, drum key, matrix pattern, and pasting a matrix cell.
+    LoadInsert = 115, RemoveInsert = 116, ApplyOutputChannel = 31, ApplyPadChoice = 119,
+    PlaceMatrixPattern = 121, PasteMatrixCell = 122
+};
+
+/// Actions the sequence table runs itself (SequenceTable::track_action).
+pub fn is_track_action(action: Action) -> bool {
+    return action == Action::RenameTrack || action == Action::CreateMidiTrack || action == Action::DeleteTrack ||
+        action == Action::DuplicateTrack || action == Action::ClearTrack || action == Action::MuteTrack ||
+        action == Action::ConfigureCcColumn || action == Action::AddCcColumn || action == Action::CreateAudioTrack ||
+        action == Action::AddNoteLine || action == Action::RemoveNoteLine || action == Action::DuplicateNoteLine ||
+        action == Action::CollapseNoteLines || action == Action::ExpandNoteLines;
+}

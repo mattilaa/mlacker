@@ -1,0 +1,59 @@
+mod mlacker_ui::actions;
+mod tui::input;
+mod std::strbuf;
+use mlacker_ui::actions::Action;
+use tui::input::*;
+
+/// A keyboard shortcut for an action. `key` is a lowercase ASCII letter code.
+/// A `global` binding also works while a dialog or text field has the keyboard.
+/// `label` is how menus show it: "C-s" (Ctrl), "S-p" (Shift), "C+S-m" (both).
+pub struct KeyBinding { var action: Action; var key: i32; var ctrl: bool; var shift: bool; var global: bool; var label: str8; };
+
+pub fn bind(action: Action, key: i32, ctrl: bool, shift: bool, global: bool) -> KeyBinding {
+    let builder: i64 = std::strbuf::builder_new(8);
+    std::strbuf::builder_append(builder, ctrl && shift ? "C+S-" : (ctrl ? "C-" : (shift ? "S-" : "")));
+    std::strbuf::builder_append_char(builder, key);
+    let label: str8 = std::strbuf::builder_to_string(builder); std::strbuf::builder_free(builder);
+    return KeyBinding { action: action, key: key, ctrl: ctrl, shift: shift, global: global, label: label };
+}
+
+/// The tracker's shortcuts. Change them here: menus show whatever is bound.
+pub fn default_keymap() -> list<KeyBinding> {
+    return [
+        bind(Action::SaveSession, 115, true, false, true),            // C-s
+        bind(Action::ViewSongMatrix, 109, false, true, false),        // S-m
+        bind(Action::ToggleSpectrum, 109, true, true, false),         // C+S-m
+        bind(Action::ToggleVirtualKeyboard, 112, false, true, false)  // S-p
+    ];
+}
+
+/// True when `event` is the binding's key. Terminals spell modified keys
+/// differently: legacy Ctrl+letter is a control byte and Shift+letter an
+/// uppercase letter; kitty/CSI-u send the letter with a modifier mask (2
+/// Shift, 5 Ctrl, 6 Ctrl+Shift). Plain Ctrl+Shift has no legacy form.
+pub fn binding_matches(binding: KeyBinding, event: InputEvent) -> bool {
+    let lower: i32 = binding.key; let upper: i32 = binding.key - 32;
+    let letter: bool = event.code == lower || event.code == upper;
+    if binding.ctrl && binding.shift { return letter && event.modifiers == 6; }
+    if binding.ctrl { return (event.code == lower - 96 && event.modifiers == 1) || (letter && event.modifiers == 5); }
+    if binding.shift { return (event.code == upper && event.modifiers == 1) || (letter && event.modifiers == 2); }
+    return event.code == lower && event.modifiers == 1;
+}
+
+/// The action bound to `event`, or Action::None. With `global_only`, only
+/// bindings that work over dialogs and text fields count.
+pub fn action_for(keymap: &list<KeyBinding>, event: InputEvent, global_only: bool) -> Action {
+    var bindings: list<KeyBinding> = []; bindings = keymap;
+    if event.released { return Action::None; }
+    for binding in bindings {
+        if (binding.global || !global_only) && binding_matches(binding, event) { return binding.action; }
+    }
+    return Action::None;
+}
+
+/// Menu label of the first key bound to `action`, or "" when it has none.
+pub fn shortcut_for(keymap: &list<KeyBinding>, action: Action) -> str8 {
+    var bindings: list<KeyBinding> = []; bindings = keymap;
+    for binding in bindings { if binding.action == action { return binding.label; } }
+    return "";
+}

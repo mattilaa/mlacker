@@ -7,6 +7,8 @@ use std::audio::controller::AudioController;
 mod tui::textfield;
 mod tui::dialog;
 mod mlacker_ui::dialog_buttons;
+mod mlacker_ui::actions;
+use mlacker_ui::actions::Action;
 mod mlacker_ui::audio_clip;
 mod mlacker_ui::duration;
 use mlacker_ui::duration::*;
@@ -349,25 +351,26 @@ pub fn move_insert(self: &mut Self, delta: i32) -> bool {
     self.selected_group_detail = to; return true;
 }
 /// Returns 115=load/edit, 116=remove. Insert mode never edits pattern cells.
-pub fn insert_event(self: &mut Self, event: InputEvent, area: Rect) -> i32 {
+/// Returns LoadInsert (Enter) or RemoveInsert (Backspace) for the selected insert slot.
+pub fn insert_event(self: &mut Self, event: InputEvent, area: Rect) -> Action {
     if event.code == 102 && event.modifiers == 1 {
         self.group_detail_rows = self.group_detail_rows == 0 ? 4 : 0;
         self.selected_group_detail = self.group_detail_rows == 0 ? -1 : 0;
-        self.visual = false; self.delete_pending = false; self.reconcile(area); return 0;
+        self.visual = false; self.delete_pending = false; self.reconcile(area); return Action::None;
     }
-    if self.group_detail_rows == 0 { return 0; }
+    if self.group_detail_rows == 0 { return Action::None; }
     // Ctrl+J/K reorder the chain: kitty/CSI-u spell them as modified j/k, legacy
     // terminals as the raw bytes LF (10, Enter is CR) and VT (11).
-    if (event.modifiers == 5 && event.code == 106) || (event.raw_byte && event.code == 10) { self.move_insert(1); return 0; }
-    if (event.modifiers == 5 && event.code == 107) || (event.raw_byte && event.code == 11) { self.move_insert(-1); return 0; }
+    if (event.modifiers == 5 && event.code == 106) || (event.raw_byte && event.code == 10) { self.move_insert(1); return Action::None; }
+    if (event.modifiers == 5 && event.code == 107) || (event.raw_byte && event.code == 11) { self.move_insert(-1); return Action::None; }
     if event.kind == InputKind::Menu {
         if event.key == Key::Left || event.key == Key::Right { self.mixer_event(event, area); }
         if event.key == Key::Up && self.selected_group_detail > 0 { self.selected_group_detail = self.selected_group_detail - 1; }
         if event.key == Key::Down && self.selected_group_detail < 3 { self.selected_group_detail = self.selected_group_detail + 1; }
-        if event.key == Key::Enter { return 115; }
+        if event.key == Key::Enter { return Action::LoadInsert; }
     }
-    if event.code == 127 || event.code == 8 { return 116; }
-    return 0;
+    if event.code == 127 || event.code == 8 { return Action::RemoveInsert; }
+    return Action::None;
 }
 pub fn empty() -> SequenceTable {
     var table: SequenceTable = SequenceTable::new();
@@ -589,7 +592,7 @@ pub fn stop_recording(self: &mut Self, tick: i64, area: Rect) -> void {
     self.release_recorded(0, 0, tick, true);
     self.selected_column = self.track_start(self.recording_track);
     self.recording_track = -1; self.recorded_keys = [];
-    self.track_action(20, area);
+    self.track_action(Action::RenameTrack, area);
 }
 pub fn record_note(self: &mut Self, note: i64, velocity: i64) -> bool {
     if note < 0 || note > 127 || velocity <= 0 || velocity > 127 || self.editing || self.visual { return false; }
@@ -1937,65 +1940,65 @@ pub fn move_notes_to_line(self: &mut Self, index: i32, line: i32, area: Rect) ->
     self.rebuild_columns(); self.reconcile(area);
     return true;
 }
-pub fn note_line_action(self: &mut Self, command: i32, area: Rect) -> void {
+pub fn note_line_action(self: &mut Self, command: Action, area: Rect) -> void {
     let index: i32 = self.active_track(); if index < 0 { return; }
     var track: SequenceTrack = self.tracks[index];
     if track.audio { self.error = "Note lines require a MIDI track"; return; }
     let first: i32 = self.track_start(index);
     let offset: i32 = self.selected_column - first;
     let selected: i32 = offset < track.note_lines * 4 ? offset / 4 : -1;
-    if selected < 0 && command != 80 { self.error = "Select a NOTE, VEL, LEN or OFF column"; return; }
-    if command == 81 && track.note_lines == 1 { self.error = "Keep at least one note line"; return; }
-    if command != 81 && track.note_lines >= 16 { self.error = "Maximum 16 note lines per track"; return; }
-    let line: i32 = command == 81 ? selected : (selected < 0 ? track.note_lines : selected + 1);
+    if selected < 0 && command != Action::AddNoteLine { self.error = "Select a NOTE, VEL, LEN or OFF column"; return; }
+    if command == Action::RemoveNoteLine && track.note_lines == 1 { self.error = "Keep at least one note line"; return; }
+    if command != Action::RemoveNoteLine && track.note_lines >= 16 { self.error = "Maximum 16 note lines per track"; return; }
+    let line: i32 = command == Action::RemoveNoteLine ? selected : (selected < 0 ? track.note_lines : selected + 1);
     let column: i32 = first + line * 4;
     let source: i32 = first + selected * 4;
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
     for row in previous {
         var cells: list<str8> = [];
         for c in 0..row.cells.len() {
-            if c == column && command != 81 {
-                if command == 82 { cells.push(clone(row.cells[source])); cells.push(clone(row.cells[source + 1])); cells.push(clone(row.cells[source + 2])); cells.push(clone(row.cells[source + 3])); }
+            if c == column && command != Action::RemoveNoteLine {
+                if command == Action::DuplicateNoteLine { cells.push(clone(row.cells[source])); cells.push(clone(row.cells[source + 1])); cells.push(clone(row.cells[source + 2])); cells.push(clone(row.cells[source + 3])); }
                 else { cells.push(clone("")); cells.push(clone("")); cells.push(clone("")); cells.push(clone("")); }
             }
-            if command == 81 && (c >= column && c < column + 4) { free(row.cells[c]); }
+            if command == Action::RemoveNoteLine && (c >= column && c < column + 4) { free(row.cells[c]); }
             else { cells.push(row.cells[c]); }
         }
         rows.push(TableRow { cells: cells });
     }
-    track.note_lines = track.note_lines + (command == 81 ? -1 : 1);
+    track.note_lines = track.note_lines + (command == Action::RemoveNoteLine ? -1 : 1);
     let next: i32 = line >= track.note_lines ? track.note_lines - 1 : line;
     self.replace_track(index, track); self.rows = rows;
     self.selected_column = first + next * 4;
     self.rebuild_columns(); self.reconcile(area); self.error = "";
     self.delete_pending = false; self.top_pending = false;
 }
-pub fn track_action(self: &mut Self, command: i32, area: Rect) -> void {
-    if command == 83 || command == 84 { self.zoom_tracks(command == 83 ? 0 : 2, true, area); return; }
-    if command >= 80 && command <= 82 { self.note_line_action(command, area); return; }
+pub fn track_action(self: &mut Self, command: Action, area: Rect) -> void {
+    if command == Action::CollapseNoteLines || command == Action::ExpandNoteLines { self.zoom_tracks(command == Action::CollapseNoteLines ? 0 : 2, true, area); return; }
+    if command == Action::AddNoteLine || command == Action::RemoveNoteLine || command == Action::DuplicateNoteLine { self.note_line_action(command, area); return; }
     self.delete_pending = false;
-    if command == 21 { self.create_track(false, area); return; }
-    if command == 28 { self.create_track_kind(false, true, area); return; }
-    if command == 23 { self.create_track(true, area); return; }
-    if command == 22 { self.remove_track(area); return; }
-    if command == 24 { self.clear_track(); return; }
+    if command == Action::CreateMidiTrack { self.create_track(false, area); return; }
+    if command == Action::CreateAudioTrack { self.create_track_kind(false, true, area); return; }
+    if command == Action::DuplicateTrack { self.create_track(true, area); return; }
+    if command == Action::DeleteTrack { self.remove_track(area); return; }
+    if command == Action::ClearTrack { self.clear_track(); return; }
     let index: i32 = self.active_track(); if index < 0 { return; }
     var track: SequenceTrack = self.tracks[index];
-    if command == 25 { track.muted = !track.muted; self.replace_track(index, track); self.rebuild_columns(); return; }
-    if command == 85 {
+    if command == Action::MuteTrack { track.muted = !track.muted; self.replace_track(index, track); self.rebuild_columns(); return; }
+    if command == Action::RemoveCcColumn {
         self.remove_automation(index, self.automation_slot_at(self.selected_column), area); return;
     }
-    if command == 27 && track.audio { self.error = "An AUDIO track has no MIDI output to automate"; return; }
-    if command == 26 {
+    if command == Action::AddCcColumn && track.audio { self.error = "An AUDIO track has no MIDI output to automate"; return; }
+    if command == Action::ConfigureCcColumn {
         // Off a CC column (they hide while a track is collapsed) the first one is meant.
         self.edit_slot = self.automation_slot_at(self.selected_column);
         if self.edit_slot == 0 && track.automation.len() > 0 { self.edit_slot = 1; }
         if self.edit_slot == 0 { self.error = "The track has no CC column; add one first"; return; }
     }
-    if command == 20 || command == 26 || command == 27 {
-        self.edit_mode = command == 20 ? 1 : (command == 26 ? 2 : 3);
-        if command == 20 { self.editor.set_text(track.name); }
-        else if command == 26 { let slot: AutomationSlot = track.automation[self.edit_slot - 1]; self.editor.set_text(slot.parameter); }
+    if command == Action::RenameTrack || command == Action::ConfigureCcColumn || command == Action::AddCcColumn {
+        self.edit_mode = command == Action::RenameTrack ? 1 : (command == Action::ConfigureCcColumn ? 2 : 3);
+        if command == Action::RenameTrack { self.editor.set_text(track.name); }
+        else if command == Action::ConfigureCcColumn { let slot: AutomationSlot = track.automation[self.edit_slot - 1]; self.editor.set_text(slot.parameter); }
         else { self.editor.set_text("cc:74"); }
         self.editing = true; self.error = "";
     }
