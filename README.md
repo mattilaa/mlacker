@@ -12,7 +12,7 @@ MLang itself needs to build (LLVM, flex, bison, OpenSSL, zstd, z3, rapidjson).
 
 ```sh
 ./bootstrap.sh                 # choose the MLang toolchain and install dirs, then build
-./build.sh                     # build mlacker and all plugins (same as --all)
+./build.sh                     # build everything configured (same as --all)
 build/cmake/bin/mlacker        # run
 ```
 
@@ -26,22 +26,39 @@ current values are the defaults.
 - **external**: uses your own MLang checkout (default `../mlang`); MLang changes
   are made in that checkout as usual.
 
-It also asks for the VST3 plugin install directory (default
-`~/.local/plugins/VST3`) and the mlacker binary directory (default `~/.local/bin`),
-and offers to build right away. Everything can be given as flags instead
-(`--mlang-subproject`, `--mlang-dir DIR`, `--plugin-dir DIR`, `--bin-dir DIR`,
-`--build`/`--no-build`, `-y`); see `./bootstrap.sh --help`.
+In subproject mode it also asks whether `./build.sh --all` should build the
+full MLang toolchain from `subprojects/mlang` (compiler, runtime, `mlang-config`,
+`mlangd-mla`, `mlang-format`, `mlang-frontend`, `mlangpkg`) and, with `--install`,
+install it under an MLang prefix (default `~/.local`, tools in `~/.local/bin`).
+That keeps the development MLang you commit to in sync with the installed one.
 
-`build.sh` builds the MLang seed compiler and runtime (`mlang`, `libmlang_std.a`)
-in the chosen checkout, then mlacker and/or the plugins with `mlang pkg`:
+It then asks for the VST3 plugin install directory (default
+`~/.local/plugins/VST3`) and the mlacker binary directory (default `~/.local/bin`),
+and offers to build (and install) right away. Everything can be given as flags
+instead (`--mlang-subproject`, `--mlang-dir DIR`, `--mlang-toolchain`/
+`--no-mlang-toolchain`, `--mlang-prefix DIR`, `--plugin-dir DIR`, `--bin-dir DIR`,
+`--build`/`--no-build`, `--install`/`--no-install`, `-y`); see
+`./bootstrap.sh --help`.
+
+`build.sh` always builds the MLang compiler and runtime (`mlang`,
+`libmlang_std.a`) that mlacker links against in the chosen checkout, then the
+selected targets. Targets can be combined; none means `--all`:
 
 ```sh
-./build.sh --all               # mlacker + plugins (default)
+./build.sh --all               # mlacker + plugins, + full MLang if MLANG_TOOLCHAIN="yes"
 ./build.sh --app               # mlacker only
 ./build.sh --plugins           # plugins only
-./build.sh --install --all     # build and install mlacker + plugins
+./build.sh --mlang             # full MLang toolchain only (MLang's own build.sh)
+./build.sh --mlang --app       # MLang toolchain and mlacker
+./build.sh --install --all     # build and install everything configured
 ./build.sh --install --plugins # build and install only the plugins
+./build.sh --install --mlang   # build and install MLang under MLANG_PREFIX
 ```
+
+`--mlang` works with an external checkout too, but there you would normally
+build MLang yourself. When the checkout has no `build/mlang-config.conf` yet,
+`build.sh` writes one for the MLang prefix so MLang's build.sh runs without
+prompting; an existing one keeps its settings apart from the prefix.
 
 For tests see [Tests](#tests).
 
@@ -54,9 +71,11 @@ SDK license and usage notices remain in `build/deps/vst3sdk/LICENSE.txt` and
 ## Install
 
 ```sh
-./build.sh --install --all      # mlacker -> BIN_DIR, Mla*.vst3 -> PLUGIN_DIR
+./build.sh --install --all      # MLang -> MLANG_PREFIX (if MLANG_TOOLCHAIN="yes"),
+                                # mlacker -> BIN_DIR, Mla*.vst3 -> PLUGIN_DIR
 ./build.sh --install --app      # mlacker only
 ./build.sh --install --plugins  # plugins only
+./build.sh --install --mlang    # MLang toolchain only
 ```
 
 Installing builds first and ad-hoc signs the copies; existing bundles of the

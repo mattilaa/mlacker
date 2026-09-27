@@ -14,6 +14,8 @@ mlang_repo=""
 mlang_branch=""
 plugin_dir=""
 bin_dir=""
+mlang_toolchain=""  # yes | no | "" (ask in subproject mode)
+mlang_prefix=""
 build_answer=""  # yes | no | "" (ask)
 install_answer=""
 assume_defaults=""
@@ -33,6 +35,15 @@ MLang toolchain (pick one):
                         to MLang are made in that checkout.
   --mlang-repo URL      Repository to clone for --mlang-subproject
   --mlang-branch NAME   Branch to clone (default: main)
+
+Full MLang toolchain (asked in subproject mode):
+  --mlang-toolchain     Make ./build.sh --all also build the full MLang
+                        toolchain (compiler, runtime, mlangd, mlang-format,
+                        mlangpkg) with MLang's own build.sh, and --install
+                        install it
+  --no-mlang-toolchain  Only build the compiler and runtime mlacker needs
+  --mlang-prefix DIR    MLang install prefix; tools go to DIR/bin
+                        (default: ~/.local)
 
 Install locations:
   --plugin-dir DIR      VST3 plugin install directory (default: ~/.local/plugins/VST3)
@@ -63,6 +74,10 @@ while [ "$#" -gt 0 ]; do
         --mlang-repo=*) mlang_repo="${1#*=}"; shift ;;
         --mlang-branch) need_value "$1" "$#"; mlang_branch="$2"; shift 2 ;;
         --mlang-branch=*) mlang_branch="${1#*=}"; shift ;;
+        --mlang-toolchain) mlang_toolchain="yes"; shift ;;
+        --no-mlang-toolchain) mlang_toolchain="no"; shift ;;
+        --mlang-prefix) need_value "$1" "$#"; mlang_prefix="$2"; shift 2 ;;
+        --mlang-prefix=*) mlang_prefix="${1#*=}"; shift ;;
         --plugin-dir) need_value "$1" "$#"; plugin_dir="$2"; shift 2 ;;
         --plugin-dir=*) plugin_dir="${1#*=}"; shift ;;
         --bin-dir) need_value "$1" "$#"; bin_dir="$2"; shift 2 ;;
@@ -191,6 +206,30 @@ if ! is_mlang_checkout "$mlang_dir"; then
     exit 1
 fi
 
+# --- Full MLang toolchain ------------------------------------------------------------
+# In subproject mode the clone can be built and installed like a normal MLang
+# checkout; an external checkout is normally built by its owner.
+if [ -z "$mlang_toolchain" ]; then
+    prev_toolchain=$(conf_get MLANG_TOOLCHAIN)
+    if [ "$mode" = "subproject" ]; then
+        default_answer="y"
+        [ "$prev_toolchain" = "no" ] && default_answer="n"
+        if confirm "Also build the full MLang toolchain from $SUBPROJECT_DIR with ./build.sh --all (and install it with --install)?" "$default_answer"; then
+            mlang_toolchain="yes"
+        else
+            mlang_toolchain="no"
+        fi
+    else
+        mlang_toolchain="${prev_toolchain:-no}"
+    fi
+fi
+if [ "$mlang_toolchain" = "yes" ] && [ -z "$mlang_prefix" ]; then
+    default_prefix=$(conf_get MLANG_PREFIX)
+    ask mlang_prefix "MLang install prefix (tools go to PREFIX/bin)" "${default_prefix:-~/.local}"
+fi
+[ -n "$mlang_prefix" ] || mlang_prefix=$(conf_get MLANG_PREFIX)
+[ -n "$mlang_prefix" ] || mlang_prefix="~/.local"
+
 # --- Install locations ---------------------------------------------------------
 if [ -z "$plugin_dir" ]; then
     default_plugin_dir=$(conf_get PLUGIN_DIR)
@@ -213,6 +252,12 @@ MLANG_DIR="$mlang_dir"
 MLANG_REPO="$mlang_repo"
 MLANG_BRANCH="$mlang_branch"
 
+# yes: ./build.sh --all also builds the full MLang toolchain in MLANG_DIR with
+# MLang's build.sh, and --install installs it under MLANG_PREFIX (./build.sh
+# --mlang does this regardless of the setting).
+MLANG_TOOLCHAIN="$mlang_toolchain"
+MLANG_PREFIX="$mlang_prefix"
+
 PLUGIN_DIR="$plugin_dir"
 BIN_DIR="$bin_dir"
 EOF
@@ -222,15 +267,19 @@ grep -v '^#' "$CONFIG_FILE" | grep -v '^$' | sed 's/^/  /'
 echo
 
 # --- Build ---------------------------------------------------------------------------
+what="mlacker and the plugins"
+[ "$mlang_toolchain" = "yes" ] && what="the MLang toolchain, mlacker and the plugins"
 if [ -z "$build_answer" ]; then
-    if confirm "Build mlacker and the plugins now?" y; then build_answer="yes"; else build_answer="no"; fi
+    if confirm "Build $what now?" y; then build_answer="yes"; else build_answer="no"; fi
 fi
 if [ "$build_answer" != "yes" ]; then
     echo "Run ./build.sh when you are ready (./build.sh --help for options)."
     exit 0
 fi
 if [ -z "$install_answer" ]; then
-    if confirm "Install mlacker to $bin_dir and the plugins to $plugin_dir after building?" n; then
+    install_what="mlacker to $bin_dir and the plugins to $plugin_dir"
+    [ "$mlang_toolchain" = "yes" ] && install_what="MLang under $mlang_prefix, $install_what"
+    if confirm "Install $install_what after building?" n; then
         install_answer="yes"
     else
         install_answer="no"
