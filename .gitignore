@@ -1,0 +1,28 @@
+# Build output (mlacker, plugins, fetched deps such as vst3sdk)
+build*
+*.vst3/
+*.o
+*.a
+*_bin
+mlang_test_bin
+*.out
+
+# Generated tooling files
+*_commands.json
+.cache/
+CMakeUserPresets.json
+Testing/
+
+# Plugin lockfiles are regenerated; the root mlang.lock is committed
+plugins/*/mlang.lock
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
