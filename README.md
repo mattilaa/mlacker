@@ -1,28 +1,51 @@
 # mlacker
 
-Terminal tracker built with MLang, the shared `tui` widget library, macOS AUHAL,
+Terminal tracker built with MLang, the MLang `tui` widget library, macOS AUHAL,
 and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
-(imported as `mlacker_ui::*`); `mlang.toml` puts both `modules/` and the
-repository's `../modules` on the module path.
+(imported as `mlacker_ui::*`); the VST3 effects and the Mla Drum instrument are
+under `plugins/`.
 
 ## Build and run
 
-Prerequisites: the repository's compiler/runtime built in `../build`, macOS,
-Xcode command-line tools, CMake, Git, Python 3, and the OpenSSL development
-installation used by the MLang runtime. From the repository root:
+Prerequisites: macOS, Xcode command-line tools, CMake, Git, Python 3, and what
+MLang itself needs to build (LLVM, flex, bison, OpenSSL, zstd, z3, rapidjson).
 
 ```sh
-build/mlang pkg --config mlacker/mlang.toml run run
+./bootstrap.sh                 # choose the MLang toolchain and install dirs, then build
+./build.sh                     # build mlacker and all plugins (same as --all)
+build/cmake/bin/mlacker        # run
 ```
 
-This fetches the official VST3 SDK and submodules, builds the runtime and tracker,
-and starts `mlacker/build/cmake/bin/mlacker`. To build without launching:
+`bootstrap.sh` asks where MLang comes from and writes the answers to the
+ignored `mlacker.conf`, which `build.sh` reads. Re-run it to change them; the
+current values are the defaults.
+
+- **subproject**: clones MLang's development repository into
+  `subprojects/mlang` (ignored by this repository). Make compiler/stdlib changes
+  that mlacker needs there and commit them to the MLang repository.
+- **external**: uses your own MLang checkout (default `../mlang`); MLang changes
+  are made in that checkout as usual.
+
+It also asks for the VST3 plugin install directory (default
+`~/.local/plugins/VST3`) and the mlacker binary directory (default `~/.local/bin`),
+and offers to build right away. Everything can be given as flags instead
+(`--mlang-subproject`, `--mlang-dir DIR`, `--plugin-dir DIR`, `--bin-dir DIR`,
+`--build`/`--no-build`, `-y`); see `./bootstrap.sh --help`.
+
+`build.sh` builds the MLang seed compiler and runtime (`mlang`, `libmlang_std.a`)
+in the chosen checkout, then mlacker and/or the plugins with `mlang pkg`:
 
 ```sh
-build/mlang pkg --config mlacker/mlang.toml build
+./build.sh --all               # mlacker + plugins (default)
+./build.sh --app               # mlacker only
+./build.sh --plugins           # plugins only
+./build.sh --install --all     # build and install mlacker + plugins
+./build.sh --install --plugins # build and install only the plugins
 ```
 
-`mlang.toml` pins SDK 3.8.1 at commit
+For tests see [Tests](#tests).
+
+`mlang.toml` pins VST3 SDK 3.8.1 at commit
 `3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96`; `mlang.lock` records the resolved
 revision. Generated SDK sources and binaries stay under ignored `build/`.
 SDK license and usage notices remain in `build/deps/vst3sdk/LICENSE.txt` and
@@ -31,15 +54,16 @@ SDK license and usage notices remain in `build/deps/vst3sdk/LICENSE.txt` and
 ## Install
 
 ```sh
-build/mlang pkg --config mlacker/mlang.toml run install          # mlacker -> ~/.local/bin
-build/mlang pkg --config mlacker/mlang.toml run install-plugins  # Mla*.vst3 -> ~/.local/mlaplugins
-build/mlang pkg --config mlacker/mlang.toml run install-all      # both
+./build.sh --install --all      # mlacker -> BIN_DIR, Mla*.vst3 -> PLUGIN_DIR
+./build.sh --install --app      # mlacker only
+./build.sh --install --plugins  # plugins only
 ```
 
-Each task builds what it installs first and ad-hoc signs the copies. Override the
-destinations with `--option bin_dir=DIR` and `--option plugin_dir=DIR`, or the
-plugin set with `--option plugins="mla_verb mla_eq"` (names under `mlacker/plugins/`).
-Existing bundles of the same name are replaced.
+Installing builds first and ad-hoc signs the copies; existing bundles of the
+same name are replaced. The destinations come from `mlacker.conf`. When running
+`mlang pkg` directly, pass `--option mlang_root=DIR`, `--option bin_dir=DIR`,
+`--option plugin_dir=DIR` or `--option plugins="mla_verb mla_eq"` (names under
+`plugins/`).
 
 ## Sessions (.mlack 1.1)
 
@@ -49,7 +73,7 @@ F1 opens the menu bar, and Tab / Shift+Tab cycle the panes. To open an existing
 session at startup:
 
 ```sh
-mlacker/build/cmake/bin/mlacker "my song.mlack"
+build/cmake/bin/mlacker "my song.mlack"
 ```
 
 **File → Save session** (or Ctrl+S) saves to the current filename; the first save
@@ -918,11 +942,13 @@ Current scope:
 
 ## Tests
 
+Run from this directory with the configured MLang checkout (here `../mlang`):
+
 ```sh
-build/mlang pkg --config mlacker/mlang.toml run test
+../mlang/build/mlang pkg --config mlang.toml run test --option mlang_root=$PWD/../mlang
 ```
 
-This builds two local test bundles (never installed in system plugin folders),
+This runs the MLang unit tests in `tests/*.mla`, then builds two local test bundles (never installed in system plugin folders),
 loads them through the real module loader, and checks instrument/effect output,
 frame-accurate event offsets, live MIDI lane independence, panic, failed
 replacement, repeated unload/reload, instrument-only validation and independent
@@ -939,12 +965,12 @@ to seeded demo data with `MLACKER_DEMO=1`; normal mlacker startup does not.
 For a hardware-free manual run:
 
 ```sh
-MLANG_TUI_NO_HARDWARE=1 mlacker/build/cmake/bin/mlacker
+MLANG_TUI_NO_HARDWARE=1 build/cmake/bin/mlacker
 ```
 
-Run that command from the repository root. The `mlacker_ui` unit tests
-(`tests/*.mla`) need no SDK; run them from the repository root with
-`build/mlang --tests mlacker/tests` or `build/mlang pkg --config mlacker/mlang.toml run unit-test`.
+Run that command from this directory. The `mlacker_ui` unit tests need no SDK;
+run them alone with `../mlang/build/mlang --tests tests` (or the `unit-test`
+task with the same `--option mlang_root=...`).
 
 ### Effect plugin presets
 

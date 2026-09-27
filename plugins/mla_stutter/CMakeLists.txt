@@ -17,7 +17,11 @@ if(NOT DEFINED MLANG_DSP_OBJECT)
     message(FATAL_ERROR "MLANG_DSP_OBJECT must point to the compiled MLang DSP object.")
 endif()
 
-get_filename_component(MLANG_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+# MLANG_ROOT        : MLang checkout (defaults to mlacker's subprojects/mlang).
+if(NOT MLANG_ROOT)
+    set(MLANG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../subprojects/mlang")
+endif()
+get_filename_component(MLANG_REPO_ROOT "${MLANG_ROOT}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 if(NOT DEFINED MLANG_STD_LIBRARY)
     set(MLANG_STD_LIBRARY "${MLANG_REPO_ROOT}/build/libmlang_std.a")
 endif()

@@ -1,5 +1,5 @@
 # Build output (mlacker, plugins, fetched deps such as vst3sdk)
-build*
+build*/
 *.vst3/
 *.o
 *.a
@@ -26,3 +26,7 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+
+# Local build configuration and the MLang development checkout (bootstrap.sh)
+mlacker.conf
+subprojects/

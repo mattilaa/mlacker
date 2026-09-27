@@ -1,7 +1,7 @@
 [package]
 name = "mlacker"
 version = "0.1.0"
-module_paths = ["modules", "../modules"]
+module_paths = ["modules"]
 
 [dependencies]
 vst3sdk = { git = "https://github.com/steinbergmedia/vst3sdk.git", rev = "3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96", submodules = true, build = "none", spinner = false }
@@ -11,18 +11,22 @@ min_mlang_version = "0.2.0"
 build_dir = "build"
 deps_dir = "build/deps"
 
-# Install locations; override with `--option bin_dir=...` / `--option plugin_dir=...`.
+# build.sh fills these from mlacker.conf (written by bootstrap.sh); override with
+# `--option key=value` when running `mlang pkg` directly.
+# mlang_root: MLang checkout that provides build/mlang, build/libmlang_std.a and
+# stdlib/include. The tui/dsp modules come from the compiler's own tree.
 [tool.mlang.options]
+mlang_root = "subprojects/mlang"
 bin_dir = "~/.local/bin"
-plugin_dir = "~/.local/mlaplugins"
-plugins = "mla_verb mla_distortion mla_delay mla_eq mla_filter mla_drum"
+plugin_dir = "~/.local/plugins/VST3"
+plugins = "mla_verb mla_distortion mla_delay mla_eq mla_filter mla_drum mla_stutter mla_juno_chorus mla_gated_verb mla_limiter"
 
 [[task]]
 name = "prepare"
 workdir = "{{root}}"
 supported_hosts = ["darwin"]
 unsupported_message = "mlacker currently uses macOS AUHAL audio output"
-commands = ["mkdir -p {{build_dir}}/obj", "cmake --build ../build --target mlang_std -j4"]
+commands = ["mkdir -p {{build_dir}}/obj", "cmake --build {{option.mlang_root}}/build --target mlang_std -j4"]
 
 [[task]]
 name = "compile-main"
@@ -40,7 +44,7 @@ compiler_flags = ["-Wno-unwrap", "-Wno-colon-if"]
 name = "configure"
 workdir = "{{root}}"
 depends_on = ["compile-main"]
-commands = ["cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{deps_dir}}/vst3sdk -DMLACKER_MAIN_OBJECT={{build_dir}}/obj/main.o"]
+commands = ["cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{deps_dir}}/vst3sdk -DMLACKER_MAIN_OBJECT={{build_dir}}/obj/main.o -DMLANG_ROOT={{option.mlang_root}}"]
 
 [[task]]
 name = "build"
@@ -56,12 +60,12 @@ depends_on = ["build"]
 log_output = false
 shell = ["exec {{build_dir}}/cmake/bin/mlacker"]
 
-# MLang unit tests for mlacker_ui; they read fixtures relative to the repo root.
+# MLang unit tests for mlacker_ui; fixtures are read relative to the repository root.
 [[task]]
 name = "unit-test"
-workdir = "{{root}}/.."
+workdir = "{{root}}"
 depends_on = ["prepare"]
-commands = ["build/mlang --tests mlacker/tests"]
+commands = ["{{option.mlang_root}}/build/mlang --tests tests"]
 
 [[task]]
 name = "test"
@@ -87,23 +91,24 @@ shell = [
 [[task]]
 name = "build-plugins"
 print = "[mlacker] Building the Mla VST3 plugins"
-workdir = "{{root}}/.."
+workdir = "{{root}}"
 depends_on = ["prepare"]
 shell = [
   "set -e",
-  "for plugin in {{option.plugins}}; do build/mlang pkg --config mlacker/plugins/$plugin/mlang.toml build; done"
+  "mlang_root=$(cd \"{{option.mlang_root}}\" && pwd)",
+  "for plugin in {{option.plugins}}; do \"$mlang_root/build/mlang\" pkg --config plugins/$plugin/mlang.toml run build --option mlang_root=\"$mlang_root\"; done"
 ]
 
 [[task]]
 name = "install-plugins"
 print = "[mlacker] Installing the Mla VST3 plugins to {{option.plugin_dir}}"
-workdir = "{{root}}/.."
+workdir = "{{root}}"
 depends_on = ["build-plugins"]
 shell = [
   "set -e",
   "plugin_dir={{option.plugin_dir}}",
   "mkdir -p \"$plugin_dir\"",
-  "for plugin in {{option.plugins}}; do for bundle in mlacker/plugins/$plugin/build/cmake/VST3/Release/*.vst3; do dest=\"$plugin_dir/$(basename \"$bundle\")\"; rm -rf \"$dest\"; cp -R \"$bundle\" \"$dest\"; codesign --force --sign - \"$dest\"; echo \"Installed $dest\"; done; done"
+  "for plugin in {{option.plugins}}; do for bundle in plugins/$plugin/build/cmake/VST3/Release/*.vst3; do dest=\"$plugin_dir/$(basename \"$bundle\")\"; rm -rf \"$dest\"; cp -R \"$bundle\" \"$dest\"; codesign --force --sign - \"$dest\"; echo \"Installed $dest\"; done; done"
 ]
 
 [[task]]

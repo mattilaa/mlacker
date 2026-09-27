@@ -1,7 +1,6 @@
 [package]
 name = "mla_distortion"
 version = "0.1.0"
-module_paths = ["../../../modules"]
 
 [dependencies]
 vst3sdk = { git = "https://github.com/steinbergmedia/vst3sdk.git", rev = "3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96", submodules = true, build = "none", spinner = false }
@@ -11,14 +10,18 @@ min_mlang_version = "0.2.0"
 build_dir = "build"
 deps_dir = "build/deps"
 
-# The MLang runtime archive the plug-in links against. Built from the repo root.
+# MLang checkout providing build/mlang and build/libmlang_std.a. mlacker's
+# build.sh passes an absolute path; the default assumes subprojects/mlang.
+[tool.mlang.options]
+mlang_root = "../../subprojects/mlang"
+
 [[task]]
 name = "prepare"
 print = "[mla_distortion] Preparing build tree and MLang runtime archive"
 workdir = "{{root}}"
 commands = [
   "mkdir -p {{build_dir}}/obj {{build_dir}}/cmake",
-  "cmake --build ../../../build --target mlang_std -j4"
+  "cmake --build {{option.mlang_root}}/build --target mlang_std -j4"
 ]
 
 [[task]]
@@ -39,7 +42,7 @@ print = "[mla_distortion] Configuring the CMake project for the VST3 effect bund
 workdir = "{{root}}"
 depends_on = ["compile-dsp"]
 commands = [
-  "cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{deps_dir}}/vst3sdk -DMLANG_DSP_OBJECT={{build_dir}}/obj/mla_distortion_dsp.o -DMLANG_STD_LIBRARY=../../../build/libmlang_std.a"
+  "cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{deps_dir}}/vst3sdk -DMLANG_DSP_OBJECT={{build_dir}}/obj/mla_distortion_dsp.o -DMLANG_STD_LIBRARY={{option.mlang_root}}/build/libmlang_std.a -DMLANG_ROOT={{option.mlang_root}}"
 ]
 
 [[task]]
