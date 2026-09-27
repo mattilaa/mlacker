@@ -1,6 +1,7 @@
 mod tui::listview;
 mod mlacker_ui::sequence;
 mod tui::dialog;
+mod mlacker_ui::dialog_buttons;
 mod mlacker_ui::audio_library;
 use mlacker_ui::audio_library::AudioLibrary;
 use mlacker_ui::audio_clip::AudioClip;
@@ -9,6 +10,7 @@ use mlacker_ui::sequence::SequenceTable;
 use mlacker_ui::sequence::SequenceTrack;
 use tui::textfield::TextField;
 use tui::dialog::Dialog;
+use mlacker_ui::dialog_buttons::TextPrompt;
 use tui::geometry::*;
 use tui::surface::*;
 use tui::theme::*;
@@ -837,13 +839,14 @@ impl PatternLibrary {
         }
         self.show_audio(); return true;
     }
-    pub fn paint_rename(self: PatternLibrary, surface: Surface, area: Rect, theme: Theme) -> void {
+    /// `frame` supplies the OK/Cancel buttons and their focus.
+    pub fn paint_rename(self: PatternLibrary, surface: Surface, area: Rect, theme: Theme, frame: &TextPrompt) -> void {
         if !self.renaming { return; }
-        let dialog: Dialog = Dialog { title: "Rename pattern", width: 64, height: 9 };
+        var dialog: TextPrompt = TextPrompt {}; dialog = frame; dialog.title = "Rename pattern";
         let content: Rect = dialog.paint_frame(surface, area, theme);
         surface.text(content, "Pattern name:", theme.foreground, theme.panel);
-        if content.height > 2 { self.editor.paint(surface, Rect::new(content.x, content.y + 2, content.width, 1), theme.foreground, theme.selection, true); }
-        if content.height > 4 { surface.text(Rect::new(content.x, content.y + 4, content.width, 1), self.error == "" ? "Enter: save | Esc: cancel" : self.error, theme.accent, theme.panel); }
+        if content.height > 2 { self.editor.paint(surface, Rect::new(content.x, content.y + 2, content.width, 1), theme.foreground, theme.selection, dialog.focus.selected == 0); }
+        if content.height > 4 { surface.text(Rect::new(content.x, content.y + 4, content.width, 1), self.error, theme.accent, theme.panel); }
     }
     pub fn release(self: &mut Self) -> void {
         let instruments: list<ListItem> = self.instruments.items; for item in instruments { free(item.label); }

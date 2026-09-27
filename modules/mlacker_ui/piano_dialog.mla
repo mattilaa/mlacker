@@ -1,6 +1,7 @@
 mod tui::dialog;
 mod tui::piano;
 use tui::dialog::Dialog;
+use tui::button::PushButton;
 use tui::focus::PaneFocus;
 use tui::layout::Alignment;
 use tui::geometry::*;
@@ -15,13 +16,14 @@ use std::strbuf::free;
 /// Pick a sampler pad on an ASCII piano. Keys outside the instrument's pad range
 /// are dimmed and cannot be selected; loaded pads show a dot.
 /// result: 1 = insert/replace at `key`, 2 = cancelled, 3 = clear the pad at `key`.
+/// `action` labels the OK button.
 pub struct PianoDialog : Dialog {
     var root: i32; var pads: i32; var occupied: i64; var key: i32;
     var names: list<str8>; var action: str8;
 };
 impl PianoDialog {
     pub fn new() -> PianoDialog {
-        return PianoDialog { title: "Choose drum key", width: 74, height: 14, action: "",
+        return PianoDialog { title: "Choose drum key", width: 74, height: 17, action: "OK",
             focus: PaneFocus::new(0), button_alignment: Alignment::Center, buttons: [] };
     }
     /// `names` holds one display name per pad ("" when unknown).
@@ -37,7 +39,12 @@ impl PianoDialog {
         for pad in 0..self.pads {
             if !self.is_loaded(i32(pad)) { self.key = self.root + i32(pad); break; }
         }
-        self.result = 0; self.active = true;
+        self.update_buttons(); self.reset_buttons(); self.focus.selected = 0; self.active = true;
+    }
+    /// Clear pad is only offered for a loaded pad.
+    fn update_buttons(self: &mut Self) -> void {
+        self.buttons = [PushButton { label: self.action, action: 1 },
+            PushButton { label: "Clear pad", action: 3, enabled: self.is_loaded(self.pad()) }, PushButton { label: "Cancel", action: 2 }];
     }
     pub fn pad(self: PianoDialog) -> i32 { return self.key - self.root; }
     pub fn is_loaded(self: PianoDialog, pad: i32) -> bool {
@@ -49,10 +56,18 @@ impl PianoDialog {
     fn select(self: &mut Self, key: i32) -> void {
         let last: i32 = self.root + self.pads - 1;
         self.key = key < self.root ? self.root : (key > last ? last : key);
+        self.update_buttons();
     }
     pub fn on_event(self: &mut Self, event: InputEvent) -> void {
+        if event.kind == InputKind::Pane {
+            if event.key == Key::Down { self.focus.selected = 3; }
+            if event.key == Key::Up { self.focus.selected = 0; }
+            return;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 { self.active = false; self.result = 2; self.pressed_button = -1; return; }
+        if event.kind == InputKind::Menu && event.key == Key::Toggle { self.focus.selected = self.focus.selected == 0 ? 3 : 0; return; }
+        if self.focus.selected == 3 { self.on_button_event(event); return; }
         if event.kind == InputKind::Menu {
-            if event.key == Key::Escape && event.code < 32 { self.active = false; self.result = 2; return; }
             if event.key == Key::Left { self.select(self.key - 1); return; }
             if event.key == Key::Right { self.select(self.key + 1); return; }
             if event.key == Key::Up { self.select(self.key + 12); return; }
@@ -62,6 +77,13 @@ impl PianoDialog {
         if event.kind == InputKind::Edit && (event.key == Key::Backspace || event.key == Key::Delete) {
             if self.is_loaded(self.pad()) { self.active = false; self.result = 3; }
         }
+    }
+    /// Call once per 10ms UI tick; returns a completed button action, which
+    /// the caller replays as its key (see dialog_buttons::button_key).
+    pub fn tick(self: &mut Self) -> i32 {
+        let action: i32 = self.tick_buttons();
+        if action != 0 { self.focus.selected = 0; }
+        return action;
     }
     pub fn paint(self: PianoDialog, surface: Surface, area: Rect, theme: Theme) -> void {
         if !self.active { return; }
@@ -87,11 +109,8 @@ impl PianoDialog {
         var name: str8 = "";
         if pad < self.names.len() { name = self.names[pad]; }
         let loaded: bool = self.is_loaded(pad);
-        let info: str8 = loaded
-            ? format!("{} (MIDI {}) pad {}: {}  Enter replaces, Del clears", note, self.key, pad + 1, name == "" ? "loaded" : name)
-            : format!("{} (MIDI {}) pad {}: empty  Enter {}", note, self.key, pad + 1, self.action);
+        let info: str8 = format!("{} (MIDI {}) pad {}: {}", note, self.key, pad + 1, loaded ? (name == "" ? "loaded" : name) : "empty");
         surface.text(Rect::new(body.x, y0 + 6, body.width, 1), info, theme.foreground, theme.panel);
-        surface.text(Rect::new(body.x, y0 + 7, body.width, 1), "h/l key  j/k octave  Enter choose  Esc cancel", theme.muted, theme.panel);
         free(note); free(info);
     }
     fn release_names(self: &mut Self) -> void {

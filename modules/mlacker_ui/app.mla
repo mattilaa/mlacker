@@ -51,6 +51,7 @@ use mlacker_ui::sample_editor::SampleEditor;
 use mlacker_ui::audio_clip::base_name;
 mod mlacker_ui::bpm_dialog;
 mod mlacker_ui::curve_dialog;
+mod mlacker_ui::dialog_buttons;
 mod mlacker_ui::note_playback;
 use mlacker_ui::note_playback::NotePlayback;
 mod mlacker_ui::audio_controller;
@@ -65,6 +66,8 @@ mod mlacker_ui::instrument_editor;
 use mlacker_ui::instrument_editor::InstrumentEditor;
 use mlacker_ui::settings_dialog::SettingsDialog;
 use mlacker_ui::bpm_dialog::BpmDialog;
+use mlacker_ui::dialog_buttons::TextPrompt;
+use mlacker_ui::dialog_buttons::button_key;
 use mlacker_ui::curve_dialog::CurveDialog;
 mod mlacker_ui::frame_rate;
 use mlacker_ui::frame_rate::FrameRate;
@@ -265,9 +268,9 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
     }
     let details: Panel = Panel { title: show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
     let bottom: Rect = details.paint_focused(surface, inspector.bounds, theme, focus.is_active(2));
-    let label: Label = Label { text: patterns.error != "" ? patterns.error : (table.error != "" ? table.error : (table.editing ? "Editing: Enter saves | Esc cancels": message)) };
+    let label: Label = Label { text: patterns.error != "" ? patterns.error : (table.error != "" ? table.error : (table.editing && table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels": message)) };
     if show_keyboard {
-        keyboard.paint(surface, bottom, theme, table.editing ? "Editing: Enter saves | Esc cancels" : message);
+        keyboard.paint(surface, bottom, theme, table.editing && table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels" : message);
         if(patterns.error != "" || table.error != "") && bottom.height > 0 {
             surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
         }
@@ -391,6 +394,10 @@ pub fn run() -> i32 {
         PushButton { label: "Split", action: 3 }];
     var clash_row: i32 = 0; var clash_lane: i32 = 0; var clash_id: i32 = 0;
     var picker: PatternPicker = PatternPicker::new();
+    // OK/Cancel of the rename and CC-column text prompts. A completed button
+    // press of any dialog below is replayed as its key on the next input pass.
+    var prompt: TextPrompt = TextPrompt::new();
+    var replay: InputEvent = button_key(1); var replay_pending: bool = false;
     // Output channel of the selected mixer strip (Track > Set output channel).
     // kind 1 = the instrument a MIDI track plays, 2 = the audio channel this
     // track feeds.
@@ -829,7 +836,7 @@ pub fn run() -> i32 {
             if !stop { let selected: str8 = dialog.selected_file(); stop = selected != preview_path; free(selected); }
             if stop {
                 midi.stop_preview(); free(preview_path); preview_path = clone("");
-                if dialog.active { dialog.status = "Ctrl+P: play/stop preview | Enter: open | Esc: cancel"; }
+                if dialog.active { dialog.status = "Ctrl+P: play/stop preview"; }
                 dirty = true;
             }
         }
@@ -1022,7 +1029,17 @@ pub fn run() -> i32 {
         if spectrum.update(midi.output, now, spectrum_area) { playback_dirty = true; }
         if playback_dirty && frame_rate.ready(now) { dirty = true; }
         if sample.visible && !library.table.audio_under_cursor() { sample.visible = false; dirty = true; }
+        prompt.follow(library.renaming ? 1 : (library.table.editing && library.table.edit_mode > 0 ? 2 : 0));
         for _ui_step in 0..ui_steps {
+            if !replay_pending {
+                var action: i32 = 0;
+                if prompt.active && prompt.pressed_button >= 0 { action = prompt.tick(); dirty = true; }
+                else if picker.active && picker.pressed_button >= 0 { action = picker.tick(); dirty = true; }
+                else if outputs.active && outputs.pressed_button >= 0 { action = outputs.tick(); dirty = true; }
+                else if piano.active && piano.pressed_button >= 0 { action = piano.tick(); dirty = true; }
+                else if sample_editor.active && sample_editor.pressed >= 0 { action = sample_editor.tick(); dirty = true; }
+                if action != 0 { replay = button_key(action); replay_pending = true; }
+            }
             if settings.active && settings.pressed_button >= 0 {
                 settings.tick(); dirty = true;
                 if !settings.active && settings.result == 1 {
@@ -1178,8 +1195,8 @@ pub fn run() -> i32 {
             clash_question.paint(surface, area, Theme::dark_blue());
             picker.paint(surface, area, Theme::dark_blue());
             outputs.paint(surface, area, Theme::dark_blue());
-            library.table.paint_track_dialog(surface, area, Theme::dark_blue());
-            library.paint_rename(surface, area, Theme::dark_blue());
+            library.table.paint_track_dialog(surface, area, Theme::dark_blue(), prompt);
+            library.paint_rename(surface, area, Theme::dark_blue(), prompt);
             bpm_dialog.paint(surface, area, Theme::dark_blue());
             curve_dialog.paint(surface, area, Theme::dark_blue());
             piano.paint(surface, area, Theme::dark_blue());
@@ -1197,13 +1214,17 @@ pub fn run() -> i32 {
         // a separate polling delay for every byte in their escape sequence.
         var received_input: bool = false;
         for _i in 0..128 {
-            let byte: i32 = read_keycode_nonblocking(stdin());
-            if byte < 0 {
-                if byte == -1 { running = false; }
-                break;
+            var event: InputEvent = replay;
+            if replay_pending { replay_pending = false; }
+            else {
+                let byte: i32 = read_keycode_nonblocking(stdin());
+                if byte < 0 {
+                    if byte == -1 { running = false; }
+                    break;
+                }
+                event = input.feed(byte);
             }
             received_input = true;
-            let event: InputEvent = input.feed(byte);
             // Key releases (reported only while the virtual keyboard shows)
             // end its notes and reach nothing else.
             if event.released {
@@ -1353,7 +1374,10 @@ pub fn run() -> i32 {
                 }
             }
             else if library.renaming {
-                if event.kind != InputKind::None || event.code != 0 { library.rename_event(event); dirty = true; }
+                if event.kind != InputKind::None || event.code != 0 {
+                    if !prompt.on_event(event) { library.rename_event(event); }
+                    dirty = true;
+                }
             }
             else if picker.active {
                 picker.on_event(event);
@@ -1402,7 +1426,7 @@ pub fn run() -> i32 {
                     let target: str8 = dialog.selected_file();
                     let replay: bool = preview_path == "" || preview_path != target;
                     midi.stop_preview(); free(preview_path); preview_path = clone("");
-                    dialog.status = "Ctrl+P: play/stop preview | Enter: open | Esc: cancel";
+                    dialog.status = "Ctrl+P: play/stop preview";
                     if replay && target != "" && dialog.matches_file(target) {
                         let error: str8 = midi.preview_file(target);
                         if error == "" { free(preview_path); preview_path = clone(target); preview_sample = -1; dialog.status = "Playing preview | Ctrl+P stops"; }
@@ -1421,7 +1445,8 @@ pub fn run() -> i32 {
             }
             else if library.table.editing {
                 if event.kind != InputKind::None || event.code != 0 {
-                    library.table.edit_event(event, panes[1].bounds.inset(1)); dirty = true;
+                    if library.table.edit_mode == 0 || !prompt.on_event(event) { library.table.edit_event(event, panes[1].bounds.inset(1)); }
+                    dirty = true;
                 }
             }
             // The focused virtual keyboard plays its keys ("q" included) and
@@ -1760,7 +1785,7 @@ pub fn run() -> i32 {
                 adding_audio = true; adding_plugin = false; adding_instrument = false; dialog.bundle_pattern = ""; dialog.title = "Add audio"; dialog.multi_select = true;
                 dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
                 dialog.open(last_audio_dir); focus.set_menu_active(true);
-                if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview | Enter: open | Esc: cancel"; }
+                if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
             }
             else if command == 91 || command == 93 {
                 adding_effect = -1;
@@ -1887,7 +1912,7 @@ pub fn run() -> i32 {
                     }
                     let title: str8 = format!("{} | {} #{}", command == 117 ? "Send sample to drum key" : "Load drum key from file", midi.output.instrument_name(slot), slot);
                     piano.open(title, i32(root), i32(pads),
-                        midi.output.instrument_sampler(slot, 2), names, command == 117 ? "inserts the Audio sample" : "picks a file");
+                        midi.output.instrument_sampler(slot, 2), names, command == 117 ? "Insert sample" : "Choose file");
                     focus.set_menu_active(true);
                 }
             }
@@ -1909,7 +1934,7 @@ pub fn run() -> i32 {
                     dialog.title = format!("Load sample for pad {}", pad_index + 1);
                     dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
                     dialog.open(last_audio_dir); focus.set_menu_active(true);
-                    if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview | Enter: open | Esc: cancel"; }
+                    if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
                 }
             }
             else if command == 107 {
@@ -1919,7 +1944,7 @@ pub fn run() -> i32 {
                     transport.playing = false;
                     let clip: AudioClip = library.audio.samples[index];
                     sample_editor.open(clip, index);
-                    free(message); message = clone("Editing a copy: Enter saves to the session and drum pads, Esc discards");
+                    free(message); message = clone("Editing a copy: Save writes it to the session and drum pads");
                 }
             }
             else if command == 94 {

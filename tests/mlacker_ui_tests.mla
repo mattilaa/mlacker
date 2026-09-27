@@ -92,6 +92,13 @@ use mlacker_ui::virtual_keyboard::*;
 use mlacker_ui::midi_controller::MidiInputEvent;
 use mlacker_ui::sample_editor::*;
 use mlacker_ui::piano_dialog::*;
+mod mlacker_ui::pattern_picker;
+mod mlacker_ui::output_picker;
+mod mlacker_ui::dialog_buttons;
+use mlacker_ui::pattern_picker::PatternPicker;
+use mlacker_ui::output_picker::OutputPicker;
+use mlacker_ui::dialog_buttons::TextPrompt;
+use mlacker_ui::dialog_buttons::button_key;
 use tui::piano::*;
 mod mlacker_ui::song_matrix;
 use mlacker_ui::song_matrix::SongMatrix;
@@ -2001,6 +2008,59 @@ fn tui_piano_dialog_picks_pad_keys() {
     for y in 0..30 { for x in 0..100 { let cell: Cell = surface.cell(i32(x), i32(y)); if cell.background == 0x5f5f5f { selected = selected + 1; } } }
     verify(selected == 10); // C-2: a 3x4 white key minus the C# key over its top-right corner
     surface.release(); piano.release();
+}
+
+fn test_ids(first: i32, second: i32) -> list<i32> { var ids: list<i32> = []; ids.push(first); ids.push(second); return ids; }
+
+#[test]
+fn tui_dialog_buttons_replay_their_keys() {
+    let tab: InputEvent = InputEvent { kind: InputKind::Menu, key: Key::Toggle };
+    let right: InputEvent = InputEvent { kind: InputKind::Menu, key: Key::Right };
+    let enter: InputEvent = InputEvent { kind: InputKind::Menu, key: Key::Enter };
+    // Pattern picker: Tab reaches OK / Empty / Cancel; a press completes on a
+    // later tick and is replayed as its key.
+    var picker: PatternPicker = PatternPicker::new();
+    picker.open(test_ids(1, 2), [clone("001 A"), clone("002 B")], 2);
+    verify(picker.buttons.len() == 3 && picker.focus.selected == 0);
+    picker.on_event(tab); picker.on_event(right); picker.on_event(enter);
+    verify(picker.active && picker.pressed_button == 1);
+    var action: i32 = 0;
+    for _i in 0..10 { if action == 0 { action = picker.tick(); } }
+    verify(action == 3 && picker.focus.selected == 0);
+    picker.on_event(button_key(action)); verify(!picker.active && picker.result == 3);
+    picker.open(test_ids(1, 2), [clone("001 A"), clone("002 B")], 2);
+    picker.on_event(tab); picker.on_event(enter);
+    action = 0; for _i in 0..10 { if action == 0 { action = picker.tick(); } }
+    picker.on_event(button_key(action)); verify(!picker.active && picker.result == 1 && picker.chosen() == 2);
+    picker.release();
+    // Output picker: Cancel.
+    var outputs: OutputPicker = OutputPicker::new();
+    outputs.open(test_ids(0, 1), [clone("Master"), clone("Track 1")], 1);
+    outputs.on_event(tab); outputs.on_event(right); outputs.on_event(enter);
+    action = 0; for _i in 0..10 { if action == 0 { action = outputs.tick(); } }
+    outputs.on_event(button_key(action)); verify(action == 2 && !outputs.active && outputs.result == 2);
+    outputs.release();
+    // Piano: the OK button carries the action; Clear pad needs a loaded pad.
+    var piano: PianoDialog = PianoDialog::new();
+    piano.open("Pick", 36, 16, 1, [clone("kick.wav")], "Insert sample");
+    let ok: PushButton = piano.buttons[0]; let clear: PushButton = piano.buttons[1];
+    verify(piano.key == 37 && ok.label == "Insert sample" && !clear.enabled);
+    piano.on_event(InputEvent { kind: InputKind::Menu, key: Key::Left, code: 104 });
+    let loaded: PushButton = piano.buttons[1]; verify(piano.key == 36 && loaded.enabled);
+    piano.on_event(tab); piano.on_event(right); piano.on_event(enter);
+    action = 0; for _i in 0..10 { if action == 0 { action = piano.tick(); } }
+    piano.on_event(button_key(action)); verify(action == 3 && !piano.active && piano.result == 3 && piano.pad() == 0);
+    piano.release();
+    // Text prompt: text keys stay with the owner; buttons after Tab.
+    var prompt: TextPrompt = TextPrompt::new();
+    prompt.follow(1); verify(prompt.active && prompt.focus.selected == 0);
+    verify(!prompt.on_event(InputEvent { kind: InputKind::Text, key: Key::Enter, code: 97 }));
+    verify(prompt.on_event(tab) && prompt.focus.selected == 3);
+    verify(!prompt.on_event(InputEvent { kind: InputKind::Menu, key: Key::Escape }));
+    prompt.on_event(right); prompt.on_event(enter);
+    action = 0; for _i in 0..10 { if action == 0 { action = prompt.tick(); } }
+    verify(action == 2 && prompt.focus.selected == 0);
+    prompt.follow(0); verify(!prompt.active);
 }
 
 #[test]

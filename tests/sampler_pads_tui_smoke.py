@@ -70,7 +70,7 @@ def main():
 
             # Override a loaded pad, then clear another one.
             tui.send(SEND_TO_PAD)
-            expect(tui.send(b"ll"), b"kick.wav", b"Enter replaces")
+            expect(tui.send(b"ll"), b"pad 3: kick.wav", b"Clear pad")
             expect(tui.send(b"\r", 0.5), b"Pad 3: snare.wav")
             tui.send(SEND_TO_PAD)
             tui.send(b"l")
@@ -101,7 +101,7 @@ def main():
 
             # Clear pad 1, then loading the kit restores it.
             tui.send(SEND_TO_PAD)
-            expect(tui.send(b"h"), b"Enter replaces")
+            expect(tui.send(b"h"), b"pad 1: kick.wav")
             expect(tui.send(BACKSPACE, 0.5), b"Pad 1 cleared")
             expect(tui.send(LOAD_PRESET), b"Load plugin preset (.mlapre)")
             expect(tui.send(b"\x15" + bytes(kit) + b"\r", 1.2), b"Loaded kit preset: 2 pad(s)")
@@ -115,8 +115,7 @@ def main():
             expect(tui.send(b"\x15" + bytes(Path(sys.argv[2]).resolve()) + b"\r", 0.9), b"Instrument loaded: Mla Drum")
             # Pads follow the selected track's instance (#2), not the list.
             expect(tui.send(b"k"), b"001 Mla Drum")  # Instruments list back to #1
-            frame = expect(tui.send(SEND_TO_PAD), b"Mla Drum #2", b"pad 1: empty")
-            assert b"Enter replaces" not in frame, frame[-4000:]
+            expect(tui.send(SEND_TO_PAD), b"Mla Drum #2", b"pad 1: empty")
             tui.send(b"\x1b", 0.6)
 
             # Enter on instance #1 from a third track asks share-or-new.

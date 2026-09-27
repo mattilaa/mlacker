@@ -6,6 +6,7 @@ mod std::audio::controller;
 use std::audio::controller::AudioController;
 mod tui::textfield;
 mod tui::dialog;
+mod mlacker_ui::dialog_buttons;
 mod mlacker_ui::audio_clip;
 mod mlacker_ui::duration;
 use mlacker_ui::duration::*;
@@ -15,6 +16,7 @@ use mlacker_ui::waveform::paint_wave_channel_style;
 use mlacker_ui::waveform::paint_grainy_row;
 use mlacker_ui::waveform::paint_grainy_row_duration;
 use tui::dialog::Dialog;
+use mlacker_ui::dialog_buttons::TextPrompt;
 use tui::table::*;
 use tui::textfield::TextField;
 use tui::geometry::*;
@@ -2866,13 +2868,15 @@ pub fn edit_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
 pub fn paint_editor(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
     if self.editing && self.edit_mode == 0 { self.editor.paint(surface, self.selected_rect(area), theme.foreground, theme.selection, true); }
 }
-pub fn paint_track_dialog(self: SequenceTable, surface: Surface, viewport: Rect, theme: Theme) -> void {
+/// `frame` supplies the OK/Cancel buttons and their focus.
+pub fn paint_track_dialog(self: SequenceTable, surface: Surface, viewport: Rect, theme: Theme, frame: &TextPrompt) -> void {
     if !self.editing || self.edit_mode == 0 { return; }
-    let dialog: Dialog = Dialog { title: self.edit_mode == 1 ? "Rename track" : (self.edit_mode == 2 ? "Configure CC column" : "Add CC column"), width: 64, height: 9 };
+    var dialog: TextPrompt = TextPrompt {}; dialog = frame;
+    dialog.title = self.edit_mode == 1 ? "Rename track" : (self.edit_mode == 2 ? "Configure CC column" : "Add CC column");
     let content: Rect = dialog.paint_frame(surface, viewport, theme);
     surface.text(Rect::new(content.x, content.y, content.width, 1), self.edit_mode == 1 ? "Track name:" : "cc:N | pitchbend | name:min:max", theme.foreground, theme.panel);
-    if content.height > 2 { self.editor.paint(surface, Rect::new(content.x, content.y + 2, content.width, 1), theme.foreground, theme.selection, true); }
-    if content.height > 4 { surface.text(Rect::new(content.x, content.y + 4, content.width, 1), self.error == "" ? "Enter: save | Esc: cancel" : self.error, theme.accent, theme.panel); }
+    if content.height > 2 { self.editor.paint(surface, Rect::new(content.x, content.y + 2, content.width, 1), theme.foreground, theme.selection, dialog.focus.selected == 0); }
+    if content.height > 4 { surface.text(Rect::new(content.x, content.y + 4, content.width, 1), self.error, theme.accent, theme.panel); }
 }
 pub fn paint_track_details(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
     let index: i32 = self.active_track(); if index < 0 || area.height < 3 { return; }

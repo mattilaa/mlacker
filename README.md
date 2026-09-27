@@ -557,8 +557,10 @@ Root Key (default MIDI 36, `C-2`), pad 2 one key higher, and so on. Keys outside
 the pads are dimmed. The selected key is dark gray, and a red dot marks pads that
 already hold a sample. The line under the keyboard names the key, pad and current
 sample. `h/l` (or Left/Right) moves one key and `j/k` one octave. The picker opens
-on the first empty pad. Enter inserts the sample, replacing any sample already on
-that pad. Backspace/Delete clears a loaded pad. Esc cancels.
+on the first empty pad. The **Insert sample** / **Choose file** button (or Enter)
+uses the key, replacing any sample already on that pad. **Clear pad** (or
+Backspace/Delete) clears a loaded pad, and **Cancel** (or Esc) closes the picker.
+Tab moves between the keyboard and the buttons.
 
 Pads can be loaded while audio is playing. For per-drum effects, load
 one instance per drum family, give each its own Instrument track, and add
@@ -572,7 +574,8 @@ does not use.
 
 **Audio → Edit sample (destructive)**, or `e` in the Audio list, opens the selected
 sample in an editor over the Pattern view. Edits work on a copy with 16 undo
-steps. **Enter** saves the result into the session, and **Esc** discards it.
+steps. The **Save** button (or Enter) saves the result into the session, and
+**Discard** (or Esc) drops it. Tab moves to the buttons and back.
 Saving replaces the sample in the Audio list and in every pattern placement.
 Placements whose length changed return to the natural length. Every drum pad
 that uses the sample is re-sent at once.
@@ -651,7 +654,7 @@ The bottom row of every mixer strip names where the channel goes, under the
 | `I4>A3` | Instrument 4, routed on into audio track 3 |
 
 **Track → Set output channel** lists the destinations for the selected track and
-routes it with Enter (`j/k` selects, Esc cancels). What it offers depends on the
+routes it with **OK** or Enter (`j/k` selects, **Cancel** or Esc closes it). What it offers depends on the
 kind of track:
 
 - A **MIDI track** picks the instrument its notes play: `MST` keeps the built-in

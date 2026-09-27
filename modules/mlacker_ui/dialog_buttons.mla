@@ -1,0 +1,51 @@
+mod tui::dialog;
+use tui::dialog::Dialog;
+use tui::button::PushButton;
+use tui::focus::PaneFocus;
+use tui::layout::Alignment;
+use tui::input::*;
+use tui::menu::Key;
+
+/// The key a dialog button stands for. A completed button press is replayed as
+/// this key, so buttons and the keyboard share one code path: 1 = Enter (OK),
+/// 2 = Escape (Cancel), 3 = Delete (clear or empty).
+pub fn button_key(action: i32) -> InputEvent {
+    if action == 3 { return InputEvent { kind: InputKind::Edit, key: Key::Delete }; }
+    if action == 2 { return InputEvent { kind: InputKind::Menu, key: Key::Escape }; }
+    return InputEvent { kind: InputKind::Menu, key: Key::Enter };
+}
+
+/// OK/Cancel frame for the text prompts owned by the pattern library and the
+/// sequence table (rename pattern, rename track, CC column). Pane 0 is the text
+/// field, pane 3 the buttons; Tab or Ctrl+Shift+J/K moves between them.
+/// `owner` is the prompt it frames: 0 none, 1 pattern rename, 2 track prompt.
+pub struct TextPrompt : Dialog { var owner: i32; };
+impl TextPrompt {
+    pub fn new() -> TextPrompt {
+        return TextPrompt { title: "", width: 64, height: 12, focus: PaneFocus::new(0), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
+    }
+    /// Follow the owning prompt: open fresh when it appears, close with it.
+    pub fn follow(self: &mut Self, owner: i32) -> void {
+        if owner != 0 && owner != self.owner { self.reset_buttons(); self.focus.selected = 0; }
+        self.owner = owner; self.active = owner != 0;
+    }
+    /// True when the event moved focus or went to the buttons; false leaves it
+    /// to the text field's owner (Escape always cancels there).
+    pub fn on_event(self: &mut Self, event: InputEvent) -> bool {
+        if event.kind == InputKind::Pane {
+            if event.key == Key::Down { self.focus.selected = 3; }
+            if event.key == Key::Up { self.focus.selected = 0; }
+            return true;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Toggle { self.focus.selected = self.focus.selected == 0 ? 3 : 0; return true; }
+        if self.focus.selected != 3 || (event.kind == InputKind::Menu && event.key == Key::Escape) { return false; }
+        self.on_button_event(event); return true;
+    }
+    /// Call once per 10ms UI tick; returns a completed button action.
+    pub fn tick(self: &mut Self) -> i32 {
+        let action: i32 = self.tick_buttons();
+        if action != 0 { self.focus.selected = 0; }
+        return action;
+    }
+}

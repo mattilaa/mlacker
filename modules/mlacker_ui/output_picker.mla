@@ -1,5 +1,6 @@
 mod tui::dialog;
 use tui::dialog::Dialog;
+use tui::button::PushButton;
 use tui::focus::PaneFocus;
 use tui::layout::Alignment;
 use tui::geometry::*;
@@ -19,23 +20,31 @@ pub struct OutputPicker : Dialog {
 };
 impl OutputPicker {
     pub fn new() -> OutputPicker {
-        return OutputPicker { title: "Set output channel", width: 52, height: 16,
-            focus: PaneFocus::new(0), button_alignment: Alignment::Center, buttons: [] };
+        return OutputPicker { title: "Set output channel", width: 52, height: 20,
+            focus: PaneFocus::new(0), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
     }
     pub fn open(self: &mut Self, ids: list<i32>, labels: list<str8>, current: i32) -> void {
         self.release();
         self.ids = ids; self.labels = labels;
         self.selected = 0;
         for i in 0..self.ids.len() { if self.ids[i] == current { self.selected = i32(i); } }
-        self.result = 0; self.active = true;
+        self.reset_buttons(); self.focus.selected = 0; self.active = true;
     }
     pub fn chosen(self: OutputPicker) -> i32 {
         if self.selected < 0 || self.selected >= self.ids.len() { return 0; }
         return self.ids[self.selected];
     }
     pub fn on_event(self: &mut Self, event: InputEvent) -> void {
+        if event.kind == InputKind::Pane {
+            if event.key == Key::Down { self.focus.selected = 3; }
+            if event.key == Key::Up { self.focus.selected = 0; }
+            return;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 { self.active = false; self.result = 2; self.pressed_button = -1; return; }
+        if event.kind == InputKind::Menu && event.key == Key::Toggle { self.focus.selected = self.focus.selected == 0 ? 3 : 0; return; }
+        if self.focus.selected == 3 { self.on_button_event(event); return; }
         if event.kind != InputKind::Menu { return; }
-        if event.key == Key::Escape && event.code < 32 { self.active = false; self.result = 2; return; }
         if event.key == Key::Up { self.selected = self.selected > 0 ? self.selected - 1 : 0; return; }
         if event.key == Key::Down {
             let last: i32 = i32(self.ids.len()) - 1;
@@ -43,11 +52,18 @@ impl OutputPicker {
         }
         if event.key == Key::Enter { self.active = false; self.result = 1; }
     }
+    /// Call once per 10ms UI tick; returns a completed button action, which
+    /// the caller replays as its key (see dialog_buttons::button_key).
+    pub fn tick(self: &mut Self) -> i32 {
+        let action: i32 = self.tick_buttons();
+        if action != 0 { self.focus.selected = 0; }
+        return action;
+    }
     pub fn paint(self: OutputPicker, surface: Surface, area: Rect, theme: Theme) -> void {
         if !self.active { return; }
         let body: Rect = self.paint_frame(surface, area, theme);
-        if body.height < 2 { return; }
-        let rows: i32 = body.height - 1;
+        if body.height < 1 { return; }
+        let rows: i32 = body.height;
         let start: i32 = self.selected >= rows ? self.selected - rows + 1 : 0;
         for line in 0..rows {
             let index: i32 = start + i32(line);
@@ -57,8 +73,6 @@ impl OutputPicker {
             surface.fill(row, Cell { glyph: 32, foreground: theme.foreground, background: background });
             surface.text(row, self.labels[index], theme.foreground, background);
         }
-        surface.text(Rect::new(body.x, body.y + body.height - 1, body.width, 1),
-            "j/k select  Enter route  Esc cancel", theme.muted, theme.panel);
     }
     pub fn release(self: &mut Self) -> void {
         let labels: list<str8> = self.labels; for label in labels { free(label); }

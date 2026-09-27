@@ -153,8 +153,8 @@ position; edits are retained when switching away and back.
 The **Pattern** menu implements Add pattern, Rename pattern, Remove pattern,
 and Clone pattern. Add creates a blank 64-row pattern with three MIDI tracks;
 Clone makes an independent copy of the current pattern. Both select the new
-pattern and append it to Song order. Rename uses a text dialog (Enter saves,
-Escape cancels). Pattern IDs remain stable after deletion. Remove deletes the
+pattern and append it to Song order. Rename uses a text dialog with OK and
+Cancel buttons (Tab moves to them; Enter and Escape work from the text field). Pattern IDs remain stable after deletion. Remove deletes the
 pattern and all its Song occurrences. mlacker retains at least one pattern and
 limits the library to 128 patterns. Changes are in memory; there is no undo or
 session persistence yet.
@@ -296,7 +296,7 @@ Menus and dialogs retain exclusive keyboard ownership while open.
 
 mlacker's **Track** menu always targets the selected column's track:
 
-- Rename opens a text dialog (Enter saves, Escape cancels).
+- Rename opens a text dialog with OK and Cancel buttons (Enter and Escape also work).
 - Create track → MIDI track / AUDIO track appends an empty track of the chosen
   type and selects it. MIDI has NOTE, VEL, LEN, OFF, CC1; AUDIO has LEN.
   Mixed groups have different widths; navigation, frozen ROW, deletion, and
