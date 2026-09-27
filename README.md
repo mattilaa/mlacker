@@ -153,8 +153,12 @@ replaced. A folder that is not an mlacker project is never overwritten.
 
 ## Menus
 
-The menu bar opens with **F1**. Each menu starts with what it creates, then what
-it changes, then what it removes; related entries live in submenus.
+Each menu opens with its function key, shown before its title in the menu bar:
+**F1** File, **F2** Edit, **F3** View, **F4** Track, **F5** Pattern, **F6** Audio,
+**F7** Instrument, **F8** Effect and **F9** Record. While a menu is open, another
+function key switches to that menu and the open menu's own key closes it. Each
+menu starts with what it creates, then what it changes, then what it removes;
+related entries live in submenus.
 
 | Menu | Contents |
 |------|----------|
@@ -359,7 +363,7 @@ list.
 
 ## Keys and panes
 
-**F1** opens and closes the menu bar. **Tab** and **Shift+Tab** cycle forwards and
+**F1**–**F9** open and close the menus (F1 File … F9 Record). **Tab** and **Shift+Tab** cycle forwards and
 backwards through every pane of the main view: the sidebar, the pattern editor,
 the inspector/mixer, the FX bus (when the mixer shows effect channels) and the
 VST3 editor (while it is open). The pattern pane is skipped while the VST3 editor

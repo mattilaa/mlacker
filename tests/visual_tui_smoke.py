@@ -8,7 +8,7 @@ F1 = b"\x1bOP"
 class VisualTerminal(Terminal):
     def read(self, seconds=0.35):
         # Button presses include animation frames before the final repaint.
-        return super().read(seconds).rsplit(b" File  Edit ", 1)[-1]
+        return super().read(seconds).rsplit(b"[F1]File  [F2]Edit ", 1)[-1]
 
 
 def main():

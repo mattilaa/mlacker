@@ -93,7 +93,7 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
-    return MenuBar::new([
+    var bar: MenuBar = MenuBar::new([
                     Menu {title: "File", items: [
                                 MenuItem { label: "New session", action: 1, enabled: true },
                                 MenuItem { label: "Open session", action: 2, enabled: true },
@@ -214,6 +214,9 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                             MenuItem { label: !metronome_always ? "[x] On recording" : "[ ] On recording", action: 152, enabled: true },
                             MenuItem { label: metronome_always ? "[x] Always" : "[ ] Always", action: 153, enabled: true }])] }
             ]);
+    // F1 File, F2 Edit, ... F9 Record, shown before each title.
+    bar.shortcuts = true;
+    return bar;
 }
 
 fn demo_panes(content: Rect) -> list<Pane> {
@@ -1467,7 +1470,8 @@ pub fn run() -> i32 {
             else if menus.active >= 0 {
                 if event.kind != InputKind::None { dirty = true; }
                 if event.kind == InputKind::Menu {
-                    command = menus.on_key(event.key == Key::Function1 ? Key::Toggle : event.key);
+                    // A function key switches to its menu, or closes it when already open.
+                    if !menus.on_function_key(event.key) { command = menus.on_key(event.key); }
                     focus.set_menu_active(menus.active >= 0);
                     dirty = true;
                 }
@@ -1509,8 +1513,8 @@ pub fn run() -> i32 {
                     : "Song matrix closed");
                 dirty = true;
             }
-            else if event.kind == InputKind::Menu && event.key == Key::Function1 {
-                command = menus.on_key(Key::Toggle);
+            else if event.kind == InputKind::Menu && function_number(event.key) > 0 {
+                menus.on_function_key(event.key);
                 focus.set_menu_active(menus.active >= 0);
                 dirty = true;
             } else if event.kind == InputKind::Pane {
