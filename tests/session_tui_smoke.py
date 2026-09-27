@@ -176,7 +176,7 @@ def main():
             frame = tui.send(F1 + b"llllll" + b"j\r")
             assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.25" in frame, frame[-5000:]
             tui.send(b"\x1b")
-            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjj\r", b"MIDI input adapter")
+            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjjjjj\r", b"MIDI input adapter")
             tui.send(b"\rk\r")
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
@@ -220,7 +220,7 @@ def main():
             assert b"Opened:" in frame, frame[-5000:]
             tui.send(b"\x13", 0.6)
             assert master_path.read_bytes() == master_saved, "Master plugin state changed on reload"
-            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjj\r", b"MIDI input adapter")
+            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjjjjj\r", b"MIDI input adapter")
             tui.send(b"\rk\r")
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.

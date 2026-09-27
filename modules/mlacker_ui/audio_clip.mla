@@ -7,6 +7,7 @@ use std::strbuf::free;
 use std::strbuf::len;
 use std::strbuf::sub;
 use tui::geometry::wide;
+extern fn __mlang_std_audio_sample_copy_file(path: str8, pcm: list<f32>, channels: i64, rate: i64) -> i32;
 
 /// Owned final path component, splitting on both '/' and '\' separators.
 pub fn base_name(path: str8) -> str8 {
@@ -93,6 +94,10 @@ impl AudioClip {
             for c in 0..ch { out.samples.push(samples[src * ch + c]); }
         }
         return out;
+    }
+    /// Write the samples to a new float WAV; never replaces an existing file.
+    pub fn write_wav(self: AudioClip, path: str8) -> bool {
+        return __mlang_std_audio_sample_copy_file(path, self.samples, self.channels, self.sample_rate) == 0;
     }
     pub fn release(self: AudioClip) -> void { if self.peaks.len() > 0 { free(self.source); } }
     /// Rebuild row peaks and the four-per-row detail peaks from samples/frames.

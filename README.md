@@ -121,6 +121,36 @@ asks for a `.mlack` path. **Save session as** chooses another path. **Open sessi
 loads a `.mlack` file. **New session** confirms before resetting to an empty editor.
 Saving stops the sequencer; loading always restores a stopped transport.
 
+## Projects (.mlaproj)
+
+A project is a folder, like a `.vst3` bundle, that keeps a song's content as
+ordinary files:
+
+```
+My song.mlaproj/
+  Project.mlack      session (format 1.2)
+  Audio/             every sample of the Audio list, as float32 WAV
+  Presets/           each plugin's parameters: Instrument 01 - <name>.mlapre,
+                     Master / Effect N / Insert N - <name>.mlafxpre
+```
+
+**File → Save project** consolidates the samples and plugin presets into the
+folder (the first save asks for a name; `.mlaproj` is appended when missing),
+and **Save project as** picks another folder. While a project is open, Ctrl+S
+and **Save session** save the project in place. **Open project** opens a
+`.mlaproj` folder, and so does passing one on the command line:
+
+```sh
+build/cmake/bin/mlacker "/path/to/My song.mlaproj"
+```
+
+The session refers to `Audio/` and `Presets/` files by paths relative to the
+folder, so a project can be moved, copied or opened from any location. VST3
+plugins stay where they are installed and are referenced by their bundle path.
+A save writes the whole folder beside the target and swaps it in only when it
+is complete; the previous folder, including any files added to it by hand, is
+replaced. A folder that is not an mlacker project is never overwritten.
+
 ## Menus
 
 The menu bar opens with **F1**. Each menu starts with what it creates, then what
@@ -128,7 +158,7 @@ it changes, then what it removes; related entries live in submenus.
 
 | Menu | Contents |
 |------|----------|
-| File | New / Open / Recent sessions ▸ / Save / Save as / Settings / Quit |
+| File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Note lines ▸, Automation ▸, Clear pattern, Delete |

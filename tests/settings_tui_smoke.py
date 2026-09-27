@@ -46,8 +46,8 @@ def main():
 
     try:
         assert b"Settings" in read_for(1)
-        # Save is disabled: New -> Open -> Recent -> Settings.
-        frame = send_until(b"jjj\r", b"Master output (AUHAL)")
+        # Saves are disabled: New -> Open session -> Open project -> Recent -> Settings.
+        frame = send_until(b"jjjj\r", b"Master output (AUHAL)")
         assert b"MIDI input adapter" in frame and b"Master output (AUHAL)" in frame
         frame = send(b"\r")
         assert b"Disabled" in frame and b"System default" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
@@ -57,7 +57,7 @@ def main():
         frame = send(b"\x1b")
         assert b"MIDI input adapter" not in frame and b"Patterns" in frame
         # Reopen and select disabled MIDI/output, with no device access on apply.
-        send(F1 + b"jjj\r")
+        send(F1 + b"jjjj\r")
         send(b"\rk\r")
         send(b"\t\rk\r")
         frame = send(b"\t\rjj\r")  # 128 -> 512 frames
@@ -65,7 +65,7 @@ def main():
         send(b"\t\rjjj\r")  # Device default -> 96 kHz
         frame = send(b"\t\r")
         assert b"Settings applied. Audio disabled." in frame
-        frame = send(F1 + b"jjj\r")
+        frame = send(F1 + b"jjjj\r")
         assert b"MIDI input adapter" in frame and b"Disabled" in frame and b"512 frames" in frame and b"96 kHz" in frame
         # Resize with an expanded dropdown, exercising clipping and overlay.
         send(b"\r")

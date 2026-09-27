@@ -74,6 +74,8 @@ use mlacker_ui::session::SessionData;
 use mlacker_ui::session::PatternData;
 use mlacker_ui::session::PresetResult;
 use mlacker_ui::session::SessionView;
+use mlacker_ui::session::is_project_path;
+use mlacker_ui::session::project_folder;
 use mlacker_ui::midi_controller::MidiController;
 use std::env::detail::__env_args;
 use std::strbuf::clone;
@@ -92,6 +94,7 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                     Menu {title: "File", items: [
                                 MenuItem { label: "New session", action: 1, enabled: true },
                                 MenuItem { label: "Open session", action: 2, enabled: true },
+                                MenuItem { label: "Open project", action: 164, enabled: true },
                                 MenuItem::submenu("Recent sessions", [
                                                 MenuItem { label: "Blue hour", action: 8, enabled: true },
                                                 MenuItem::submenu("Templates", [
@@ -101,6 +104,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                         ]),
                                 MenuItem { label: "Save session", action: 3, enabled: !fixture },
                                 MenuItem { label: "Save session as", action: 96, enabled: !fixture },
+                                MenuItem { label: "Save project", action: 165, enabled: !fixture },
+                                MenuItem { label: "Save project as", action: 166, enabled: !fixture },
                                 MenuItem { label: "Settings", action: 90, enabled: true },
                                 MenuItem { label: "Quit", action: 99, enabled: true }] },
                     Menu {title: "Edit", items: [
@@ -325,6 +330,9 @@ pub fn run() -> i32 {
     var library: PatternLibrary = fixture ? PatternLibrary::new() : PatternLibrary::empty();
     var session_path: str8 = clone(""); var request_path: str8 = clone("");
     var session_request: i32 = 0; var saving_session: bool = false;
+    // The open document is a .mlaproj project folder (session_path names it);
+    // saving_project picks the project format for the save chooser.
+    var project_open: bool = false; var saving_project: bool = false;
     var pattern_action: i32 = 0; var last_pattern_dir: str8 = clone("");
     var learn_action: i32 = 0; var learn_slot: i64 = 0;
     // Sampler pads: 117 = from the Audio list, 118 = from a file.
@@ -423,7 +431,7 @@ pub fn run() -> i32 {
             var session_status: str8 = "";
             transport.playing = false;
             note_playback.update(library.table, transport.ticks, false); midi.sequencer_events(note_playback.events);
-            if session_request == 2 {
+            if session_request == 2 || session_request == 4 {
                 let view: SessionView = SessionView { bpm: transport.bpm, beats: transport.beats_per_bar, unit: transport.beat_unit,
                     row: transport.row < 0 ? 0 : transport.row, phase: transport.phase, pane: focus.selected,
                     sidebar: library.instruments_mode ? 3 : (library.audio_mode ? 2 : 0),
@@ -436,11 +444,20 @@ pub fn run() -> i32 {
                     spectrum: spectrum.visible, spectrum_detail: spectrum.detail, spectrum_fps: spectrum.fps, master: spectrum.bus,
                     master_saved: spectrum.visible || spectrum.detail != 0 || spectrum.fps != 30 || !spectrum.bus.is_default() };
                 var serializer: SessionCodec = SessionCodec {};
-                let saved: bool = serializer.save(request_path, library, view, midi);
-                if saved { free(session_path); session_path = clone(request_path); session_status = format!("Saved: {}", session_path); }
-                else { session_status = clone("Save failed: invalid state, size limit or unwritable path. Original file retained."); }
+                if session_request == 4 {
+                    let saved: result<str8, str8> = serializer.save_project(request_path, library, view, midi);
+                    if saved.is_ok() { free(session_path); session_path = saved.unwrap(); project_open = true; session_status = format!("Saved project: {}", session_path); }
+                    else { session_status = clone(saved.unwrap_err()); }
+                } else {
+                    let saved: bool = serializer.save(request_path, library, view, midi);
+                    if saved { free(session_path); session_path = clone(request_path); project_open = false; session_status = format!("Saved: {}", session_path); }
+                    else { session_status = clone("Save failed: invalid state, size limit or unwritable path. Original file retained."); }
+                }
             } else {
-                var result: result<SessionData, str8> = session_request == 3 ? Ok<SessionData, str8>(SessionData { library: PatternLibrary::empty(), view: SessionView {} }) : SessionCodec::load(request_path);
+                // A .mlaproj path (or any directory) opens as a project.
+                let project: bool = session_request == 1 && (is_project_path(request_path) || std::fs::is_dir(request_path) == 1);
+                var result: result<SessionData, str8> = session_request == 3 ? Ok<SessionData, str8>(SessionData { library: PatternLibrary::empty(), view: SessionView {} })
+                    : (project ? SessionCodec::load_project(request_path) : SessionCodec::load(request_path));
                 if result.is_err() { session_status = clone(result.unwrap_err()); }
                 else {
                     var data: SessionData = result.unwrap();
@@ -485,8 +502,9 @@ pub fn run() -> i32 {
                                     instrument_editor.scroll = v.editor_scroll;
                                 }
                             }
-                            free(session_path); session_path = session_request == 3 ? clone("") : clone(request_path);
-                            session_status = session_request == 3 ? clone("New empty session") : format!("Opened: {}", session_path);
+                            free(session_path); session_path = session_request == 3 ? clone("") : (project ? project_folder(request_path) : clone(request_path));
+                            project_open = project;
+                            session_status = session_request == 3 ? clone("New empty session") : (project ? format!("Opened project: {}", session_path) : format!("Opened: {}", session_path));
                         }
                     }
                 }
@@ -732,7 +750,7 @@ pub fn run() -> i32 {
             else if adding_plugin { message = midi.set_processor(first); adding_plugin = false; }
             else {
                 message = format!("Selected: {}", first);
-                if !fixture { free(request_path); request_path = clone(first); session_request = saving_session ? 2 : 1; }
+                if !fixture { free(request_path); request_path = clone(first); session_request = saving_session ? (saving_project ? 4 : 2) : 1; }
             }
             dirty = true;
         }
@@ -1709,14 +1727,28 @@ pub fn run() -> i32 {
                 question.title = "New session"; question.question = "Start a new session?";
                 confirm_track_action = 0; question.open(); focus.set_menu_active(true);
             }
-            else if command == 3 && session_path != "" {
-                free(request_path); request_path = clone(session_path); session_request = 2;
+            else if (command == 3 || command == 165) && session_path != "" && (project_open || command == 3) {
+                // Ctrl+S saves the open document, project or session, in place.
+                free(request_path); request_path = clone(session_path); session_request = project_open ? 4 : 2;
+            }
+            else if command == 164 || command == 165 || command == 166 {
+                // Projects are folders, picked like .vst3 bundles.
+                adding_effect = -1;
+                learn_action = 0;
+                adding_audio = false; adding_plugin = false; adding_instrument = false;
+                saving_session = command != 164; saving_project = true; dialog.save_mode = saving_session; dialog.multi_select = false;
+                dialog.bundle_pattern = ".*\\.[mM][lL][aA][pP][rR][oO][jJ]";
+                dialog.file_pattern = saving_session ? "" : dialog.bundle_pattern;
+                dialog.title = saving_session ? "Save project (.mlaproj)" : "Open project (.mlaproj)";
+                dialog.open(last_session_dir);
+                if saving_session && project_open { let name: str8 = base_name(session_path); dialog.path_field.set_text(name); free(name); }
+                focus.set_menu_active(true);
             }
             else if command == 2 || command == 3 || command == 96 {
                 adding_effect = -1;
                 learn_action = 0;
                 adding_audio = false; adding_plugin = false; adding_instrument = false; dialog.bundle_pattern = "";
-                saving_session = command != 2; dialog.save_mode = saving_session; dialog.multi_select = false;
+                saving_session = command != 2; saving_project = false; dialog.save_mode = saving_session; dialog.multi_select = false;
                 dialog.title = saving_session ? "Save session (.mlack)" : "Open session"; dialog.file_pattern = fixture ? "" : ".*\\.[mM][lL][aA][cC][kK]";
                 dialog.open(last_session_dir);
                 focus.set_menu_active(true);

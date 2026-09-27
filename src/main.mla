@@ -6,10 +6,10 @@ use std::env::detail::__env_args;
 extern fn mlacker_install_vst3_host() -> void;
 fn main() -> i32 {
     let arguments: list<str8> = __env_args();
-    if arguments.len() > 2 { println!("Usage: mlacker [session.mlack]"); return 2; }
+    if arguments.len() > 2 { println!("Usage: mlacker [session.mlack | project.mlaproj]"); return 2; }
     if arguments.len() == 2 {
         if arguments[1] == "--help" || arguments[1] == "-h" {
-            println!("Usage: mlacker [session.mlack] | No file starts an empty editor."); return 0;
+            println!("Usage: mlacker [session.mlack | project.mlaproj] | No path starts an empty editor."); return 0;
         }
     }
     mlacker_install_vst3_host();

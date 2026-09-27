@@ -137,7 +137,7 @@ def main():
             tui.send(b"\x1b", 0.6)
 
             # Device changes rebuild every instrument; pads must be re-sent.
-            expect(tui.send_until(F1 + b"jjjjj\r", b"Master output (AUHAL)"), b"Master output (AUHAL)")  # File > Settings
+            expect(tui.send_until(F1 + b"jjjjjjjj\r", b"Master output (AUHAL)"), b"Master output (AUHAL)")  # File > Settings
             tui.send(b"\rk\r")
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
@@ -150,7 +150,7 @@ def main():
             tui.send(PAD_FROM_FILE)
             expect(tui.send(b"\r"), b"Load sample for pad 2")
             tui.send(b"\x1b", 0.6)
-            expect(tui.send(F1 + b"jjjj\r"), b"Save session (.mlack)")
+            expect(tui.send(F1 + b"jjjjj\r"), b"Save session (.mlack)")
             frame = expect(tui.send(b"\x15" + bytes(path) + b"\r", 0.7), b"Saved:")
             assert b"Pad 2:" not in frame, frame[-4000:]
 

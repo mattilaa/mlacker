@@ -1,7 +1,10 @@
 /// MLACK binary session 1.0. All lengths and integers are little endian.
+/// A project (1.2) is a `.mlaproj` folder: Project.mlack refers to float WAVs
+/// in Audio/ and plugin presets in Presets/ by paths relative to the folder.
 mod std::serde::detail;
 mod std::fs;
 mod std::bytes;
+mod std::audio;
 mod mlacker_ui::patterns;
 mod mlacker_ui::audio_controller;
 mod mlacker_ui::spectrum;
@@ -16,6 +19,7 @@ use mlacker_ui::audio_controller::EffectChannel;
 use mlacker_ui::audio_controller::PadAssignment;
 use mlacker_ui::patterns::SongLane;
 use std::audio::controller::AudioController;
+use std::audio::PcmAudio;
 use tui::table::*;
 use tui::listview::*;
 use tui::geometry::*;
@@ -23,6 +27,7 @@ use std::strbuf::clone;
 use std::strbuf::free;
 use std::strbuf::len;
 extern fn __mlang_std_serde_binary_write_atomic(handle: i64, path: str8) -> i32;
+extern fn rename(from: str8, to: str8) -> i32;
 // Small session-specific adapters avoid pulling unrelated generic serde traits
 // into the widget demo. Encoding is the std::serde primitive wire format.
 pub struct SessionBuffer { var handle: i64; };
@@ -160,6 +165,50 @@ impl SessionData {
     }
 }
 
+/// The session inside a project folder.
+pub fn project_session() -> str8 { return "Project.mlack"; }
+/// True for a `.mlaproj` project folder path, with or without trailing '/'.
+pub fn is_project_path(path: str8) -> bool { return tui::table::table_matches(".*\\.[mM][lL][aA][pP][rR][oO][jJ]/*", path); }
+/// Owned project folder for `path`: trailing separators dropped and
+/// `.mlaproj` appended when missing.
+pub fn project_folder(path: str8) -> str8 {
+    var end: i64 = len(path);
+    while end > 1 {
+        let last: str8 = std::strbuf::sub(path, end - 1, 1); let slash: bool = last == "/"; free(last);
+        if !slash { break; } end = end - 1;
+    }
+    let trimmed: str8 = std::strbuf::sub(path, 0, end);
+    if is_project_path(trimmed) { return trimmed; }
+    let folder: str8 = format!("{}.mlaproj", trimmed); free(trimmed); return folder;
+}
+/// Owned copy of `name` usable as a file name: control characters and path
+/// separators become '_'. May be empty.
+fn file_safe(name: str8) -> str8 {
+    let raw: result<std::bytes::Bytes, str8> = std::bytes::Bytes::from_string(name);
+    if raw.is_err() { return clone(""); }
+    let bytes: std::bytes::Bytes = raw.unwrap();
+    let builder: i64 = std::strbuf::builder_new(len(name) + 1);
+    for i in 0..bytes.len() {
+        let ch: i32 = bytes.get(i);
+        std::strbuf::builder_append_char(builder, ch < 32 || ch == 127 || ch == 47 || ch == 92 || ch == 58 ? 95 : ch);
+    }
+    let safe: str8 = std::strbuf::builder_to_string(builder);
+    std::strbuf::builder_free(builder); bytes.close(); return safe;
+}
+/// A project content path is `folder/name`: one component below one of the
+/// project's own folders, so a project never refers outside itself.
+fn content_path(path: str8, folder: str8) -> bool {
+    let pattern: str8 = format!("{}/[^./\\\\][^/\\\\]*", folder);
+    let valid: bool = tui::table::table_matches(pattern, path); free(pattern); return valid;
+}
+/// Owned file name stem for the plugin in `slot`.
+fn slot_label(slot: i32) -> str8 {
+    if slot == 0 { return clone("Master"); }
+    if slot <= 32 { return format!("Instrument {}{}", slot < 10 ? "0" : "", slot); }
+    if slot <= 40 { return format!("Effect {}", slot - 32); }
+    return format!("Insert {}", slot - 40);
+}
+
 /// Portable pattern: owned sequence and embedded source clips.
 pub struct PatternData { var name: str8; var table: SequenceTable; var clips: list<AudioClip>; };
 impl PatternData {
@@ -170,8 +219,11 @@ impl PatternData {
 }
 /// Sticky errors prevent a later successful operation from masking truncation.
 /// `minor` is the document's minor version: 0 stores two fixed automation
-/// slots per track, 1 a counted list.
-pub struct SessionCodec { var reading: bool; var failed: bool; var binary: SessionBuffer; var reader: SessionReader; var cells: i64; var minor: i32; };
+/// slots per track, 1 a counted list, 2 is a project session. `root` is the
+/// project folder (empty for a plain session); `problem` explains the first
+/// failure involving a project file.
+pub struct SessionCodec { var reading: bool; var failed: bool; var binary: SessionBuffer; var reader: SessionReader; var cells: i64; var minor: i32;
+    var root: str8{""}; var problem: str8{""}; };
 impl SessionCodec {
     /// Exposed-parameter preset. Caller joins MIDI before loading; IDs are stable.
     /// Saving with `pads` (sampler pad numbers, with their `clips`) writes a
@@ -269,17 +321,9 @@ impl SessionCodec {
         free(actual); result.status = status; return result;
     }
     pub fn learn_suggestion(name: str8) -> str8 {
-        let raw: result<std::bytes::Bytes, str8> = std::bytes::Bytes::from_string(name);
-        if raw.is_err() { return clone("Instrument - "); }
-        let bytes: std::bytes::Bytes = raw.unwrap();
-        let builder: i64 = std::strbuf::builder_new(len(name) + 4);
-        for i in 0..bytes.len() {
-            let ch: i32 = bytes.get(i);
-            std::strbuf::builder_append_char(builder, ch < 32 || ch == 127 || ch == 47 || ch == 92 || ch == 58 ? 95 : ch);
-        }
-        std::strbuf::builder_append(builder, " - ");
-        let suggested: str8 = std::strbuf::builder_to_string(builder);
-        std::strbuf::builder_free(builder); bytes.close(); return suggested;
+        let safe: str8 = file_safe(name);
+        let suggested: str8 = format!("{} - ", safe == "" && name != "" ? "Instrument" : safe);
+        free(safe); return suggested;
     }
     /// Portable, per-plugin MIDI mappings. Validate completely before replacing.
     pub fn learn_file(path: str8, output: AudioController, slot: i64, saving: bool) -> str8 {
@@ -422,6 +466,137 @@ impl SessionCodec {
         if self.reading && clip.peaks.len() == 0 { clip.peaks.push(WavePeak {}); }
         return clip;
     }
+    fn fail_with(self: &mut Self, problem: str8) -> void {
+        if !self.failed && self.problem == "" { self.problem = problem; } else { free(problem); }
+        self.failed = true;
+    }
+    /// Owned `folder/stem extension` path that is still free under the
+    /// project root; later files with the same stem are numbered.
+    fn unique_file(self: &mut Self, folder: str8, stem: str8, extension: str8) -> str8 {
+        var name: str8 = format!("{}/{}{}", folder, stem, extension);
+        for n in 2..100000 {
+            let full: str8 = format!("{}/{}", self.root, name);
+            let taken: bool = std::fs::file_exists(full) == 1; free(full);
+            if !taken { break; }
+            free(name); name = format!("{}/{} {}{}", folder, stem, n, extension);
+        }
+        return name;
+    }
+    /// Project sample: the PCM is a float WAV in Audio/ and the session keeps
+    /// its relative path, format and row size. Peaks are rebuilt on load.
+    fn clip_file(self: &mut Self, source: AudioClip, index: i64) -> AudioClip {
+        var clip: AudioClip = AudioClip {}; clip = source;
+        var name: str8 = clone("");
+        if !self.reading && !self.failed {
+            let base: str8 = base_name(clip.source);
+            let dot: i64 = std::strbuf::rfind(base, ".");
+            let bare: str8 = dot > 0 ? std::strbuf::sub(base, 0, dot) : clone(base); free(base);
+            let safe: str8 = file_safe(bare); free(bare);
+            let stem: str8 = safe == "" ? format!("Sample {}", index + 1) : clone(safe); free(safe);
+            free(name); name = self.unique_file("Audio", stem, ".wav"); free(stem);
+            let full: str8 = format!("{}/{}", self.root, name);
+            if !clip.write_wav(full) {
+                self.fail_with(format!("Cannot write {}", name));
+            }
+            free(full);
+        }
+        let path: str8 = self.text(name);
+        clip.channels = self.integer(clip.channels, 1, 2); clip.sample_rate = self.integer(clip.sample_rate, 1000, 768000);
+        clip.frames = self.integer(clip.frames, 1, 16777216); clip.frames_per_row = self.integer(clip.frames_per_row, 1, 16777216);
+        if !self.reading { free(name); return clip; }
+        free(name);
+        var decoded: AudioClip = AudioClip { source: clone("") };
+        if !self.failed && (clip.frames + clip.frames_per_row - 1) / clip.frames_per_row > 16384 { self.failed = true; }
+        if !self.failed && !content_path(path, "Audio") { self.fail_with(format!("Invalid audio path: {}", path)); }
+        if !self.failed {
+            let full: str8 = format!("{}/{}", self.root, path);
+            let loaded: result<PcmAudio, str8> = PcmAudio::load(full);
+            if loaded.is_err() { self.fail_with(format!("Missing or unreadable audio file: {}", path)); }
+            else {
+                let audio: PcmAudio = loaded.unwrap();
+                if audio.channels() != clip.channels || audio.sample_rate() != clip.sample_rate || audio.frame_count() != clip.frames {
+                    self.fail_with(format!("Audio file changed since the project was saved: {}", path));
+                } else {
+                    let template: AudioClip = AudioClip { source: full, channels: clip.channels, sample_rate: clip.sample_rate, frames_per_row: clip.frames_per_row };
+                    free(decoded.source); decoded = template.with_samples(audio.samples());
+                }
+                audio.close();
+            }
+            free(full);
+        }
+        free(path);
+        // Even a failed clip owns its source string.
+        if decoded.peaks.len() == 0 { decoded.peaks.push(WavePeak {}); }
+        return decoded;
+    }
+    /// Project plugin state: a preset in Presets/ named by relative path in
+    /// place of inline parameters. `effect` selects the .mlafxpre format.
+    fn preset_reference(self: &mut Self, source: PluginSnapshot, output: AudioController, effect: bool) -> PluginSnapshot {
+        var plugin: PluginSnapshot = PluginSnapshot {}; plugin = source;
+        var name: str8 = clone("");
+        if !self.reading && !self.failed && plugin.path != "" {
+            let label: str8 = slot_label(plugin.slot);
+            let safe: str8 = file_safe(plugin.slot == 0 ? output.processor_name() : output.instrument_name(plugin.slot));
+            let stem: str8 = safe == "" ? clone(label) : format!("{} - {}", label, safe); free(label); free(safe);
+            free(name); name = self.unique_file("Presets", stem, effect ? ".mlafxpre" : ".mlapre"); free(stem);
+            let full: str8 = format!("{}/{}", self.root, name);
+            let saved: PresetResult = SessionCodec::preset_body(full, output, plugin.slot, true, [], [], effect);
+            if !saved.ok { self.fail_with(format!("Cannot write {}", name)); }
+            free(saved.status); free(full);
+        }
+        let path: str8 = self.text(name);
+        if self.reading && !self.failed {
+            if plugin.path == "" { if path != "" { self.failed = true; } }
+            else if !content_path(path, "Presets") { self.fail_with(format!("Invalid preset path: {}", path)); }
+            else {
+                let full: str8 = format!("{}/{}", self.root, path);
+                let values: result<PluginSnapshot, str8> = SessionCodec::preset_values(full, effect);
+                if values.is_err() { self.fail_with(format!("{}: {}", values.unwrap_err(), path)); }
+                else { let read: PluginSnapshot = values.unwrap(); plugin.ids = read.ids; plugin.values = read.values; }
+                free(full);
+            }
+        }
+        if self.reading { free(path); }
+        free(name); return plugin;
+    }
+    /// Parameter IDs and values of a plugin preset, without applying them.
+    fn preset_values(path: str8, effect: bool) -> result<PluginSnapshot, str8> {
+        let opened: result<File, str8> = File::open(path);
+        if opened.is_err() { return Err<PluginSnapshot, str8>("Missing preset file"); }
+        let file: File = opened.unwrap(); let size: result<i64, str8> = file.size(); file.close();
+        if size.is_err() || size.unwrap() > 268435456 { return Err<PluginSnapshot, str8>("Unreadable preset file"); }
+        let read: result<SessionReader, str8> = SessionReader::from_file(path);
+        if read.is_err() { return Err<PluginSnapshot, str8>("Unreadable preset file"); }
+        var codec: SessionCodec = SessionCodec { reading: true, reader: read.unwrap() };
+        let expected: str8 = effect ? "MLAFXPRE" : "MLAPRE";
+        let magic: str8 = codec.text(""); if magic != expected { codec.failed = true; } free(magic);
+        codec.number(1, 1, 1);
+        let minor: i32 = codec.number(0, 0, effect ? 0 : 1);
+        let name: str8 = codec.text(""); free(name);
+        var plugin: PluginSnapshot = PluginSnapshot { path: "" };
+        let count: i32 = codec.number(0, 0, 16384);
+        for _i in 0..count {
+            if codec.failed { break; }
+            let id: i64 = codec.integer(0, 0, 4294967295);
+            let value: f64 = codec.real(0.0, 0.0, 1.0);
+            let ids: list<i64> = plugin.ids; for old in ids { if old == id { codec.failed = true; } }
+            plugin.ids.push(id); plugin.values.push(value);
+        }
+        // A kit preset's pads belong to the session; skip them.
+        if minor == 1 && !codec.failed {
+            let tag: str8 = codec.text(""); if tag != "SAMPLER_PADS" { codec.failed = true; } free(tag);
+            let pads: i32 = codec.number(0, 0, 64);
+            var previous: i32 = -1;
+            for _i in 0..pads {
+                if codec.failed { break; }
+                previous = codec.number(0, previous + 1, 127);
+                let clip: AudioClip = codec.clip(AudioClip {}); clip.release();
+            }
+        }
+        if codec.reader.remaining() != 0 { codec.failed = true; } codec.reader.close();
+        if codec.failed { return Err<PluginSnapshot, str8>("Invalid or incompatible preset file"); }
+        return Ok<PluginSnapshot, str8>(plugin);
+    }
     fn sequence_data(self: &mut Self, source: &SequenceTable, samples: list<AudioClip>) -> SequenceTable {
         var table: SequenceTable = SequenceTable {}; table = source;
         if self.reading {
@@ -526,13 +701,15 @@ impl SessionCodec {
         // in order; MASTER_BUS precedes MATRIX_LOOPS.
         let mastered: bool = mastered_view || looped;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
-        self.number(1, 1, 1); self.minor = self.number(1, 0, 1);
+        // A project session (1.2) keeps samples and plugin state in files.
+        let project: bool = self.root != "";
+        self.number(1, 1, 1); self.minor = self.number(project ? 2 : 1, project ? 2 : 0, project ? 2 : 1);
         var state: SessionView = self.view(view);
         let sample_count: i32 = self.number(i32(library.audio.samples.len()), 0, 256);
         for i in 0..sample_count {
             if self.failed { break; }
             var clip: AudioClip = AudioClip {}; if !self.reading { clip = library.audio.samples[i]; }
-            let decoded: AudioClip = self.clip(clip);
+            let decoded: AudioClip = project ? self.clip_file(clip, i) : self.clip(clip);
             if self.reading { library.audio.samples.push(decoded); let name: str8 = base_name(decoded.source); library.audio.view.items.push(ListItem { id: i32(i) + 1, label: format!("{} {}", i + 1, name) }); free(name); }
         }
         var count: i32 = audio.processor_path != "" ? 1 : 0;
@@ -553,11 +730,14 @@ impl SessionCodec {
             let path: str8 = self.text(self.reading ? "" : (slot == 0 ? audio.processor_path : paths[slot - 1]));
             var plugin: PluginSnapshot = PluginSnapshot { slot: slot, path: path };
             if path == "" { self.failed = true; }
-            let params: i32 = self.number(self.reading ? 0 : i32(audio.output.parameter_info(slot, 0, 0)), 0, 16384);
-            for j in 0..params {
-                let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, j, 4), 0, 4294967295);
-                let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, j, 2), 0.0, 1.0);
-                plugin.ids.push(id); plugin.values.push(value);
+            if project { plugin = self.preset_reference(plugin, audio.output, slot == 0); }
+            else {
+                let params: i32 = self.number(self.reading ? 0 : i32(audio.output.parameter_info(slot, 0, 0)), 0, 16384);
+                for j in 0..params {
+                    let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, j, 4), 0, 4294967295);
+                    let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, j, 2), 0.0, 1.0);
+                    plugin.ids.push(id); plugin.values.push(value);
+                }
             }
             plugins.push(plugin);
             if self.reading && slot > 0 { library.instruments.items.push(ListItem { id: slot, label: format!("{} {}", slot, path) }); }
@@ -644,14 +824,17 @@ impl SessionCodec {
                 var effect: EffectChannel = EffectChannel {}; if !self.reading { effect = audio.effects[fx]; }
                 effect.path = self.text(effect.path); effect.volume = self.number(effect.volume, 0, 100); effect_volumes.push(effect.volume);
                 let slot: i32 = i32(fx) + 33;
-                let params: i32 = self.number(!self.reading && effect.path != "" ? i32(audio.output.parameter_info(slot, 0, 0)) : 0, 0, 16384);
-                if effect.path == "" && params != 0 { self.failed = true; }
                 var plugin: PluginSnapshot = PluginSnapshot { slot: slot, path: effect.path };
-                for p in 0..params {
-                    let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, p, 4), 0, 4294967295);
-                    let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, p, 2), 0.0, 1.0);
-                    let ids: list<i64> = plugin.ids; for old in ids { if old == id { self.failed = true; } }
-                    plugin.ids.push(id); plugin.values.push(value);
+                if project { plugin = self.preset_reference(plugin, audio.output, true); }
+                else {
+                    let params: i32 = self.number(!self.reading && effect.path != "" ? i32(audio.output.parameter_info(slot, 0, 0)) : 0, 0, 16384);
+                    if effect.path == "" && params != 0 { self.failed = true; }
+                    for p in 0..params {
+                        let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, p, 4), 0, 4294967295);
+                        let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, p, 2), 0.0, 1.0);
+                        let ids: list<i64> = plugin.ids; for old in ids { if old == id { self.failed = true; } }
+                        plugin.ids.push(id); plugin.values.push(value);
+                    }
                 }
                 plugins.push(plugin);
             }
@@ -688,12 +871,15 @@ impl SessionCodec {
                 let path: str8 = self.text(self.reading ? "" : audio.insert_paths[n]);
                 if path == "" { self.failed = true; }
                 var plugin: PluginSnapshot = PluginSnapshot { slot: slot, path: path };
-                let params: i32 = self.number(self.reading ? 0 : i32(audio.output.parameter_info(slot, 0, 0)), 0, 16384);
-                for p in 0..params {
-                    let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, p, 4), 0, 4294967295);
-                    let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, p, 2), 0.0, 1.0);
-                    let ids: list<i64> = plugin.ids; for old in ids { if old == id { self.failed = true; } }
-                    plugin.ids.push(id); plugin.values.push(value);
+                if project { plugin = self.preset_reference(plugin, audio.output, true); }
+                else {
+                    let params: i32 = self.number(self.reading ? 0 : i32(audio.output.parameter_info(slot, 0, 0)), 0, 16384);
+                    for p in 0..params {
+                        let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, p, 4), 0, 4294967295);
+                        let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, p, 2), 0.0, 1.0);
+                        let ids: list<i64> = plugin.ids; for old in ids { if old == id { self.failed = true; } }
+                        plugin.ids.push(id); plugin.values.push(value);
+                    }
                 }
                 plugins.push(plugin);
             }
@@ -925,19 +1111,79 @@ impl SessionCodec {
         if ok { let written: result<i32, str8> = codec.binary.write_atomic(path); ok = written.is_ok(); }
         codec.binary.close(); return ok;
     }
-    pub fn load(path: str8) -> result<SessionData, str8> {
+    /// Save the project folder `path` (`.mlaproj` appended when missing):
+    /// Project.mlack, Audio/ and Presets/. It is written beside the target and
+    /// swapped in only when complete, so a failed save keeps the previous
+    /// project. Returns the owned folder path.
+    pub fn save_project(self: &mut Self, path: str8, library: &PatternLibrary, view: SessionView, audio: &AudioSystem) -> result<str8, str8> {
+        let folder: str8 = project_folder(path);
+        let existing: bool = std::fs::file_exists(folder) == 1;
+        if existing {
+            let session: str8 = format!("{}/{}", folder, project_session());
+            let project: bool = std::fs::is_dir(folder) == 1 && std::fs::file_exists(session) == 1; free(session);
+            if !project { free(folder); return Err<str8, str8>("Save failed: the target exists but is not an mlacker project"); }
+        }
+        let staging: str8 = format!("{}.saving", folder); let previous: str8 = format!("{}.previous", folder);
+        if std::fs::file_exists(staging) == 1 { std::fs::remove_tree(staging); }
+        let audio_dir: str8 = format!("{}/Audio", staging); let presets_dir: str8 = format!("{}/Presets", staging);
+        let audio_made: result<i32, str8> = std::fs::mkdir_p(audio_dir);
+        let presets_made: result<i32, str8> = std::fs::mkdir_p(presets_dir);
+        let made: bool = audio_made.is_ok() && presets_made.is_ok();
+        free(audio_dir); free(presets_dir);
+        var status: str8 = "";
+        if made {
+            let created: result<SessionBuffer, str8> = SessionBuffer::new(4096);
+            if created.is_ok() {
+                var codec: SessionCodec = SessionCodec { binary: created.unwrap(), root: staging };
+                codec.contents(library, view, audio);
+                var ok: bool = !codec.failed && codec.binary.len() <= 268435456;
+                let session: str8 = format!("{}/{}", staging, project_session());
+                if ok { let written: result<i32, str8> = codec.binary.write_atomic(session); ok = written.is_ok(); }
+                codec.binary.close(); free(session);
+                if !ok { status = codec.problem != "" ? format!("Save failed: {}", codec.problem) : "Save failed: invalid state, size limit or unwritable path"; }
+                if codec.problem != "" { free(codec.problem); }
+            } else { status = "Save failed: cannot allocate the session"; }
+        } else { status = "Save failed: cannot create the project folder"; }
+        if status == "" && existing {
+            if std::fs::file_exists(previous) == 1 { std::fs::remove_tree(previous); }
+            if rename(folder, previous) != 0 { status = "Save failed: cannot replace the existing project; it is unchanged"; }
+        }
+        if status == "" && rename(staging, folder) != 0 {
+            if existing { rename(previous, folder); }
+            status = "Save failed: cannot move the project into place; previous project retained";
+        }
+        if status != "" { std::fs::remove_tree(staging); }
+        else if existing { std::fs::remove_tree(previous); }
+        free(staging); free(previous);
+        if status != "" { free(folder); return Err<str8, str8>(status); }
+        return Ok<str8, str8>(folder);
+    }
+    /// Open a project folder; content paths resolve against it wherever it is.
+    pub fn load_project(path: str8) -> result<SessionData, str8> {
+        let folder: str8 = project_folder(path);
+        if std::fs::is_dir(folder) == 0 { free(folder); return Err<SessionData, str8>("Project folder not found"); }
+        let session: str8 = format!("{}/{}", folder, project_session());
+        let loaded: result<SessionData, str8> = SessionCodec::load_file(session, folder);
+        free(session); free(folder); return loaded;
+    }
+    pub fn load(path: str8) -> result<SessionData, str8> { return SessionCodec::load_file(path, ""); }
+    fn load_file(path: str8, root: str8) -> result<SessionData, str8> {
         let opened: result<File, str8> = File::open(path); if opened.is_err() { return Err<SessionData, str8>("Cannot open session file"); }
         let file: File = opened.unwrap(); let length: result<i64, str8> = file.size(); file.close();
         if length.is_err() { return Err<SessionData, str8>("Cannot read session size"); }
         if length.unwrap() < 21 || length.unwrap() > 268435456 { return Err<SessionData, str8>("Session exceeds 256 MiB limit or is truncated"); }
         let read: result<SessionReader, str8> = SessionReader::from_file(path); if read.is_err() { return Err<SessionData, str8>("Cannot read session file"); }
-        var codec: SessionCodec = SessionCodec { reading: true, reader: read.unwrap() };
+        var codec: SessionCodec = SessionCodec { reading: true, reader: read.unwrap(), root: root };
         var dummy: PatternLibrary = PatternLibrary {};
         var audio: AudioSystem = AudioSystem {};
         var data: SessionData = codec.contents(dummy, SessionView {}, audio);
         if codec.reader.remaining() != 0 { codec.failed = true; }
         codec.reader.close();
-        if codec.failed { data.release(); return Err<SessionData, str8>("Invalid, truncated or unsupported .mlack session (expected version 1.0)"); }
+        if codec.failed {
+            data.release();
+            if codec.problem != "" { return Err<SessionData, str8>(codec.problem); }
+            return Err<SessionData, str8>(root != "" ? "Invalid, truncated or unsupported mlacker project" : "Invalid, truncated or unsupported .mlack session (expected version 1.0)");
+        }
         return Ok<SessionData, str8>(data);
     }
 }

@@ -496,7 +496,7 @@ def main():
         # Escape from the grandchild closes every menu and restores pane 2.
         os.write(master, F1)
         read_frame(None)
-        os.write(master, b"jjl")
+        os.write(master, b"jjjl")
         cascade = read_frame(None)
         assert b"Recent sessions" in cascade and b"Blue hour" in cascade and b">" in cascade
         os.write(master, b"jl")

@@ -46,6 +46,8 @@ use std::env::println;
 use mlacker_ui::session::SessionCodec;
 use mlacker_ui::session::SessionData;
 use mlacker_ui::session::SessionView;
+use mlacker_ui::session::is_project_path;
+use mlacker_ui::session::project_folder;
 use mlacker_ui::audio_controller::AudioSystem;
 use std::audio::PcmBlock;
 use std::testing::verify_eq;
@@ -378,6 +380,7 @@ fn tui_mixer_meters_the_routed_channel_output() {
 }
 
 extern fn mkdtemp(path: str8) -> str8;
+extern fn rename(from: str8, to: str8) -> i32;
 
 #[test]
 fn tui_session_roundtrip() {
@@ -419,6 +422,78 @@ fn tui_session_roundtrip() {
     var valid: SessionData = retained.unwrap(); valid.release();
     library.release();
     let removed: result<i32, str8> = std::fs::remove_tree(directory); verify(removed.is_ok()); free(path); free(directory);
+}
+
+fn test_clip(source: str8, channels: i64, frames: i64) -> AudioClip {
+    var clip: AudioClip = AudioClip { source: clone(source), channels: channels, sample_rate: 8000, frames: frames, frames_per_row: 10 };
+    let count: i64 = frames * channels; let rows: i64 = frames / 10; let details: i64 = rows * 4;
+    for i in 0..count { clip.samples.push(f32(i % 7) * 0.125f - 0.375f); }
+    for _i in 0..rows { clip.peaks.push(WavePeak { left: 375, right: 375, left_body: 200, right_body: 200 }); }
+    for _i in 0..details { clip.detail_peaks.push(WavePeak { left: 375, right: 375 }); }
+    return clip;
+}
+
+#[test]
+fn tui_project_paths() {
+    verify(is_project_path("/a/Song.mlaproj") && is_project_path("Song.MLAPROJ/") && !is_project_path("/a/Song.mlack"));
+    let appended: str8 = project_folder("/a/Song//"); verify(appended == "/a/Song.mlaproj"); free(appended);
+    let kept: str8 = project_folder("/a/Song.mlaproj/"); verify(kept == "/a/Song.mlaproj"); free(kept);
+}
+
+#[test]
+fn tui_project_roundtrip_relocation_and_resave() {
+    let directory: str8 = clone("/private/tmp/mlacker-project-test-XXXXXX"); mkdtemp(directory);
+    let target: str8 = format!("{}/My song", directory);
+    var library: PatternLibrary = PatternLibrary::new();
+    var audio: AudioSystem = AudioSystem {}; var codec: SessionCodec = SessionCodec {};
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    library.table.create_track_kind(false, true, area);
+    // Two samples with the same file name must not overwrite each other.
+    let clip: AudioClip = test_clip("/elsewhere/kick.wav", 2, 80);
+    library.audio.samples.push(clip); library.audio.samples.push(test_clip("other/kick.wav", 1, 40));
+    library.table.selected_row = 7; verify(library.table.insert_audio(clip, area));
+    let saved: result<str8, str8> = codec.save_project(target, library, SessionView { bpm: 133 }, audio); verify(saved.is_ok());
+    let folder: str8 = saved.unwrap();
+    let expected: str8 = format!("{}/My song.mlaproj", directory); verify(folder == expected);
+    let session: str8 = format!("{}/Project.mlack", folder); let first: str8 = format!("{}/Audio/kick.wav", folder);
+    let second: str8 = format!("{}/Audio/kick 2.wav", folder); let presets: str8 = format!("{}/Presets", folder);
+    verify(std::fs::file_exists(session) == 1 && std::fs::file_exists(first) == 1 && std::fs::file_exists(second) == 1 && std::fs::is_dir(presets) == 1);
+    // Content paths are relative: the project opens after moving the folder.
+    let parent: str8 = format!("{}/moved", directory); std::fs::mkdir_p(parent);
+    let moved: str8 = format!("{}/Renamed.mlaproj", parent); verify(rename(folder, moved) == 0);
+    let opened_path: str8 = format!("{}/", moved);
+    let loaded: result<SessionData, str8> = SessionCodec::load_project(opened_path); verify(loaded.is_ok());
+    var restored: SessionData = loaded.unwrap();
+    verify(restored.view.bpm == 133 && restored.library.audio.samples.len() == 2);
+    let sample: AudioClip = restored.library.audio.samples[0];
+    let moved_audio: str8 = format!("{}/Audio/kick.wav", moved); verify(sample.source == moved_audio);
+    verify(sample.channels == 2 && sample.frames == 80 && sample.frames_per_row == 10 && sample.peaks.len() == 8 && sample.detail_peaks.len() == 32);
+    for i in 0..160 { verify(sample.samples[i] == clip.samples[i]); }
+    let track: SequenceTrack = restored.library.table.tracks[restored.library.table.tracks.len() - 1];
+    let placement: AudioInstance = track.instances[0]; verify(placement.start_row == 7 && placement.clip.frames == 80);
+    // Saving over the opened project replaces it in place.
+    let resaved: result<str8, str8> = codec.save_project(moved, restored.library, SessionView { bpm: 90 }, audio); verify(resaved.is_ok());
+    let resaved_folder: str8 = resaved.unwrap(); verify(resaved_folder == moved); free(resaved_folder);
+    restored.release();
+    let staging: str8 = format!("{}.saving", moved); let previous: str8 = format!("{}.previous", moved);
+    verify(std::fs::file_exists(staging) == 0 && std::fs::file_exists(previous) == 0);
+    let reloaded: result<SessionData, str8> = SessionCodec::load_project(moved); verify(reloaded.is_ok());
+    var again: SessionData = reloaded.unwrap(); verify(again.view.bpm == 90 && again.library.audio.samples.len() == 2); again.release();
+    // A missing content file is named in the error.
+    let moved_second: str8 = format!("{}/Audio/kick 2.wav", moved); std::fs::remove_tree(moved_second);
+    let missing: result<SessionData, str8> = SessionCodec::load_project(moved); verify(missing.is_err());
+    verify(std::strbuf::contains(missing.unwrap_err(), "Audio/kick 2.wav") == 1);
+    // A plain .mlack loader rejects the project session and vice versa.
+    let moved_session: str8 = format!("{}/Project.mlack", moved);
+    let plain: result<SessionData, str8> = SessionCodec::load(moved_session); verify(plain.is_err());
+    // A folder that is not a project is never replaced.
+    let foreign: str8 = format!("{}/foreign.mlaproj", directory); std::fs::mkdir_p(foreign);
+    let refused: result<str8, str8> = codec.save_project(foreign, library, SessionView {}, audio); verify(refused.is_err());
+    let foreign_session: str8 = format!("{}/Project.mlack", foreign); verify(std::fs::is_dir(foreign) == 1 && std::fs::file_exists(foreign_session) == 0);
+    library.release();
+    std::fs::remove_tree(directory);
+    free(foreign_session); free(foreign); free(moved_session); free(moved_second); free(staging); free(previous); free(moved_audio);
+    free(opened_path); free(moved); free(parent); free(presets); free(second); free(first); free(session); free(expected); free(folder); free(target); free(directory);
 }
 
 #[test]

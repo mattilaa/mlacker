@@ -10,7 +10,6 @@ use tui::table::table_matches;
 use tui::table::table_integer;
 use std::strbuf::*;
 use std::fs::file_exists;
-extern fn __mlang_std_audio_sample_copy_file(path: str8, pcm: list<f32>, channels: i64, rate: i64) -> i32;
 
 pub struct CopiedPad { var pad: i32; var clip: AudioClip; };
 pub struct SidebarCopy {
@@ -111,8 +110,7 @@ impl SidebarClipboard {
                     if file_exists(path) == 0 { break; }
                 }
                 free(directory); free(stem);
-                let saved: i32 = __mlang_std_audio_sample_copy_file(path, entry.clip.samples, entry.clip.channels, entry.clip.sample_rate);
-                if saved != 0 { free(path); self.error = "Cannot create audio copy beside the original"; break; }
+                if !entry.clip.write_wav(path) { free(path); self.error = "Cannot create audio copy beside the original"; break; }
                 var duplicate: AudioClip = entry.clip.copy(); free(duplicate.source); duplicate.source = path;
                 let index: i32 = library.audio.add_clip(duplicate); library.audio.view.selected = index;
             } else {

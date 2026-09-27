@@ -168,6 +168,36 @@ plugin-internal sample libraries. It preserves the exposed parameter state edite
 by mlacker. Sampler pads filled by mlacker are the exception: they are rebuilt
 from the embedded sample list (`SAMPLER_PADS`). Future incompatible additions require a new version.
 
+## Project folders (`.mlaproj`, session 1.2)
+
+A project is a directory whose name ends in `.mlaproj`:
+
+- `Project.mlack`: the session, minor version **2**.
+- `Audio/`: one IEEE float32 WAV per sample-list entry, named after the source
+  file (`kick.wav`, then `kick 2.wav`, … for repeated names).
+- `Presets/`: one parameter preset per loaded plugin: `.mlapre` (1.0) for
+  instruments, `.mlafxpre` for the master, aux effect and insert plugins.
+
+A 1.2 session is the 1.1 document with two differences:
+
+- A sample is its relative path string (`Audio/<name>`), channel count, sample
+  rate, frame count and frames per row. The file must still have that format and
+  frame count; row and detail peaks are rebuilt from its PCM when loading.
+- A plugin's parameter list is replaced by the relative path of its preset
+  (`Presets/<name>`). An aux effect channel without a plugin stores an empty
+  path. Kit presets are accepted, but their pads are ignored: sampler pads
+  still come from `SAMPLER_PADS`.
+
+Content paths are exactly one file name below `Audio/` or `Presets/`; any
+other path, including absolute paths and `..`, is rejected, so a project only
+reads its own files and opens from any location. Plugin bundle paths remain
+absolute. A 1.2 session is only read as part of a project, and a project only
+reads 1.2 sessions. A failed load names the missing or invalid content file.
+
+Saving writes `<folder>.saving`, then renames an existing project to
+`<folder>.previous`, moves the new folder into place and removes the old one.
+An existing target that is not a directory holding `Project.mlack` is refused.
+
 ## Portable MIDI learn files (`.mlalearn`, version 1.0)
 
 Uses the same little-endian integer and length-prefixed UTF-8 string primitives:
