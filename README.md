@@ -24,7 +24,8 @@ current values are the defaults.
 
 - **subproject**: clones MLang's development repository into
   `subprojects/mlang` (ignored by this repository). Make compiler/stdlib changes
-  that mlacker needs there and commit them to the MLang repository.
+  that mlacker needs there and commit them to the MLang repository (see
+  [Developing MLang alongside mlacker](#developing-mlang-alongside-mlacker)).
 - **external**: uses your own MLang checkout (default `../mlang`); MLang changes
   are made in that checkout as usual.
 
@@ -88,6 +89,78 @@ For tests see [Tests](#tests).
 revision. Generated SDK sources and binaries stay under ignored `build/`.
 SDK license and usage notices remain in `build/deps/vst3sdk/LICENSE.txt` and
 `VST3_Usage_Guidelines.pdf`; preserve applicable notices when distributing.
+
+## Developing MLang alongside mlacker
+
+mlacker needs matching MLang changes now and then: a `tui` widget, a stdlib
+function, a compiler fix. Make those changes in the MLang checkout that
+mlacker builds against (`subprojects/mlang` in subproject mode), and commit
+them to MLang, never to this repository.
+
+### In `subprojects/mlang` (subproject mode)
+
+1. Work on a branch in the subproject:
+
+   ```sh
+   git -C subprojects/mlang switch -c my-change
+   ```
+
+2. Edit MLang and mlacker together. `./build.sh --app` always rebuilds the
+   MLang compiler and runtime (`mlang`, `libmlang_std.a`) first, and the `tui`
+   and `dsp` modules are compiled from the checkout, so every build sees your
+   MLang edits.
+3. Test both sides:
+
+   ```sh
+   ./build.sh --app --test                                  # mlacker unit tests + CTest
+   (cd subprojects/mlang && build/mlang --tests tests/tui_tests.mla)   # MLang tests you touched
+   (cd subprojects/mlang && build/mlang test)               # all MLang .mla tests
+   ```
+
+4. Commit in each repository: the MLang part in `subprojects/mlang`, the
+   mlacker part here. Mention the MLang dependency in the mlacker commit.
+5. Merge and **push MLang first**, then mlacker. CI builds mlacker against the
+   MLang on GitHub, so an mlacker push that needs an unpushed MLang change
+   fails there.
+
+   ```sh
+   git -C subprojects/mlang switch main && git -C subprojects/mlang merge my-change
+   git -C subprojects/mlang push
+   git push
+   ```
+
+`./build.sh --update` fast-forwards the subproject later on. It keeps local
+commits and uncommitted work, and stops instead of merging if your branch and
+upstream have diverged.
+
+### In a separate MLang checkout
+
+If you already develop MLang elsewhere (for example `../mlang`), you have two
+options:
+
+- **Build mlacker against that checkout.** Run
+  `./bootstrap.sh --mlang-dir ../mlang` (external mode). mlacker then builds with
+  whatever is in that checkout, and you commit and push there as usual. Run
+  `./bootstrap.sh --mlang-subproject` to switch back.
+- **Keep subproject mode and copy the change over to test it.** Apply the
+  uncommitted diff to the subproject, build and test mlacker, then commit in
+  `../mlang`:
+
+  ```sh
+  git -C ../mlang diff -- modules/tui | git -C subprojects/mlang apply
+  ./build.sh --app --test
+  ```
+
+  After the MLang commit is pushed, drop the copy and pull the real commit. The
+  copy must go first, or `--update` refuses to overwrite it:
+
+  ```sh
+  git -C subprojects/mlang restore --staged --worktree modules/tui
+  ./build.sh --update --app
+  git -C subprojects/mlang status --short   # empty: the subproject matches upstream
+  ```
+
+  Then push mlacker.
 
 ## Install
 
