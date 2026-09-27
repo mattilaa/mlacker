@@ -33,3 +33,7 @@ subprojects/
 
 # Scratch sessions, patterns and presets saved while testing (see demos/README.md)
 demos/**/*.mla*
+
+# Local AI agent notes written by bootstrap.sh (--agent-notes)
+CLAUDE.local.md
+AGENTS.override.md

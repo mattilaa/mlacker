@@ -13,11 +13,12 @@ do_app=""
 do_plugins=""
 do_mlang=""
 install=""
+update=""
 jobs=""
 
 usage() {
     cat <<EOF
-Usage: ./build.sh [--all | --app | --plugins | --mlang ...] [--install] [-j N]
+Usage: ./build.sh [--all | --app | --plugins | --mlang ...] [--install] [--update] [-j N]
 
 Targets (combine freely; none given means --all):
   --all        mlacker and all plugins, plus the full MLang toolchain when
@@ -31,6 +32,11 @@ Targets (combine freely; none given means --all):
 Options:
   --install    Also install: MLang under MLANG_PREFIX, mlacker to BIN_DIR,
                plugins to PLUGIN_DIR
+  --update     Fetch the latest MLang into subprojects/mlang (subproject mode)
+               and fast-forward its current branch. Local commits and
+               uncommitted changes are kept; a diverged branch is reported,
+               not merged. Alone it only updates; with targets it updates,
+               then builds
   -j, --jobs N Parallel jobs for building MLang
   -h, --help   Show this help
 
@@ -39,6 +45,8 @@ Examples:
   ./build.sh --install --all     # build and install everything
   ./build.sh --install --plugins # build and install only the plugins
   ./build.sh --install --mlang   # build and install only MLang (e.g. subprojects/mlang)
+  ./build.sh --update            # pull the latest MLang into subprojects/mlang
+  ./build.sh --update --all      # pull the latest MLang, then build everything
 
 Without --mlang only the MLang compiler and runtime that mlacker links against
 are built. Configuration comes from mlacker.conf; run ./bootstrap.sh to create
@@ -53,6 +61,7 @@ while [ "$#" -gt 0 ]; do
         --plugins) do_plugins="1"; shift ;;
         --mlang) do_mlang="1"; shift ;;
         --install) install="1"; shift ;;
+        --update) update="1"; shift ;;
         -j|--jobs)
             [ "$#" -ge 2 ] || { echo "build.sh: $1 requires a value" >&2; exit 2; }
             jobs="$2"; shift 2 ;;
@@ -92,7 +101,11 @@ bin_dir=$(conf_get BIN_DIR)
 [ -n "$plugin_dir" ] || plugin_dir="~/.local/plugins/VST3"
 [ -n "$bin_dir" ] || bin_dir="~/.local/bin"
 
-if [ -n "$all" ] || { [ -z "$do_app" ] && [ -z "$do_plugins" ] && [ -z "$do_mlang" ]; }; then
+update_only=""
+if [ -n "$update" ] && [ -z "$all" ] && [ -z "$do_app" ] && [ -z "$do_plugins" ] && [ -z "$do_mlang" ]; then
+    update_only="1"
+fi
+if [ -n "$all" ] || { [ -z "$update_only" ] && [ -z "$do_app" ] && [ -z "$do_plugins" ] && [ -z "$do_mlang" ]; }; then
     do_app="1"
     do_plugins="1"
     [ "$mlang_toolchain" = "yes" ] && do_mlang="1"
@@ -110,6 +123,57 @@ run() {
     echo "+ $*"
     "$@"
 }
+
+# --- Update the MLang subproject -------------------------------------------------------
+update_mlang() {
+    if [ "$mlang_mode" != "subproject" ]; then
+        echo "[mlacker] --update only updates the subprojects/mlang clone; $mlang_root is"
+        echo "[mlacker] your own MLang checkout (external mode), update it yourself."
+        return 0
+    fi
+    if [ ! -d "$mlang_root/.git" ]; then
+        echo "build.sh: $mlang_root is not a git checkout; run ./bootstrap.sh" >&2
+        return 1
+    fi
+    local branch upstream behind ahead
+    branch=$(git -C "$mlang_root" symbolic-ref --quiet --short HEAD || true)
+    if [ -z "$branch" ]; then
+        echo "build.sh: $mlang_root is on a detached HEAD; check out a branch to update it" >&2
+        return 1
+    fi
+    echo "[mlacker] Updating MLang in $mlang_root (branch $branch)"
+    run git -C "$mlang_root" fetch --prune origin
+    upstream=$(git -C "$mlang_root" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+    if [ -z "$upstream" ]; then
+        echo "[mlacker] Branch $branch has no upstream; fetched only."
+        return 0
+    fi
+    behind=$(git -C "$mlang_root" rev-list --count "HEAD..$upstream")
+    ahead=$(git -C "$mlang_root" rev-list --count "$upstream..HEAD")
+    if [ "$behind" = "0" ]; then
+        if [ "$ahead" = "0" ]; then
+            echo "[mlacker] MLang is up to date with $upstream"
+        else
+            echo "[mlacker] MLang is up to date with $upstream ($ahead local commit(s) not pushed)"
+        fi
+        return 0
+    fi
+    if [ "$ahead" != "0" ]; then
+        echo "build.sh: $branch has $ahead local and $behind upstream commit(s) in $mlang_root;" >&2
+        echo "build.sh: rebase or merge there (git -C $mlang_dir pull --rebase), then rebuild." >&2
+        return 1
+    fi
+    # --ff-only never merges; git refuses if uncommitted changes would be overwritten.
+    run git -C "$mlang_root" merge --ff-only "$upstream"
+    echo "[mlacker] MLang updated to $(git -C "$mlang_root" log --oneline -1)"
+}
+
+if [ -n "$update" ]; then
+    update_mlang
+    if [ -n "$update_only" ]; then
+        exit 0
+    fi
+fi
 
 # --- MLang ---------------------------------------------------------------------------------
 echo "[mlacker] MLang checkout: $mlang_root ($mlang_mode)"

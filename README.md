@@ -33,11 +33,20 @@ full MLang toolchain from `subprojects/mlang` (compiler, runtime, `mlang-config`
 install it under an MLang prefix (default `~/.local`, tools in `~/.local/bin`).
 That keeps the development MLang you commit to in sync with the installed one.
 
+It also offers to write notes for AI coding agents (default yes in subproject
+mode): `CLAUDE.local.md` for Claude Code and `AGENTS.override.md` for Codex, both
+ignored by git. They tell agents to make every MLang change (compiler, stdlib,
+`tui`/`dsp` modules, headers) in the configured checkout, for example
+`subprojects/mlang`, and to commit it there rather than in mlacker or another
+MLang checkout. Only a marked block in those files is generated; anything else
+you write in them is kept, and `--no-agent-notes` removes just the block.
+
 It then asks for the VST3 plugin install directory (default
 `~/.local/plugins/VST3`) and the mlacker binary directory (default `~/.local/bin`),
 and offers to build (and install) right away. Everything can be given as flags
 instead (`--mlang-subproject`, `--mlang-dir DIR`, `--mlang-toolchain`/
-`--no-mlang-toolchain`, `--mlang-prefix DIR`, `--plugin-dir DIR`, `--bin-dir DIR`,
+`--no-mlang-toolchain`, `--mlang-prefix DIR`, `--agent-notes`/`--no-agent-notes`,
+`--plugin-dir DIR`, `--bin-dir DIR`,
 `--build`/`--no-build`, `--install`/`--no-install`, `-y`); see
 `./bootstrap.sh --help`.
 
@@ -54,7 +63,16 @@ selected targets. Targets can be combined; none means `--all`:
 ./build.sh --install --all     # build and install everything configured
 ./build.sh --install --plugins # build and install only the plugins
 ./build.sh --install --mlang   # build and install MLang under MLANG_PREFIX
+./build.sh --update            # pull the latest MLang into subprojects/mlang
+./build.sh --update --all      # pull the latest MLang, then build everything
 ```
+
+`--update` fetches MLang's upstream into `subprojects/mlang` and fast-forwards
+the checked-out branch. It never merges: uncommitted changes are kept (git
+refuses only if the update would overwrite them), and when the branch has local
+commits that are not upstream yet it stops and asks you to rebase or merge in
+`subprojects/mlang`. In external mode it leaves your own checkout alone. Given
+alone it only updates; with targets it updates and then builds.
 
 `--mlang` works with an external checkout too, but there you would normally
 build MLang yourself. When the checkout has no `build/mlang-config.conf` yet,
