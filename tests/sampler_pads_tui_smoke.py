@@ -137,7 +137,7 @@ def main():
             tui.send(b"\x1b", 0.6)
 
             # Device changes rebuild every instrument; pads must be re-sent.
-            expect(tui.send(F1 + b"jjjjj\r"), b"Master output (AUHAL)")  # File > Settings
+            expect(tui.send_until(F1 + b"jjjjj\r", b"Master output (AUHAL)"), b"Master output (AUHAL)")  # File > Settings
             tui.send(b"\rk\r")
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
@@ -172,7 +172,8 @@ def main():
             expect(tui.send(F1 + b"ll" + b"jjj\r"), b" Instruments ")
             tui.send(b"\x1b[104;6u")
             tui.send(b"gg")
-            frame = expect(tui.send(b"\x1b[127;2u", 0.6), b"track(s) play it")
+            # Shift+Backspace goes through the sidebar's marked-item removal.
+            frame = expect(tui.send(b"\x1b[127;2u", 0.6), b"track(s) use this instrument")
             assert b"Remove tracks" in frame and b"Keep tracks" in frame, frame[-4000:]
             frame = expect(tui.send(b"l\r", 0.8), b"track assignments cleared")
 

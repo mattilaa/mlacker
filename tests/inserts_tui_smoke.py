@@ -62,7 +62,7 @@ def main():
             assert b"0.25" in tui.send(b"\r")
             tui.send(b"\x1b")
             # Replacing the audio device must keep insert parameter state.
-            assert b"MIDI input adapter" in tui.send(F1 + b"jjjjj\r")
+            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjj\r", b"MIDI input adapter")
             tui.send(b"\rk\r"); tui.send(b"\t\rk\r")
             # Tab past the buffer size and sample rate dropdowns to the buttons.
             assert b"Settings applied. Audio disabled." in tui.send(b"\t\t\t\r", .6)

@@ -1,3 +1,4 @@
+[![Build and Test](https://github.com/mattilaa/mlacker/actions/workflows/build.yml/badge.svg)](https://github.com/mattilaa/mlacker/actions/workflows/build.yml)
 # mlacker
 
 Terminal tracker built with MLang, the MLang `tui` widget library, macOS AUHAL,
@@ -65,6 +66,7 @@ selected targets. Targets can be combined; none means `--all`:
 ./build.sh --install --mlang   # build and install MLang under MLANG_PREFIX
 ./build.sh --update            # pull the latest MLang into subprojects/mlang
 ./build.sh --update --all      # pull the latest MLang, then build everything
+./build.sh --test              # build everything, then run all tests
 ```
 
 `--update` fetches MLang's upstream into `subprojects/mlang` and fast-forwards
@@ -980,13 +982,15 @@ Current scope:
 
 ## Tests
 
-Run from this directory with the configured MLang checkout (here `../mlang`):
-
 ```sh
-../mlang/build/mlang pkg --config mlang.toml run test --option mlang_root=$PWD/../mlang
+./build.sh --test              # build, then test mlacker and every plugin
+./build.sh --app --test        # mlacker only: MLang unit tests, then CTest
 ```
 
-This runs the MLang unit tests in `tests/*.mla`, then builds two local test bundles (never installed in system plugin folders),
+CI (`.github/workflows/build.yml`) runs the same on macOS for every push and
+pull request, building against MLang's `main` from GitHub; a manual run can pick
+another MLang branch. For mlacker's tests, `--test` runs `mlang pkg run test`,
+which runs the MLang unit tests in `tests/*.mla`, then builds two local test bundles (never installed in system plugin folders),
 loads them through the real module loader, and checks instrument/effect output,
 frame-accurate event offsets, live MIDI lane independence, panic, failed
 replacement, repeated unload/reload, instrument-only validation and independent

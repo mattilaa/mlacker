@@ -88,7 +88,7 @@ def main():
             frame = tui.send(F1 + b"lllllll" + b"jjj\r")
             assert b"50" in frame and b"Set track send" in frame
             tui.send(b"\x1b")
-            assert b"MIDI input adapter" in tui.send(F1 + b"jjjjj\r")
+            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjj\r", b"MIDI input adapter")
             tui.send(b"\rk\r")
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.

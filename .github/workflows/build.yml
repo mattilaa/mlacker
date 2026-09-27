@@ -1,0 +1,64 @@
+name: Build and Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mlang_ref:
+        description: MLang branch to build against
+        required: false
+        default: main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (macOS)
+    # mlacker uses macOS AUHAL audio output and CoreMIDI.
+    runs-on: macos-latest
+    timeout-minutes: 150
+    env:
+      MLANG_REF: ${{ github.event.inputs.mlang_ref || 'main' }}
+      # The PTY tests never open audio/MIDI devices; keep any manual run the same.
+      MLANG_TUI_NO_HARDWARE: "1"
+
+    steps:
+      - name: Check out mlacker
+        uses: actions/checkout@v4
+
+      - name: Install MLang build dependencies
+        run: |
+          brew install llvm openssl@3 zstd z3 rapidjson ninja
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm);$(brew --prefix openssl@3);$(brew --prefix zstd);$(brew --prefix z3);$(brew --prefix rapidjson)" >> "$GITHUB_ENV"
+
+      - name: Bootstrap (MLang as subprojects/mlang)
+        run: |
+          ./bootstrap.sh --mlang-subproject \
+            --mlang-repo https://github.com/mattilaa/mlang.git \
+            --mlang-branch "$MLANG_REF" \
+            --no-mlang-toolchain --no-agent-notes --no-build -y
+          echo "MLang: $(git -C subprojects/mlang log -1 --format='%h %s')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build MLang, mlacker and plugins
+        run: ./build.sh --all -j 3
+
+      - name: Test mlacker and plugins
+        run: ./build.sh --all --test -j 3
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            build/cmake/Testing/Temporary/
+            plugins/*/build/cmake/Testing/Temporary/
+          if-no-files-found: ignore
+          retention-days: 14

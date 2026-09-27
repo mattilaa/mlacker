@@ -14,11 +14,12 @@ do_plugins=""
 do_mlang=""
 install=""
 update=""
+run_tests=""
 jobs=""
 
 usage() {
     cat <<EOF
-Usage: ./build.sh [--all | --app | --plugins | --mlang ...] [--install] [--update] [-j N]
+Usage: ./build.sh [--all | --app | --plugins | --mlang ...] [--install] [--test] [--update] [-j N]
 
 Targets (combine freely; none given means --all):
   --all        mlacker and all plugins, plus the full MLang toolchain when
@@ -32,6 +33,9 @@ Targets (combine freely; none given means --all):
 Options:
   --install    Also install: MLang under MLANG_PREFIX, mlacker to BIN_DIR,
                plugins to PLUGIN_DIR
+  --test       After building, run the tests of the selected targets: mlacker's
+               MLang unit tests and CTest suite (--app), each plugin's test
+               task (--plugins)
   --update     Fetch the latest MLang into subprojects/mlang (subproject mode)
                and fast-forward its current branch. Local commits and
                uncommitted changes are kept; a diverged branch is reported,
@@ -47,6 +51,7 @@ Examples:
   ./build.sh --install --mlang   # build and install only MLang (e.g. subprojects/mlang)
   ./build.sh --update            # pull the latest MLang into subprojects/mlang
   ./build.sh --update --all      # pull the latest MLang, then build everything
+  ./build.sh --test              # build everything, then run all tests
 
 Without --mlang only the MLang compiler and runtime that mlacker links against
 are built. Configuration comes from mlacker.conf; run ./bootstrap.sh to create
@@ -62,6 +67,7 @@ while [ "$#" -gt 0 ]; do
         --mlang) do_mlang="1"; shift ;;
         --install) install="1"; shift ;;
         --update) update="1"; shift ;;
+        --test) run_tests="1"; shift ;;
         -j|--jobs)
             [ "$#" -ge 2 ] || { echo "build.sh: $1 requires a value" >&2; exit 2; }
             jobs="$2"; shift 2 ;;
@@ -236,11 +242,29 @@ else
     fi
 fi
 
+if [ -n "$run_tests" ]; then
+    # Plugins first: mlacker's CTest suite includes the Mla Drum/Delay host tests
+    # only when those bundles exist when it is configured.
+    if [ -n "$do_plugins" ]; then
+        for plugin in $plugins; do
+            if grep -q '^name = "test"' "plugins/$plugin/mlang.toml"; then
+                echo "[mlacker] Testing $plugin"
+                run "$mlang" pkg --config "$ROOT_DIR/plugins/$plugin/mlang.toml" run test \
+                    --option mlang_root="$mlang_root"
+            fi
+        done
+    fi
+    if [ -n "$do_app" ]; then
+        echo "[mlacker] Testing mlacker (MLang unit tests, then CTest)"
+        pkg test
+    fi
+fi
+
 built=""
 [ -n "$do_mlang" ] && built="MLang"
 [ -n "$do_app" ] && built="${built:+$built, }mlacker"
 [ -n "$do_plugins" ] && built="${built:+$built, }plugins"
-echo "[mlacker] Done: $built${install:+ (installed)}"
+echo "[mlacker] Done: $built${install:+ (installed)}${run_tests:+ (tested)}"
 if [ -n "$do_app" ] && [ -z "$install" ]; then
     echo "[mlacker] Run with: build/cmake/bin/mlacker"
 fi

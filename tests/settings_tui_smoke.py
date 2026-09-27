@@ -34,10 +34,20 @@ def main():
         os.write(master, keys)
         return read_for()
 
+    def send_until(keys, needle, timeout=10.0):
+        # The first Settings open enumerates CoreAudio/CoreMIDI devices and can
+        # take longer than a fixed read window.
+        os.write(master, keys)
+        data = bytearray()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and needle not in data:
+            data.extend(read_for(0.05))
+        return bytes(data) + read_for(0.2)
+
     try:
         assert b"Settings" in read_for(1)
         # Save is disabled: New -> Open -> Recent -> Settings.
-        frame = send(b"jjj\r")
+        frame = send_until(b"jjj\r", b"Master output (AUHAL)")
         assert b"MIDI input adapter" in frame and b"Master output (AUHAL)" in frame
         frame = send(b"\r")
         assert b"Disabled" in frame and b"System default" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()

@@ -36,6 +36,20 @@ class Terminal:
         os.write(self.master, keys)
         return self.read(seconds)
 
+    def send_until(self, keys, needle, timeout=10.0):
+        """Send keys and read until needle appears. For screens that can take longer
+        than a fixed read window, e.g. Settings, whose first open enumerates the
+        CoreAudio/CoreMIDI devices."""
+        os.write(self.master, keys)
+        data = bytearray()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if select.select([self.master], [], [], 0.03)[0]:
+                data.extend(os.read(self.master, 65536))
+                if needle in re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data):
+                    break
+        return re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data) + self.read(0.2)
+
     def close(self):
         if self.process.poll() is None:
             self.send(b"\x1b")
@@ -162,7 +176,7 @@ def main():
             frame = tui.send(F1 + b"llllll" + b"j\r")
             assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.25" in frame, frame[-5000:]
             tui.send(b"\x1b")
-            assert b"MIDI input adapter" in tui.send(F1 + b"jjjjj\r")
+            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjj\r", b"MIDI input adapter")
             tui.send(b"\rk\r")
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
@@ -206,7 +220,7 @@ def main():
             assert b"Opened:" in frame, frame[-5000:]
             tui.send(b"\x13", 0.6)
             assert master_path.read_bytes() == master_saved, "Master plugin state changed on reload"
-            assert b"MIDI input adapter" in tui.send(F1 + b"jjjjj\r")
+            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjj\r", b"MIDI input adapter")
             tui.send(b"\rk\r")
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
