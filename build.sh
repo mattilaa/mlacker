@@ -46,7 +46,9 @@ Options:
 
 Examples:
   ./build.sh                     # build everything
+  ./build.sh --app               # build only mlacker
   ./build.sh --install --all     # build and install everything
+  ./build.sh --install --app     # build and install only mlacker (to BIN_DIR)
   ./build.sh --install --plugins # build and install only the plugins
   ./build.sh --install --mlang   # build and install only MLang (e.g. subprojects/mlang)
   ./build.sh --update            # pull the latest MLang into subprojects/mlang
