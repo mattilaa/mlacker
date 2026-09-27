@@ -1,0 +1,3 @@
+fn main() {
+    println!("mlacker subproject scaffold ready");
+}

@@ -1,0 +1,8 @@
+[package]
+name = "mlacker"
+version = "0.2.155"
+entry = "src/main.mla"
+
+[dependencies]
+
+[c-dependencies]
