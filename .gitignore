@@ -30,3 +30,6 @@ __pycache__/
 # Local build configuration and the MLang development checkout (bootstrap.sh)
 mlacker.conf
 subprojects/
+
+# Scratch sessions, patterns and presets saved while testing (see demos/README.md)
+demos/**/*.mla*
