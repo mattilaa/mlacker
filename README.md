@@ -1041,6 +1041,13 @@ preallocated, with sample offsets preserved by the native audio event queue.
    needed. Device default keeps the native device rate.
    Both selections survive device changes and session opens during this run.
    After applying, the status shows the actual device buffer size and sample rate.
+   **CPU cores for audio** limits how many threads render plugins. It lists every
+   core the OS reports, and on Apple silicon the label also gives the performance
+   and efficiency core counts. The default is All cores. Instruments (with their
+   inserts), tracks at the same routing depth, and aux returns render in
+   parallel. They are summed in slot order, so the mix sounds the same with any
+   setting. The limit applies to running audio at once, without restarting the
+   device.
 2. Choose **Effect → Master → Load master VST3**.
 3. Select a `.vst3` bundle, or type its full path into the dialog and press Enter.
    The chooser starts in `/Library/Audio/Plug-Ins/VST3`; user plugins are commonly

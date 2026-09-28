@@ -1,0 +1,36 @@
+mod std::process;
+mod std::thread;
+use std::process::cpu_time_us;
+use std::thread::cpu_count;
+
+/// Status-bar CPU meter: CPU time of every mlacker thread (UI, audio and
+/// render workers) over wall time, as a share of all online cores. Sampled
+/// every `period_ms` so the reading is steady enough to read.
+/// MLACKER_CPU_METER=0 turns it off (scripted PTY tests expect no repaint
+/// they did not cause).
+pub struct CpuMeter {
+    var enabled: bool{true};
+    var period_ms: i64{300};
+    var last_ms: i64{-1}; var last_cpu_us: i64;
+    /// -1 until the first full period has been measured.
+    var percent: i32{-1};
+};
+impl CpuMeter {
+    /// True when `percent` changed.
+    pub fn update(self: &mut Self, now: i64) -> bool {
+        if !self.enabled { return false; }
+        if self.last_ms >= 0 && now - self.last_ms < self.period_ms { return false; }
+        let cpu: i64 = cpu_time_us();
+        if cpu < 0 { return false; }
+        if self.last_ms < 0 { self.last_ms = now; self.last_cpu_us = cpu; return false; }
+        let wall_us: i64 = (now - self.last_ms) * 1000 * cpu_count();
+        let used: i64 = cpu - self.last_cpu_us;
+        self.last_ms = now; self.last_cpu_us = cpu;
+        if wall_us <= 0 { return false; }
+        var next: i64 = (used * 100 + wall_us / 2) / wall_us;
+        if next > 100 { next = 100; }
+        if next < 0 { next = 0; }
+        if i32(next) == self.percent { return false; }
+        self.percent = i32(next); return true;
+    }
+}

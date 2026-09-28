@@ -63,10 +63,14 @@ def main():
         frame = send(b"\t\rjj\r")  # 128 -> 512 frames
         assert b"512 frames" in frame
         send(b"\t\rjjj\r")  # Device default -> 96 kHz
+        frame = send(b"\t\r")  # CPU cores choices come from the OS
+        assert b"1 core (no worker threads)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
+        send(b"j\r")  # All cores -> 1 core
         frame = send(b"\t\r")
         assert b"Settings applied. Audio disabled." in frame
         frame = send(F1 + b"jjjj\r")
         assert b"MIDI input adapter" in frame and b"Disabled" in frame and b"512 frames" in frame and b"96 kHz" in frame
+        assert b"1 core (no worker threads)" in frame
         # Resize with an expanded dropdown, exercising clipping and overlay.
         send(b"\r")
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 30, 0, 0))
@@ -83,7 +87,7 @@ def main():
         before[3] &= ~pending
         after[3] &= ~pending
         assert after == before
-        print("PASS: Settings dropdowns, cancel, apply disabled devices, resize, shutdown")
+        print("PASS: Settings dropdowns, cancel, apply disabled devices, CPU cores, resize, shutdown")
     finally:
         if process.poll() is None:
             process.kill()
