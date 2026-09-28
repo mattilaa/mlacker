@@ -591,6 +591,26 @@ int main(int argc, char **argv) {
         CHECK(std::llabs(slow - 24000) <= 2 && std::llabs(fast - 12000) <= 2);
         std::puts("PASS: Mla Delay follows the host tempo");
     }
+    // Mla Sampler has eight output buses: the host loads it, mixes Main, and a
+    // slot sent to the inactive Out 2 falls back to Main.
+    if(const char *sampler = std::getenv("MLA_SAMPLER_VST3")) {
+        int64_t d = __mlang_std_audio_controller_new(48000, 128);
+        CHECK(__mlang_std_audio_controller_load_instrument(d, 1, sampler) == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Sampler") == 0);
+        CHECK(__mlang_std_audio_controller_instrument_sampler(d, 1, 1) == 16);
+        const std::vector<float> hit(4800, 0.5f);
+        CHECK(__mlang_std_audio_controller_instrument_pad(d, 1, 0, FloatList{4800, hit.data()}, 1, 48000, "hit") == 0);
+        // Parameter 11 is Slot 1 Output (ID 203), stepped: 1 = Out 2.
+        CHECK(__mlang_std_audio_controller_parameter_info(d, 1, 11, 4) == 203);
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 11, 1) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        const int64_t now = __mlang_std_audio_controller_info(d, 2);
+        CHECK(__mlang_std_audio_controller_post(d, 0, 6, 0, 36, 127, 0, now + 32, 1, 1) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        CHECK(std::abs(__mlang_std_audio_pcm_block_sample(b, 128, 0) - 0.125f) < 1.e-4f);
+        CHECK(__mlang_std_audio_controller_close(d) == 0);
+        std::puts("PASS: Mla Sampler multi-output instrument on the main output");
+    }
     {
         // Lane 2 carries sequencer events stamped with the frame they sound
         // on: one stamped 100 frames into a block starts there, and one

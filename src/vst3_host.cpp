@@ -83,8 +83,10 @@ public:
         }
         const int32 ins = component->getBusCount(kAudio, kInput);
         const int32 outs = component->getBusCount(kAudio, kOutput);
-        if(ins < 0 || ins > 1 || outs != 1) {
-            error = "Only zero/one audio input bus and one output bus are supported"; return false;
+        // Extra output buses (multi-output instruments such as Mla Sampler)
+        // keep their own arrangement and stay inactive; only bus 0 is mixed.
+        if(ins < 0 || ins > 1 || outs < 1 || outs > 16) {
+            error = "Only zero/one audio input bus and 1-16 output buses are supported"; return false;
         }
         BusInfo outInfo{}, inInfo{};
         if(component->getBusInfo(kAudio, kOutput, 0, outInfo) != kResultOk ||
@@ -96,14 +98,17 @@ public:
             error = "VST3 input must be mono or stereo"; return false;
         }
         SpeakerArrangement input = inInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo;
-        SpeakerArrangement output = outInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo;
-        if(processor->setBusArrangements(ins ? &input : nullptr, ins, &output, 1) != kResultOk) {
+        SpeakerArrangement outputs[16] = {outInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo};
+        for(int32 bus = 1; bus < outs; ++bus)
+            if(processor->getBusArrangement(kOutput, bus, outputs[bus]) != kResultOk) outputs[bus] = SpeakerArr::kStereo;
+        if(processor->setBusArrangements(ins ? &input : nullptr, ins, outputs, outs) != kResultOk) {
             error = "VST3 processor rejected its mono/stereo bus arrangement"; return false;
         }
         if(component->activateBus(kAudio, kOutput, 0, true) != kResultOk ||
            (ins && component->activateBus(kAudio, kInput, 0, true) != kResultOk)) {
             error = "Could not activate VST3 audio buses"; return false;
         }
+        for(int32 bus = 1; bus < outs; ++bus) component->activateBus(kAudio, kOutput, bus, false);
         const int32 eventInputs = component->getBusCount(kEvent, kInput);
         if(instrumentOnly && eventInputs < 1) { error = "Instrument requires a MIDI event input"; return false; }
         const int32 eventOutputs = component->getBusCount(kEvent, kOutput);
@@ -118,7 +123,7 @@ public:
         ProcessSetup setup{kRealtime, kSample32, frames, rate};
         if(processor->setupProcessing(setup) != kResultOk) { error = "VST3 processing setup failed"; return false; }
         if(!data.prepare(*component, frames, kSample32)) { error = "VST3 buffer allocation failed"; return false; }
-        if(data.numOutputs != 1 || data.outputs[0].numChannels < 1 || data.outputs[0].numChannels > 2 ||
+        if(data.numOutputs != outs || data.outputs[0].numChannels < 1 || data.outputs[0].numChannels > 2 ||
            data.numInputs != ins || (ins && (data.inputs[0].numChannels < 1 || data.inputs[0].numChannels > 2))) {
             error = "VST3 processor changed to an unsupported bus layout"; return false;
         }

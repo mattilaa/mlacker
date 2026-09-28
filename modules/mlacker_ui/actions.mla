@@ -15,7 +15,7 @@ pub enum Action : i32 {
     SampleViewNormal = 70, SampleViewGrainy = 71, SampleViewFilled = 72, SampleViewWave = 73,
     MeterSolid = 40, MeterGrainy = 41, MeterUpdateRate = 74,
     ToggleSpectrum = 160, SpectrumDetails = 161, SpectrumUpdateRate = 162,
-    ToggleVirtualKeyboard = 163, ResetLayout = 6, ShowDetails = 7,
+    ToggleVirtualKeyboard = 163, ToggleSampler = 167, ResetLayout = 6, ShowDetails = 7,
     // Track
     RenameTrack = 20, CreateMidiTrack = 21, DeleteTrack = 22, DuplicateTrack = 23,
     ClearTrack = 24, MuteTrack = 25, ConfigureCcColumn = 26, AddCcColumn = 27,
@@ -41,9 +41,10 @@ pub enum Action : i32 {
     // Record
     ToggleMetronome = 150, ToggleExtendRecording = 151, MetronomeOnRecording = 152, MetronomeAlways = 153,
     // Follow-ups, not in a menu: an insert slot's Enter / Backspace, a chosen
-    // output channel, drum key, matrix pattern, and pasting a matrix cell.
+    // output channel, drum key, matrix pattern, pasting a matrix cell, and the
+    // Sampler pane's Enter / Backspace on a slot.
     LoadInsert = 115, RemoveInsert = 116, ApplyOutputChannel = 31, ApplyPadChoice = 119,
-    PlaceMatrixPattern = 121, PasteMatrixCell = 122
+    PlaceMatrixPattern = 121, PasteMatrixCell = 122, LoadSamplerSlot = 123, ClearSamplerSlot = 124
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).

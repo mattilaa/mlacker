@@ -47,6 +47,8 @@ use mlacker_ui::piano_dialog::PianoDialog;
 mod mlacker_ui::virtual_keyboard;
 use mlacker_ui::virtual_keyboard::VirtualKeyboard;
 use mlacker_ui::virtual_keyboard::HeldNote;
+mod mlacker_ui::sampler_view;
+use mlacker_ui::sampler_view::SamplerView;
 use mlacker_ui::sample_editor::SampleEditor;
 use mlacker_ui::audio_clip::base_name;
 mod mlacker_ui::bpm_dialog;
@@ -104,7 +106,7 @@ fn menu_item(label: str8, action: Action, enabled: bool, keymap: &Keymap) -> Men
     return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: keys.shortcut_for(action) };
 }
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, keymap: &Keymap) -> MenuBar {
+fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, keymap: &Keymap) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
@@ -152,6 +154,7 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item("Change details", Action::SpectrumDetails, true, keymap),
                                                 menu_item("Update rate", Action::SpectrumUpdateRate, true, keymap)]),
                                 menu_item(keyboard ? "[x] Show virtual keyboard" : "[ ] Show virtual keyboard", Action::ToggleVirtualKeyboard, true, keymap),
+                                menu_item(sampler ? "[x] Show sampler" : "[ ] Show sampler", Action::ToggleSampler, true, keymap),
                                 menu_item("Reset layout", Action::ResetLayout, true, keymap),
                                 menu_item("Show details", Action::ShowDetails, true, keymap)] },
                     Menu {title: "Track", items: [
@@ -247,7 +250,7 @@ fn demo_panes(content: Rect) -> list<Pane> {
             Pane { id: 2, bounds: right[1] }];
 }
 
-fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, document: str8) -> void {
+fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
     let theme: Theme = Theme::dark_blue();
     surface.fill(surface.bounds(), Cell { glyph: 32, foreground: theme.foreground, background: theme.background });
     let library: Pane = panes[0];
@@ -273,17 +276,19 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
         table.paint_note_lengths(surface, top, theme);
         table.paint_editor(surface, top, theme);
     }
-    // The virtual keyboard (Shift+P) covers whatever else this pane shows.
-    let show_keyboard: bool = keyboard.visible;
-    let show_spectrum: bool = !show_keyboard && spectrum.visible;
-    let show_sample: bool = !show_keyboard && !show_spectrum && sample.visible && table.audio_under_cursor();
+    // The sampler (Shift+S) or the virtual keyboard (Shift+P) covers whatever
+    // else this pane shows. The caller paints the sampler over its panel.
+    let show_sampler: bool = sampler_title != "";
+    let show_keyboard: bool = !show_sampler && keyboard.visible;
+    let show_spectrum: bool = !show_sampler && !show_keyboard && spectrum.visible;
+    let show_sample: bool = !show_sampler && !show_keyboard && !show_spectrum && sample.visible && table.audio_under_cursor();
     var sample_title: str8 = "";
     if show_sample {
         let track: SequenceTrack = table.tracks[table.active_track()];
         let instance: AudioInstance = track.instances[track.instance_at(table.selected_row)];
         let name: str8 = base_name(instance.clip.source); sample_title = format!(" Sample: {} ", name); free(name);
     }
-    let details: Panel = Panel { title: show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
+    let details: Panel = Panel { title: show_sampler ? sampler_title : show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
     let bottom: Rect = details.paint_focused(surface, inspector.bounds, theme, focus.is_active(2));
     let label: Label = Label { text: patterns.error != "" ? patterns.error : (table.error != "" ? table.error : (table.editing && table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels": message)) };
     if show_keyboard {
@@ -316,7 +321,7 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
             surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
         }
     }
-    else { label.paint(surface, bottom, theme); table.paint_track_details(surface, bottom, theme); }
+    else if !show_sampler { label.paint(surface, bottom, theme); table.paint_track_details(surface, bottom, theme); }
     if show_sample { free(sample_title); }
     transport.paint(surface, Rect::new(0, surface.height - 1, surface.width, 1), theme, document);
 }
@@ -337,9 +342,11 @@ pub fn run() -> i32 {
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
     // Computer-keyboard piano in the same pane (View menu / Shift+P).
     var keyboard: VirtualKeyboard = VirtualKeyboard {};
+    // Mla Sampler editor in the same pane (View menu / Shift+S).
+    var sampler: SamplerView = SamplerView {};
     // Shortcuts for menu actions; the menus label their items from it.
     var keymap: Keymap = Keymap::new(default_keymap());
-    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
     var input: InputDecoder = InputDecoder::new();
@@ -518,7 +525,7 @@ pub fn run() -> i32 {
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
-                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                             frame_rate.set(v.meter_fps, now_ms()); note_playback = NotePlayback {}; play_pattern = library.active_id;
                             instrument_editor.release();
                             instrument_editor.slot = v.editor_slot;
@@ -1204,11 +1211,25 @@ pub fn run() -> i32 {
                 if target >= 0 { let track: SequenceTrack = library.table.tracks[target % 64]; track_name = track.name; }
                 keyboard_title = keyboard.title(track_name);
             }
+            // The Sampler pane edits the Mla Sampler on the selected Instrument track.
+            let sampler_slot: i32 = sampler.visible ? SamplerView::target(midi.output, library.table.active_instrument()) : 0;
+            let sampler_title: str8 = sampler.visible ? sampler.title(midi.output, sampler_slot) : "";
             // The status bar names the open project or session file.
             let document: str8 = session_path == "" ? clone("Untitled") : base_name(session_path);
-            paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, document);
+            paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, sampler_title, document);
             free(document);
             if keyboard.visible { free(keyboard_title); }
+            if sampler.visible {
+                free(sampler_title);
+                var names: list<str8> = [];
+                for s in 0..16 {
+                    let used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, i32(s)) : -1;
+                    if used >= 0 && used < library.audio.samples.len() { let clip: AudioClip = library.audio.samples[used]; names.push(base_name(clip.source)); }
+                    else { names.push(clone("")); }
+                }
+                sampler.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), midi.output, sampler_slot, names, message);
+                for name in names { free(name); }
+            }
             let details_pane: Pane = panes[2]; spectrum_area = details_pane.bounds.inset(1);
             matrix.paint(surface, panes[1].bounds, Theme::dark_blue(), library, focus.is_active(1), song_playing ? song_row : -1);
             instrument_editor.paint(surface, panes[1].bounds, Theme::dark_blue());
@@ -1335,7 +1356,7 @@ pub fn run() -> i32 {
             // pattern, inspector/mixer, the FX bus, and the VST3 editor.
             else if event.kind == InputKind::Menu && event.key == Key::Toggle && menus.active < 0 &&
                     !sample_editor.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
-                let has_bus: bool = mixer.visible && !keyboard.visible && midi.effects.len() > 0;
+                let has_bus: bool = mixer.visible && !keyboard.visible && !sampler.visible && midi.effects.len() > 0;
                 let has_editor: bool = instrument_editor.active;
                 var stop: i32 = focus.selected == 0 ? 0 : (focus.selected == 1 ? 1 : (mixer.bus_focus && has_bus ? 3 : 2));
                 if has_editor && instrument_editor.focused { stop = 4; }
@@ -1491,6 +1512,14 @@ pub fn run() -> i32 {
                 else if target < 0 && VirtualKeyboard::key_offset(event.code) >= 0 {
                     free(message); message = clone("Keyboard: select a MIDI or Instrument track (audio and muted tracks do not play)"); dirty = true;
                 }
+            }
+            // The focused Sampler pane keeps its keys (see SamplerView::handles).
+            else if sampler.visible && focus.selected == 2 && !mixer.bus_focus && !instrument_editor.focused && menus.active < 0 && SamplerView::handles(event) {
+                let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
+                let request: i32 = sampler.on_event(event, midi.output, target);
+                if request == 2 { command = Action::LoadSamplerSlot; }
+                else if request == 3 { command = Action::ClearSamplerSlot; }
+                dirty = true;
             }
             else if event.kind == InputKind::Quit { running = false; }
             // Exclusive input ownership: never call a widget handler from a
@@ -1935,9 +1964,15 @@ pub fn run() -> i32 {
                     focus.set_menu_active(true);
                 }
             }
-            else if command == Action::ApplyPadChoice {
-                pad_index = piano.pad();
-                if piano.result == 3 {
+            else if (command == Action::LoadSamplerSlot || command == Action::ClearSamplerSlot) && SamplerView::target(midi.output, library.table.active_instrument()) < 1 {
+                free(message); message = clone("Select an Instrument track playing Mla Sampler");
+            }
+            else if command == Action::ApplyPadChoice || command == Action::LoadSamplerSlot || command == Action::ClearSamplerSlot {
+                // The Sampler pane names its slot directly instead of the piano.
+                let from_sampler: bool = command != Action::ApplyPadChoice;
+                if from_sampler { pad_action = Action::LoadPadFromFile; pad_slot = library.table.active_instrument(); pad_index = sampler.slot; }
+                else { pad_index = piano.pad(); }
+                if (from_sampler && command == Action::ClearSamplerSlot) || (!from_sampler && piano.result == 3) {
                     let error: str8 = midi.clear_pad(pad_slot, pad_index);
                     free(message); message = error == "" ? format!("Pad {} cleared", pad_index + 1) : error;
                 } else if pad_action == Action::SendSampleToPad {
@@ -2144,7 +2179,7 @@ pub fn run() -> i32 {
                 if command == Action::ToggleMetronome { play_metronome = !play_metronome; }
                 else if command == Action::ToggleExtendRecording { extend_recording = !extend_recording; }
                 else { metronome_always = command == Action::MetronomeAlways; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
             }
             else if command == Action::AddPattern || command == Action::ClonePattern { library.add(command == Action::ClonePattern); }
             else if command == Action::RenamePattern {
@@ -2157,7 +2192,7 @@ pub fn run() -> i32 {
             }
             else if command == Action::FollowMatrix {
                 follow_matrix = !follow_matrix;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                 free(message);
                 if follow_matrix {
                     if song_playing { library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id; }
@@ -2174,22 +2209,36 @@ pub fn run() -> i32 {
             else if command == Action::MeterUpdateRate { bpm_dialog.open_meter_rate(frame_rate.fps); }
             else if command == Action::ToggleSpectrum {
                 spectrum.visible = !spectrum.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
             }
             else if command == Action::ToggleVirtualKeyboard {
                 keyboard.visible = !keyboard.visible;
+                if keyboard.visible { sampler.visible = false; }
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                 // Keys only play while the pane has focus.
                 if keyboard.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
                 message = keyboard.visible ? clone("Keyboard: z-m and q-p play the selected track; Left/Right or -/= change octave; Space plays")
                     : clone("Virtual keyboard closed");
+            }
+            else if command == Action::ToggleSampler {
+                sampler.visible = !sampler.visible;
+                // The sampler and the virtual keyboard share the pane.
+                if sampler.visible && keyboard.visible {
+                    keyboard.visible = false; terminal.report_key_releases(false); input.releases = false;
+                }
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                // Keys only reach the sampler while the pane has focus.
+                if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
+                free(message);
+                message = sampler.visible ? clone("Sampler: j/k slot, h/l field, J/K adjust, Enter loads a file, Backspace clears")
+                    : clone("Sampler closed");
             }
             else if command == Action::SpectrumDetails {
                 spectrum.detail = (spectrum.detail + 1) % 3; spectrum.levels = []; spectrum.peaks = [];

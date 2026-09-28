@@ -1,0 +1,68 @@
+[package]
+name = "mla_sampler"
+version = "0.1.0"
+
+[tool.mlang]
+min_mlang_version = "0.2.0"
+build_dir = "build"
+deps_dir = "build/deps"
+
+# MLang checkout providing build/mlang and build/libmlang_std.a. mlacker's
+# build.sh passes an absolute path; the default assumes subprojects/mlang.
+# vst3_sdk_root: the VST3 SDK that mlacker's mlang.toml fetches once for the app
+# and all plugins (run ./build.sh first). mlacker builds every plugin against a
+# single compiled SDK (plugins/CMakeLists.txt); this package's own configure and
+# build tasks are for building the plugin alone.
+[tool.mlang.options]
+mlang_root = "../../subprojects/mlang"
+vst3_sdk_root = "../../build/deps/vst3sdk"
+
+[[task]]
+name = "prepare"
+print = "[mla_sampler] Preparing build tree and MLang runtime archive"
+workdir = "{{root}}"
+commands = [
+  "mkdir -p {{build_dir}}/obj {{build_dir}}/cmake",
+  "cmake --build {{option.mlang_root}}/build --target mlang_std -j4"
+]
+
+[[task]]
+name = "compile-dsp"
+phase = "compile"
+print = "[mla_sampler] Compiling the MLang sampler voice DSP object"
+workdir = "{{root}}"
+depends_on = ["prepare"]
+language = "mlang"
+source = "src/mla_sampler_dsp.mla"
+output = "{{build_dir}}/obj/mla_sampler_dsp.o"
+compile_only = true
+opt_level = "O2"
+
+[[task]]
+name = "configure"
+print = "[mla_sampler] Configuring the CMake project for the VST3 instrument bundle"
+workdir = "{{root}}"
+depends_on = ["compile-dsp"]
+commands = [
+  "cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{option.vst3_sdk_root}} -DMLANG_DSP_OBJECT={{build_dir}}/obj/mla_sampler_dsp.o -DMLANG_STD_LIBRARY={{option.mlang_root}}/build/libmlang_std.a -DMLANG_ROOT={{option.mlang_root}}"
+]
+
+[[task]]
+name = "build"
+phase = "build"
+print = "[mla_sampler] Building the Mla Sampler .vst3 bundle"
+workdir = "{{root}}"
+depends_on = ["configure"]
+commands = [
+  "cmake --build {{build_dir}}/cmake --target MlaSampler -j4"
+]
+
+[[task]]
+name = "test"
+print = "[mla_sampler] Running the offline functional tests against the built bundle"
+workdir = "{{root}}"
+depends_on = ["build"]
+commands = [
+  "cmake --build {{build_dir}}/cmake --target mla_sampler_tests -j4",
+  "sh -c 'mkdir -p {{build_dir}}/test && exec {{build_dir}}/cmake/bin/Release/mla_sampler_tests {{build_dir}}/cmake/VST3/Release/MlaSampler.vst3 {{build_dir}}/test'"
+]

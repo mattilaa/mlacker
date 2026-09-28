@@ -1,0 +1,214 @@
+/// \file mla_sampler_dsp.mla
+/// \brief C-ABI bridge: one sampler voice (playhead, loop, ADSR, pan).
+///
+/// Same split as Mla Drum: each voice is a scalar-only value struct,
+/// heap-allocated with `calloc` and handed to the C++ VST3 layer as an opaque
+/// pointer. MLang cannot index raw pointers, so the C++ side passes the two
+/// stereo frames around the playhead: `mlasampler_voice_frame` and
+/// `mlasampler_voice_next_frame` say which. The playhead, loop wrap/reflection,
+/// gain, envelope and pan math live here.
+///
+/// Loop modes: 0 = off (the voice ends with the sample), 1 = forward (jump
+/// from the loop end back to the loop start), 2 = bidirectional (play the loop
+/// forwards and backwards). Loops keep running through the release.
+
+mod dsp::envelope;
+use dsp::envelope::Adsr;
+
+extern fn calloc(count: i64, size: i64) -> ptr<SamplerVoice>;
+extern fn free(block: ptr<SamplerVoice>) -> void;
+extern fn floor(value: f64) -> f64;
+extern fn fmod(value: f64, divisor: f64) -> f64;
+extern fn sinf(value: f32) -> f32;
+extern fn cosf(value: f32) -> f32;
+
+/// @brief One playing (or idle) sample voice.
+struct SamplerVoice {
+    var envelope: Adsr;
+    var sample_rate: f32;
+    /// Read position in source frames, advance per output frame, and the
+    /// direction the playhead moves (1 or -1, only -1 in a bidirectional loop).
+    var position: f64;
+    var step: f64;
+    var direction: f64;
+    /// Source length in frames; without a loop the voice ends past it.
+    var frames: f64;
+    /// Loop mode (see the file comment) and the loop as frames
+    /// [loop_start, loop_end).
+    var loop_mode: i32;
+    var loop_start: f64;
+    var loop_end: f64;
+    var gain_left: f32;
+    var gain_right: f32;
+    var active: i32;
+};
+
+fn clamp_sampler_f32(value: f32, low: f32, high: f32) -> f32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+fn clamp_sampler_f64(value: f64, low: f64, high: f64) -> f64 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+/// @brief Allocate an idle voice for a sample rate (8 kHz..384 kHz).
+fn mlasampler_voice_create(sample_rate: f32) -> ptr<SamplerVoice> {
+    var rate: f32 = sample_rate;
+    if rate < 8000.0f { rate = 8000.0f; }
+    if rate > 384000.0f { rate = 384000.0f; }
+    let voice: ptr<SamplerVoice> = calloc(1, size_of(SamplerVoice));
+    unsafe {
+        (*voice).envelope = Adsr::new(rate);
+        (*voice).sample_rate = rate;
+        (*voice).direction = 1.0;
+    }
+    return voice;
+}
+
+/// @brief Release a voice created by `mlasampler_voice_create`.
+fn mlasampler_voice_destroy(voice: ptr<SamplerVoice>) {
+    free(voice);
+}
+
+/// @brief Amp envelope times in seconds and sustain level 0..1. Takes effect
+/// immediately, including on sounding voices.
+fn mlasampler_voice_set_envelope(voice: ptr<SamplerVoice>, attack: f32, decay: f32, sustain: f32, release: f32) {
+    unsafe {
+        (*voice).envelope.set_attack_seconds(attack);
+        (*voice).envelope.set_decay_seconds(decay);
+        (*voice).envelope.set_sustain(sustain);
+        (*voice).envelope.set_release_seconds(release);
+    }
+}
+
+/// @brief Start a sample from its first frame.
+/// @param frames Source length in frames (> 0).
+/// @param step Source frames per output frame (rate ratio times pitch ratio).
+/// @param gain Linear gain (level and velocity already applied).
+/// @param pan -1 (left) .. +1 (right), constant-power.
+/// @param loop_mode 0 off, 1 forward, 2 bidirectional.
+/// @param loop_start First loop frame.
+/// @param loop_end One past the last loop frame. A loop shorter than two
+/// frames plays as loop off.
+fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain: f32, pan: f32, loop_mode: i32, loop_start: f64, loop_end: f64) {
+    let p: f32 = clamp_sampler_f32(pan, -1.0f, 1.0f);
+    // Constant-power law: angle 0..pi/2 across the stereo field.
+    let angle: f32 = (p + 1.0f) * 0.78539816339744830962f;
+    let start: f64 = clamp_sampler_f64(floor(loop_start), 0.0, frames);
+    let end: f64 = clamp_sampler_f64(floor(loop_end), 0.0, frames);
+    unsafe {
+        (*voice).position = 0.0;
+        (*voice).step = step > 0.0 ? step : 1.0;
+        (*voice).direction = 1.0;
+        (*voice).frames = frames;
+        (*voice).loop_mode = (loop_mode == 1 || loop_mode == 2) && end - start >= 2.0 ? loop_mode : 0;
+        (*voice).loop_start = start;
+        (*voice).loop_end = end;
+        // sqrt(2) keeps a centred voice at unity in both channels.
+        (*voice).gain_left = gain * cosf(angle) * 1.41421356237309504880f;
+        (*voice).gain_right = gain * sinf(angle) * 1.41421356237309504880f;
+        (*voice).envelope.reset();
+        (*voice).envelope.gate_on();
+        (*voice).active = frames > 0.0 ? 1 : 0;
+    }
+}
+
+/// @brief Note-off: enter the envelope release. A looping voice keeps looping
+/// until the release ends.
+fn mlasampler_voice_release(voice: ptr<SamplerVoice>) {
+    unsafe { (*voice).envelope.gate_off(); }
+}
+
+/// @brief Silence immediately (sample swapped out, transport reset, stolen).
+fn mlasampler_voice_stop(voice: ptr<SamplerVoice>) {
+    unsafe {
+        (*voice).active = 0;
+        (*voice).envelope.reset();
+    }
+}
+
+/// @brief 1 while the voice still produces sound.
+fn mlasampler_voice_is_active(voice: ptr<SamplerVoice>) -> i32 {
+    unsafe { return (*voice).active; }
+}
+
+/// @brief Integer source frame under the playhead (as f64): the first frame
+/// passed to `mlasampler_voice_render`.
+fn mlasampler_voice_frame(voice: ptr<SamplerVoice>) -> f64 {
+    unsafe { return floor((*voice).position); }
+}
+
+/// @brief The frame the playhead interpolates towards: the next one, except
+/// that a forward loop continues from its start after its last frame. The
+/// silent guard frame at `frames` ends a sample without a loop.
+fn mlasampler_voice_next_frame(voice: ptr<SamplerVoice>) -> f64 {
+    unsafe {
+        let next: f64 = floor((*voice).position) + 1.0;
+        if (*voice).loop_mode == 1 && next >= (*voice).loop_end { return (*voice).loop_start; }
+        if (*voice).loop_mode == 2 && next >= (*voice).loop_end { return (*voice).loop_end - 1.0; }
+        return next;
+    }
+}
+
+/// @brief Move the playhead one output frame, wrapping (forward) or
+/// reflecting (bidirectional) at the loop points.
+fn advance_sampler_voice(voice: ptr<SamplerVoice>) {
+    unsafe {
+        var position: f64 = (*voice).position + (*voice).step * (*voice).direction;
+        let start: f64 = (*voice).loop_start;
+        if (*voice).loop_mode == 1 {
+            if position >= (*voice).loop_end { position = start + fmod(position - start, (*voice).loop_end - start); }
+        } else if (*voice).loop_mode == 2 {
+            // Turn on the last loop frame so interpolation stays inside the loop.
+            let last: f64 = (*voice).loop_end - 1.0;
+            let span: f64 = last - start;
+            // Fold the overshoot into one back-and-forth period (2 * span). A
+            // playhead still before the loop start moves forwards into it.
+            if ((*voice).direction > 0.0 && position > last) || ((*voice).direction < 0.0 && position < start) {
+                var offset: f64 = (*voice).direction > 0.0 ? position - start : last - position;
+                offset = fmod(offset, 2.0 * span);
+                let forwards: bool = (*voice).direction > 0.0 ? offset <= span : offset > span;
+                let distance: f64 = offset <= span ? offset : 2.0 * span - offset;
+                if (*voice).direction > 0.0 {
+                    position = offset <= span ? start + distance : last - (offset - span);
+                } else {
+                    position = offset <= span ? last - distance : start + (offset - span);
+                }
+                (*voice).direction = forwards ? 1.0 : -1.0;
+            }
+        } else if position >= (*voice).frames {
+            (*voice).active = 0;
+        }
+        (*voice).position = position;
+    }
+}
+
+/// @brief Render one output frame and advance. Returns the left sample and
+/// writes the right one through `out_right`. `left0/right0` is the frame at
+/// `mlasampler_voice_frame`, `left1/right1` the one at
+/// `mlasampler_voice_next_frame`. The voice deactivates itself at the end of
+/// an unlooped sample or of the envelope.
+fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, left1: f32, right1: f32, out_right: ptr<f32>) -> f32 {
+    unsafe {
+        if (*voice).active == 0 {
+            *out_right = 0.0f;
+            return 0.0f;
+        }
+        let position: f64 = (*voice).position;
+        let frac: f32 = clamp_sampler_f32(f32(position - floor(position)), 0.0f, 1.0f);
+        let left: f32 = left0 + (left1 - left0) * frac;
+        let right: f32 = right0 + (right1 - right0) * frac;
+
+        let amp: f32 = (*voice).envelope.process();
+        *out_right = right * amp * (*voice).gain_right;
+        let out_left: f32 = left * amp * (*voice).gain_left;
+
+        advance_sampler_voice(voice);
+        if !(*voice).envelope.is_active() { (*voice).active = 0; }
+        return out_left;
+    }
+}

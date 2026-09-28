@@ -1,0 +1,201 @@
+mod std::audio::controller;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use tui::menu::Key;
+use tui::menu::function_number;
+use tui::piano::piano_note_name;
+use std::audio::controller::AudioController;
+use std::strbuf::clone;
+use std::strbuf::free;
+
+// Mla Sampler's layout (plugins/mla_sampler/src/plugin.cpp): 16 slots and 8
+// outputs. Slot `s` parameter IDs are 200 + 7s + field: level, pan, tune,
+// output, loop, loop start, loop end.
+
+
+
+/// Mla Sampler editor in the Pattern view's bottom pane (View menu / Shift+S),
+/// sharing it with the virtual keyboard. It edits the instance on the selected
+/// Instrument track through its VST3 parameters, so loop edits are saved with
+/// the session and the plugin state like any parameter. While the pane is
+/// focused it keeps the keys for itself (see `handles`).
+pub struct SamplerView {
+    var visible: bool;
+    /// Selected slot 0-15, first slot shown, and the selected column: 0 loop
+    /// mode, 1 loop start, 2 loop end, 3 output.
+    var slot: i32; var column: i32; var scroll: i32;
+};
+impl SamplerView {
+    /// Keys the focused pane keeps for itself: everything printable ("q"
+    /// included), Enter, Backspace and the arrows. Pane moves, Tab, F-keys, Escape, control
+    /// shortcuts, Space (transport) and the Shift+S / Shift+M / Shift+P view
+    /// toggles still reach the application.
+    pub fn handles(event: InputEvent) -> bool {
+        if event.kind == InputKind::None || event.kind == InputKind::Pane { return false; }
+        if event.modifiers != 1 && event.modifiers != 2 { return false; }
+        if event.kind == InputKind::Menu && (event.key == Key::Toggle || event.key == Key::Escape || function_number(event.key) > 0) { return false; }
+        if event.code == 32 || event.code == 77 || event.code == 80 || event.code == 83 { return false; }
+        if event.modifiers == 2 && (event.code == 109 || event.code == 112 || event.code == 115) { return false; }
+        if event.code == 13 || event.code == 10 || event.code == 8 || event.code == 127 { return true; }
+        return event.code == 0 || event.code >= 33;
+    }
+    /// Instrument slot (1-32) of a loaded Mla Sampler, or 0 when `slot` holds
+    /// something else.
+    pub fn target(output: AudioController, slot: i32) -> i32 {
+        if slot < 1 || output.instrument_sampler(slot, 1) < 0 { return 0; }
+        let name: str8 = output.instrument_name(slot);
+        return name == "Mla Sampler" ? slot : 0;
+    }
+    /// Parameter index of stable ID `id` in instrument `slot`, or -1.
+    fn parameter_index(output: AudioController, slot: i32, id: i32) -> i32 {
+        let count: i32 = i32(output.parameter_info(slot, 0, 0));
+        for i in 0..count {
+            if i32(output.parameter_info(slot, i, 4)) == id { return i32(i); }
+        }
+        return -1;
+    }
+    fn field_id(sample_slot: i32, col: i32) -> i32 { return 200 + sample_slot * 7 + 4 + col; }
+    fn output_field_id(sample_slot: i32) -> i32 { return 200 + sample_slot * 7 + 3; }
+    /// Normalized value of a slot's column (see `column`), or -1 when the plugin lacks it.
+    fn value(output: AudioController, slot: i32, sample_slot: i32, col: i32) -> f64 {
+        let id: i32 = col == 3 ? SamplerView::output_field_id(sample_slot) : SamplerView::field_id(sample_slot, col);
+        let index: i32 = SamplerView::parameter_index(output, slot, id);
+        return index < 0 ? -1.0 : output.parameter_info(slot, index, 2);
+    }
+    /// Steps the selected field: loop mode and output by one choice, loop points by 1%.
+    /// The loop start stays below the loop end. False when nothing changed.
+    fn adjust(self: SamplerView, output: AudioController, slot: i32, delta: i32) -> bool {
+        let id: i32 = self.column == 3 ? SamplerView::output_field_id(self.slot) : SamplerView::field_id(self.slot, self.column);
+        let index: i32 = SamplerView::parameter_index(output, slot, id);
+        if index < 0 { return false; }
+        let steps: f64 = output.parameter_info(slot, index, 1);
+        let normalized: f64 = output.parameter_info(slot, index, 2);
+        var value: f64 = 0.0;
+        if steps > 0.0 {
+            value = std::math::floor(normalized * steps + 0.5) + f64(delta);
+            if value < 0.0 { value = 0.0; }
+            if value > steps { value = steps; }
+            if value == std::math::floor(normalized * steps + 0.5) { return false; }
+        } else {
+            value = normalized + f64(delta) * 0.01;
+            if self.column == 1 {
+                let end: f64 = SamplerView::value(output, slot, self.slot, 2);
+                if value > end - 0.01 { value = end - 0.01; }
+            }
+            if self.column == 2 {
+                let start: f64 = SamplerView::value(output, slot, self.slot, 1);
+                if value < start + 0.01 { value = start + 0.01; }
+            }
+            if value < 0.0 { value = 0.0; }
+            if value > 1.0 { value = 1.0; }
+            if value == normalized { return false; }
+        }
+        return output.set_parameter(slot, index, value) == 0;
+    }
+    /// A key press while the pane is focused. `slot` is the Mla Sampler
+    /// instrument slot (0 when the selected track has none). Returns what the
+    /// application should do for the selected slot: 0 nothing, 1 repaint,
+    /// 2 load a file into it, 3 clear it. (An i32, not an enum: a `let` of
+    /// enum type re-runs its initializer at each comparison.)
+    pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32) -> i32 {
+        let up: bool = (event.kind == InputKind::Menu && event.key == Key::Up) || (event.code == 107 && event.modifiers == 1);
+        let down: bool = (event.kind == InputKind::Menu && event.key == Key::Down) || (event.code == 106 && event.modifiers == 1);
+        let left: bool = (event.kind == InputKind::Menu && event.key == Key::Left) || (event.code == 104 && event.modifiers == 1);
+        let right: bool = (event.kind == InputKind::Menu && event.key == Key::Right) || (event.code == 108 && event.modifiers == 1);
+        if up && self.slot > 0 { self.slot = self.slot - 1; return 1; }
+        if down && self.slot < 15 { self.slot = self.slot + 1; return 1; }
+        if left && self.column > 0 { self.column = self.column - 1; return 1; }
+        if right && self.column < 3 { self.column = self.column + 1; return 1; }
+        if slot < 1 { return 0; }
+        // Shift+J/K adjust, as everywhere else in the tracker.
+        let lower: bool = (event.code == 74 && event.modifiers == 1) || (event.code == 106 && event.modifiers == 2);
+        let raise: bool = (event.code == 75 && event.modifiers == 1) || (event.code == 107 && event.modifiers == 2);
+        if lower || raise { return self.adjust(output, slot, raise ? 1 : -1) ? 1 : 0; }
+        if event.kind == InputKind::Menu && event.key == Key::Enter { return 2; }
+        if event.code == 13 || event.code == 10 { return 2; }
+        if event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace) { return 3; }
+        return 0;
+    }
+    /// Pane title, e.g. " Sampler | Mla Sampler #2 ".
+    pub fn title(self: SamplerView, output: AudioController, slot: i32) -> str8 {
+        if slot < 1 { return clone(" Sampler "); }
+        return format!(" Sampler | {} #{} ", output.instrument_name(slot), slot);
+    }
+    /// Paints into the pane's inner area: one row per slot (key, sample name,
+    /// loop mode, loop start/end, output), a key help line and `status` on
+    /// the last row. `names[s]` is the session sample in slot `s` ("" when
+    /// unknown); `slot` is the Mla Sampler instrument slot or 0.
+    pub fn paint(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, names: &list<str8>, status: str8) -> void {
+        if area.width < 20 || area.height < 3 { return; }
+        let help_y: i32 = area.y + area.height - 2;
+        surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), status, theme.foreground, theme.panel);
+        if slot < 1 {
+            surface.text(Rect::new(area.x, area.y, area.width, 1), "Select an Instrument track playing Mla Sampler", theme.muted, theme.panel);
+            surface.text(Rect::new(area.x, help_y, area.width, 1), "Track > Create Instrument track, Instrument > Add instrument: MlaSampler.vst3 | Shift+S hide", theme.muted, theme.panel);
+            return;
+        }
+        var labels: list<str8> = []; labels = names;
+        let root: i64 = output.instrument_sampler(slot, 0);
+        let occupied: i64 = output.instrument_sampler(slot, 2);
+        // Columns: key, sample, loop, start, end, output.
+        let widths: array<i32, 6> = {6, 0, 7, 8, 8, 6};
+        let fixed: i32 = 6 + 7 + 8 + 8 + 6;
+        let name_width: i32 = area.width - fixed > 8 ? area.width - fixed : 8;
+        let header: Rect = Rect::new(area.x, area.y, area.width, 1);
+        surface.text(header, " Key", theme.muted, theme.panel);
+        surface.text(Rect::new(area.x + 6, area.y, name_width, 1), "Sample", theme.muted, theme.panel);
+        let headings: array<str8, 4> = {"Loop", "Start%", "End%", "Out"};
+        var heading_x: i32 = area.x + 6 + name_width;
+        for f in 0..4 {
+            surface.text(Rect::new(heading_x, area.y, widths[f + 2], 1), headings[f], f == self.column ? theme.accent : theme.muted, theme.panel);
+            heading_x = heading_x + widths[f + 2];
+        }
+        let rows: i32 = area.height - 3;
+        if rows < 1 { return; }
+        if self.slot < self.scroll { self.scroll = self.slot; }
+        if self.slot >= self.scroll + rows { self.scroll = self.slot - rows + 1; }
+        for r in 0..rows {
+            let s: i32 = self.scroll + i32(r);
+            if s >= 16 { break; }
+            let y: i32 = area.y + 1 + i32(r);
+            let selected: bool = s == self.slot;
+            let background: i32 = selected ? theme.selection : theme.panel;
+            surface.fill(Rect::new(area.x, y, area.width, 1), Cell { glyph: 32, foreground: theme.foreground, background: background });
+            let key: str8 = root >= 0 ? piano_note_name(i32(root) + s) : clone("");
+            let key_text: str8 = format!(" {}", key); free(key);
+            surface.text(Rect::new(area.x, y, 6, 1), key_text, theme.muted, background); free(key_text);
+            let loaded: bool = occupied >= 0 && ((occupied >> wide(s)) & 1) == 1;
+            let label: str8 = s < labels.len() ? labels[s] : "";
+            let name: str8 = loaded ? (label != "" ? label : "(loaded)") : "(empty)";
+            surface.text(Rect::new(area.x + 6, y, name_width - 1, 1), name, loaded ? theme.foreground : theme.muted, background);
+            var x: i32 = area.x + 6 + name_width;
+            for f in 0..4 {
+                let value: f64 = SamplerView::value(output, slot, s, i32(f));
+                let text: str8 = SamplerView::field_text(i32(f), value);
+                let focused: bool = selected && i32(f) == self.column;
+                surface.text(Rect::new(x, y, widths[f + 2] - 1, 1), text, focused ? theme.accent : theme.foreground, background);
+                free(text);
+                x = x + widths[f + 2];
+            }
+        }
+        surface.text(Rect::new(area.x, help_y, area.width, 1),
+            "j/k slot | h/l field | J/K adjust | Enter load file | Backspace clear | Shift+S hide", theme.muted, theme.panel);
+    }
+    /// Owned display text of a field's normalized value.
+    fn field_text(col: i32, value: f64) -> str8 {
+        if value < 0.0 { return clone("-"); }
+        if col == 0 {
+            let mode: i32 = i32(std::math::floor(value * 2.0 + 0.5));
+            return clone(mode == 1 ? "Fwd" : (mode == 2 ? "Bidir" : "Off"));
+        }
+        if col == 3 {
+            let bus: i32 = i32(std::math::floor(value * 7.0 + 0.5));
+            return bus == 0 ? clone("Main") : format!("Out {}", bus + 1);
+        }
+        let tenths: i32 = i32(std::math::floor(value * 1000.0 + 0.5));
+        return format!("{}.{}", tenths / 10, tenths % 10);
+    }
+}
+

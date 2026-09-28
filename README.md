@@ -3,8 +3,8 @@
 
 Terminal tracker built with MLang, the MLang `tui` widget library, macOS AUHAL,
 and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
-(imported as `mlacker_ui::*`); the VST3 effects and the Mla Drum instrument are
-under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+(imported as `mlacker_ui::*`); the VST3 effects and the Mla Drum and Mla Sampler
+instruments are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run
@@ -245,6 +245,7 @@ shortcut of several presses in a row is written `<C-a><C-m>`.
 | `<S-m>` | Show or hide the song matrix |
 | `<C-S-m>` | Show or hide the spectrum analyzer |
 | `<S-p>` | Show or hide the virtual keyboard |
+| `<S-s>` | Show or hide the Sampler pane (Mla Sampler) |
 
 These use Ctrl+Shift because macOS keeps Ctrl+F1–F3 for keyboard focus. The
 terminal must pass modified function keys on; the View menu works everywhere.
@@ -262,7 +263,7 @@ dialog or text field has the keyboard.
 |------|----------|
 | File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
-| View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Reset layout, Show details |
+| View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Note lines ▸, Automation ▸, Clear pattern, Delete |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
 | Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio |
@@ -671,6 +672,37 @@ reloads the pads on open and after audio-device changes. Removing an instrument
 forgets its pads. **Save plugin preset** on a sampler writes a kit preset that
 embeds its pad samples. Loading it restores all pads and clears pads the kit
 does not use.
+
+### Sampler pane
+
+**Shift+S**, or **View → Show sampler**, shows the Sampler pane in the lowest
+pane of the Pattern view and focuses it. It edits the
+[Mla Sampler](plugins/mla_sampler) instance on the selected Instrument track;
+other tracks show a hint instead. Shift+S again hides it. The Sampler pane and
+the virtual keyboard share the pane, so opening one closes the other.
+
+Each of the 16 slots is one row: its key (slot 1 plays at the Root Key,
+default `C-2`), the sample, the loop mode (`Off`, `Fwd` forward, `Bidir`
+bidirectional), the loop start and end in percent of the sample, and the output
+bus (`Main`, `Out 2`..`Out 8`).
+
+| Keys | Action |
+|------|--------|
+| `j` / `k` (Down / Up) | Next / previous slot |
+| `h` / `l` (Left / Right) | Previous / next column |
+| `J` / `K` | Decrease / increase the column: loop mode and output by one choice, loop points by 1% |
+| Enter | Load a WAV/AIFF into the slot (added to the Audio list) |
+| Backspace | Clear the slot |
+
+While focused, the pane keeps every printable key, `q` included, plus Enter,
+Backspace and the arrows. Tab, Space, the function keys, Escape, Ctrl
+shortcuts and the Shift+M / Shift+P / Shift+S toggles still work. Loop settings
+and outputs are ordinary plugin parameters, so sessions, plugin presets and
+automation keep them. Slots are saved like drum pads (see above).
+
+mlacker mixes only a plugin's main output for now. A slot sent to `Out 2`..`Out
+8` plays on Main in mlacker, because mlacker does not activate the auxiliary
+buses yet.
 
 ### Destructive sample editing
 
@@ -1143,7 +1175,9 @@ The session PTY test separately checks real empty startup, command-line opening,
 parameter/editor-state round trips and rejected files. The spectrum PTY test toggles the
 analyzer, edits the master bus and checks it survives a session round trip. The
 virtual keyboard PTY test toggles the keyboard, changes octave, step-enters a note
-and checks that Space and `q` behave. Legacy widget tests opt in
+and checks that Space and `q` behave. The Sampler pane PTY test (run when
+`MlaSampler.vst3` is built) loads and clears slots, edits loops and outputs, and
+checks that they survive a session round trip. Legacy widget tests opt in
 to seeded demo data with `MLACKER_DEMO=1`; normal mlacker startup does not.
 
 For a hardware-free manual run:
