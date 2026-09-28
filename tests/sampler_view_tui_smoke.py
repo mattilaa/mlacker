@@ -1,5 +1,5 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
-clearing slots, loop mode / loop point / output edits, routing an aux output to
+clearing slots, key zones, loop mode / loop point / output edits, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
 
@@ -54,8 +54,8 @@ def main():
             expect(tui.send(b"\x15" + bytes(Path(sys.argv[2]).resolve()) + b"\r", 0.9), b"Instrument loaded: Mla Sampler")
 
             # Shift+S opens the pane on the selected track's instance: 16 empty
-            # slots from the root key C-2, loop off over the whole sample, Main.
-            frame = expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"C-2", b"(empty)", b"Off", b"Start%", b"0.0 ", b"100.0", b"Main")
+            # pad slots from the root key C-2, loop off over the whole sample, Main.
+            frame = expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"Mode", b"Pad", b"C-2", b"(empty)", b"Off", b"Start%", b"0.0 ", b"100.0", b"Main")
             assert frame.count(b"(empty)") >= 4, frame[-4000:]
 
             # The focused pane keeps its keys: "m" does not toggle the mixer,
@@ -70,7 +70,20 @@ def main():
             expect(tui.send_until(b"\r", b"Load sample for pad 2"), b"Load sample for pad 2")
             expect(tui.send(b"\x15" + bytes(pad) + b"\r", 0.7), b"Pad 2: pad.wav (added to Audio)", b"pad.wav")
 
-            # Shift+J/K adjust the selected field: loop mode, start, end, output.
+            # A pad slot has one key: its zone columns need Zone mode first.
+            tui.send(b"l")
+            expect(tui.send(b"K"), b"Slot 2 is a pad")
+            tui.send(b"h")
+            expect(tui.send(b"K"), b"Zone", b"G-9", b"C-4")  # whole keyboard, root C-4
+            # [ and ] step keys by an octave: low C-3, root C-5, then Key Track off.
+            tui.send(b"l")
+            expect(tui.send(b"]]]]"), b"C-3")
+            tui.send(b"ll")
+            expect(tui.send(b"]"), b"C-5")
+            tui.send(b"l")
+            expect(tui.send(b"J"), b"Zone")
+            # Shift+J/K adjust the selected column: loop mode, start, end, output.
+            tui.send(b"l")
             expect(tui.send(b"K"), b"Fwd")
             expect(tui.send(b"K"), b"Bidir")
             frame = tui.send(b"K")  # already the last mode
@@ -111,7 +124,7 @@ def main():
         tui = Terminal(str(path), cwd=directory)
         try:
             expect(tui.read(1.2), b"Opened:")
-            expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
+            expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:
             tui.close()

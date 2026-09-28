@@ -1,10 +1,11 @@
 // Mla Sampler - VST3 sampler instrument with looping and multiple outputs.
 //
-// Sixteen sample slots on consecutive keys from a root note. Each slot holds
-// one sample with its own level, pan, tune, loop (off, forward or
-// bidirectional, between a start and an end point) and output bus. The
-// instance has one amp ADSR; note-off releases it, and looping slots keep
-// looping through the release.
+// Sixteen sample slots. A slot in Pad mode plays on one key (Root Key + slot);
+// in Zone mode it plays across a key range, pitched from its zone root when
+// Key Track is on. Overlapping zones layer. Each slot holds one sample with
+// its own level, pan, tune, loop (off, forward or bidirectional, between a
+// start and an end point) and output bus. The instance has one amp ADSR;
+// note-off releases it, and looping slots keep looping through the release.
 //
 // Outputs: bus 0 "Main" plus seven auxiliary stereo buses "Out 2".."Out 8".
 // A slot sent to an aux bus the host has not activated plays on Main, so the
@@ -105,6 +106,7 @@ enum ParamId : ParamID {
     kSustainParam,
     kReleaseParam,
     kSlotParamBase = 200, // slot s: 200 + 7s, see SlotParam
+    kZoneParamBase = 400, // slot s: 400 + 5s, see ZoneParam
 };
 
 // Per-slot parameter offsets from kSlotParamBase + s * kParamsPerSlot.
@@ -119,29 +121,51 @@ enum SlotParam : int {
     kParamsPerSlot,
 };
 
-constexpr int kNumGlobalParams = 8;
-constexpr int kNumParams = kNumGlobalParams + kNumSlots * kParamsPerSlot;
+// Key zone offsets from kZoneParamBase + s * kParamsPerZone. A second block,
+// so the parameters above keep their IDs and indexes.
+enum ZoneParam : int {
+    kZoneMode = 0, // Pad: one key at Root Key + slot. Zone: Low..High.
+    kZoneLow,
+    kZoneHigh,
+    kZoneRoot,     // Key that plays the sample at its recorded pitch.
+    kZoneTrack,    // Off: every key in the zone plays the recorded pitch.
+    kParamsPerZone,
+};
 
-// Flat index <-> ParamID. Globals occupy 0..7, slots follow.
+constexpr int kNumGlobalParams = 8;
+constexpr int kNumSlotParams = kNumSlots * kParamsPerSlot;
+constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumSlots * kParamsPerZone;
+
+// Flat index <-> ParamID. Globals occupy 0..7, slot parameters follow, then
+// the key zones.
 static ParamID paramIdAt(int index)
 {
     if(index < kNumGlobalParams)
         return static_cast<ParamID>(kLevelParam + index);
-    return static_cast<ParamID>(kSlotParamBase + (index - kNumGlobalParams));
+    if(index < kNumGlobalParams + kNumSlotParams)
+        return static_cast<ParamID>(kSlotParamBase + (index - kNumGlobalParams));
+    return static_cast<ParamID>(kZoneParamBase + (index - kNumGlobalParams - kNumSlotParams));
 }
 
 static int indexOf(ParamID id)
 {
     if(id >= kLevelParam && id < kLevelParam + kNumGlobalParams)
         return static_cast<int>(id - kLevelParam);
-    if(id >= kSlotParamBase && id < kSlotParamBase + kNumSlots * kParamsPerSlot)
+    if(id >= kSlotParamBase && id < kSlotParamBase + kNumSlotParams)
         return kNumGlobalParams + static_cast<int>(id - kSlotParamBase);
+    if(id >= kZoneParamBase && id < kZoneParamBase + kNumSlots * kParamsPerZone)
+        return kNumGlobalParams + kNumSlotParams + static_cast<int>(id - kZoneParamBase);
     return -1;
 }
 
 static ParamID slotParamId(int slot, SlotParam param)
 {
     return static_cast<ParamID>(kSlotParamBase + slot * kParamsPerSlot + param);
+}
+
+static ParamID zoneParamId(int slot, ZoneParam param)
+{
+    return static_cast<ParamID>(kZoneParamBase + slot * kParamsPerZone + param);
 }
 
 // --- Normalized -> physical mappings ----------------------------------------
@@ -323,6 +347,21 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
             addParam(slotParamId(slot, kSlotLoopStart), slotTitle(slot, "Loop Start").c_str(), nullptr, 0.0);
             addParam(slotParamId(slot, kSlotLoopEnd), slotTitle(slot, "Loop End").c_str(), nullptr, 1.0);
+        }
+        // Key zones come last, so the parameters above keep their indexes.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *mode = addList(zoneParamId(slot, kZoneMode), slotTitle(slot, "Key Mode"));
+            mode->appendString(STR16("Pad"));
+            mode->appendString(STR16("Zone"));
+            addKey(zoneParamId(slot, kZoneLow), slotTitle(slot, "Low Key"), 0);
+            addKey(zoneParamId(slot, kZoneHigh), slotTitle(slot, "High Key"), 127);
+            addKey(zoneParamId(slot, kZoneRoot), slotTitle(slot, "Zone Root"), 60);
+            auto *track = addList(zoneParamId(slot, kZoneTrack), slotTitle(slot, "Key Track"));
+            track->appendString(STR16("Off"));
+            track->appendString(STR16("On"));
+            track->getInfo().defaultNormalizedValue = 1.0;
+            track->setNormalized(1.0);
+            norm_[indexOf(zoneParamId(slot, kZoneTrack))].store(1.0, std::memory_order_relaxed);
         }
         return kResultOk;
     }
@@ -649,6 +688,13 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         return list;
     }
 
+    // A MIDI key 0..127 as a stepped parameter.
+    void addKey(ParamID id, const std::u16string &title, int key)
+    {
+        parameters.addParameter(title.c_str(), nullptr, 127, key / 127.0, ParameterInfo::kCanAutomate, id);
+        norm_[indexOf(id)].store(key / 127.0, std::memory_order_relaxed);
+    }
+
     static std::string outputName(int bus) { return bus == 0 ? "Main" : "Out " + std::to_string(bus + 1); }
 
     static std::u16string slotTitle(int slot, const char *what)
@@ -681,6 +727,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
     double norm(ParamID id) const { return norm_[indexOf(id)].load(std::memory_order_relaxed); }
     double slotNorm(int slot, SlotParam param) const { return norm(slotParamId(slot, param)); }
+    double zoneNorm(int slot, ZoneParam param) const { return norm(zoneParamId(slot, param)); }
 
     // --- Control thread ------------------------------------------------------
     void replaceSlot(int slot, std::unique_ptr<Sample> sample)
@@ -778,14 +825,33 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             pushEnvelope();
     }
 
-    // Loop settings are read when a note starts; sounding notes keep theirs.
+    // Every slot whose key (Pad) or key range (Zone) holds the note plays it,
+    // so overlapping zones layer. Zone and loop settings are read when a note
+    // starts; sounding notes keep theirs.
     void noteOn(int16 channel, int16 pitch, float velocity)
     {
-        const int slot = pitch - rootKeyFromNorm(norm(kRootKeyParam));
-        if(slot < 0 || slot >= kNumSlots || active_[slot] == nullptr)
-            return;
-        const Sample *sample = active_[slot];
+        const int padSlot = pitch - rootKeyFromNorm(norm(kRootKeyParam));
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            if(active_[slot] == nullptr)
+                continue;
+            if(zoneNorm(slot, kZoneMode) < 0.5) {
+                if(slot == padSlot)
+                    startVoice(slot, channel, pitch, velocity, 0);
+                continue;
+            }
+            const int low = rootKeyFromNorm(zoneNorm(slot, kZoneLow));
+            const int high = rootKeyFromNorm(zoneNorm(slot, kZoneHigh));
+            if(pitch < std::min(low, high) || pitch > std::max(low, high))
+                continue;
+            const int tracked = zoneNorm(slot, kZoneTrack) >= 0.5 ? pitch - rootKeyFromNorm(zoneNorm(slot, kZoneRoot)) : 0;
+            startVoice(slot, channel, pitch, velocity, tracked);
+        }
+    }
 
+    // `keySemitones`: pitch offset from key tracking.
+    void startVoice(int slot, int16 channel, int16 pitch, float velocity, int keySemitones)
+    {
+        const Sample *sample = active_[slot];
         Voice *target = nullptr;
         for(auto &voice : voices_) {
             if(!voice.dsp)
@@ -800,7 +866,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(target == nullptr)
             return;
 
-        const double semitones = semitonesFromNorm(norm(kTuneParam)) + semitonesFromNorm(slotNorm(slot, kSlotTune));
+        const double semitones =
+            semitonesFromNorm(norm(kTuneParam)) + semitonesFromNorm(slotNorm(slot, kSlotTune)) + keySemitones;
         const double step = sample->rate / sampleRate_ * std::pow(2.0, semitones / 12.0);
         const float sensitivity = static_cast<float>(norm(kVelocityParam));
         const float velocityGain = 1.0f - sensitivity + sensitivity * std::clamp(velocity, 0.0f, 1.0f);

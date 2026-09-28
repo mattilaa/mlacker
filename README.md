@@ -681,24 +681,36 @@ pane of the Pattern view and focuses it. It edits the
 other tracks show a hint instead. Shift+S again hides it. The Sampler pane and
 the virtual keyboard share the pane, so opening one closes the other.
 
-Each of the 16 slots is one row: its key (slot 1 plays at the Root Key,
-default `C-2`), the sample, the loop mode (`Off`, `Fwd` forward, `Bidir`
-bidirectional), the loop start and end in percent of the sample, and the output
-bus (`Main`, `Out 2`..`Out 8`).
+Each of the 16 slots is one row with these columns:
+
+- **Mode**: `Pad` or `Zone`. A pad plays one key, shown under **Low** (slot 1
+  at the Root Key, default `C-2`, then one key up per slot).
+- **Low** / **High**: a zone's key range.
+- **Root**: the key that plays the sample at its recorded pitch.
+- **Trk**: key tracking, `On` or `Off`. On pitches each key from Root; off
+  plays every key at the recorded pitch.
+- The sample.
+- **Loop**: `Off`, `Fwd` forward, `Bidir` bidirectional.
+- **Start%** / **End%**: the loop points, in percent of the sample.
+- **Out**: the output bus (`Main`, `Out 2`..`Out 8`).
+
+Overlapping zones layer.
 
 | Keys | Action |
 |------|--------|
 | `j` / `k` (Down / Up) | Next / previous slot |
 | `h` / `l` (Left / Right) | Previous / next column |
-| `J` / `K` | Decrease / increase the column: loop mode and output by one choice, loop points by 1% |
+| `J` / `K` | Decrease / increase the column: choices by one, keys by a semitone, loop points by 1% |
+| `[` / `]` | Keys by an octave, loop points by 10% |
 | Enter | Load a WAV/AIFF into the slot (added to the Audio list) |
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 
 While focused, the pane keeps every printable key, `q` included, plus Enter,
 Backspace and the arrows. Tab, Space, the function keys, Escape, Ctrl
-shortcuts and the Shift+M / Shift+P / Shift+S toggles still work. Loop settings
-and outputs are ordinary plugin parameters, so sessions, plugin presets and
+shortcuts and the Shift+M / Shift+P / Shift+S toggles still work. A pad slot's
+Low, High, Root and Trk need Zone mode first. Zones, loop settings and outputs
+are ordinary plugin parameters, so sessions, plugin presets and
 automation keep them. Slots are saved like drum pads (see above).
 
 #### Plugin outputs

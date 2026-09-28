@@ -1547,6 +1547,7 @@ pub fn run() -> i32 {
                 if request == 2 { command = Action::LoadSamplerSlot; }
                 else if request == 3 { command = Action::ClearSamplerSlot; }
                 else if request == 4 { command = Action::RouteSamplerOutput; }
+                else if request == 5 { free(message); message = format!("Slot {} is a pad (one key): set its Mode to Zone first", sampler.slot + 1); }
                 dirty = true;
             }
             else if event.kind == InputKind::Quit { running = false; }
@@ -2317,7 +2318,7 @@ pub fn run() -> i32 {
                 // Keys only reach the sampler while the pane has focus.
                 if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
-                message = sampler.visible ? clone("Sampler: j/k slot, h/l field, J/K adjust, Enter loads a file, Backspace clears")
+                message = sampler.visible ? clone("Sampler: j/k slot, h/l column, J/K adjust, Enter loads a file, Backspace clears")
                     : clone("Sampler closed");
             }
             else if command == Action::SpectrumDetails {

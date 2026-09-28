@@ -2,9 +2,9 @@
 //
 // Loads the built .vst3 through the SDK hosting classes (as mlacker does),
 // fills slots through the mla_sampler_protocol messages and checks rendered
-// audio: the bus layout, slot/key mapping, loop off / forward /
-// bidirectional, per-slot output routing with the fallback to Main, and state
-// round trips.
+// audio: the bus layout, slot/key mapping, key zones with pitch tracking and
+// layering, loop off / forward / bidirectional, per-slot output routing with
+// the fallback to Main, and state round trips.
 //
 // Usage: mla_sampler_tests <path/to/MlaSampler.vst3> <scratch dir>
 
@@ -61,6 +61,9 @@ constexpr ParamID kRelease = 107;
 enum SlotParam { kSlotLevel, kSlotPan, kSlotTune, kSlotOutput, kSlotLoop, kSlotLoopStart, kSlotLoopEnd };
 constexpr ParamID slotParam(int slot, SlotParam k) { return 200 + slot * 7 + k; }
 constexpr double kLoopForward = 0.5, kLoopBidirectional = 1.0;
+enum ZoneParam { kZoneMode, kZoneLow, kZoneHigh, kZoneRoot, kZoneTrack };
+constexpr ParamID zoneParam(int slot, ZoneParam k) { return 400 + slot * 5 + k; }
+constexpr double key(int midi) { return midi / 127.0; }
 
 class Application final : public HostApplication {
   public:
@@ -321,6 +324,73 @@ void testBidirectionalLoop(const std::string &path)
     }
 }
 
+// One note on `pitch` in a fresh block; returns the left channel of `frames`.
+std::vector<float> play(Instance &plugin, int pitch, int frames = 1024)
+{
+    plugin.noteOn(pitch);
+    return plugin.render(frames);
+}
+
+void zone(Instance &plugin, int slot, int low, int high, int root, bool track = true)
+{
+    plugin.param(zoneParam(slot, kZoneMode), 1.0);
+    plugin.param(zoneParam(slot, kZoneLow), key(low));
+    plugin.param(zoneParam(slot, kZoneHigh), key(high));
+    plugin.param(zoneParam(slot, kZoneRoot), key(root));
+    plugin.param(zoneParam(slot, kZoneTrack), track ? 1.0 : 0.0);
+}
+
+void testKeyZones(const std::string &path)
+{
+    const int frames = 4000;
+    // Pitch tracking: an octave up plays twice as fast, an octave down half.
+    for(const auto &[pitch, step] : {std::pair<int, double>{72, 2.0}, {60, 1.0}, {48, 0.5}}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60);
+        const auto out = play(plugin, pitch);
+        for(int f : {100, 700}) {
+            const double source = f * step;
+            CHECK(std::fabs(left(out, f) - static_cast<float>((source + 1) / frames)) < 2e-3f);
+        }
+    }
+    // Keys outside the zone are silent, including the slot's old pad key.
+    for(int pitch : {kRootKey, 47, 73}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60);
+        CHECK(energy(play(plugin, pitch), 0, 1024) == 0.0);
+    }
+    // Key Track off: every key in the zone plays the recorded pitch.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60, false);
+        const auto out = play(plugin, 72);
+        CHECK(std::fabs(left(out, 100) - 101.0f / frames) < 2e-3f);
+    }
+    // Overlapping zones layer, and pad slots keep their keys beside them.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(frames, 0.25f)) == kResultOk);
+        CHECK(loadPcm(plugin, 2, std::vector<float>(frames, 0.5f)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60);
+        zone(plugin, 1, 55, 65, 60, false);
+        plugin.param(kRelease, 0.0); // 1 ms, so the layer is gone before the pad
+        const auto layered = play(plugin, 60);
+        CHECK(std::fabs(left(layered, 100) - (101.0f / frames + 0.25f)) < 2e-3f);
+        plugin.noteOff(60);
+        plugin.render(2048);
+        const auto pad = play(plugin, kRootKey + 2);
+        CHECK(std::fabs(left(pad, 100) - 0.5f) < 1e-3f);
+    }
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -388,12 +458,13 @@ int main(int argc, char **argv)
     testLoopOff(path);
     testForwardLoop(path);
     testBidirectionalLoop(path);
+    testKeyZones(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

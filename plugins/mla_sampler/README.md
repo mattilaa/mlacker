@@ -1,14 +1,11 @@
 # Mla Sampler
 
 A VST3 **sampler instrument** (subcategory `Instrument|Sampler`) with looping
-samples and multiple outputs. Each instance holds up to 16 samples ("slots") on
-consecutive keys, with one amp ADSR. Every slot has its own loop, set to off,
-forward or bidirectional between a start and an end point, and its own output
-bus.
-
-This is a first version: slots play at their recorded pitch (plus Tune) on one
-key each, like [Mla Drum](../mla_drum)'s pads. It has no key zones or
-pitch-tracked playback across the keyboard yet.
+samples, key zones and multiple outputs. Each instance holds up to 16 samples
+("slots") with one amp ADSR. A slot plays on one key like
+[Mla Drum](../mla_drum)'s pads, or across a key zone, pitched from its root
+key. Every slot has its own loop, set to off, forward or bidirectional between a
+start and an end point, and its own output bus.
 
 The per-sample voice math (playhead, loop wrap and reflection, linear
 interpolation, ADSR, constant-power pan) is MLang: `src/mla_sampler_dsp.mla` on
@@ -19,9 +16,19 @@ and persists state.
 
 ## Slots and keys
 
-Slot 1 plays at **Root Key** (default MIDI note 36), slot 2 at 37, and so on up
-to slot 16. Other keys, and slots without a sample, are silent. Note-off
-releases the envelope. A looping slot keeps looping through the release until
+Each slot has a **Key Mode**:
+
+- **Pad** (the default): slot 1 plays at **Root Key** (default MIDI note 36),
+  slot 2 at 37, and so on up to slot 16, at the sample's recorded pitch.
+- **Zone**: the slot plays on every key from **Low Key** to **High Key**. With
+  **Key Track** on (the default), **Zone Root** plays the sample at its
+  recorded pitch and each key a semitone away shifts it a semitone, so one
+  sample covers the keyboard. With Key Track off, every key in the zone plays
+  the recorded pitch.
+
+Zones may overlap: every slot whose key or zone holds a note plays it, so
+slots layer. Keys no slot covers, and slots without a sample, are silent.
+Global and slot Tune add to the key tracking. Note-off releases the envelope. A looping slot keeps looping through the release until
 the envelope ends. A slot with loop off ends with its sample, even while the key
 is held.
 
@@ -78,10 +85,17 @@ mlacker's README, "Plugin outputs").
 | Slot N Loop        | Off, Forward, Bidirectional   | |
 | Slot N Loop Start  | 0..1 of the sample            | Default 0. |
 | Slot N Loop End    | 0..1 of the sample            | Default 1 (the whole sample). |
+| Slot N Key Mode    | Pad, Zone                     | Default Pad. |
+| Slot N Low Key     | MIDI 0..127                   | Zone's lowest key. Default 0. |
+| Slot N High Key    | MIDI 0..127                   | Zone's highest key. Default 127. |
+| Slot N Zone Root   | MIDI 0..127                   | Key at the recorded pitch. Default 60 (C-4). |
+| Slot N Key Track   | Off, On                       | Default On. |
 
 Parameter IDs are stable: globals are 100-107 and slot `s` (0-based) uses
 `200 + 7s` + (0 level, 1 pan, 2 tune, 3 output, 4 loop, 5 loop start, 6 loop
-end). With all 32 voices busy, the oldest is stolen.
+end) and `400 + 5s` + (0 key mode, 1 low key, 2 high key, 3 zone root, 4 key
+track). The key zone parameters come after all the others, so presets and
+states saved before they existed load with every slot in Pad mode. With all 32 voices busy, the oldest is stolen.
 
 ## Build
 
@@ -94,7 +108,9 @@ from this directory:
 ```
 
 `test` builds and runs `tests/mla_sampler_tests.cpp`, an offline host that
-checks rendered audio: the bus layout, slot/key mapping, loop off / forward /
+checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
+tracking up and down, keys outside a zone, Key Track off, layering beside
+pads), loop off / forward /
 bidirectional, per-slot output routing with the fallback to Main, and state
 round trips. In mlacker's plugin tree it is also the CTest test
 `sampler_processor` (`./build.sh --test`). The SDK's `validator` passes (47/47).
