@@ -25,6 +25,7 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+.rg
 *.swp
 
 # Local build configuration and the MLang development checkout (bootstrap.sh)
