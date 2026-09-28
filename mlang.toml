@@ -88,15 +88,50 @@ shell = [
   "echo \"Installed $bin_dir/mlacker\""
 ]
 
+# The plugins share one CMake tree (plugins/CMakeLists.txt) so the VST3 SDK,
+# fetched once above, is compiled once: configure-plugins -> build-vst3sdk ->
+# compile-plugins (each plugin's MLang DSP object) -> build-plugins.
 [[task]]
-name = "build-plugins"
-print = "[mlacker] Building the Mla VST3 plugins"
+name = "configure-plugins"
 workdir = "{{root}}"
 depends_on = ["prepare"]
 shell = [
   "set -e",
+  "cmake -S plugins -B {{build_dir}}/plugins -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{deps_dir}}/vst3sdk -DMLANG_ROOT={{option.mlang_root}} -DMLA_PLUGINS=\"{{option.plugins}}\""
+]
+
+[[task]]
+name = "build-vst3sdk"
+print = "[mlacker] Building the VST3 SDK for the plugins"
+workdir = "{{root}}"
+depends_on = ["configure-plugins"]
+commands = ["cmake --build {{build_dir}}/plugins --target sdk -j4"]
+
+[[task]]
+name = "compile-plugins"
+print = "[mlacker] Compiling the Mla plugin DSP objects"
+workdir = "{{root}}"
+depends_on = ["build-vst3sdk"]
+shell = [
+  "set -e",
   "mlang_root=$(cd \"{{option.mlang_root}}\" && pwd)",
-  "for plugin in {{option.plugins}}; do \"$mlang_root/build/mlang\" pkg --config plugins/$plugin/mlang.toml run build --option mlang_root=\"$mlang_root\"; done"
+  "for plugin in {{option.plugins}}; do \"$mlang_root/build/mlang\" pkg --config plugins/$plugin/mlang.toml run compile-dsp --option mlang_root=\"$mlang_root\"; done"
+]
+
+[[task]]
+name = "build-plugins"
+print = "[mlacker] Building the Mla VST3 plugins"
+workdir = "{{root}}"
+depends_on = ["compile-plugins"]
+commands = ["cmake --build {{build_dir}}/plugins --target mla_plugins -j4"]
+
+[[task]]
+name = "test-plugins"
+workdir = "{{root}}"
+depends_on = ["build-plugins"]
+commands = [
+  "cmake --build {{build_dir}}/plugins --target mla_plugin_tests -j4",
+  "ctest --test-dir {{build_dir}}/plugins --output-on-failure"
 ]
 
 [[task]]
@@ -108,7 +143,7 @@ shell = [
   "set -e",
   "plugin_dir={{option.plugin_dir}}",
   "mkdir -p \"$plugin_dir\"",
-  "for plugin in {{option.plugins}}; do for bundle in plugins/$plugin/build/cmake/VST3/Release/*.vst3; do dest=\"$plugin_dir/$(basename \"$bundle\")\"; rm -rf \"$dest\"; cp -R \"$bundle\" \"$dest\"; codesign --force --sign - \"$dest\"; echo \"Installed $dest\"; done; done"
+  "for bundle in {{build_dir}}/plugins/VST3/Release/*.vst3; do dest=\"$plugin_dir/$(basename \"$bundle\")\"; rm -rf \"$dest\"; cp -R \"$bundle\" \"$dest\"; codesign --force --sign - \"$dest\"; echo \"Installed $dest\"; done"
 ]
 
 [[task]]

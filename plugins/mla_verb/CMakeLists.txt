@@ -37,23 +37,28 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Build only the plug-in target from the SDK, no examples/validator/GUI.
-set(SMTG_CREATE_PLUGIN_LINK OFF CACHE BOOL "" FORCE)
-set(SMTG_RUN_VST_VALIDATOR OFF CACHE BOOL "" FORCE)
-set(SMTG_ADD_VST3_UTILITIES ON CACHE BOOL "" FORCE)
-set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
-set(SMTG_DISABLE_CODE_SIGNING ON CACHE BOOL "" FORCE)
-set(SMTG_BUILD_UNIVERSAL_BINARY OFF CACHE BOOL "" FORCE)
-
 set(vst3sdk_SOURCE_DIR "${VST3_SDK_ROOT}")
-add_subdirectory(${vst3sdk_SOURCE_DIR} ${PROJECT_BINARY_DIR}/vst3sdk)
-smtg_enable_vst3_sdk()
+# Inside plugins/CMakeLists.txt the SDK is already added (and built once)
+# for all plugins; a standalone build adds its own copy.
+if(NOT TARGET sdk)
+    # Build only the plug-in target from the SDK, no examples/validator/GUI.
+    set(SMTG_CREATE_PLUGIN_LINK OFF CACHE BOOL "" FORCE)
+    set(SMTG_RUN_VST_VALIDATOR OFF CACHE BOOL "" FORCE)
+    set(SMTG_ADD_VST3_UTILITIES ON CACHE BOOL "" FORCE)
+    set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
+    set(SMTG_DISABLE_CODE_SIGNING ON CACHE BOOL "" FORCE)
+    set(SMTG_BUILD_UNIVERSAL_BINARY OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${vst3sdk_SOURCE_DIR} ${PROJECT_BINARY_DIR}/vst3sdk)
+    smtg_enable_vst3_sdk()
+endif()
 
 get_filename_component(MLANG_DSP_OBJECT_FILE "${MLANG_DSP_OBJECT}" ABSOLUTE
     BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-if(NOT EXISTS "${MLANG_DSP_OBJECT_FILE}")
+# plugins/CMakeLists.txt (target mla_plugins) configures before the DSP
+# objects are compiled, so it cannot require them yet.
+if(NOT TARGET mla_plugins AND NOT EXISTS "${MLANG_DSP_OBJECT_FILE}")
     message(FATAL_ERROR "Resolved MLANG_DSP_OBJECT does not exist: ${MLANG_DSP_OBJECT_FILE}")
 endif()
 set_source_files_properties("${MLANG_DSP_OBJECT_FILE}"

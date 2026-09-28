@@ -34,8 +34,8 @@ Options:
   --install    Also install: MLang under MLANG_PREFIX, mlacker to BIN_DIR,
                plugins to PLUGIN_DIR
   --test       After building, run the tests of the selected targets: mlacker's
-               MLang unit tests and CTest suite (--app), each plugin's test
-               task (--plugins)
+               MLang unit tests and CTest suite (--app), the plugins' CTest
+               suite (--plugins)
   --update     Fetch the latest MLang into subprojects/mlang (subproject mode)
                and fast-forward its current branch. Local commits and
                uncommitted changes are kept; a diverged branch is reported,
@@ -248,13 +248,8 @@ if [ -n "$run_tests" ]; then
     # Plugins first: mlacker's CTest suite includes the Mla Drum/Delay host tests
     # only when those bundles exist when it is configured.
     if [ -n "$do_plugins" ]; then
-        for plugin in $plugins; do
-            if grep -q '^name = "test"' "plugins/$plugin/mlang.toml"; then
-                echo "[mlacker] Testing $plugin"
-                run "$mlang" pkg --config "$ROOT_DIR/plugins/$plugin/mlang.toml" run test \
-                    --option mlang_root="$mlang_root"
-            fi
-        done
+        echo "[mlacker] Testing the plugins"
+        pkg test-plugins
     fi
     if [ -n "$do_app" ]; then
         echo "[mlacker] Testing mlacker (MLang unit tests, then CTest)"

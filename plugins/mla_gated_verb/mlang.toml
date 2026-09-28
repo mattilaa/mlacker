@@ -2,9 +2,6 @@
 name = "mla_gated_verb"
 version = "0.1.0"
 
-[dependencies]
-vst3sdk = { git = "https://github.com/steinbergmedia/vst3sdk.git", rev = "3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96", submodules = true, build = "none", spinner = false }
-
 [tool.mlang]
 min_mlang_version = "0.2.0"
 build_dir = "build"
@@ -12,8 +9,13 @@ deps_dir = "build/deps"
 
 # MLang checkout providing build/mlang and build/libmlang_std.a. mlacker's
 # build.sh passes an absolute path; the default assumes subprojects/mlang.
+# vst3_sdk_root: the VST3 SDK that mlacker's mlang.toml fetches once for the app
+# and all plugins (run ./build.sh first). mlacker builds every plugin against a
+# single compiled SDK (plugins/CMakeLists.txt); this package's own configure and
+# build tasks are for building the plugin alone.
 [tool.mlang.options]
 mlang_root = "../../subprojects/mlang"
+vst3_sdk_root = "../../build/deps/vst3sdk"
 
 [[task]]
 name = "prepare"
@@ -42,7 +44,7 @@ print = "[mla_gated_verb] Configuring the CMake project for the VST3 effect bund
 workdir = "{{root}}"
 depends_on = ["compile-dsp"]
 commands = [
-  "cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{deps_dir}}/vst3sdk -DMLANG_DSP_OBJECT={{build_dir}}/obj/mla_gated_verb_dsp.o -DMLANG_STD_LIBRARY={{option.mlang_root}}/build/libmlang_std.a -DMLANG_ROOT={{option.mlang_root}}"
+  "cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{option.vst3_sdk_root}} -DMLANG_DSP_OBJECT={{build_dir}}/obj/mla_gated_verb_dsp.o -DMLANG_STD_LIBRARY={{option.mlang_root}}/build/libmlang_std.a -DMLANG_ROOT={{option.mlang_root}}"
 ]
 
 [[task]]
