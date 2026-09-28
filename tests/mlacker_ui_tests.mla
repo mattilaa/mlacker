@@ -54,6 +54,8 @@ use std::testing::verify_eq;
 use std::testing::verify_eq_i32;
 mod mlacker_ui::transport;
 use mlacker_ui::transport::TransportStatus;
+mod mlacker_ui::cpu_meter;
+use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::waveform;
 use mlacker_ui::waveform::paint_wave_channel;
 use mlacker_ui::waveform::paint_grainy_row;
@@ -1494,9 +1496,35 @@ fn tui_transport_status() {
     verify(active.glyph == 9679 && active.foreground == 0x5adc8c);
     let minute: Cell = surface.cell(17, 2); let second: Cell = surface.cell(20, 2);
     verify(minute.glyph == 49 && second.glyph == 50);
+    // CPU use sits at the right end: "CPU 42% " ends one cell before the edge.
+    let before: Cell = surface.cell(72, 2);
+    verify(before.glyph == 32);
+    status.cpu_percent = 42;
+    status.paint(surface, Rect::new(0, 2, 80, 1), theme);
+    let c: Cell = surface.cell(72, 2); let percent: Cell = surface.cell(78, 2);
+    verify(c.glyph == 67 && percent.glyph == 37 && percent.foreground == theme.foreground);
+    status.cpu_percent = 95;
+    status.paint(surface, Rect::new(0, 2, 80, 1), theme);
+    let busy: Cell = surface.cell(78, 2); verify(busy.foreground == theme.accent);
+    // Too narrow to clear the transport text: the meter is left out.
+    status.paint(surface, Rect::new(0, 2, 50, 1), theme);
+    let hidden: Cell = surface.cell(43, 2); verify(hidden.glyph != 67);
     status.paint(surface, Rect::new(0, 2, 5, 1), theme);
     status.paint(surface, Rect::new(0, 2, 0, 0), theme);
     surface.release();
+}
+
+#[test]
+fn cpu_meter_samples_every_period() {
+    var meter: CpuMeter = CpuMeter {};
+    verify(meter.percent == -1);
+    verify(!meter.update(1000)); // first sample only sets the baseline
+    verify(!meter.update(1200)); // inside the 300 ms period
+    var sum: i64 = 0;
+    for i in 0..5000000 { sum = sum + i % 3; }
+    verify(sum > 0);
+    verify(meter.update(1300));
+    verify(meter.percent >= 0 && meter.percent <= 100);
 }
 
 #[test]

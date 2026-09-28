@@ -116,4 +116,10 @@ add_test(NAME terminal_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOUR
 add_test(NAME playback_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/playback_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(settings_tui vst3_tui terminal_tui playback_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 set_tests_properties(settings_tui vst3_tui terminal_tui playback_tui PROPERTIES ENVIRONMENT "MLACKER_DEMO=1")
+# PTY smoke tests read one frame per keystroke; the status-bar CPU meter
+# repaints on its own every 300 ms, so it is switched off for them.
+get_property(mlacker_tests DIRECTORY PROPERTY TESTS)
+list(FILTER mlacker_tests INCLUDE REGEX "_tui$")
+set_property(TEST ${mlacker_tests} APPEND PROPERTY ENVIRONMENT "MLACKER_CPU_METER=0")
+
 set_tests_properties(vst3_host PROPERTIES TIMEOUT 30)

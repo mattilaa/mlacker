@@ -69,6 +69,8 @@ use mlacker_ui::audio_controller::EffectChannel;
 use mlacker_ui::audio_controller::PadAssignment;
 use std::audio::controller::AudioController;
 mod mlacker_ui::settings_dialog;
+mod mlacker_ui::cpu_meter;
+use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::instrument_editor;
 use mlacker_ui::instrument_editor::InstrumentEditor;
 use mlacker_ui::settings_dialog::SettingsDialog;
@@ -450,6 +452,8 @@ pub fn run() -> i32 {
     var midi: AudioSystem = AudioSystem::start(terminal.active && no_hardware != "1");
     free(no_hardware);
     var master_meter_clock: i64 = now_ms();
+    let cpu_meter_env: str8 = __env_get_var("MLACKER_CPU_METER");
+    var cpu_meter: CpuMeter = CpuMeter { enabled: cpu_meter_env != "0" }; free(cpu_meter_env);
     while running {
         if session_request != 0 {
             var session_status: str8 = "";
@@ -863,6 +867,7 @@ pub fn run() -> i32 {
         }
         last_processor_errors = processor_errors;
         if transport.midi_received != midi_active { transport.midi_received = midi_active; dirty = true; }
+        if cpu_meter.update(now) { transport.cpu_percent = cpu_meter.percent; dirty = true; }
         let ui_steps: i64 = (now - ui_clock) / 10; ui_clock = ui_clock + ui_steps * 10;
         if play_pattern != library.active_id {
             mixer.expanded = []; mixer.selected_send = -1; mixer.send_track = -1;
@@ -1060,6 +1065,8 @@ pub fn run() -> i32 {
             if settings.active && settings.pressed_button >= 0 {
                 settings.tick(); dirty = true;
                 if !settings.active && settings.result == 1 {
+                    // The core cap applies to running audio from its next block.
+                    AudioController::set_render_threads(settings.cores.selected_id() < 0 ? 0 : settings.cores.selected_id());
                     let applied: result<i32, str8> = midi.configure_audio(settings.midi.selected_id(), settings.output.selected_id(), settings.buffer.selected_id(), settings.rate.selected_id(), library.audio.samples);
                     if applied.is_err() { settings.fail(applied.unwrap_err()); }
                     else {

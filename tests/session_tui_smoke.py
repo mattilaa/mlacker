@@ -181,7 +181,7 @@ def main():
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
             tui.send(b"\t\rjjj\r")  # Device default -> 96 kHz
-            frame = tui.send(b"\t\r", 0.6)
+            frame = tui.send(b"\t\t\r", 0.6)
             assert b"Settings applied. Audio disabled." in frame, frame[-5000:]
             frame = tui.send(F1 + b"llllll" + b"j\r")
             assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.25" in frame, frame[-5000:]
@@ -225,7 +225,7 @@ def main():
             tui.send(b"\t\rk\r")
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
             tui.send(b"\t\rjjj\r")  # Device default -> 96 kHz
-            frame = tui.send(b"\t\r", 0.6)
+            frame = tui.send(b"\t\t\r", 0.6)
             assert b"Settings applied. Audio disabled." in frame, frame[-5000:]
             tui.send(b"\x13", 0.6)
             assert master_path.read_bytes() == master_saved, "Master plugin state changed on output replacement"

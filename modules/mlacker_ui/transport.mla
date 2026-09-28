@@ -17,6 +17,8 @@ pub struct TransportStatus {
     var playing: bool; var row: i32; var phase: i64; var clock_ms: i64;
     var ticks: i64;
     var count_in: i64; var click_ticks: i64; var last_click: i64{-1};
+    /// Process CPU use across all cores, shown at the right end; -1 hides it.
+    var cpu_percent: i32{-1};
 };
 impl TransportStatus {
     pub fn toggle(self: &mut Self, now: i64, selected: i32, count: i32) -> void {
@@ -91,6 +93,17 @@ impl TransportStatus {
         if offset + 2 < area.width {
             surface.text(Rect::new(area.x + offset + 2, area.y, area.width - offset - 2, 1),
                 self.playing && self.count_in > 0 ? "COUNT IN" : (self.recording ? "REC" : (self.playing ? "PLAY" : "STOP")), self.playing ? theme.accent : theme.muted, theme.panel);
+        }
+        let state_end: i32 = offset + 2 + (self.playing && self.count_in > 0 ? 8 : 4);
+        if self.cpu_percent >= 0 {
+            let cpu: str8 = format!("CPU {}{} ", self.cpu_percent, "%");
+            let width: i32 = i32(len(cpu));
+            // Right-aligned, and only where it clears the transport text.
+            if area.width - width > state_end + 1 {
+                surface.text(Rect::new(area.x + area.width - width, area.y, width, 1), cpu,
+                    self.cpu_percent >= 80 ? theme.accent : theme.foreground, theme.panel);
+            }
+            free(cpu);
         }
         free(text);
     }

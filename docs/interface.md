@@ -123,7 +123,10 @@ are not implemented yet; row editing does not trim the source audio.
 ## Transport and tempo
 
 mlacker's bottom status bar shows BPM (initially 120), sequence elapsed time
-(`MM:SS.mmm`), time signature (4/4), PLAY/STOP, and a MIDI-input light.
+(`MM:SS.mmm`), time signature (4/4), PLAY/STOP, and a MIDI-input light. At the
+right end, `CPU n%` shows the CPU time of all mlacker threads (UI, audio and
+render workers) as a share of every online core. It updates every 300 ms and
+turns the accent colour at 80%.
 **Ctrl+B** opens the tempo dialog (20–400 integer BPM; Enter saves, Escape cancels,
 Tab switches between the field and OK/Cancel). CSI-u Ctrl+B and legacy Ctrl+B
 are supported. The input light stays idle until a MIDI-input processor is added.
@@ -212,6 +215,8 @@ audio-instance scheduling is not yet connected to this output. Existing
 sequencer events are forwarded as they become due in the UI loop; a future
 look-ahead sequencer can use absolute frame timestamps supported by the API.
 Set `MLANG_TUI_NO_HARDWARE=1` to skip startup device opening, as the PTY tests do.
+Set `MLACKER_CPU_METER=0` to turn off the status-bar CPU meter. The PTY tests do
+this so that the only repaints are the ones their keystrokes cause.
 
 Add → VST3 master plugin opens the bundle chooser; Add → Unload master VST3
 restores the preview synth.
