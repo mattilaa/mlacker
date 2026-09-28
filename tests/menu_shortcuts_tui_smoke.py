@@ -5,6 +5,7 @@ from session_tui_smoke import Terminal
 
 # SS3 spellings for F1-F4, CSI n~ for F5-F9.
 KEYS = [b"\x1bOP", b"\x1bOQ", b"\x1bOR", b"\x1bOS", b"\x1b[15~", b"\x1b[17~", b"\x1b[18~", b"\x1b[19~", b"\x1b[20~"]
+CTRL_SHIFT_F = [b"\x1b[1;6P", b"\x1b[1;6Q", b"\x1b[13;6~"]
 # Each menu's first item.
 FIRST = [b"New session", b"Undo", b"Patterns", b"Create MIDI track", b"Add pattern", b"Add audio",
          b"Add instrument", b"Add effect channel", b"Play metronome"]
@@ -21,11 +22,20 @@ def main():
         # Items with a keymap shortcut show it right-aligned, at least three
         # cells after the menu's longest label.
         frame = tui.send(KEYS[0])
-        assert re.search(rb"Save session {3,}C-s", frame), frame[-3000:]
+        assert re.search(rb"Save session {3,}<C-s>", frame), frame[-3000:]
         frame = tui.send(KEYS[2])
-        for label, key in ((rb"Song matrix", rb"S-m"), (rb"Show spectrum analyzer", rb"C\+S-m"), (rb"Show virtual keyboard", rb"S-p")):
+        for label, key in ((rb"Patterns", rb"<C-S-F1>"), (rb"Audio", rb"<C-S-F2>"), (rb"Instruments", rb"<C-S-F3>"),
+                           (rb"Song matrix", rb"<S-m>"), (rb"Show spectrum analyzer", rb"<C-S-m>"),
+                           (rb"Show virtual keyboard", rb"<S-p>")):
             assert re.search(label + rb" {3,}" + key, frame), (label, frame[-3000:])
         tui.send(KEYS[2])
+        # Ctrl+Shift+F1-F3 switch the left view instead of opening a menu.
+        frame = tui.send(CTRL_SHIFT_F[1])
+        assert b" Audio " in frame and b"New session" not in frame and b"Undo" not in frame, frame[-3000:]
+        frame = tui.send(CTRL_SHIFT_F[2])
+        assert b" Instruments " in frame and b"Patterns" not in frame.split(b" Instruments ")[-1][:40], frame[-3000:]
+        frame = tui.send(CTRL_SHIFT_F[0])
+        assert b" Patterns " in frame and b"New session" not in frame, frame[-3000:]
         # The open menu's key closes it; another key switches menus.
         tui.send(KEYS[8])
         frame = tui.send(KEYS[1])

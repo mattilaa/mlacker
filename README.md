@@ -234,14 +234,28 @@ menu starts with what it creates, then what it changes, then what it removes;
 related entries live in submenus.
 
 Items that have a keyboard shortcut show it right-aligned in the menu, in the
-same color as the function keys: `C-` is Ctrl, `S-` Shift and `C+S-` both, so
-**Save session** shows `C-s` and **Show spectrum analyzer** `C+S-m`.
+same color as the function keys, written like Vim key notation: `<C-s>` is
+Ctrl+S, `<S-m>` Shift+M, `<C-S-m>` Ctrl+Shift+M and `<C-S-F1>` Ctrl+Shift+F1. A
+shortcut of several presses in a row is written `<C-a><C-m>`.
+
+| Shortcut | Action |
+|----------|--------|
+| `<C-S-F1>` / `<C-S-F2>` / `<C-S-F3>` | Left view: Patterns / Audio / Instruments |
+| `<C-s>` | Save the session or project |
+| `<S-m>` | Show or hide the song matrix |
+| `<C-S-m>` | Show or hide the spectrum analyzer |
+| `<S-p>` | Show or hide the virtual keyboard |
+
+These use Ctrl+Shift because macOS keeps Ctrl+F1–F3 for keyboard focus. The
+terminal must pass modified function keys on; the View menu works everywhere.
 
 For developers: every command is an `Action` in
 `modules/mlacker_ui/actions.mla`, and shortcuts are bound to actions in
-`modules/mlacker_ui/keymap.mla` (`default_keymap()`). The key handling and the
-menu labels both read the keymap, so changing a binding there changes the key
-and what the menu shows. A `global` binding (like `C-s`) also works while a
+`modules/mlacker_ui/keymap.mla` (`default_keymap()`) as one or more key chords
+(`key(115, true, false)` is `<C-s>`, `fkey(1, true, true)` is `<C-S-F1>`). The key
+handling and the menu labels both read the keymap, so changing a binding there
+changes the key and what the menu shows. A binding of several chords waits for
+the rest of its presses; a `global` binding (like `<C-s>`) also works while a
 dialog or text field has the keyboard.
 
 | Menu | Contents |

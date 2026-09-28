@@ -1,59 +1,116 @@
 mod mlacker_ui::actions;
 mod tui::input;
+mod tui::menu;
 mod std::strbuf;
 use mlacker_ui::actions::Action;
 use tui::input::*;
+use tui::menu::Key;
+use tui::menu::function_key;
 
-/// A keyboard shortcut for an action. `key` is a lowercase ASCII letter code.
-/// A `global` binding also works while a dialog or text field has the keyboard.
-/// `label` is how menus show it: "C-s" (Ctrl), "S-p" (Shift), "C+S-m" (both).
-pub struct KeyBinding { var action: Action; var key: i32; var ctrl: bool; var shift: bool; var global: bool; var label: str8; };
+/// One key press: a lowercase ASCII letter (`letter`) or a function key
+/// (`function`, 1-12), with its modifiers.
+pub struct KeyChord { var letter: i32; var function: i32; var ctrl: bool; var shift: bool; };
 
-pub fn bind(action: Action, key: i32, ctrl: bool, shift: bool, global: bool) -> KeyBinding {
-    let builder: i64 = std::strbuf::builder_new(8);
-    std::strbuf::builder_append(builder, ctrl && shift ? "C+S-" : (ctrl ? "C-" : (shift ? "S-" : "")));
-    std::strbuf::builder_append_char(builder, key);
+pub fn key(code: i32, ctrl: bool, shift: bool) -> KeyChord { return KeyChord { letter: code, ctrl: ctrl, shift: shift }; }
+pub fn fkey(number: i32, ctrl: bool, shift: bool) -> KeyChord { return KeyChord { function: number, ctrl: ctrl, shift: shift }; }
+
+/// A shortcut: one or more chords pressed in turn (`<C-a><C-m>`). A `global`
+/// shortcut also works while a dialog or text field has the keyboard.
+/// `label` is how menus show it, e.g. `<C-s>`, `<S-m>`, `<C-S-m>`, `<C-F1>`.
+pub struct KeyBinding { var action: Action; var chords: list<KeyChord>; var global: bool; var label: str8; };
+
+/// Owned menu label of a chord sequence: `<C-a><C-m>`.
+fn chords_label(chords: &list<KeyChord>) -> str8 {
+    var presses: list<KeyChord> = []; presses = chords;
+    let builder: i64 = std::strbuf::builder_new(16);
+    for chord in presses {
+        std::strbuf::builder_append(builder, "<");
+        if chord.ctrl { std::strbuf::builder_append(builder, "C-"); }
+        if chord.shift { std::strbuf::builder_append(builder, "S-"); }
+        if chord.function > 0 {
+            let name: str8 = format!("F{}", chord.function); std::strbuf::builder_append(builder, name); std::strbuf::free(name);
+        } else { std::strbuf::builder_append_char(builder, chord.letter); }
+        std::strbuf::builder_append(builder, ">");
+    }
     let label: str8 = std::strbuf::builder_to_string(builder); std::strbuf::builder_free(builder);
-    return KeyBinding { action: action, key: key, ctrl: ctrl, shift: shift, global: global, label: label };
+    return label;
+}
+
+pub fn bind(action: Action, chords: list<KeyChord>, global: bool) -> KeyBinding {
+    let label: str8 = chords_label(chords);
+    return KeyBinding { action: action, chords: chords, global: global, label: label };
 }
 
 /// The tracker's shortcuts. Change them here: menus show whatever is bound.
 pub fn default_keymap() -> list<KeyBinding> {
     return [
-        bind(Action::SaveSession, 115, true, false, true),            // C-s
-        bind(Action::ViewSongMatrix, 109, false, true, false),        // S-m
-        bind(Action::ToggleSpectrum, 109, true, true, false),         // C+S-m
-        bind(Action::ToggleVirtualKeyboard, 112, false, true, false)  // S-p
+        bind(Action::SaveSession, [key(115, true, false)], true),              // <C-s>
+        // Ctrl+Shift, not Ctrl: macOS keeps Ctrl+F1-F3 for keyboard focus.
+        bind(Action::ViewPatterns, [fkey(1, true, true)], false),             // <C-S-F1>
+        bind(Action::ViewAudio, [fkey(2, true, true)], false),                // <C-S-F2>
+        bind(Action::ViewInstruments, [fkey(3, true, true)], false),          // <C-S-F3>
+        bind(Action::ViewSongMatrix, [key(109, false, true)], false),          // <S-m>
+        bind(Action::ToggleSpectrum, [key(109, true, true)], false),           // <C-S-m>
+        bind(Action::ToggleVirtualKeyboard, [key(112, false, true)], false)    // <S-p>
     ];
 }
 
-/// True when `event` is the binding's key. Terminals spell modified keys
-/// differently: legacy Ctrl+letter is a control byte and Shift+letter an
-/// uppercase letter; kitty/CSI-u send the letter with a modifier mask (2
-/// Shift, 5 Ctrl, 6 Ctrl+Shift). Plain Ctrl+Shift has no legacy form.
-pub fn binding_matches(binding: KeyBinding, event: InputEvent) -> bool {
-    let lower: i32 = binding.key; let upper: i32 = binding.key - 32;
-    let letter: bool = event.code == lower || event.code == upper;
-    if binding.ctrl && binding.shift { return letter && event.modifiers == 6; }
-    if binding.ctrl { return (event.code == lower - 96 && event.modifiers == 1) || (letter && event.modifiers == 5); }
-    if binding.shift { return (event.code == upper && event.modifiers == 1) || (letter && event.modifiers == 2); }
+/// True when `event` is the chord. Terminals spell modified keys differently:
+/// legacy Ctrl+letter is a control byte and Shift+letter an uppercase letter;
+/// kitty/CSI-u and modified function keys carry a modifier mask (2 Shift,
+/// 5 Ctrl, 6 Ctrl+Shift). Plain Ctrl+Shift+letter has no legacy form.
+pub fn chord_matches(chord: KeyChord, event: InputEvent) -> bool {
+    let mask: i32 = chord.ctrl && chord.shift ? 6 : (chord.ctrl ? 5 : (chord.shift ? 2 : 1));
+    if chord.function > 0 { return event.kind == InputKind::Menu && event.key == function_key(chord.function) && event.modifiers == mask; }
+    let lower: i32 = chord.letter; let upper: i32 = chord.letter - 32;
+    let same: bool = event.code == lower || event.code == upper;
+    if chord.ctrl && chord.shift { return same && event.modifiers == 6; }
+    if chord.ctrl { return (event.code == lower - 96 && event.modifiers == 1) || (same && event.modifiers == 5); }
+    if chord.shift { return (event.code == upper && event.modifiers == 1) || (same && event.modifiers == 2); }
     return event.code == lower && event.modifiers == 1;
 }
 
-/// The action bound to `event`, or Action::None. With `global_only`, only
-/// bindings that work over dialogs and text fields count.
-pub fn action_for(keymap: &list<KeyBinding>, event: InputEvent, global_only: bool) -> Action {
-    var bindings: list<KeyBinding> = []; bindings = keymap;
-    if event.released { return Action::None; }
-    for binding in bindings {
-        if (binding.global || !global_only) && binding_matches(binding, event) { return binding.action; }
-    }
-    return Action::None;
-}
+/// What one key press did: completed a shortcut (`action`), or started or
+/// continued one (`waiting`, the press should be swallowed).
+pub struct KeyMatch { var action: Action; var global: bool; var waiting: bool; };
 
-/// Menu label of the first key bound to `action`, or "" when it has none.
-pub fn shortcut_for(keymap: &list<KeyBinding>, action: Action) -> str8 {
-    var bindings: list<KeyBinding> = []; bindings = keymap;
-    for binding in bindings { if binding.action == action { return binding.label; } }
-    return "";
+/// Matches key presses against the bindings, remembering the presses of an
+/// unfinished multi-chord shortcut.
+pub struct Keymap { var bindings: list<KeyBinding>; var pending: list<InputEvent>; };
+impl Keymap {
+    pub fn new(bindings: list<KeyBinding>) -> Keymap { return Keymap { bindings: bindings, pending: [] }; }
+    /// Feed every key press once. A press that breaks an unfinished shortcut
+    /// drops it and is matched again on its own.
+    pub fn feed(self: &mut Self, event: InputEvent) -> KeyMatch {
+        if event.released || (event.kind == InputKind::None && event.code == 0) { return KeyMatch { action: Action::None }; }
+        let held: bool = self.pending.len() > 0;
+        var presses: list<InputEvent> = [];
+        let before: list<InputEvent> = self.pending; for press in before { presses.push(press); }
+        presses.push(event);
+        let found: KeyMatch = self.find(presses);
+        if found.waiting { self.pending = presses; return found; }
+        self.pending = [];
+        if found.action != Action::None || !held { return found; }
+        return self.find([event]);
+    }
+    fn find(self: Keymap, pressed: &list<InputEvent>) -> KeyMatch {
+        var presses: list<InputEvent> = []; presses = pressed;
+        var waiting: bool = false; var global: bool = false;
+        let bindings: list<KeyBinding> = self.bindings;
+        for binding in bindings {
+            if binding.chords.len() < presses.len() { continue; }
+            var same: bool = true;
+            for i in 0..presses.len() { if !chord_matches(binding.chords[i], presses[i]) { same = false; break; } }
+            if !same { continue; }
+            if binding.chords.len() == presses.len() { return KeyMatch { action: binding.action, global: binding.global }; }
+            waiting = true; if binding.global { global = true; }
+        }
+        return KeyMatch { action: Action::None, waiting: waiting, global: global };
+    }
+    /// Menu label of the first shortcut bound to `action`, or "" when it has none.
+    pub fn shortcut_for(self: Keymap, action: Action) -> str8 {
+        let bindings: list<KeyBinding> = self.bindings;
+        for binding in bindings { if binding.action == action { return binding.label; } }
+        return "";
+    }
 }

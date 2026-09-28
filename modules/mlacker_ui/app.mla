@@ -56,10 +56,9 @@ mod mlacker_ui::actions;
 mod mlacker_ui::keymap;
 use mlacker_ui::actions::Action;
 use mlacker_ui::actions::is_track_action;
-use mlacker_ui::keymap::KeyBinding;
+use mlacker_ui::keymap::Keymap;
+use mlacker_ui::keymap::KeyMatch;
 use mlacker_ui::keymap::default_keymap;
-use mlacker_ui::keymap::action_for;
-use mlacker_ui::keymap::shortcut_for;
 mod mlacker_ui::note_playback;
 use mlacker_ui::note_playback::NotePlayback;
 mod mlacker_ui::audio_controller;
@@ -98,11 +97,12 @@ use std::time::sleep_ms;
 use std::time::now_ms;
 
 /// A menu item for `action`, showing the key bound to it in `keymap`.
-fn menu_item(label: str8, action: Action, enabled: bool, keymap: &list<KeyBinding>) -> MenuItem {
-    return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: shortcut_for(keymap, action) };
+fn menu_item(label: str8, action: Action, enabled: bool, keymap: &Keymap) -> MenuItem {
+    var keys: Keymap = Keymap {}; keys = keymap;
+    return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: keys.shortcut_for(action) };
 }
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, keymap: &list<KeyBinding>) -> MenuBar {
+fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, keymap: &Keymap) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
@@ -336,7 +336,7 @@ pub fn run() -> i32 {
     // Computer-keyboard piano in the same pane (View menu / Shift+P).
     var keyboard: VirtualKeyboard = VirtualKeyboard {};
     // Shortcuts for menu actions; the menus label their items from it.
-    let keymap: list<KeyBinding> = default_keymap();
+    var keymap: Keymap = Keymap::new(default_keymap());
     var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
@@ -1267,15 +1267,15 @@ pub fn run() -> i32 {
             }
             escape_ticks = 0;
             var command: Action = Action::None;
-            // Keymap shortcuts: global ones (C-s) work over dialogs and text
-            // fields; the rest only reach the main view further below.
-            let global_key: Action = action_for(keymap, event, true);
-            let view_key: Action = action_for(keymap, event, false);
+            // Keymap shortcuts: global ones (<C-s>) work over dialogs and text
+            // fields; the rest only reach the main view further below. A press
+            // that starts a multi-key shortcut is swallowed (`waiting`).
+            let key: KeyMatch = keymap.feed(event);
             if library.table.paste_error {
                 paste_error.question = library.table.error; paste_error.open(); library.table.paste_error = false; dirty = true;
             }
             if paste_error.active { paste_error.on_event(event); dirty = true; }
-            else if global_key != Action::None { command = global_key; dirty = true; }
+            else if key.global && (key.action != Action::None || key.waiting) { command = key.action; dirty = true; }
             // Space starts/stops from every pane, including the mixer and the
             // VST3 editor. Text entry and modal dialogs keep it for themselves.
             // Ctrl+P plays the matrix. Terminals send it as the control byte
@@ -1489,7 +1489,7 @@ pub fn run() -> i32 {
                 if event.kind != InputKind::None { dirty = true; }
                 if event.kind == InputKind::Menu {
                     // A function key switches to its menu, or closes it when already open.
-                    if !menus.on_function_key(event.key) { command = menus.on_key(event.key); }
+                    if event.modifiers != 1 || !menus.on_function_key(event.key) { command = menus.on_key(event.key); }
                     focus.set_menu_active(menus.active >= 0);
                     dirty = true;
                 }
@@ -1514,11 +1514,11 @@ pub fn run() -> i32 {
             else if ((event.code == 26 && event.modifiers == 1) || (event.code == 122 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible {
                 library.table.cycle_vertical_zoom(panes[1].bounds.inset(1)); dirty = true;
             }
-            else if view_key != Action::None { command = view_key; dirty = true; }
+            else if key.action != Action::None || key.waiting { command = key.action; dirty = true; }
             else if event.code == 109 && event.modifiers == 1 {
                 mixer.visible = !mixer.visible; dirty = true;
             }
-            else if event.kind == InputKind::Menu && function_number(event.key) > 0 {
+            else if event.kind == InputKind::Menu && function_number(event.key) > 0 && event.modifiers == 1 {
                 menus.on_function_key(event.key);
                 focus.set_menu_active(menus.active >= 0);
                 dirty = true;

@@ -2016,26 +2016,42 @@ fn tui_piano_dialog_picks_pad_keys() {
 
 #[test]
 fn tui_keymap_matches_every_terminal_spelling_and_labels_menus() {
-    let keymap: list<KeyBinding> = default_keymap();
-    // C-s: legacy control byte and kitty/CSI-u; global over dialogs.
-    verify(action_for(keymap, decode_input("\x13"), true) == Action::SaveSession);
-    verify(action_for(keymap, decode_input("\x1b[115;5u"), false) == Action::SaveSession);
-    // S-m: legacy uppercase and CSI-u shifted letter; not global.
-    verify(action_for(keymap, decode_input("M"), false) == Action::ViewSongMatrix);
-    verify(action_for(keymap, decode_input("\x1b[109;2u"), false) == Action::ViewSongMatrix);
-    verify(action_for(keymap, decode_input("M"), true) == Action::None);
-    // C+S-m and S-p.
-    verify(action_for(keymap, decode_input("\x1b[109;6u"), false) == Action::ToggleSpectrum);
-    verify(action_for(keymap, decode_input("P"), false) == Action::ToggleVirtualKeyboard);
-    // Plain keys are not shortcuts here.
-    verify(action_for(keymap, decode_input("m"), false) == Action::None && action_for(keymap, decode_input("s"), false) == Action::None);
-    verify(shortcut_for(keymap, Action::SaveSession) == "C-s" && shortcut_for(keymap, Action::ViewSongMatrix) == "S-m");
-    verify(shortcut_for(keymap, Action::ToggleSpectrum) == "C+S-m" && shortcut_for(keymap, Action::ToggleVirtualKeyboard) == "S-p");
-    verify(shortcut_for(keymap, Action::Quit) == "");
-    // A changed binding changes the label menus show.
-    let custom: list<KeyBinding> = [bind(Action::Quit, 113, true, false, true)];
-    verify(shortcut_for(custom, Action::Quit) == "C-q" && action_for(custom, decode_input("\x11"), true) == Action::Quit);
-    let plain: KeyBinding = bind(Action::EditSample, 101, false, false, false); verify(plain.label == "e");
+    var keymap: Keymap = Keymap::new(default_keymap());
+    // <C-s>: legacy control byte and kitty/CSI-u; global over dialogs.
+    let save: KeyMatch = keymap.feed(decode_input("\x13")); verify(save.action == Action::SaveSession && save.global);
+    let kitty: KeyMatch = keymap.feed(decode_input("\x1b[115;5u")); verify(kitty.action == Action::SaveSession);
+    // <S-m>: legacy uppercase and CSI-u shifted letter; not global.
+    let matrix: KeyMatch = keymap.feed(decode_input("M")); verify(matrix.action == Action::ViewSongMatrix && !matrix.global);
+    let shifted: KeyMatch = keymap.feed(decode_input("\x1b[109;2u")); verify(shifted.action == Action::ViewSongMatrix);
+    // <C-S-m>, <S-p> and the Ctrl+Shift+F1-F3 sidebar views.
+    let spectrum: KeyMatch = keymap.feed(decode_input("\x1b[109;6u")); verify(spectrum.action == Action::ToggleSpectrum);
+    let piano: KeyMatch = keymap.feed(decode_input("P")); verify(piano.action == Action::ToggleVirtualKeyboard);
+    let patterns: KeyMatch = keymap.feed(decode_input("\x1b[1;6P")); verify(patterns.action == Action::ViewPatterns);
+    let audio: KeyMatch = keymap.feed(decode_input("\x1b[1;6Q")); verify(audio.action == Action::ViewAudio);
+    let instruments: KeyMatch = keymap.feed(decode_input("\x1b[13;6~")); verify(instruments.action == Action::ViewInstruments);
+    // Ctrl+F1 alone is left to macOS.
+    let ctrl_f1: KeyMatch = keymap.feed(decode_input("\x1b[1;5P")); verify(ctrl_f1.action == Action::None);
+    // Plain F1 opens the File menu, not a keymap action; plain letters are free.
+    let f1: KeyMatch = keymap.feed(decode_input("\x1bOP")); verify(f1.action == Action::None && !f1.waiting);
+    let m: KeyMatch = keymap.feed(decode_input("m")); verify(m.action == Action::None);
+    let save_label: str8 = keymap.shortcut_for(Action::SaveSession); verify(save_label == "<C-s>");
+    let matrix_label: str8 = keymap.shortcut_for(Action::ViewSongMatrix); verify(matrix_label == "<S-m>");
+    let spectrum_label: str8 = keymap.shortcut_for(Action::ToggleSpectrum); verify(spectrum_label == "<C-S-m>");
+    let piano_label: str8 = keymap.shortcut_for(Action::ToggleVirtualKeyboard); verify(piano_label == "<S-p>");
+    let patterns_label: str8 = keymap.shortcut_for(Action::ViewPatterns); verify(patterns_label == "<C-S-F1>");
+    let instruments_label: str8 = keymap.shortcut_for(Action::ViewInstruments); verify(instruments_label == "<C-S-F3>");
+    let none_label: str8 = keymap.shortcut_for(Action::Quit); verify(none_label == "");
+    // A multi-press shortcut: the first press waits, the second completes it.
+    var custom: Keymap = Keymap::new([bind(Action::Quit, [key(97, true, false), key(109, true, false)], false),
+        bind(Action::Undo, [key(109, true, false)], false)]);
+    let sequence_label: str8 = custom.shortcut_for(Action::Quit); verify(sequence_label == "<C-a><C-m>");
+    let first: KeyMatch = custom.feed(decode_input("\x1b[97;5u")); verify(first.waiting && first.action == Action::None);
+    let second: KeyMatch = custom.feed(decode_input("\x1b[109;5u")); verify(second.action == Action::Quit && !second.waiting);
+    // A press that breaks the sequence is matched on its own.
+    custom.feed(decode_input("\x1b[97;5u"));
+    let broken: KeyMatch = custom.feed(decode_input("x")); verify(broken.action == Action::None && !broken.waiting);
+    let alone: KeyMatch = custom.feed(decode_input("\x1b[109;5u")); verify(alone.action == Action::Undo);
+    let plain: KeyBinding = bind(Action::EditSample, [key(101, false, false)], false); verify(plain.label == "<e>");
 }
 
 fn test_ids(first: i32, second: i32) -> list<i32> { var ids: list<i32> = []; ids.push(first); ids.push(second); return ids; }
