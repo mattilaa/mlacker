@@ -344,28 +344,21 @@ def main():
             for path in (wav_path, aif_path):
                 if path == aif_path:
                     os.write(master, b"\x7f")  # remove the WAV instance, not the loaded sample
-                    assert b"L  WAVE" not in read_frame(1)
+                    assert b"WAVE" not in read_frame(1)
                     os.write(master, b"jjjjj")  # next import starts on row 6
                     read_frame(1)
                 os.write(master, F1 + b"lllll\r")
                 assert b"Add audio" in read_frame(None, 1)
                 os.write(master, b"\x15" + path.encode() + b"\r")
                 imported = read_frame(1)
-                assert b"L  WAVE  R" in imported
-                assert b"38;2;90;220;140" in imported  # left, green
-                assert b"38;2;239;101;117" in imported  # right, red
+                assert b"WAVE" in imported
+                assert b"38;2;138;138;138" in imported  # mono sum, gray
+                assert b"38;2;90;220;140" not in imported and b"38;2;239;101;117" not in imported
                 if path == wav_path:
                     assert any(0x2800 < ord(c) <= 0x28ff for c in imported.decode())
                 os.write(master, b"z")
-                assert b"L  WAVE x2  R" in read_frame(1)
-                os.write(master, F1)
-                read_frame(None)
-                os.write(master, b"z")
-                read_frame(None)
-                os.write(master, b"\x1b")
-                assert b"L  WAVE x2  R" in read_frame(1)  # menu captured z
-                os.write(master, b"z")
-                assert b"L  WAVE  R" in read_frame(1)
+                zoomed = read_frame(1)
+                assert b"WAVE" in zoomed and b"WAVE x2" not in zoomed  # no waveform zoom
                 os.write(master, b"s")
                 assert b" Sample: " in read_frame(1)
                 os.write(master, b"\x1b[108;5u" * 15)
@@ -411,7 +404,7 @@ def main():
             read_frame(1)
         # Loaded samples survive removal of their source files and placements.
         os.write(master, b"jjjjj\x7f")
-        assert b"L  WAVE" not in read_frame(1)
+        assert b"WAVE" not in read_frame(1)
         os.write(master, F1 + b"ll")
         read_frame(None)
         os.write(master, b"jj\r")
@@ -419,13 +412,13 @@ def main():
         os.write(master, b"\x1b[104;6u")
         assert b"2 mono.AIF" in read_frame(0)
         os.write(master, b"\r")  # reuse selected sample at the Pattern cursor (row 6)
-        assert b"L  WAVE" in read_frame(0)
+        assert b"WAVE" in read_frame(0)
         os.write(master, b"\x1b[108;6u" + b"j" * 15)
         read_frame(1)
         os.write(master, b"\x1b[104;6u\r")  # a second independent instance at row 21
-        assert b"L  WAVE" in read_frame(0)
+        assert b"WAVE" in read_frame(0)
         os.write(master, b"\x1b[108;6u\x7f")
-        assert b"L  WAVE" in read_frame(1)  # the first instance remains
+        assert b"WAVE" in read_frame(1)  # the first instance remains
         os.write(master, b"gg" + F1 + b"ll")
         read_frame(None)
         os.write(master, b"\r")
