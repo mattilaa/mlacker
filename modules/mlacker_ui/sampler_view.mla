@@ -97,8 +97,8 @@ impl SamplerView {
     /// A key press while the pane is focused. `slot` is the Mla Sampler
     /// instrument slot (0 when the selected track has none). Returns what the
     /// application should do for the selected slot: 0 nothing, 1 repaint,
-    /// 2 load a file into it, 3 clear it. (An i32, not an enum: a `let` of
-    /// enum type re-runs its initializer at each comparison.)
+    /// 2 load a file into it, 3 clear it. (An i32 rather than an enum: MLang
+    /// before its let-enum fix ran an enum `let` initializer twice.)
     pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32) -> i32 {
         let up: bool = (event.kind == InputKind::Menu && event.key == Key::Up) || (event.code == 107 && event.modifiers == 1);
         let down: bool = (event.kind == InputKind::Menu && event.key == Key::Down) || (event.code == 106 && event.modifiers == 1);
