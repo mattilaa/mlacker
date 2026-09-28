@@ -14,9 +14,9 @@ mod mlacker_ui::duration;
 use mlacker_ui::duration::*;
 use mlacker_ui::audio_clip::*;
 mod mlacker_ui::waveform;
-use mlacker_ui::waveform::paint_wave_channel_style;
-use mlacker_ui::waveform::paint_grainy_row;
-use mlacker_ui::waveform::paint_grainy_row_duration;
+use mlacker_ui::waveform::mono_level;
+use mlacker_ui::waveform::paint_mono_grainy;
+use mlacker_ui::waveform::paint_mono_wave;
 use tui::dialog::Dialog;
 use mlacker_ui::dialog_buttons::TextPrompt;
 use tui::table::*;
@@ -184,7 +184,6 @@ pub struct SequenceTrack {
     var instrument: bool; var instrument_id: i32;
     var note_lines: i32{1};
     var instances: list<AudioInstance>;
-    var wave_zoom: bool;
     var zoom_stage: i32;
 };
 impl SequenceTrack {
@@ -1263,7 +1262,7 @@ pub fn paint_audio_style(self: SequenceTable, surface: Surface, area: Rect, them
         let track: SequenceTrack = self.tracks[t];
         if track.instances.len() > 0 {
             let x: i32 = area.x + self.column_x(self.audio_length_column(i32(t)) + 1);
-            let half: i32 = track.wave_zoom ? 12 : 6;
+            let half: i32 = 3;
             for y in 0..body.height {
                 let row: i32 = self.scroll_y + i32(y) / self.row_spacing();
                 let hit: i32 = track.instance_at(row);
@@ -1278,21 +1277,42 @@ pub fn paint_audio_style(self: SequenceTable, surface: Surface, area: Rect, them
                     let bg: i32 = background_cell.background;
                     let line: Rect = Rect::new(x, body.y + i32(y), half * 2 + 1, 1);
                     surface.fill(line.intersect(clip), Cell { glyph: 32, foreground: theme.muted, background: bg });
-                    let left: Rect = Rect::new(x, body.y + i32(y), half, 1);
-                    let right: Rect = Rect::new(x + half + 1, body.y + i32(y), half, 1);
-                    let center: Rect = Rect::new(x + half, body.y + i32(y), 1, 1);
-                    let remaining: i64 = instance.duration() - wide(local) * 15000;
-                    if has_peak {
-                        if grainy || remaining < 15000 {
-                            paint_grainy_row_duration(surface, left, clip, instance.clip.detail_peaks, peak_row, true, 0x5adc8c, bg, wave, remaining);
-                            paint_grainy_row_duration(surface, right, clip, instance.clip.detail_peaks, peak_row, false, 0xef6575, bg, wave, remaining);
+                    // One gray waveform across the column: L and R summed to mono for display only.
+                    // Vertical zoom splits a row into 2 or 4 lines (1/32, 1/64), each
+                    // drawn from its own quarter-row detail slices.
+                    let color: i32 = 0x8a8a8a;
+                    let spacing: i32 = self.row_spacing(); let sub: i32 = i32(y) % spacing;
+                    let slices: i32 = 4 / spacing; let first: i32 = peak_row * 4 + sub * slices;
+                    let span: i64 = 15000 / wide(spacing);
+                    let remaining: i64 = instance.duration() - wide(local) * 15000 - wide(sub) * span;
+                    if has_peak && remaining > 0 {
+                        let step: i64 = instance.clip.frames_per_row / wide(spacing * 4);
+                        if (grainy || remaining < span) && spacing > 1 && step > 0 && instance.clip.samples.len() > 0 {
+                            // Zoomed lines keep four time slices per cell, one per dot row,
+                            // measured from the samples (1/128 or 1/256 of a note each).
+                            let start: i64 = wide(peak_row) * instance.clip.frames_per_row + wide(sub) * step * 4;
+                            let fine: list<WavePeak> = instance.clip.slice_peaks(start, step, 4);
+                            paint_mono_grainy(surface, line, clip, fine, 0, 4, color, bg, wave, remaining * wide(spacing));
+                        } else if grainy || remaining < span {
+                            paint_mono_grainy(surface, line, clip, instance.clip.detail_peaks, first, slices, color, bg, wave, remaining);
+                        } else if spacing == 1 {
+                            paint_mono_wave(surface, line, clip, mono_level(peak.left, peak.right), mono_level(peak.left_body, peak.right_body), color, bg, wave);
                         } else {
-                            paint_wave_channel_style(surface, left, clip, peak.left, peak.left_body, true, 0x5adc8c, bg, false, wave);
-                            paint_wave_channel_style(surface, right, clip, peak.right, peak.right_body, false, 0xef6575, bg, false, wave);
+                            // Detail slices carry no average; keep the row's body-to-peak ratio.
+                            var level: i32 = 0;
+                            for i in 0..slices {
+                                let index: i32 = first + i32(i);
+                                if index < instance.clip.detail_peaks.len() {
+                                    let detail: WavePeak = instance.clip.detail_peaks[index];
+                                    let value: i32 = mono_level(detail.left, detail.right); if value > level { level = value; }
+                                }
+                            }
+                            let row_level: i32 = mono_level(peak.left, peak.right);
+                            let row_body: i32 = mono_level(peak.left_body, peak.right_body);
+                            let line_body: i32 = row_level > 0 ? level * row_body / row_level : 0;
+                            paint_mono_wave(surface, line, clip, level, line_body, color, bg, wave);
                         }
                     }
-                    let end_glyph: i32 = remaining >= 15000 ? 0x2502 : (remaining > 11250 ? 0x2847 : (remaining > 7500 ? 0x2807 : (remaining > 3750 ? 0x2803 : 0x2801)));
-                    surface.fill(center.intersect(clip), Cell { glyph: end_glyph, foreground: theme.muted, background: bg });
                 }
             }
         }
@@ -1315,7 +1335,7 @@ pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
     }
     var tracks: list<SequenceTrack> = []; let source_tracks: list<SequenceTrack> = self.tracks;
     for track in source_tracks {
-        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), wave_zoom: track.wave_zoom, zoom_stage: track.zoom_stage,
+        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
             automation: track.copy_automation() });
     }
     var notes: array<str8, 128> = {};
@@ -1467,7 +1487,7 @@ pub fn rebuild_columns(self: &mut Self) -> void {
         }
         if track.audio { columns.push(TableColumn { title: "LEN", width: 6, value_type: "str8", pattern: "[0-9]{1,5}(\\.[0-9]{1,2})?", nullable: true }); }
         if track.audio && track.instances.len() > 0 {
-            columns.push(TableColumn { title: track.wave_zoom ? "L  WAVE x2  R" : "L  WAVE  R", width: track.wave_zoom ? 25 : 13, value_type: "str8", read_only: true, nullable: true });
+            columns.push(TableColumn { title: "WAVE", width: 7, value_type: "str8", read_only: true, nullable: true });
         }
     }
     self.columns = columns; self.groups = groups; self.column_titles = titles;
@@ -1598,7 +1618,7 @@ pub fn create_track_kind(self: &mut Self, duplicate: bool, audio: bool, area: Re
     if duplicate {
         let original: SequenceTrack = self.tracks[source];
         track.release_strings();
-        track = SequenceTrack { name: format!("{} copy", original.name), muted: original.muted, volume: original.volume, pan: original.pan, sends: original.copy_sends(), audio: original.audio, output: original.output, instrument: original.instrument, instrument_id: original.instrument_id, note_lines: original.note_lines, instances: original.copy_audio(), wave_zoom: original.wave_zoom, zoom_stage: original.zoom_stage,
+        track = SequenceTrack { name: format!("{} copy", original.name), muted: original.muted, volume: original.volume, pan: original.pan, sends: original.copy_sends(), audio: original.audio, output: original.output, instrument: original.instrument, instrument_id: original.instrument_id, note_lines: original.note_lines, instances: original.copy_audio(), zoom_stage: original.zoom_stage,
             automation: original.copy_automation() };
     }
     if duplicate && track.instrument { let original: SequenceTrack = self.tracks[source]; track.inserts = original.inserts; }
@@ -2018,7 +2038,7 @@ pub fn release(self: &mut Self) -> void {
     self.editor.release();
 }
 /// -1 cycles each targeted MIDI track independently; 0/2 collapse/expand.
-/// Hidden columns keep their storage and validation; audio keeps waveform zoom.
+/// Hidden columns keep their storage and validation; audio tracks have no stages.
 pub fn zoom_tracks(self: &mut Self, stage: i32, all: bool, area: Rect) -> void {
     let selected: i32 = self.active_track();
     var tracks: list<SequenceTrack> = [];
@@ -2785,12 +2805,8 @@ pub fn edit_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
         if self.remove_audio_under_cursor() { self.reconcile(area); return true; }
     }
     if event.code == 122 && event.modifiers == 1 {
-        let index: i32 = self.active_track();
-        if index < 0 { return false; }
-        var track: SequenceTrack = self.tracks[index];
-        if !track.audio { self.zoom_tracks(-1, false, area); return true; }
-        track.wave_zoom = !track.wave_zoom;
-        self.replace_track(index, track); self.rebuild_columns(); self.reconcile(area); return true;
+        if self.active_track() < 0 { return false; }
+        self.zoom_tracks(-1, false, area); return true;
     }
     if self.selected_row < 0 || self.selected_column < 0 { return self.on_event(event, area); }
     if delete_key {

@@ -67,16 +67,17 @@ and start rows.
 
 Each instance references decoded samples and carries its own start row.
 A read-only waveform column
-beside the LEN column draws time downward, with green left-channel bars extending left
-from the center line and red right-channel bars extending right. Mono is shown
-on both sides. Waveforms scroll with the table, while ROW stays frozen.
+beside the LEN column draws time downward as one gray, 7-cell-wide waveform:
+left and right are summed to mono for display only (playback and meters stay
+stereo), and the level grows outward from the center to both edges. Waveforms
+scroll with the table, while ROW stays frozen.
 
 Waveforms use eighth-cell edges, a solid mean-absolute-amplitude body, and a
-shaded peak envelope. With the Pattern pane focused, press `z` on an audio track
-to toggle its waveform between 13 and 25 cells wide (6 or 12 cells per channel).
-Zoom is stored per track and preserved by pattern/track cloning. This expands
-amplitude detail horizontally, not time: rows and notes remain aligned. Narrow
-viewports clip the waveform safely; menus and text editors capture `z` normally.
+shaded peak envelope. In the braille (Grainy) style every cell's four dot rows
+are four successive time slices. Vertical row zoom (Ctrl+Z) keeps that: at 1/32
+and 1/64 each line holds four slices of its own part of the row, measured from
+the samples, so zooming reveals finer detail instead of stretching it. Narrow
+viewports clip the waveform safely.
 
 **View → Sample view** selects **Normal** or **Grainy**, and its **Type** submenu
 selects **Filled blocks** or **Wave (osc)**. These settings affect both the Pattern
@@ -237,8 +238,8 @@ independently. Track → Collapse all selects stage 1; Expand all selects stage 
 Hidden columns consume no width and are skipped by h/l navigation, but their
 values and playback remain unchanged. Collapsing keeps selection in the same
 track, returning a hidden LEN/OFF selection to its note line's NOTE column.
-Track/pattern copies preserve their stages. Audio retains its existing `z`
-waveform-width toggle; MIDI column stages do not change audio tracks.
+Track/pattern copies preserve their stages. MIDI column stages do not change
+audio tracks.
 
 ### Note length and offset
 
