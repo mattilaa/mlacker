@@ -55,8 +55,9 @@ read when a note starts. Notes already sounding keep theirs.
 Bus 0 is **Main**. Buses 1-7 are the auxiliary stereo outputs **Out 2**..**Out 8**,
 inactive by default as VST3 expects. Each slot's **Output** parameter picks
 its bus. A slot sent to an output the host has not activated plays on Main, so
-nothing goes silent in hosts that only use the main output. mlacker is one
-such host for now.
+nothing goes silent in hosts that only use the main output. mlacker activates
+every bus: they play with Main until routed to their own mixer channels (see
+mlacker's README, "Plugin outputs").
 
 ## Parameters
 

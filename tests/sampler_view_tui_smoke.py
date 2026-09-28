@@ -1,6 +1,7 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
-clearing slots, loop mode / loop point / output edits, sharing the pane with the
-virtual keyboard, and the loop settings surviving a session round trip.
+clearing slots, loop mode / loop point / output edits, routing an aux output to
+an AUDIO track, sharing the pane with the virtual keyboard, and all of it
+surviving a session round trip.
 
 Usage: sampler_view_tui_smoke.py <mlacker> <MlaSampler.vst3>. No audio hardware.
 """
@@ -45,6 +46,9 @@ def main():
             expect(tui.send(b"S"), b" Sampler ", b"Select an Instrument track playing Mla Sampler")
             expect(tui.send(b"S"), b"Sampler closed")
 
+            # An AUDIO track (A1) to take the sampler's Out 2, then the
+            # Instrument track, which stays selected.
+            expect(tui.send(F1 + b"lll" + b"j\r"), b"Audio 1 [AUDIO]")
             expect(tui.send(F1 + b"lll" + b"jj\r"), b"Instrument track created")
             expect(tui.send(F1 + b"llllll\r"), b"Add VST3 instrument")
             expect(tui.send(b"\x15" + bytes(Path(sys.argv[2]).resolve()) + b"\r", 0.9), b"Instrument loaded: Mla Sampler")
@@ -77,6 +81,13 @@ def main():
             expect(tui.send(b"J"), b"99.0 ")
             tui.send(b"l")
             expect(tui.send(b"K"), b"Out 2")
+            # o routes the slot's bus: Out 2 into A1's channel.
+            expect(tui.send(b"o"), b"Output destination", b"MAIN with the instrument's output", b"MST  master", b"A1")
+            tui.send(b"jj")
+            expect(tui.send(b"\r", 0.5), b"Out 2 > A1", b"Out 2>A1")
+            # Track > Route plugin outputs lists every aux bus and its route.
+            frame = expect(tui.send(F1 + b"lll" + b"j" * 11 + b"\r"), b"Plugin output to route", b"Out 2  > A1", b"Out 8  > MAIN")
+            expect(tui.send(b"\x1b", 0.5), b"Cancelled.")
 
             # Backspace clears the slot; its loop settings stay.
             expect(tui.send(BACKSPACE, 0.5), b"Pad 2 cleared")
@@ -100,7 +111,7 @@ def main():
         tui = Terminal(str(path), cwd=directory)
         try:
             expect(tui.read(1.2), b"Opened:")
-            expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2")
+            expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:
             tui.close()

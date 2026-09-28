@@ -139,6 +139,14 @@ are accepted. Unsupported major or minor versions fail closed.
     store plain pattern IDs. It is written only when the matrix has a loop or
     a split, and it requires the preceding tags (a default `MASTER_BUS` is
     written when only this extension is needed).
+17. Optional `AUX_OUTPUTS` extension follows `MATRIX_LOOPS`: per pattern, a
+    track count that must match the pattern, then per track a bus count (0–15)
+    and, for each of the track's instrument's aux output buses from Out 2 on,
+    its route: -1 to stay with the instrument's main output, 0 for master, or
+    a destination track index + 1. A track cannot route to itself. A route to
+    a track that is not an AUDIO track plays as -1. It is written only when
+    some Instrument track routes an aux bus, and it requires the preceding
+    tags.
 
 The active pattern is serialized from the live editor, not its older library
 snapshot. Audio placements reference the embedded sample list; plugin assignments

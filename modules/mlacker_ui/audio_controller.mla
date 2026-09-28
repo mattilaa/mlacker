@@ -363,6 +363,21 @@ impl AudioSystem {
             }
             self.output.output_route(s, wide(destination));
         }
+        // Aux output buses of multi-output instruments (e.g. Mla Sampler's Out
+        // 2-8) follow the routes of the track that plays the instance.
+        for slot in 1..33 {
+            let outputs: i64 = self.output.instrument_outputs(slot);
+            if outputs <= 1 { continue; }
+            var selected: i32 = -1;
+            for t in 0..table.tracks.len() {
+                let track: SequenceTrack = table.tracks[t];
+                if track.instrument && wide(track.instrument_id) == slot { selected = i32(t); }
+            }
+            for bus in 1..outputs {
+                let destination: i32 = selected >= 0 ? table.track_aux_output(selected, i32(bus)) : -1;
+                self.output.instrument_output_route(slot, bus, wide(destination));
+            }
+        }
         for i in 0..table.tracks.len() {
             let track: SequenceTrack = table.tracks[i];
             self.output.track_volume(i, track.instrument ? track.instrument_id : 0, track.muted ? 0 : track.volume);

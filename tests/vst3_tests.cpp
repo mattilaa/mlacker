@@ -25,6 +25,10 @@ int32_t __mlang_std_audio_controller_restore_parameter(int64_t, int64_t, int64_t
 int32_t __mlang_std_audio_controller_unload_instrument(int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_clear_pad(int64_t, int64_t, int64_t);
 int64_t __mlang_std_audio_controller_instrument_sampler(int64_t, int64_t, int64_t);
+int64_t __mlang_std_audio_controller_instrument_outputs(int64_t, int64_t);
+const char *__mlang_std_audio_controller_instrument_output_name(int64_t, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_instrument_output_route(int64_t, int64_t, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_track_peak(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_pad(int64_t, int64_t, int64_t, FloatList, int64_t, int64_t, const char*);
 int32_t __mlang_std_audio_controller_midi_target(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_live_note(int64_t, int64_t, int64_t, int64_t, int64_t);
@@ -591,15 +595,22 @@ int main(int argc, char **argv) {
         CHECK(std::llabs(slow - 24000) <= 2 && std::llabs(fast - 12000) <= 2);
         std::puts("PASS: Mla Delay follows the host tempo");
     }
-    // Mla Sampler has eight output buses: the host loads it, mixes Main, and a
-    // slot sent to the inactive Out 2 falls back to Main.
+    // Mla Sampler has eight output buses. Its aux buses follow the main
+    // output until routed to master or a PCM track's channel.
     if(const char *sampler = std::getenv("MLA_SAMPLER_VST3")) {
         int64_t d = __mlang_std_audio_controller_new(48000, 128);
         CHECK(__mlang_std_audio_controller_load_instrument(d, 1, sampler) == 0);
         CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Sampler") == 0);
         CHECK(__mlang_std_audio_controller_instrument_sampler(d, 1, 1) == 16);
-        const std::vector<float> hit(4800, 0.5f);
-        CHECK(__mlang_std_audio_controller_instrument_pad(d, 1, 0, FloatList{4800, hit.data()}, 1, 48000, "hit") == 0);
+        CHECK(__mlang_std_audio_controller_instrument_outputs(d, 1) == 8);
+        CHECK(__mlang_std_audio_controller_instrument_outputs(d, 2) == -1);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 0), "Main") == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 1), "Out 2") == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 8), "") == 0);
+        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 0, 0) == -1); // main is not an aux bus
+        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 1, 65) == -1);
+        const std::vector<float> hit_pcm(4800, 0.5f);
+        CHECK(__mlang_std_audio_controller_instrument_pad(d, 1, 0, FloatList{4800, hit_pcm.data()}, 1, 48000, "hit") == 0);
         // Parameter 11 is Slot 1 Output (ID 203), stepped: 1 = Out 2.
         CHECK(__mlang_std_audio_controller_parameter_info(d, 1, 11, 4) == 203);
         CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 11, 1) == 0);
@@ -607,9 +618,48 @@ int main(int argc, char **argv) {
         const int64_t now = __mlang_std_audio_controller_info(d, 2);
         CHECK(__mlang_std_audio_controller_post(d, 0, 6, 0, 36, 127, 0, now + 32, 1, 1) == 0);
         CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        // Out 2 follows Main: 0.5 through the controller's 0.25 master gain.
         CHECK(std::abs(__mlang_std_audio_pcm_block_sample(b, 128, 0) - 0.125f) < 1.e-4f);
+        // Release 1 ms (parameter 7): the panic before each hit ends the last
+        // one. A panic drops queued events, so render the change first.
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 7, 0) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        const auto hit = [&]() -> float {
+            __mlang_std_audio_controller_panic(d);
+            CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+            const int64_t at = __mlang_std_audio_controller_info(d, 2);
+            CHECK(__mlang_std_audio_controller_post(d, 0, 6, 0, 36, 127, 0, at + 32, 1, 1) == 0);
+            CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+            return __mlang_std_audio_pcm_block_sample(b, 128, 0);
+        };
+        // The instrument's fader applies to a following bus...
+        CHECK(__mlang_std_audio_controller_track_volume(d, 0, 1, 0) == 0);
+        CHECK(std::abs(hit()) < 1.e-6f);
+        // ...but not to one routed away: straight to master...
+        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 1, 0) == 0);
+        CHECK(std::abs(hit() - 0.125f) < 1.e-4f);
+        // ...or into track 3's channel, whose own fader applies.
+        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 1, 3) == 0);
+        CHECK(__mlang_std_audio_controller_track_volume(d, 2, 0, 50) == 0);
+        __mlang_std_audio_controller_track_peak(d, 2, 0);
+        CHECK(std::abs(hit() - 0.0625f) < 1.e-4f);
+        CHECK(__mlang_std_audio_controller_track_peak(d, 2, 0) >= 249);
+        // A slot back on Main plays through the instrument fader again.
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 11, 0) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        CHECK(std::abs(hit()) < 1.e-6f);
+        CHECK(__mlang_std_audio_controller_track_volume(d, 0, 1, 100) == 0);
+        CHECK(std::abs(hit() - 0.125f) < 1.e-4f);
+        // Reloading resets the routes to follow Main.
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 11, 1) == 0);
+        CHECK(__mlang_std_audio_controller_load_instrument(d, 1, sampler) == 0);
+        CHECK(__mlang_std_audio_controller_instrument_pad(d, 1, 0, FloatList{4800, hit_pcm.data()}, 1, 48000, "hit") == 0);
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 11, 1) == 0);
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 7, 0) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        CHECK(std::abs(hit() - 0.125f) < 1.e-4f);
         CHECK(__mlang_std_audio_controller_close(d) == 0);
-        std::puts("PASS: Mla Sampler multi-output instrument on the main output");
+        std::puts("PASS: Mla Sampler aux outputs follow Main or route to master and tracks");
     }
     {
         // Lane 2 carries sequencer events stamped with the frame they sound

@@ -97,7 +97,7 @@ impl SamplerView {
     /// A key press while the pane is focused. `slot` is the Mla Sampler
     /// instrument slot (0 when the selected track has none). Returns what the
     /// application should do for the selected slot: 0 nothing, 1 repaint,
-    /// 2 load a file into it, 3 clear it. (An i32 rather than an enum: MLang
+    /// 2 load a file into it, 3 clear it, 4 route its output bus. (An i32 rather than an enum: MLang
     /// before its let-enum fix ran an enum `let` initializer twice.)
     pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32) -> i32 {
         let up: bool = (event.kind == InputKind::Menu && event.key == Key::Up) || (event.code == 107 && event.modifiers == 1);
@@ -116,7 +116,13 @@ impl SamplerView {
         if event.kind == InputKind::Menu && event.key == Key::Enter { return 2; }
         if event.code == 13 || event.code == 10 { return 2; }
         if event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace) { return 3; }
+        if event.code == 111 && event.modifiers == 1 { return 4; }
         return 0;
+    }
+    /// Output bus (0 = Main, 1-7 = Out 2-8) of the selected slot, or -1.
+    pub fn output_bus(self: SamplerView, output: AudioController, slot: i32) -> i32 {
+        let value: f64 = SamplerView::value(output, slot, self.slot, 3);
+        return value < 0.0 ? -1 : i32(std::math::floor(value * 7.0 + 0.5));
     }
     /// Pane title, e.g. " Sampler | Mla Sampler #2 ".
     pub fn title(self: SamplerView, output: AudioController, slot: i32) -> str8 {
@@ -126,8 +132,9 @@ impl SamplerView {
     /// Paints into the pane's inner area: one row per slot (key, sample name,
     /// loop mode, loop start/end, output), a key help line and `status` on
     /// the last row. `names[s]` is the session sample in slot `s` ("" when
-    /// unknown); `slot` is the Mla Sampler instrument slot or 0.
-    pub fn paint(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, names: &list<str8>, status: str8) -> void {
+    /// unknown), `routes[b]` where output bus `b` goes ("MAIN", "MST", "A3";
+    /// unused for Main); `slot` is the Mla Sampler instrument slot or 0.
+    pub fn paint(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, names: &list<str8>, routes: &list<str8>, status: str8) -> void {
         if area.width < 20 || area.height < 3 { return; }
         let help_y: i32 = area.y + area.height - 2;
         surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), status, theme.foreground, theme.panel);
@@ -137,11 +144,12 @@ impl SamplerView {
             return;
         }
         var labels: list<str8> = []; labels = names;
+        var destinations: list<str8> = []; destinations = routes;
         let root: i64 = output.instrument_sampler(slot, 0);
         let occupied: i64 = output.instrument_sampler(slot, 2);
         // Columns: key, sample, loop, start, end, output.
-        let widths: array<i32, 6> = {6, 0, 7, 8, 8, 6};
-        let fixed: i32 = 6 + 7 + 8 + 8 + 6;
+        let widths: array<i32, 6> = {6, 0, 7, 8, 8, 12};
+        let fixed: i32 = 6 + 7 + 8 + 8 + 12;
         let name_width: i32 = area.width - fixed > 8 ? area.width - fixed : 8;
         let header: Rect = Rect::new(area.x, area.y, area.width, 1);
         surface.text(header, " Key", theme.muted, theme.panel);
@@ -173,7 +181,12 @@ impl SamplerView {
             var x: i32 = area.x + 6 + name_width;
             for f in 0..4 {
                 let value: f64 = SamplerView::value(output, slot, s, i32(f));
-                let text: str8 = SamplerView::field_text(i32(f), value);
+                var text: str8 = SamplerView::field_text(i32(f), value);
+                // An aux bus routed away from Main shows where: "Out 2>A3".
+                let bus: i32 = f == 3 && value >= 0.0 ? i32(std::math::floor(value * 7.0 + 0.5)) : 0;
+                if bus > 0 && bus < destinations.len() && destinations[bus] != "MAIN" {
+                    let routed: str8 = format!("{}>{}", text, destinations[bus]); free(text); text = routed;
+                }
                 let focused: bool = selected && i32(f) == self.column;
                 surface.text(Rect::new(x, y, widths[f + 2] - 1, 1), text, focused ? theme.accent : theme.foreground, background);
                 free(text);
@@ -181,7 +194,7 @@ impl SamplerView {
             }
         }
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot | h/l field | J/K adjust | Enter load file | Backspace clear | Shift+S hide", theme.muted, theme.panel);
+            "j/k slot | h/l field | J/K adjust | Enter load | Backspace clear | o route Out | Shift+S hide", theme.muted, theme.panel);
     }
     /// Owned display text of a field's normalized value.
     fn field_text(col: i32, value: f64) -> str8 {

@@ -697,9 +697,11 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
+        // Plugin aux outputs routed away from their instrument's main output.
+        let aux_routed: bool = !self.reading && library.has_aux_routes();
         // Every extension is written when a later one is, so the chain stays
-        // in order; MASTER_BUS precedes MATRIX_LOOPS.
-        let mastered: bool = mastered_view || looped;
+        // in order; MASTER_BUS precedes MATRIX_LOOPS, which precedes AUX_OUTPUTS.
+        let mastered: bool = mastered_view || looped || aux_routed;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
         // A project session (1.2) keeps samples and plugin state in files.
         let project: bool = self.root != "";
@@ -1019,7 +1021,7 @@ impl SessionCodec {
         // Optional MATRIX_LOOPS extension: cells whose pattern loops down its
         // lane (kind 1) and splits that end a loop or long pattern (kind 2),
         // as lane, row, kind. The lanes above store these cells' plain IDs.
-        let loops_extension: bool = self.reading ? self.reader.remaining() > 0 : looped;
+        let loops_extension: bool = self.reading ? self.reader.remaining() > 0 : looped || aux_routed;
         if loops_extension && !self.failed {
             let tag: str8 = self.text("MATRIX_LOOPS"); if tag != "MATRIX_LOOPS" { self.failed = true; } if self.reading { free(tag); }
             var cells: list<i32> = [];
@@ -1043,6 +1045,40 @@ impl SessionCodec {
                 let id: i32 = library.song_at(row, lane);
                 if (kind == 1) != (id > 0) || library.song_raw(row, lane) != id { self.failed = true; break; }
                 library.set_song_raw(row, lane, kind == 1 ? id + song_loop_flag() : song_end_marker());
+            }
+        }
+        // Optional AUX_OUTPUTS extension: per pattern track, the routes of its
+        // instrument's aux output buses (Out 2 first): -1 = with the main
+        // output, 0 = master, otherwise a track index + 1. A route to a track
+        // that is not an AUDIO track reads as -1 when played.
+        let aux_extension: bool = self.reading ? self.reader.remaining() > 0 : aux_routed;
+        if aux_extension && !self.failed {
+            let tag: str8 = self.text("AUX_OUTPUTS"); if tag != "AUX_OUTPUTS" { self.failed = true; } if self.reading { free(tag); }
+            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
+            for p in 0..patterns.len() {
+                if self.failed { break; }
+                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
+                let track_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
+                if track_count != entry.data.tracks.len() { self.failed = true; break; }
+                var tracks: list<SequenceTrack> = [];
+                for t in 0..track_count {
+                    var track: SequenceTrack = entry.data.tracks[t];
+                    let buses: i32 = self.number(i32(track.aux_outputs.len()), 0, 15);
+                    var aux: list<i32> = [];
+                    for b in 0..buses {
+                        let destination: i32 = self.number(self.reading ? 0 : track.aux_outputs[b], -1, track_count);
+                        if destination - 1 == i32(t) { self.failed = true; }
+                        aux.push(destination);
+                    }
+                    if self.reading { track.aux_outputs = aux; }
+                    tracks.push(track);
+                }
+                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
+            }
+            if self.reading && !self.failed {
+                library.patterns = updated;
+                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
+                library.table.release(); library.table = entry.data.copy_pattern();
             }
         }
         if state.editor_slot > 32 {

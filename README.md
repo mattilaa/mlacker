@@ -264,7 +264,7 @@ dialog or text field has the keyboard.
 | File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
-| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Note lines ▸, Automation ▸, Clear pattern, Delete |
+| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
 | Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
@@ -693,6 +693,7 @@ bus (`Main`, `Out 2`..`Out 8`).
 | `J` / `K` | Decrease / increase the column: loop mode and output by one choice, loop points by 1% |
 | Enter | Load a WAV/AIFF into the slot (added to the Audio list) |
 | Backspace | Clear the slot |
+| `o` | Route the slot's output bus (see Plugin outputs below) |
 
 While focused, the pane keeps every printable key, `q` included, plus Enter,
 Backspace and the arrows. Tab, Space, the function keys, Escape, Ctrl
@@ -700,9 +701,19 @@ shortcuts and the Shift+M / Shift+P / Shift+S toggles still work. Loop settings
 and outputs are ordinary plugin parameters, so sessions, plugin presets and
 automation keep them. Slots are saved like drum pads (see above).
 
-mlacker mixes only a plugin's main output for now. A slot sent to `Out 2`..`Out
-8` plays on Main in mlacker, because mlacker does not activate the auxiliary
-buses yet.
+#### Plugin outputs
+
+A multi-output instrument such as Mla Sampler brings its extra output buses
+(`Out 2`..`Out 8`) into mlacker. By default each one plays with the instrument's
+main output, through the Instrument track's inserts, fader and sends. To give a
+bus its own mixer channel, create an AUDIO track and route the bus there:
+**Track → Route plugin outputs** on the Instrument track lists each bus with its
+route (`MAIN`, `MST` or `A3`). Pick one, then its destination. In the Sampler
+pane, `o` does the same for the selected slot's bus. The Out column then shows
+the route, e.g. `Out 2>A3`. A routed bus skips the instrument's own inserts,
+fader and sends and takes the destination track's instead; routed to `MST` it
+goes straight to the master bus. Routes belong to the Instrument track in each
+pattern, like its output channel, and `.mlack` saves them.
 
 ### Destructive sample editing
 

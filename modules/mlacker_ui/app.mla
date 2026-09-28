@@ -178,7 +178,9 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item("Configure CC column", Action::ConfigureCcColumn, true, keymap),
                                                 menu_item("Remove CC column", Action::RemoveCcColumn, true, keymap)]),
                                 menu_item("Clear pattern", Action::ClearTrack, true, keymap),
-                                menu_item("Delete", Action::DeleteTrack, true, keymap)] },
+                                menu_item("Delete", Action::DeleteTrack, true, keymap),
+                                // Last, so the items above keep their positions.
+                                menu_item("Route plugin outputs", Action::RoutePluginOutput, plugins, keymap)] },
                     Menu {title: "Pattern", items: [
                                 menu_item("Add pattern", Action::AddPattern, true, keymap),
                                 menu_item("Clone pattern", Action::ClonePattern, true, keymap),
@@ -248,6 +250,24 @@ fn demo_panes(content: Rect) -> list<Pane> {
     let right: list<Rect> = right_layout.split(columns[1]);
     return [Pane { id: 0, bounds: columns[0] }, Pane { id: 1, bounds: right[0] },
             Pane { id: 2, bounds: right[1] }];
+}
+
+/// Picker rows for where an instrument's aux bus goes: with the main output
+/// (-1), master (0), or an AUDIO track (index + 1).
+struct AuxChoices { var ids: list<i32>; var labels: list<str8>; };
+fn aux_destinations(table: &SequenceTable) -> AuxChoices {
+    var tracks: list<SequenceTrack> = []; tracks = table.tracks;
+    var choices: AuxChoices = AuxChoices { ids: [-1, 0], labels: [clone("  MAIN with the instrument's output"), clone("  MST  master")] };
+    for t in 0..tracks.len() {
+        let track: SequenceTrack = tracks[t];
+        if !track.audio { continue; }
+        choices.ids.push(i32(t) + 1); choices.labels.push(format!("  A{}   {}", t + 1, track.name));
+    }
+    return choices;
+}
+/// Short route label: "MAIN", "MST" or "A3".
+fn aux_route_text(destination: i32) -> str8 {
+    return destination < 0 ? clone("MAIN") : (destination == 0 ? clone("MST") : format!("A{}", destination));
 }
 
 fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
@@ -429,6 +449,9 @@ pub fn run() -> i32 {
     // track feeds.
     var outputs: OutputPicker = OutputPicker::new();
     var output_kind: i32 = 0; var output_track: i32 = -1;
+    // Route plugin outputs: kind 3 picks an aux bus of the track's instrument,
+    // kind 4 where `aux_bus` goes.
+    var aux_bus: i32 = 0;
     // Matrix playback: the merged table of the playing row, and which row it is.
     var song_playing: bool = false; var song_row: i32 = -1;
     var song_table: SequenceTable = SequenceTable {};
@@ -1227,8 +1250,12 @@ pub fn run() -> i32 {
                     if used >= 0 && used < library.audio.samples.len() { let clip: AudioClip = library.audio.samples[used]; names.push(base_name(clip.source)); }
                     else { names.push(clone("")); }
                 }
-                sampler.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), midi.output, sampler_slot, names, message);
+                // Where each output bus goes, for the Out column.
+                var routes: list<str8> = [clone("")];
+                for bus in 1..8 { routes.push(aux_route_text(library.table.track_aux_output(library.table.active_track(), i32(bus)))); }
+                sampler.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), midi.output, sampler_slot, names, routes, message);
                 for name in names { free(name); }
+                for route in routes { free(route); }
             }
             let details_pane: Pane = panes[2]; spectrum_area = details_pane.bounds.inset(1);
             matrix.paint(surface, panes[1].bounds, Theme::dark_blue(), library, focus.is_active(1), song_playing ? song_row : -1);
@@ -1519,6 +1546,7 @@ pub fn run() -> i32 {
                 let request: i32 = sampler.on_event(event, midi.output, target);
                 if request == 2 { command = Action::LoadSamplerSlot; }
                 else if request == 3 { command = Action::ClearSamplerSlot; }
+                else if request == 4 { command = Action::RouteSamplerOutput; }
                 dirty = true;
             }
             else if event.kind == InputKind::Quit { running = false; }
@@ -2103,6 +2131,58 @@ pub fn run() -> i32 {
                         focus.set_menu_active(true);
                     }
                 }
+            }
+            else if command == Action::RoutePluginOutput || command == Action::RouteSamplerOutput {
+                // An Instrument track's multi-output plugin: pick an aux bus
+                // (the Sampler pane names its slot's bus), then its channel.
+                let index: i32 = library.table.active_track();
+                let slot: i32 = library.table.active_instrument();
+                let bus_count: i64 = slot > 0 ? midi.output.instrument_outputs(wide(slot)) : -1;
+                let slot_bus: i32 = command == Action::RouteSamplerOutput ? sampler.output_bus(midi.output, slot) : 0;
+                free(message); message = clone("");
+                if slot < 1 { free(message); message = clone("Select an Instrument track playing a plugin"); }
+                else if bus_count <= 1 { free(message); message = format!("{} has a single output", midi.output.instrument_name(wide(slot))); }
+                else if command == Action::RouteSamplerOutput && slot_bus < 1 {
+                    free(message); message = format!("Slot {} plays on Main; pick Out 2-8 in its Out column first", sampler.slot + 1);
+                }
+                else if command == Action::RouteSamplerOutput {
+                    output_track = index; output_kind = 4; aux_bus = slot_bus;
+                    let choices: AuxChoices = aux_destinations(library.table);
+                    outputs.title = "Output destination";
+                    outputs.open(choices.ids, choices.labels, library.table.track_aux_output(index, aux_bus));
+                    focus.set_menu_active(true);
+                }
+                else {
+                    var ids: list<i32> = []; var labels: list<str8> = [];
+                    for bus in 1..bus_count {
+                        let route: str8 = aux_route_text(library.table.track_aux_output(index, i32(bus)));
+                        ids.push(i32(bus)); labels.push(format!("  {}  > {}", midi.output.instrument_output_name(wide(slot), bus), route));
+                        free(route);
+                    }
+                    output_track = index; output_kind = 3;
+                    outputs.title = "Plugin output to route"; outputs.open(ids, labels, 1);
+                    focus.set_menu_active(true);
+                }
+            }
+            else if command == Action::ApplyOutputChannel && output_kind == 3 {
+                // Bus chosen: now where it goes.
+                aux_bus = outputs.chosen(); output_kind = 4;
+                let slot: i32 = library.table.active_instrument();
+                let choices: AuxChoices = aux_destinations(library.table);
+                outputs.title = "Output destination";
+                outputs.open(choices.ids, choices.labels, library.table.track_aux_output(output_track, aux_bus));
+                focus.set_menu_active(true);
+            }
+            else if command == Action::ApplyOutputChannel && output_kind == 4 {
+                let choice: i32 = outputs.chosen();
+                let slot: i32 = library.table.active_instrument();
+                free(message);
+                if !library.table.set_aux_output(output_track, aux_bus, choice) { message = clone(library.table.error); }
+                else {
+                    let route: str8 = aux_route_text(choice);
+                    message = format!("{} > {}", midi.output.instrument_output_name(wide(slot), wide(aux_bus)), route); free(route);
+                }
+                playback_dirty = true;
             }
             else if command == Action::ApplyOutputChannel {
                 let choice: i32 = outputs.chosen();
