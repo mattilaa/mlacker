@@ -7,6 +7,7 @@ use tui::menu::Key;
 use tui::menu::function_number;
 use tui::piano::piano_note_name;
 use std::audio::controller::AudioController;
+use mlacker_ui::audio_clip::AudioClip;
 use std::strbuf::clone;
 use std::strbuf::free;
 
@@ -26,6 +27,11 @@ pub struct SamplerView {
     /// mode, 1 low key, 2 high key, 3 zone root, 4 key track, 5 loop mode,
     /// 6 loop start, 7 loop end, 8 output.
     var slot: i32; var column: i32; var scroll: i32;
+    /// Wave view (`w`): the selected slot's waveform with its loop markers.
+    /// `marker` 0 edits the loop start, 1 the loop end. `zoom` halves the
+    /// frames shown per step, centred on the marker. `dots` is the dot
+    /// columns the waveform last painted, for moving a marker one dot.
+    var wave: bool; var marker: i32; var zoom: i32; var dots: i32{160};
 };
 impl SamplerView {
     /// Keys the focused pane keeps for itself: everything printable ("q"
@@ -111,7 +117,12 @@ impl SamplerView {
     /// 2 load a file into it, 3 clear it, 4 route its output bus, 5 tell that
     /// its zone columns need Zone mode. (An i32 rather than an enum: MLang
     /// before its let-enum fix ran an enum `let` initializer twice.)
-    pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32) -> i32 {
+    pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
+        if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; return 1; }
+        if self.wave {
+            let handled: i32 = self.wave_event(event, output, slot, clip, has_clip);
+            if handled >= 0 { return handled; }
+        }
         let up: bool = (event.kind == InputKind::Menu && event.key == Key::Up) || (event.code == 107 && event.modifiers == 1);
         let down: bool = (event.kind == InputKind::Menu && event.key == Key::Down) || (event.code == 106 && event.modifiers == 1);
         let left: bool = (event.kind == InputKind::Menu && event.key == Key::Left) || (event.code == 104 && event.modifiers == 1);
@@ -136,6 +147,91 @@ impl SamplerView {
         if event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace) { return 3; }
         if event.code == 111 && event.modifiers == 1 { return 4; }
         return 0;
+    }
+    /// Loop start and end of sample slot `s` in frames of a `frames`-long
+    /// sample, as the plugin reads them (floor of value * frames).
+    fn loop_frame(output: AudioController, slot: i32, s: i32, end: bool, frames: i64) -> i64 {
+        let value: f64 = SamplerView::value(output, slot, s, end ? 7 : 6);
+        if value < 0.0 { return end ? frames : 0; }
+        let frame: i64 = wide(i32(std::math::floor(value * f64(frames))));
+        return frame < 0 ? 0 : (frame > frames ? frames : frame);
+    }
+    /// Set a loop point to an exact frame. The value sits mid-frame so the
+    /// plugin's floor lands on it; the end of the sample is exactly 1.
+    fn set_loop_frame(output: AudioController, slot: i32, s: i32, end: bool, frame: i64, frames: i64) -> bool {
+        let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, end ? 7 : 6));
+        if index < 0 || frames < 1 { return false; }
+        let value: f64 = frame >= frames ? 1.0 : (f64(frame) + 0.5) / f64(frames);
+        return output.set_parameter(slot, index, value) == 0;
+    }
+    /// The zero crossing nearest `frame` (a frame whose sign differs from the
+    /// one before it), searched up to 1 s of 48 kHz either way; `frame` when
+    /// there is none.
+    fn zero_crossing(clip: &AudioClip, frame: i64) -> i64 {
+        var source: AudioClip = AudioClip {}; source = clip;
+        let samples: list<f32> = source.samples; let channels: i64 = source.channels;
+        for distance in 0..48000 {
+            for side in 0..2 {
+                let f: i64 = side == 0 ? frame - distance : frame + distance;
+                if f < 1 || f >= source.frames { continue; }
+                // Mono: the channel average.
+                let a: f32 = channels < 2 ? samples[f - 1] : (samples[(f - 1) * channels] + samples[(f - 1) * channels + 1]) * 0.5f;
+                let b: f32 = channels < 2 ? samples[f] : (samples[f * channels] + samples[f * channels + 1]) * 0.5f;
+                if (a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f) { return f; }
+            }
+        }
+        return frame;
+    }
+    /// Frames the wave view shows: the whole sample, halved per zoom step.
+    fn span(self: SamplerView, frames: i64) -> i64 {
+        var span: i64 = frames;
+        for _z in 0..self.zoom { span = span / 2; }
+        return span < 16 ? (frames < 16 ? frames : 16) : span;
+    }
+    /// First frame the wave view shows: the span centred on the marker.
+    fn window_start(self: SamplerView, frames: i64, marker_frame: i64) -> i64 {
+        let span: i64 = self.span(frames);
+        var start: i64 = marker_frame - span / 2;
+        if start > frames - span { start = frames - span; }
+        return start < 0 ? 0 : start;
+    }
+    /// Wave view keys; -1 when the key is not one of them (the table's keys
+    /// then apply: j/k slot, Enter, Backspace, o). 6 = no waveform to edit.
+    fn wave_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
+        let left: bool = (event.kind == InputKind::Menu && event.key == Key::Left) || (event.code == 104 && event.modifiers == 1);
+        let right: bool = (event.kind == InputKind::Menu && event.key == Key::Right) || (event.code == 108 && event.modifiers == 1);
+        let fine_left: bool = (event.code == 72 && event.modifiers == 1) || (event.code == 104 && event.modifiers == 2);
+        let fine_right: bool = (event.code == 76 && event.modifiers == 1) || (event.code == 108 && event.modifiers == 2);
+        let zoom_in: bool = event.code == 61 || event.code == 43;
+        let zoom_out: bool = event.code == 45 && event.modifiers == 1;
+        let toggle: bool = event.code == 109 && event.modifiers == 1;
+        let snap: bool = event.code == 122 && event.modifiers == 1;
+        if !(left || right || fine_left || fine_right || zoom_in || zoom_out || toggle || snap) { return -1; }
+        if toggle { self.marker = 1 - self.marker; return 1; }
+        if zoom_out { if self.zoom > 0 { self.zoom = self.zoom - 1; } return 1; }
+        if zoom_in { if self.zoom < 20 { self.zoom = self.zoom + 1; } return 1; }
+        if slot < 1 || !has_clip { return 6; }
+        var source: AudioClip = AudioClip {}; source = clip;
+        let frames: i64 = source.frames;
+        if frames < 2 { return 6; }
+        var probe: AudioClip = AudioClip {}; probe = source;
+        let end: bool = self.marker == 1;
+        let current: i64 = SamplerView::loop_frame(output, slot, self.slot, end, frames);
+        var target: i64 = current;
+        if snap { target = SamplerView::zero_crossing(probe, current); }
+        else {
+            // One dot of the waveform, or one frame with Shift.
+            let dots: i64 = self.dots > 0 ? wide(self.dots) : 160;
+            var step: i64 = fine_left || fine_right ? 1 : self.span(frames) / dots;
+            if step < 1 { step = 1; }
+            target = left || fine_left ? current - step : current + step;
+        }
+        // The loop keeps at least two frames.
+        let other: i64 = SamplerView::loop_frame(output, slot, self.slot, !end, frames);
+        if end { if target < other + 2 { target = other + 2; } if target > frames { target = frames; } }
+        else { if target > other - 2 { target = other - 2; } if target < 0 { target = 0; } }
+        if target == current { return 0; }
+        return SamplerView::set_loop_frame(output, slot, self.slot, end, target, frames) ? 1 : 0;
     }
     /// Output bus (0 = Main, 1-7 = Out 2-8) of the selected slot, or -1.
     pub fn output_bus(self: SamplerView, output: AudioController, slot: i32) -> i32 {
@@ -167,7 +263,7 @@ impl SamplerView {
     /// ("" when unknown), `routes[b]` where output bus `b` goes ("MAIN",
     /// "MST", "A3"; unused for Main); `slot` is the Mla Sampler instrument
     /// slot or 0. A pad slot shows its key under Low.
-    pub fn paint(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, names: &list<str8>, routes: &list<str8>, status: str8) -> void {
+    pub fn paint(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, names: &list<str8>, routes: &list<str8>, clip: &AudioClip, has_clip: bool, status: str8) -> void {
         if area.width < 20 || area.height < 3 { return; }
         let help_y: i32 = area.y + area.height - 2;
         surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), status, theme.foreground, theme.panel);
@@ -178,6 +274,7 @@ impl SamplerView {
         }
         var labels: list<str8> = []; labels = names;
         var destinations: list<str8> = []; destinations = routes;
+        if self.wave { self.paint_wave(surface, area, theme, output, slot, labels, clip, has_clip); return; }
         let root: i64 = output.instrument_sampler(slot, 0);
         let occupied: i64 = output.instrument_sampler(slot, 2);
         var fixed: i32 = 1;
@@ -227,7 +324,87 @@ impl SamplerView {
                 loaded ? theme.foreground : theme.muted, background);
         }
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot | h/l column | J/K adjust, [ ] octave/10% | Enter load | Backspace clear | o route Out | Shift+S hide", theme.muted, theme.panel);
+            "j/k slot | h/l column | J/K adjust, [ ] octave/10% | w wave | Enter load | Backspace clear | o route | Shift+S hide", theme.muted, theme.panel);
+    }
+    /// Wave view: a summary line, the selected slot's waveform with the loop
+    /// region highlighted and its start/end markers, and a key help line.
+    /// `clip` is the slot's session sample when `has_clip`.
+    fn paint_wave(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, labels: &list<str8>, clip: &AudioClip, has_clip: bool) -> void {
+        var names: list<str8> = []; names = labels;
+        let help_y: i32 = area.y + area.height - 2;
+        surface.text(Rect::new(area.x, help_y, area.width, 1),
+            "j/k slot | m start/end | h/l move, H/L 1 frame | z zero crossing | -/= zoom | w table", theme.muted, theme.panel);
+        let label: str8 = self.slot < names.len() ? names[self.slot] : "";
+        var source: AudioClip = AudioClip {}; if has_clip { source = clip; }
+        if !has_clip || source.frames < 2 {
+            let why: str8 = format!("Slot {}: {}", self.slot + 1, label != "" ? "no waveform (not in the Audio list)" : "empty - Enter loads a sample");
+            surface.text(Rect::new(area.x, area.y, area.width, 1), why, theme.muted, theme.panel); free(why);
+            return;
+        }
+        let frames: i64 = source.frames;
+        let samples: list<f32> = source.samples; let channels: i64 = source.channels;
+        let start_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, false, frames);
+        let end_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, true, frames);
+        let mode: str8 = SamplerView::field_text(5, SamplerView::value(output, slot, self.slot, 5));
+        let info: str8 = format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {} of {} frames | Zoom {}x",
+            self.slot + 1, label, mode, self.marker == 0 ? "[" : "", start_frame, self.marker == 0 ? "]" : "",
+            self.marker == 1 ? "[" : "", end_frame, self.marker == 1 ? "]" : "", end_frame - start_frame, frames, 1 << self.zoom);
+        surface.text(Rect::new(area.x, area.y, area.width, 1), info, theme.foreground, theme.panel);
+        free(info); free(mode);
+        let rows: i32 = area.height - 3;
+        if rows < 1 || area.width < 4 { return; }
+        let dot_rows: i32 = rows * 4;
+        let columns: i32 = area.width * 2;
+        self.dots = columns;
+        let span: i64 = self.span(frames);
+        let first: i64 = self.window_start(frames, self.marker == 1 ? end_frame : start_frame);
+        // Top and bottom dot row of each dot column, from its min and max.
+        var tops: list<i32> = []; var bottoms: list<i32> = [];
+        for px in 0..columns {
+            let f0: i64 = first + span * wide(i32(px)) / wide(columns);
+            var f1: i64 = first + span * (wide(i32(px)) + 1) / wide(columns);
+            if f1 <= f0 { f1 = f0 + 1; }
+            let stride: i64 = (f1 - f0) / 64 + 1;
+            var low: f32 = 1.0f; var high: f32 = -1.0f;
+            var f: i64 = f0;
+            while f < f1 && f < frames {
+                let v: f32 = channels < 2 ? samples[f] : (samples[f * channels] + samples[f * channels + 1]) * 0.5f;
+                if v < low { low = v; } if v > high { high = v; }
+                f = f + stride;
+            }
+            if high < low { low = 0.0f; high = 0.0f; }
+            if high > 1.0f { high = 1.0f; } if low < -1.0f { low = -1.0f; }
+            tops.push(i32(std::math::floor(f64((1.0f - high) * 0.5f) * f64(dot_rows - 1) + 0.5)));
+            bottoms.push(i32(std::math::floor(f64((1.0f - low) * 0.5f) * f64(dot_rows - 1) + 0.5)));
+        }
+        let left_bits: array<i32, 4> = {1, 2, 4, 64};
+        let right_bits: array<i32, 4> = {8, 16, 32, 128};
+        let start_x: i64 = (start_frame - first) * wide(area.width) / (span > 0 ? span : 1);
+        var end_x: i64 = (end_frame - first) * wide(area.width) / (span > 0 ? span : 1);
+        // A loop ending at the window's right edge (e.g. the sample's end)
+        // marks the last column.
+        if end_x == wide(area.width) && end_frame == first + span { end_x = wide(area.width) - 1; }
+        for r in 0..rows {
+            let y: i32 = area.y + 1 + i32(r);
+            for x in 0..area.width {
+                var mask: i32 = 0;
+                for dot in 0..4 {
+                    let dy: i32 = i32(r) * 4 + i32(dot);
+                    let a: i32 = i32(x) * 2; let b: i32 = a + 1;
+                    if dy >= tops[a] && dy <= bottoms[a] { mask = mask + left_bits[dot]; }
+                    if dy >= tops[b] && dy <= bottoms[b] { mask = mask + right_bits[dot]; }
+                }
+                let cell_frame: i64 = first + span * wide(i32(x)) / wide(area.width);
+                let looped: bool = cell_frame >= start_frame && cell_frame < end_frame;
+                let marker: bool = wide(i32(x)) == start_x || wide(i32(x)) == end_x;
+                if marker {
+                    let selected: bool = (self.marker == 0 && wide(i32(x)) == start_x) || (self.marker == 1 && wide(i32(x)) == end_x);
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2502, foreground: selected ? theme.accent : theme.foreground, background: theme.panel });
+                } else if mask != 0 {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2800 + mask, foreground: looped ? theme.accent : theme.muted, background: theme.panel });
+                }
+            }
+        }
     }
     /// Owned display text of a column's normalized value.
     fn field_text(col: i32, value: f64) -> str8 {

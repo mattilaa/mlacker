@@ -705,6 +705,26 @@ Overlapping zones layer.
 | Enter | Load a WAV/AIFF into the slot (added to the Audio list) |
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
+| `w` | Wave view of the slot (again returns to the table) |
+
+**Wave view** shows the selected slot's waveform across the pane, with the
+loop region highlighted and its start and end as `│` markers. The line above
+names the slot and shows the loop mode, the loop start and end in frames (the
+one being edited in brackets), the loop length and the zoom. Frames are exact:
+a loop point set here plays from that frame.
+
+| Keys | Action |
+|------|--------|
+| `m` | Edit the loop start or the loop end |
+| `h` / `l` (Left / Right) | Move the marker one dot of the waveform |
+| `H` / `L` | Move the marker one frame |
+| `z` | Snap the marker to the nearest zero crossing (within 48000 frames) |
+| `=` / `-` | Zoom in / out, centred on the marker |
+| `j` / `k` | Next / previous slot |
+
+The loop keeps at least two frames. The waveform comes from the slot's sample
+in the Audio list, so a slot filled only by a plugin preset has none. Enter
+loads one.
 
 While focused, the pane keeps every printable key, `q` included, plus Enter,
 Backspace and the arrows. Tab, Space, the function keys, Escape, Ctrl

@@ -1253,7 +1253,10 @@ pub fn run() -> i32 {
                 // Where each output bus goes, for the Out column.
                 var routes: list<str8> = [clone("")];
                 for bus in 1..8 { routes.push(aux_route_text(library.table.track_aux_output(library.table.active_track(), i32(bus)))); }
-                sampler.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), midi.output, sampler_slot, names, routes, message);
+                let wave_used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, sampler.slot) : -1;
+                let wave_known: bool = wave_used >= 0 && wave_used < library.audio.samples.len();
+                var wave_clip: AudioClip = AudioClip {}; if wave_known { wave_clip = library.audio.samples[wave_used]; }
+                sampler.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), midi.output, sampler_slot, names, routes, wave_clip, wave_known, message);
                 for name in names { free(name); }
                 for route in routes { free(route); }
             }
@@ -1543,10 +1546,15 @@ pub fn run() -> i32 {
             // The focused Sampler pane keeps its keys (see SamplerView::handles).
             else if sampler.visible && focus.selected == 2 && !mixer.bus_focus && !instrument_editor.focused && menus.active < 0 && SamplerView::handles(event) {
                 let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
-                let request: i32 = sampler.on_event(event, midi.output, target);
+                // The wave view reads the slot's session sample.
+                let used: i32 = target > 0 ? midi.pad_sample(target, sampler.slot) : -1;
+                let has_clip: bool = used >= 0 && used < library.audio.samples.len();
+                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used]; }
+                let request: i32 = sampler.on_event(event, midi.output, target, clip, has_clip);
                 if request == 2 { command = Action::LoadSamplerSlot; }
                 else if request == 3 { command = Action::ClearSamplerSlot; }
                 else if request == 4 { command = Action::RouteSamplerOutput; }
+                else if request == 6 { free(message); message = clone("No waveform: load the slot from a file or the Audio list (Enter)"); }
                 else if request == 5 { free(message); message = format!("Slot {} is a pad (one key): set its Mode to Zone first", sampler.slot + 1); }
                 dirty = true;
             }

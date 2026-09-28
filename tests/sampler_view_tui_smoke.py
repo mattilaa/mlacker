@@ -1,5 +1,6 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
-clearing slots, key zones, loop mode / loop point / output edits, routing an aux output to
+clearing slots, key zones, loop mode / loop point / output edits, the wave view's
+frame-accurate loop markers and zero-crossing snap, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
 
@@ -27,6 +28,16 @@ def write_wav(path, value):
         out.writeframes(struct.pack("<h", value) * 4800)
 
 
+def write_square(path):
+    """4800 frames of a square wave: +0.5 for 50 frames, then -0.5, so the
+    zero crossings fall on every multiple of 50."""
+    with wave.open(str(path), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(48000)
+        out.writeframes(b"".join(struct.pack("<h", 16000 if (f // 50) % 2 == 0 else -16000) for f in range(4800)))
+
+
 def expect(frame, *needles):
     for needle in needles:
         assert needle in frame, (needle, frame[-4000:])
@@ -38,6 +49,8 @@ def main():
         root = Path(directory)
         pad = root / "pad.wav"
         write_wav(pad, 12000)
+        square = root / "square.wav"
+        write_square(square)
         path = root / "sampler.mlack"
         tui = Terminal(cwd=directory)
         try:
@@ -108,6 +121,23 @@ def main():
             expect(tui.send_until(b"\r", b"Load sample for pad 1"), b"Load sample for pad 1")
             expect(tui.send(b"\x15" + bytes(pad) + b"\r", 0.7), b"Pad 1: pad.wav")
 
+            # Wave view (w) of slot 3: the whole sample, loop start selected.
+            tui.send(b"jj")
+            expect(tui.send_until(b"\r", b"Load sample for pad 3"), b"Load sample for pad 3")
+            expect(tui.send(b"\x15" + bytes(square) + b"\r", 0.7), b"Pad 3: square.wav")
+            expect(tui.send(b"w"), b"Slot 3 square.wav", b"Loop Off", b"[Start 0]", b"End 4800", b"Len 4800 of 4800 frames", b"Zoom 1x")
+            # Shift+L moves a frame; z snaps to the nearest zero crossing.
+            expect(tui.send(b"L" * 10), b"[Start 10]")
+            expect(tui.send(b"z"), b"[Start 50]", b"Len 4750")
+            # m picks the end marker: a frame back, then the crossing at 4750.
+            expect(tui.send(b"m"), b"[End 4800]")
+            expect(tui.send(b"H"), b"[End 4799]")
+            expect(tui.send(b"z"), b"[End 4750]", b"Len 4700")
+            expect(tui.send(b"="), b"Zoom 2x")
+            expect(tui.send(b"-"), b"Zoom 1x")
+            expect(tui.send(b"w"), b"Start%")
+            tui.send(b"kk")
+
             # The virtual keyboard takes the pane over, and Shift+S takes it back.
             frame = expect(tui.send(b"P"), b"Keyboard")
             assert b"Sampler |" not in frame, frame[-4000:]
@@ -125,6 +155,10 @@ def main():
         try:
             expect(tui.read(1.2), b"Opened:")
             expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
+            # Frame-accurate loop points survive the round trip.
+            tui.send(b"jj")
+            expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750")
+            tui.send(b"w")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:
             tui.close()
