@@ -1486,12 +1486,17 @@ fn tui_transport_status() {
     let surface: Surface = Surface::new(80, 3); let theme: Theme = Theme::dark_blue();
     var status: TransportStatus = TransportStatus {};
     verify(status.bpm == 120 && status.beats_per_bar == 4 && status.beat_unit == 4);
-    status.paint(surface, Rect::new(0, 2, 80, 1), theme);
+    status.paint(surface, Rect::new(0, 2, 80, 1), theme, "Untitled");
     let idle: Cell = surface.cell(42, 2);
     verify(idle.glyph == 9675 && idle.foreground == theme.muted);
+    // " | Untitled" follows "STOP"; a saved project shows its folder name.
+    let untitled: Cell = surface.cell(51, 2); verify(untitled.glyph == 85);
+    status.paint(surface, Rect::new(0, 2, 80, 1), theme, "Song.mlaproj");
+    let project: Cell = surface.cell(51, 2); let suffix: Cell = surface.cell(56, 2);
+    verify(project.glyph == 83 && suffix.glyph == 109 && project.foreground == theme.foreground);
     status.elapsed_ms = 62003; status.bpm = 140; status.beats_per_bar = 7; status.beat_unit = 8;
     status.midi_received = true;
-    status.paint(surface, Rect::new(0, 2, 80, 1), theme);
+    status.paint(surface, Rect::new(0, 2, 80, 1), theme, "Untitled");
     let active: Cell = surface.cell(42, 2);
     verify(active.glyph == 9679 && active.foreground == 0x5adc8c);
     let minute: Cell = surface.cell(17, 2); let second: Cell = surface.cell(20, 2);
@@ -1500,17 +1505,17 @@ fn tui_transport_status() {
     let before: Cell = surface.cell(72, 2);
     verify(before.glyph == 32);
     status.cpu_percent = 42;
-    status.paint(surface, Rect::new(0, 2, 80, 1), theme);
+    status.paint(surface, Rect::new(0, 2, 80, 1), theme, "Untitled");
     let c: Cell = surface.cell(72, 2); let percent: Cell = surface.cell(78, 2);
     verify(c.glyph == 67 && percent.glyph == 37 && percent.foreground == theme.foreground);
     status.cpu_percent = 95;
-    status.paint(surface, Rect::new(0, 2, 80, 1), theme);
+    status.paint(surface, Rect::new(0, 2, 80, 1), theme, "Untitled");
     let busy: Cell = surface.cell(78, 2); verify(busy.foreground == theme.accent);
     // Too narrow to clear the transport text: the meter is left out.
-    status.paint(surface, Rect::new(0, 2, 50, 1), theme);
+    status.paint(surface, Rect::new(0, 2, 50, 1), theme, "Untitled");
     let hidden: Cell = surface.cell(43, 2); verify(hidden.glyph != 67);
-    status.paint(surface, Rect::new(0, 2, 5, 1), theme);
-    status.paint(surface, Rect::new(0, 2, 0, 0), theme);
+    status.paint(surface, Rect::new(0, 2, 5, 1), theme, "Untitled");
+    status.paint(surface, Rect::new(0, 2, 0, 0), theme, "Untitled");
     surface.release();
 }
 

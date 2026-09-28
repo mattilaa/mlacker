@@ -70,7 +70,9 @@ impl TransportStatus {
         self.ticks = wide(self.row) * 15000;
         self.elapsed_ms = i32(wide(self.row) * 15000 / wide(self.bpm));
     }
-    pub fn paint(self: TransportStatus, surface: Surface, area: Rect, theme: Theme) -> void {
+    /// `document` names the open project or session ("Untitled" before the
+    /// first save); it follows the play state.
+    pub fn paint(self: TransportStatus, surface: Surface, area: Rect, theme: Theme, document: str8) -> void {
         if area.width <= 0 || area.height <= 0 { return; }
         let row: Rect = Rect::new(area.x, area.y, area.width, 1);
         surface.fill(row, Cell { glyph: 32, foreground: theme.foreground, background: theme.panel });
@@ -90,11 +92,18 @@ impl TransportStatus {
             surface.text(Rect::new(area.x + offset, area.y, area.width - offset, 1),
                 self.midi_received ? "●" : "○", self.midi_received ? 0x5adc8c : theme.muted, theme.panel);
         }
+        let state: str8 = self.playing && self.count_in > 0 ? "COUNT IN" : (self.recording ? "REC" : (self.playing ? "PLAY" : "STOP"));
         if offset + 2 < area.width {
             surface.text(Rect::new(area.x + offset + 2, area.y, area.width - offset - 2, 1),
-                self.playing && self.count_in > 0 ? "COUNT IN" : (self.recording ? "REC" : (self.playing ? "PLAY" : "STOP")), self.playing ? theme.accent : theme.muted, theme.panel);
+                state, self.playing ? theme.accent : theme.muted, theme.panel);
         }
-        let state_end: i32 = offset + 2 + (self.playing && self.count_in > 0 ? 8 : 4);
+        var state_end: i32 = offset + 2 + i32(len(state));
+        let name: str8 = format!(" | {}", document);
+        if state_end < area.width {
+            surface.text(Rect::new(area.x + state_end, area.y, area.width - state_end, 1), name, theme.foreground, theme.panel);
+        }
+        state_end = state_end + i32(len(name));
+        free(name);
         if self.cpu_percent >= 0 {
             let cpu: str8 = format!("CPU {}{} ", self.cpu_percent, "%");
             let width: i32 = i32(len(cpu));

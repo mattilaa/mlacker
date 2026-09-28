@@ -247,7 +247,7 @@ fn demo_panes(content: Rect) -> list<Pane> {
             Pane { id: 2, bounds: right[1] }];
 }
 
-fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8) -> void {
+fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, document: str8) -> void {
     let theme: Theme = Theme::dark_blue();
     surface.fill(surface.bounds(), Cell { glyph: 32, foreground: theme.foreground, background: theme.background });
     let library: Pane = panes[0];
@@ -318,7 +318,7 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
     }
     else { label.paint(surface, bottom, theme); table.paint_track_details(surface, bottom, theme); }
     if show_sample { free(sample_title); }
-    transport.paint(surface, Rect::new(0, surface.height - 1, surface.width, 1), theme);
+    transport.paint(surface, Rect::new(0, surface.height - 1, surface.width, 1), theme, document);
 }
 
 pub fn run() -> i32 {
@@ -1204,7 +1204,10 @@ pub fn run() -> i32 {
                 if target >= 0 { let track: SequenceTrack = library.table.tracks[target % 64]; track_name = track.name; }
                 keyboard_title = keyboard.title(track_name);
             }
-            paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title);
+            // The status bar names the open project or session file.
+            let document: str8 = session_path == "" ? clone("Untitled") : base_name(session_path);
+            paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, document);
+            free(document);
             if keyboard.visible { free(keyboard_title); }
             let details_pane: Pane = panes[2]; spectrum_area = details_pane.bounds.inset(1);
             matrix.paint(surface, panes[1].bounds, Theme::dark_blue(), library, focus.is_active(1), song_playing ? song_row : -1);
