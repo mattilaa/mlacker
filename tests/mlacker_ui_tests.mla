@@ -1988,6 +1988,35 @@ fn tui_replace_sample_updates_all_placements() {
 }
 
 #[test]
+fn tui_sample_editor_crop_to_watched_range() {
+    let source: AudioClip = test_clip(4000, 0.5f);
+    var editor: SampleEditor = SampleEditor {};
+    // A crop to exactly the selected (watched) range: a Sampler slot's loop.
+    editor.open(source, 0);
+    editor.select(1000, 3000);
+    verify(editor.selection_start() == 1000 && editor.selection_end() == 3000);
+    verify(editor.edit(116) && editor.clip.frames == 2000 && editor.cropped_to_watch);
+    // Undoing it, or cropping another range, is not.
+    verify(editor.edit(117) && !editor.cropped_to_watch);
+    editor.release(); editor.open(source, 0);
+    editor.select(1000, 3000);
+    editor.view.sel_start = 500; editor.view.sel_end = 3000;
+    verify(editor.edit(116) && !editor.cropped_to_watch);
+    // Nor is one after a delete moved the audio, even on the same frames.
+    editor.release(); editor.open(source, 0);
+    editor.select(1000, 3000);
+    editor.view.sel_start = 0; editor.view.sel_end = 100;
+    verify(editor.edit(120));
+    editor.view.sel_start = 1000; editor.view.sel_end = 3000; editor.view.sel_frames = editor.clip.frames;
+    verify(editor.edit(116) && !editor.cropped_to_watch);
+    // The selection is clamped to the sample.
+    editor.release(); editor.open(source, 0);
+    editor.select(-10, 999999);
+    verify(editor.selection_start() == 0 && editor.selection_end() == 4000);
+    editor.release(); source.release();
+}
+
+#[test]
 fn tui_audio_library_add_clip_reuses_identical_samples() {
     var audio: AudioLibrary = AudioLibrary {};
     verify(audio.add_clip(test_clip(100, 0.5f)) == 0);

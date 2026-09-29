@@ -2,7 +2,8 @@
 clearing slots, key zones, velocity ranges, the Sound page (level, pan, tune,
 per-slot envelopes, sample start, groups and group mode), the Filter page (a
 two-stage filter chain and filter envelope), the LFO pages, the Mod page, loop mode / loop point / output edits, the wave view's
-frame-accurate loop and sample start markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
+frame-accurate loop and sample start markers, zero-crossing snap and crossfade,
+editing a slot's sample (crop to its loop), auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
 
@@ -163,6 +164,13 @@ def main():
             expect(tui.send(b"z"), b"[Ofs 50]")
             tui.send(b"m")
             tui.send(b"w")
+            # E edits the slot's sample with its loop (frames 50-4750)
+            # selected; cropping to it makes the loop span the whole sample.
+            expect(tui.send_until(b"E", b"Edit sample 3"), b"Edit sample 3", b"Selection 1..98 ms of 100 ms")
+            expect(tui.send(b"t"), b"Cropped to selection")
+            expect(tui.send_until(b"\r", b"the slot's loop now spans it"), b"Sample 3 saved")
+            expect(tui.send(b"w"), b"Start 0", b"End 4700", b"Len 4700/4700", b"Ofs 0")
+            tui.send(b"w")
             tui.send(b"kk")
 
             # e: the Sound page of slot 1. Level 0 dB, centred, the instance
@@ -253,7 +261,7 @@ def main():
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
-            expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750", b"Xfade 50", b"Ofs 50")
+            expect(tui.send(b"w"), b"Slot 3 square.wav", b"Start 0", b"End 4700", b"Ofs 0")
             tui.send(b"w")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:

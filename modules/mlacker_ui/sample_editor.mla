@@ -92,6 +92,10 @@ pub struct SampleEditor {
     var active: bool; var index: i32; var clip: AudioClip; var history: list<AudioClip>;
     var view: SampleView; var modified: bool; var status: str8{""};
     var button: i32{-1}; var pressed: i32{-1}; var press_ticks: i32;
+    /// A range to watch (a sampler slot's loop, see `select`), and whether
+    /// the only change of length so far is a crop to exactly that range.
+    var watch_from: i64{-1}; var watch_to: i64{-1};
+    var length_changed: bool; var cropped_to_watch: bool;
 };
 impl SampleEditor {
     pub fn open(self: &mut Self, source: &AudioClip, index: i32) -> void {
@@ -102,6 +106,17 @@ impl SampleEditor {
         self.view.reset_selection(self.clip.frames);
         self.view.anchor_frame = 0; self.view.anchor_active = true;
         self.modified = false; self.status = ""; self.button = -1; self.pressed = -1; self.active = true;
+        self.watch_from = -1; self.watch_to = -1; self.length_changed = false; self.cropped_to_watch = false;
+    }
+    /// Select frames `from` .. `to` (clamped) and watch that range: after a
+    /// crop to exactly it, `cropped_to_watch` says so.
+    pub fn select(self: &mut Self, from: i64, to: i64) -> void {
+        let start: i64 = from < 0 ? 0 : from;
+        let end: i64 = to > self.clip.frames ? self.clip.frames : to;
+        if end <= start { return; }
+        self.view.sel_start = start; self.view.sel_end = end; self.view.sel_frames = self.clip.frames;
+        self.view.anchor_frame = start; self.view.anchor_active = true;
+        self.watch_from = start; self.watch_to = end;
     }
     /// Selection in frames; the whole sample when nothing narrower is selected.
     pub fn selection_start(self: SampleEditor) -> i64 {
@@ -134,10 +149,13 @@ impl SampleEditor {
         let from: i64 = self.selection_start(); let to: i64 = self.selection_end();
         if command == 116 { // t: crop to selection
             if self.whole() { self.status = "Select a range first (Ctrl+N/M start, Shift+N/M end)"; return false; }
+            self.cropped_to_watch = !self.length_changed && from == self.watch_from && to == self.watch_to;
+            self.length_changed = true;
             self.apply(pcm_crop(self.clip.samples, ch, from, to), "Cropped to selection", false); return true;
         }
         if command == 120 { // x: delete selection
             if self.whole() { self.status = "Cannot delete the whole sample"; return false; }
+            self.length_changed = true; self.cropped_to_watch = false;
             self.apply(pcm_delete(self.clip.samples, ch, from, to), "Deleted selection", false); return true;
         }
         if command == 114 { self.apply(pcm_reverse(self.clip.samples, ch, from, to), "Reversed", true); return true; }
@@ -154,6 +172,8 @@ impl SampleEditor {
         if command == 97 { self.view.reset_selection(self.clip.frames); self.status = "Selected all"; return true; }
         if command == 117 { // u: undo
             if self.history.len() == 0 { self.status = "Nothing to undo"; return false; }
+            // Undo may take back the crop: stop trusting it.
+            self.length_changed = true; self.cropped_to_watch = false;
             let old: list<AudioClip> = self.history; var kept: list<AudioClip> = [];
             for i in 0..old.len() - 1 { kept.push(old[i]); }
             self.clip.release(); self.clip = old[old.len() - 1]; self.history = kept;

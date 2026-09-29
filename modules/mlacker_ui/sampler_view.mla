@@ -232,7 +232,7 @@ impl SamplerView {
     /// its zone columns need Zone mode, 6 tell that it has no waveform, 7
     /// audition it (see `audition_key`), 8 tell that its envelope columns
     /// need Env set to Own, 9 that its filter envelope columns need FEnv set
-    /// to Own. (An i32 rather than an enum: MLang
+    /// to Own, 10 edit its sample. (An i32 rather than an enum: MLang
     /// before its let-enum fix ran an enum `let` initializer twice.)
     pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
         if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; return 1; }
@@ -274,6 +274,8 @@ impl SamplerView {
             return output.set_parameter(slot, index, output.parameter_info(slot, index, 2) >= 0.5 ? 0.0 : 1.0) == 0 ? 1 : 0;
         }
         if event.code == 112 && event.modifiers == 1 { return 7; }
+        // E edits the slot's sample in the sample editor.
+        if (event.code == 69 && event.modifiers == 1) || (event.code == 101 && event.modifiers == 2) { return 10; }
         return 0;
     }
     /// Column a wave view marker edits: loop start, loop end, sample start.
@@ -447,6 +449,34 @@ impl SamplerView {
         let note: i32 = self.audition_note; self.audition_note = -1;
         return note;
     }
+    /// The frames of the selected slot's sample (`frames` long) that its loop
+    /// covers, as stored: a reversed slot's loop counts from the end, so it
+    /// is mirrored here. The whole sample when the loop is off.
+    pub fn loop_range_start(self: SamplerView, output: AudioController, slot: i32, frames: i64) -> i64 {
+        if !self.looping(output, slot) { return 0; }
+        let reversed: bool = SamplerView::value(output, slot, self.slot, 111) >= 0.5;
+        return reversed ? frames - SamplerView::loop_frame(output, slot, self.slot, true, frames)
+            : SamplerView::loop_frame(output, slot, self.slot, false, frames);
+    }
+    pub fn loop_range_end(self: SamplerView, output: AudioController, slot: i32, frames: i64) -> i64 {
+        if !self.looping(output, slot) { return frames; }
+        let reversed: bool = SamplerView::value(output, slot, self.slot, 111) >= 0.5;
+        return reversed ? frames - SamplerView::loop_frame(output, slot, self.slot, false, frames)
+            : SamplerView::loop_frame(output, slot, self.slot, true, frames);
+    }
+    fn looping(self: SamplerView, output: AudioController, slot: i32) -> bool {
+        return i32(std::math::floor(SamplerView::value(output, slot, self.slot, 7) * 2.0 + 0.5)) != 0;
+    }
+    /// After the slot's sample was cropped to its loop: the loop covers the
+    /// whole new sample, and playback starts at its beginning.
+    pub fn loop_to_whole(output: AudioController, slot: i32, s: i32) -> void {
+        let start: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, 8));
+        let end: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, 9));
+        let offset: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, 108));
+        if start >= 0 { output.set_parameter(slot, start, 0.0); }
+        if end >= 0 { output.set_parameter(slot, end, 1.0); }
+        if offset >= 0 { output.set_parameter(slot, offset, 0.0); }
+    }
     /// Output bus (0 = Main, 1-7 = Out 2-8) of the selected slot, or -1.
     pub fn output_bus(self: SamplerView, output: AudioController, slot: i32) -> i32 {
         let value: f64 = SamplerView::value(output, slot, self.slot, 11);
@@ -571,7 +601,7 @@ impl SamplerView {
                 loaded ? theme.foreground : theme.muted, background);
         }
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot  h/l col  J/K [ ] adjust  e sound  w wave  p play  Enter load  Bksp clear  o route", theme.muted, theme.panel);
+            "j/k slot  h/l col  J/K [ ] adjust  e sound  w wave  p play  E edit  Enter load  o route", theme.muted, theme.panel);
     }
     /// Wave view: a summary line, the selected slot's waveform with the loop
     /// region highlighted and its start/end markers, and a key help line.

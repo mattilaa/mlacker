@@ -401,6 +401,9 @@ pub fn run() -> i32 {
     var last_plugin_dir: str8 = clone("/Library/Audio/Plug-Ins/VST3"); var last_preset_dir: str8 = clone("");
     var piano: PianoDialog = PianoDialog::new();
     var sample_editor: SampleEditor = SampleEditor {};
+    // The Sampler slot (instrument slot and sample slot) whose sample the
+    // editor is editing, or -1: a crop to its loop resets the loop.
+    var editing_sampler_slot: i32 = -1; var editing_sampler_pad: i32 = -1;
     if !fixture {
         let arguments: list<str8> = __env_args();
         if arguments.len() == 2 { free(request_path); request_path = clone(arguments[1]); session_request = 1; }
@@ -1429,14 +1432,20 @@ pub fn run() -> i32 {
                 if action == 1 && !sample_editor.modified { sample_editor.release(); free(message); message = clone("Sample unchanged"); }
                 else if action == 1 {
                     let index: i32 = sample_editor.index;
+                    let loop_cropped: bool = editing_sampler_slot > 0 && sample_editor.cropped_to_watch;
                     let placed: i32 = library.replace_sample(index, sample_editor.take());
                     let edited: AudioClip = library.audio.samples[index];
                     let pads: i32 = midi.refresh_pads(index, edited);
+                    // Cropped to a Sampler slot's loop: that slot now loops,
+                    // and starts, over the whole sample.
+                    if loop_cropped { SamplerView::loop_to_whole(midi.output, editing_sampler_slot, editing_sampler_pad); }
                     free(message);
                     message = pads < 0 ? format!("Sample {} saved, but a drum pad rejected it: {}", index + 1, __mlang_std_audio_last_error())
-                        : format!("Sample {} saved: {} placement(s), {} drum pad(s) updated", index + 1, placed, pads);
+                        : format!("Sample {} saved: {} placement(s), {} drum pad(s) updated{}", index + 1, placed, pads,
+                            loop_cropped ? "; the slot's loop now spans it" : "");
+                    editing_sampler_slot = -1;
                 }
-                else if action == 2 { sample_editor.release(); free(message); message = clone("Sample edits discarded"); }
+                else if action == 2 { sample_editor.release(); editing_sampler_slot = -1; free(message); message = clone("Sample edits discarded"); }
                 dirty = true;
             }
             else if piano.active {
@@ -1582,6 +1591,7 @@ pub fn run() -> i32 {
                         }
                     }
                 }
+                else if request == 10 { command = Action::EditSamplerSample; }
                 else if request == 9 { free(message); message = format!("Slot {} uses the instance filter envelope: set its FEnv to Own first", sampler.slot + 1); }
                 else if request == 8 { free(message); message = format!("Slot {} uses the instance envelope: set its Env to Own first", sampler.slot + 1); }
                 else if request == 6 { free(message); message = clone("No waveform: load the slot from a file or the Audio list (Enter)"); }
@@ -2058,7 +2068,23 @@ pub fn run() -> i32 {
                     if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
                 }
             }
+            else if command == Action::EditSamplerSample {
+                // The selected slot's sample, its loop selected: t crops to it.
+                let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
+                let used: i32 = target > 0 ? midi.pad_sample(target, sampler.slot) : -1;
+                if used < 0 || used >= library.audio.samples.len() {
+                    free(message); message = clone("Load the slot's sample from a file or the Audio list first (Enter)");
+                } else {
+                    transport.playing = false;
+                    let clip: AudioClip = library.audio.samples[used];
+                    sample_editor.open(clip, used);
+                    sample_editor.select(sampler.loop_range_start(midi.output, target, clip.frames), sampler.loop_range_end(midi.output, target, clip.frames));
+                    editing_sampler_slot = target; editing_sampler_pad = sampler.slot;
+                    free(message); message = format!("Editing slot {}'s sample, its loop selected: t crops to it, Enter saves", sampler.slot + 1);
+                }
+            }
             else if command == Action::EditSample {
+                editing_sampler_slot = -1;
                 let index: i32 = library.audio.view.selected;
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
                 else {

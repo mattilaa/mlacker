@@ -714,6 +714,7 @@ Overlapping zones layer.
 | `e` | Next page: keys & loops, Sound, Filter, LFO 1, LFO 2, Mod |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
+| `E` | Edit the slot's sample (see below) |
 
 The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
 two stages in series: per stage its type (**F1**/**F2**: `Off`, `LP12`,
@@ -762,6 +763,16 @@ until Env is `Own`. `J`/`K` step level by 1 dB, tune by a semitone and the
 rest by 1%. `[`/`]` step by 6 dB, an octave and 10%. A slot on its own
 envelope keeps it, so a short pad and a sustained, looping zone can share one
 instance.
+
+`E` opens the slot's sample in the destructive sample editor (see
+Destructive sample editing), with the slot's loop already selected, or the
+whole sample when the loop is off. A reversed slot's loop is selected where it
+lies in the stored sample. `n`, `i`/`o`, `r` and the other edits then work on
+the loop, and `t` crops the sample to it. Saving a crop to exactly the loop
+resets the slot's loop to span the whole new sample and its start to the
+beginning, so it plays as before, without the audio outside the loop. The
+edit changes the session sample, so every placement and pad using it updates;
+other slots' loop points stay as they were.
 
 **Wave view** shows the selected slot's waveform across the pane, with the
 loop region highlighted, the crossfade region shaded, its start and end as `│`

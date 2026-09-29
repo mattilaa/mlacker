@@ -42,10 +42,10 @@ pub enum Action : i32 {
     ToggleMetronome = 150, ToggleExtendRecording = 151, MetronomeOnRecording = 152, MetronomeAlways = 153,
     // Follow-ups, not in a menu: an insert slot's Enter / Backspace, a chosen
     // output channel, drum key, matrix pattern, pasting a matrix cell, and the
-    // Sampler pane's Enter / Backspace / o on a slot.
+    // Sampler pane's Enter / Backspace / o / E on a slot.
     LoadInsert = 115, RemoveInsert = 116, ApplyOutputChannel = 31, ApplyPadChoice = 119,
     PlaceMatrixPattern = 121, PasteMatrixCell = 122, LoadSamplerSlot = 123, ClearSamplerSlot = 124,
-    RouteSamplerOutput = 125
+    RouteSamplerOutput = 125, EditSamplerSample = 126
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).
