@@ -93,9 +93,19 @@ starting at frame 0 cannot crossfade. Off and bidirectional loops ignore it.
 
 ## Filters
 
-Each voice runs through a **chain of filter stages** in series, after the
-playhead and before the amp envelope. There are two stages today (**Filter 1**
-then **Filter 2**). Each has a **Type**, **Cutoff** (20 Hz .. 20 kHz),
+Each voice runs through a **chain of four filter stages**, after the
+playhead and before the amp envelope: **Filter 1** .. **Filter 4**. The slot's
+**Filter Chain** connects them:
+
+| Chain    | Signal path |
+|----------|-------------|
+| Serial   | 1, 2, 3, 4 in series (the default) |
+| Parallel | every stage that is not Off fed the same input, their outputs summed |
+| 2 x 2    | 1-2 and 3-4 in series, the two pairs (each with a stage on) summed |
+
+With every stage Off the signal passes, whatever the chain. Parallel and 2 x 2
+make band splits and EMU-style dual filters: a low-pass beside a high-pass, a
+formant pair beside a comb. Each stage has a **Type**, **Cutoff** (20 Hz .. 20 kHz),
 **Resonance** (0 .. 36 dB), **Env** (how far the filter envelope moves the
 cutoff, -8 .. +8 octaves), **Key Track** (0 .. 100 % of the key's distance
 from C-4, so higher notes open the filter) and **Gain** (-24 .. +24 dB, for
@@ -126,9 +136,9 @@ the voices are, off the audio thread.
 The type list is built to grow. Its parameter always has 64 entries, so a
 saved type never changes meaning. New filter models take the next number, and
 the ones not yet written show as `(reserved)` and pass the signal through.
-The parameter IDs also leave room for up to four stages of up to eight fields
-per slot, so more stages in the chain, or more settings per stage (drive,
-modulation), only add parameters after the existing ones. In the voice
+The parameter IDs leave room for up to eight fields per stage, so more
+settings per stage (drive, modulation) only add parameters after the existing
+ones; the chain list has 8 entries for more routings. In the voice
 (`src/mla_sampler_dsp.mla`), a stage is a `SamplerFilter`: a new model adds its
 state there and a branch to `configure`/`process`.
 
@@ -137,6 +147,31 @@ The **filter envelope** mirrors the amp envelope: the instance has one
 each slot uses it or its own (**Slot N Filter Envelope**: Instance or Own). It
 starts and releases with the note. Coefficients follow it every 16 frames.
 Filter and filter envelope edits reach notes already sounding.
+
+## Velocity and key curves
+
+A note's level follows its velocity through the slot's **Velocity Curve**:
+Linear, Soft (square root: soft notes louder), Hard (squared: soft notes
+quieter) or Fixed (every note at full). **Velocity Depth** (0 .. 100 %, with
+the instance's Velocity sensitivity) sets how much the curved velocity counts:
+at 0 every note plays at full. **Key Level** (-12 .. +12 dB per octave from
+C-4) makes higher notes louder or quieter. They are read when a note starts.
+The Velocity mod source stays the raw velocity.
+
+## Tempo sync
+
+A slot's **Tempo Sync** plays its whole sample in its **Beats** (1/4 .. 64,
+default 4) at the host tempo (120 BPM without one):
+
+| Sync    | How |
+|---------|-----|
+| Off     | at its own speed (the default) |
+| Repitch | faster or slower, so the pitch moves with the speed, as on a turntable |
+| Stretch | at its own pitch: the playhead keeps the tempo while two 40 ms grains, half a grain apart and crossfaded with triangle windows, read from it at the note's pitch |
+
+Tempo changes reach sounding notes. Loops, the start and reverse work in
+the stretched timeline; a stretched voice skips the loop crossfade, since its
+grains cross the seam.
 
 ## LFOs
 
@@ -289,7 +324,7 @@ runs every 16 frames, and restarts with each note but not on a legato note.
 | Filter Attack .. Release | as the amp envelope's   | The instance filter envelope. Sustain defaults to 0. |
 | Slot N Filter Envelope | Instance, Own             | Own uses the four below. |
 | Slot N Filter Attack .. Release | as above         | With Own. |
-| Slot N Filter T Type | 64-entry list (see Filters) | Stage T = 1, 2. Default Off. |
+| Slot N Filter T Type | 64-entry list (see Filters) | Stage T = 1 .. 4. Default Off. |
 | Slot N Filter T Cutoff | 20 Hz .. 20 kHz           | Logarithmic. Default 20 kHz. |
 | Slot N Filter T Resonance | 0 .. 36 dB             | Default 0. |
 | Slot N Filter T Env | -8 .. +8 octaves             | Filter envelope depth. Default 0. |
@@ -319,6 +354,12 @@ runs every 16 frames, and restarts with each note but not on a legato note.
 | Slot N Pitch Attack | 0 .. 2 s                     | Default 0. |
 | Slot N Pitch Decay | 1 ms .. 10 s                  | Default 100 ms. |
 | Slot N Send A, Send B | 0 .. 100 %                 | Level on the Send A / Send B bus. Default 0. |
+| Slot N Filter Chain | Serial, Parallel, 2 x 2      | 8-entry list. Default Serial. |
+| Slot N Tempo Sync  | Off, Repitch, Stretch         | 8-entry list. Default Off. |
+| Slot N Beats       | 1/4, 1/2, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64 | 16-entry list. Default 4. |
+| Slot N Velocity Curve | Linear, Soft, Hard, Fixed  | 8-entry list. Default Linear. |
+| Slot N Velocity Depth | 0 .. 100 %                 | Default 100 %. |
+| Slot N Key Level   | -12 .. +12 dB/octave          | From C-4. Default 0. |
 | Bend Range         | 0 .. 24 semitones             | Pitch bend either way. Default 2. |
 | Mod CC             | CC 2, 4, 11, 16, 17, 18, 19, 74 | Which CC the Mod CC source reads. 16-entry list. Default CC 2. |
 | Mod Wheel, Aftertouch | 0 .. 1                     | Set by CC 1 and channel pressure. Default 0. |
@@ -336,8 +377,9 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `900 + s`: group
 - `1100 + 5s` + 0 filter envelope, 1 attack, 2 decay, 3 sustain, 4 release
 - `2000 + 32s + 8t` + 0 type, 1 cutoff, 2 resonance, 3 env, 4 key track, 5
-  gain, for filter stage `t` (0-based; room for 4 stages of 8 fields). The
-  gains were added later and are registered after the choke groups.
+  gain, for filter stage `t` (0-3, 8 fields each). Stages 0 and 1's gains
+  were added later and are registered after the choke groups; stages 2 and
+  3 after the sends.
 - `1200 + s`: choke group
 - `1300 + s`: reverse
 - `3000 + 32s + 16l` + 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch,
@@ -349,6 +391,8 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `1500 + 4s` + 0 play mode, 1 glide
 - `1600 + 4s` + 0 pitch envelope depth, 1 attack, 2 decay
 - `1700 + 4s` + 0 Send A, 1 Send B
+- `1800 + 4s` + 0 filter chain, 1 tempo sync, 2 beats
+- `1900 + 4s` + 0 velocity curve, 1 velocity depth, 2 key level
 
 `950` is the Group Mode and `960`-`963` the instance filter envelope. The MIDI
 controllers are `110` Bend Range, `111` Mod CC, `112` Mod Wheel, `113`
@@ -359,7 +403,8 @@ Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
 off, no choke group, LFO depths at 0, no mod routes, forwards, one voice, Poly,
-a 2-semitone bend range, no pitch envelope and no sends.
+a 2-semitone bend range, no pitch envelope and no sends, filter stages 3 and
+4 off in a serial chain, the linear velocity curve, no tempo sync.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -391,7 +436,9 @@ detune), Mono replacing a note, Legato keeping the envelope, glide and
 returning to a held key), MIDI controllers (the host mapping, pitch bend and
 its range on new and sounding notes, the mod wheel, aftertouch and chosen CC as
 sources, pitch bend as a source), the pitch envelope (a decaying drop, an attack, off at
-depth 0), the send buses (each slot's levels, Main unchanged), choke
+depth 0), the send buses (each slot's levels, Main unchanged), filter stages 3
+and 4 and the parallel and 2 x 2 chains, velocity curves, depth and key level,
+Repitch speeds and Stretch keeping pitch, length and level, choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

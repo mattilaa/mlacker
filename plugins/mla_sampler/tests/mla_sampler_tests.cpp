@@ -90,6 +90,10 @@ enum { kSrcLfo1 = 1, kSrcLfo2, kSrcAmpEnv, kSrcFilterEnv, kSrcVelocity, kSrcKey,
 constexpr ParamID kBendRangeId = 110, kModCcId = 111, kModWheelId = 112, kAftertouchId = 113, kPitchBendId = 114;
 constexpr ParamID pitchEnvParam(int slot, int k) { return 1600 + slot * 4 + k; } // 0 depth, 1 attack, 2 decay
 constexpr ParamID sendParam(int slot, int send) { return 1700 + slot * 4 + send; }
+constexpr ParamID chainParam(int slot, int k) { return 1800 + slot * 4 + k; } // 0 chain, 1 tempo sync, 2 beats
+constexpr ParamID curveParam(int slot, int k) { return 1900 + slot * 4 + k; } // 0 curve, 1 depth, 2 key level
+constexpr double kParallel = 1.0 / 7.0, kPairs = 2.0 / 7.0, kRepitch = 1.0 / 7.0, kStretch = 2.0 / 7.0;
+double beatsValue(int index) { return index / 15.0; } // 1/4, 1/2, 1, 2, 3, 4, ...
 constexpr ParamID ccValueParam(int choice) { return 120 + choice; } // CC 2, 4, 11, 16, 17, 18, 19, 74
 enum { kTgtPitch = 1, kTgtCutoff, kTgtResonance, kTgtLevel, kTgtPan, kTgtStart };
 double listValue(int index) { return index / 15.0; }
@@ -1206,6 +1210,80 @@ void testPitchEnvelopeAndSends(const std::string &path)
     CHECK(sendA.channelBuffers32[0][100] == 0.0f);
 }
 
+void testChainCurvesAndTempo(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto stage = [](int t, int type, double hz) {
+        return Params{{filterParam(0, t, kFilterType), filterType(type)}, {filterParam(0, t, kFilterCutoff), cutoff(hz)}};
+    };
+    const auto join = [](Params a, const Params &b) { for(const auto &p : b) a.push_back(p); return a; };
+    const auto dcLevel = [&](const Params &params) { return left(filtered(path, dc(), params), 3000); };
+    // Stages 3 and 4 filter like the first two: a high-pass on stage 3 (or 4)
+    // takes the DC out.
+    CHECK(std::fabs(dcLevel(stage(2, kHighpass24, 500))) < 0.01f);
+    CHECK(std::fabs(dcLevel(join(stage(0, kLowpass24, 500), stage(3, kHighpass24, 500)))) < 0.01f);
+    // A low-pass and a high-pass: in series nothing is left of DC; in
+    // parallel the low-pass's DC is; so with two pairs (1-2 and 3-4).
+    const Params split = join(stage(0, kLowpass24, 500), stage(1, kHighpass24, 500));
+    CHECK(std::fabs(dcLevel(split)) < 0.01f);
+    CHECK(std::fabs(dcLevel(join(split, {{chainParam(0, 0), kParallel}})) - 0.5f) < 0.01f);
+    const Params pairs = join(stage(0, kLowpass24, 500), stage(2, kHighpass24, 500));
+    CHECK(std::fabs(dcLevel(join(pairs, {{chainParam(0, 0), kPairs}})) - 0.5f) < 0.01f);
+    // With nothing on, every chain passes the signal.
+    CHECK(std::fabs(dcLevel({{chainParam(0, 0), kParallel}}) - 0.5f) < 1e-3f);
+
+    // Velocity curves on a half-hard note (DC 0.5): linear halves it, soft
+    // takes sqrt(0.5), hard 0.25, fixed full; depth 0 ignores velocity.
+    const auto soft = [&](const Params &params, int pitch = kRootKey) {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : params)
+            plugin.param(id, value);
+        plugin.noteOn(pitch, 0.5f);
+        return left(plugin.render(kBlock), 100);
+    };
+    CHECK(std::fabs(soft({}) - 0.25f) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 0), listValue(1) * 15.0 / 7.0}}) - 0.5f * std::sqrt(0.5f)) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 0), 2.0 / 7.0}}) - 0.125f) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 0), 3.0 / 7.0}}) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 1), 0.0}}) - 0.5f) < 1e-3f);
+    // Key level +6 dB/octave: the pad at C-2 (MIDI 36), two octaves under
+    // C-4, plays 12 dB down.
+    CHECK(std::fabs(soft({{curveParam(0, 1), 0.0}, {curveParam(0, 2), 0.75}}) - 0.5f * std::pow(10.0f, -12.0f / 20.0f)) < 1e-3f);
+
+    // Tempo sync at the default 120 BPM of a 1 s sample: Repitch over 4
+    // beats (2 s) plays at half speed, over 2 beats (1 s) at its own.
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto rate = [](const std::vector<float> &out) { return (left(out, 1001) - left(out, 1000)) * 48000.0f; };
+    CHECK(std::fabs(rate(filtered(path, slope, {{chainParam(0, 1), kRepitch}})) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(rate(filtered(path, slope, {{chainParam(0, 1), kRepitch}, {chainParam(0, 2), beatsValue(3)}})) - 1.0f) < 1e-3f);
+    // Stretch over 4 beats keeps the pitch of a 1 kHz tone and lasts 2 s; a
+    // constant level stays constant through the grains' crossfades.
+    std::vector<float> tone(48000);
+    for(size_t f = 0; f < tone.size(); ++f)
+        tone[f] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 1000.0 * f / 48000.0));
+    Instance plugin;
+    OPEN(plugin, path);
+    CHECK(loadPcm(plugin, 0, tone) == kResultOk);
+    plugin.param(chainParam(0, 1), kStretch);
+    plugin.noteOn(kRootKey);
+    const auto stretched = plugin.render(72192);
+    int crossings = 0;
+    for(int f = 60001; f < 64800; ++f)
+        if((left(stretched, f) >= 0.0f) != (left(stretched, f - 1) >= 0.0f))
+            ++crossings;
+    CHECK(crossings > 180 && crossings < 220); // 200 at 1 kHz over 0.1 s
+    CHECK(energy(stretched, 60000, 64800) > 100.0); // still playing at 1.25 s
+    const auto level = filtered(path, dc(), {{chainParam(0, 1), kStretch}});
+    CHECK(std::fabs(left(level, 3000) - 0.5f) < 2e-3f);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -1331,12 +1409,13 @@ int main(int argc, char **argv)
     testUnisonAndGlide(path);
     testControllers(path);
     testPitchEnvelopeAndSends(path);
+    testChainCurvesAndTempo(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, pitch envelope and sends, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, pitch envelope and sends, filter chain, velocity/key curves and tempo sync, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

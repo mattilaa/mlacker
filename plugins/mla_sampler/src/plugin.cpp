@@ -80,6 +80,9 @@ extern "C" void mlasampler_voice_set_route__ptr_struct_SamplerVoice_i32_i32_i32_
 extern "C" void mlasampler_voice_set_note__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float velocity, float key);
 extern "C" void mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float semitones,
                                                                         float seconds);
+extern "C" void mlasampler_voice_set_chain__ptr_struct_SamplerVoice_i32(SamplerVoice *voice, int32_t chain);
+extern "C" void mlasampler_voice_set_stretch__ptr_struct_SamplerVoice_f64_f32(SamplerVoice *voice, double timeStep,
+                                                                          float grainSeconds);
 extern "C" void mlasampler_voice_set_pitch_envelope__ptr_struct_SamplerVoice_f32_f32_f32(SamplerVoice *voice, float depth,
                                                                                          float attack, float decay);
 extern "C" void mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32(
@@ -169,6 +172,8 @@ enum ParamId : ParamID {
     kPlayParamBase = 1500,               // slot s: 1500 + 4s: 0 play mode, 1 glide time
     kPitchEnvParamBase = 1600,           // slot s: 1600 + 4s: 0 depth, 1 attack, 2 decay
     kSendParamBase = 1700,               // slot s: 1700 + 4s: 0 Send A, 1 Send B
+    kChainParamBase = 1800,              // slot s: 1800 + 4s: 0 filter chain, 1 tempo sync, 2 beats
+    kCurveParamBase = 1900,              // slot s: 1900 + 4s: 0 velocity curve, 1 velocity depth, 2 key level
     kFilterParamBase = 2000,             // slot s, stage t: 2000 + 32s + 8t, see FilterField
     kLfoParamBase = 3000,                // slot s, LFO l: 3000 + 32s + 16l, see LfoField
     kRouteParamBase = 4000,              // slot s, route r: 4000 + 32s + 4r, see RouteField
@@ -245,7 +250,31 @@ static const double kRouteTargetRange[] = {0.0, 24.0, 8.0, 36.0, 1.0, 1.0, 1.0};
 // The filter chain. IDs leave room for 4 stages of 8 fields per slot; the
 // chain runs kFilterStages of kFilterFields today, and more of either only
 // add parameters after the existing ones.
-constexpr int kFilterStages = 2;
+constexpr int kFilterStages = 4;
+// The first two stages' fields were registered with the first filter block;
+// stages 3 and 4 came later and are registered after the sends.
+constexpr int kFilterStagesFirst = 2;
+constexpr int kFilterFieldsLater = 6; // type .. gain of stages 3 and 4
+// How the stages connect (8-entry list, see the voice's set_chain).
+constexpr int kChainCount = 8;
+static const char *const kChainNames[] = {"Serial", "Parallel", "2 x 2"};
+constexpr int kChainsKnown = sizeof(kChainNames) / sizeof(kChainNames[0]);
+// Tempo sync (8-entry list): Repitch plays the sample in its length of beats
+// by changing its speed and pitch, Stretch by grains at its own pitch.
+constexpr int kSyncCount = 8;
+static const char *const kSyncNames[] = {"Off", "Repitch", "Stretch"};
+constexpr int kSyncsKnown = sizeof(kSyncNames) / sizeof(kSyncNames[0]);
+enum TempoSync : int { kSyncOff = 0, kSyncRepitch = 1, kSyncStretch = 2 };
+constexpr int kBeatsCount = 16;
+static const double kBeats[] = {0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64};
+static const char *const kBeatNames[] = {"1/4", "1/2", "1", "2", "3", "4", "6", "8", "12", "16", "24", "32", "48", "64"};
+constexpr int kBeatsKnown = sizeof(kBeats) / sizeof(kBeats[0]);
+constexpr float kGrainSeconds = 0.04f;
+// Velocity curves (8-entry list): Linear, Soft (sqrt: louder soft notes),
+// Hard (squared: quieter soft notes), Fixed (every note at full).
+constexpr int kCurveCount = 8;
+static const char *const kCurveNames[] = {"Linear", "Soft", "Hard", "Fixed"};
+constexpr int kCurvesKnown = sizeof(kCurveNames) / sizeof(kCurveNames[0]);
 enum FilterField : int {
     kFilterType = 0,  // one of kFilterTypeNames, as a 64-entry list (see there)
     kFilterCutoff,    // 20 Hz .. 20 kHz
@@ -325,9 +354,10 @@ constexpr int kNumVelocityParams = kNumSlots * 2;
 constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
-                            kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages +
+                            kNumSlots * kFilterStagesFirst * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStagesFirst +
                             kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields + kNumSlots +
-                            kNumSlots * 3 + kNumSlots * 2 + kControllerParams + kNumSlots * 3 + kNumSlots * kNumSends;
+                            kNumSlots * 3 + kNumSlots * 2 + kControllerParams + kNumSlots * 3 + kNumSlots * kNumSends +
+                            kNumSlots * (kFilterStages - kFilterStagesFirst) * kFilterFieldsLater + kNumSlots * 3 + kNumSlots * 3;
 constexpr ParamID kMaxParamId = kRouteParamBase + kNumSlots * kRouteSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
@@ -364,11 +394,11 @@ struct ParamLayout {
         run(kFilterEnvelopeParamBase, 4);
         run(kSlotFilterEnvelopeParamBase, kNumSlots * kParamsPerEnvelope);
         for(int slot = 0; slot < kNumSlots; ++slot)
-            for(int stage = 0; stage < kFilterStages; ++stage)
+            for(int stage = 0; stage < kFilterStagesFirst; ++stage)
                 run(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride, kFilterFieldsFirst);
         run(kChokeParamBase, kNumSlots);
         for(int slot = 0; slot < kNumSlots; ++slot)
-            for(int stage = 0; stage < kFilterStages; ++stage)
+            for(int stage = 0; stage < kFilterStagesFirst; ++stage)
                 add(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride + kFilterGain);
         for(int lfo = 0; lfo < kLfos; ++lfo)
             for(int slot = 0; slot < kNumSlots; ++slot)
@@ -387,6 +417,13 @@ struct ParamLayout {
             run(kPitchEnvParamBase + slot * 4, 3);
         for(int slot = 0; slot < kNumSlots; ++slot)
             run(kSendParamBase + slot * 4, kNumSends);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = kFilterStagesFirst; stage < kFilterStages; ++stage)
+                run(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride, kFilterFieldsLater);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            run(kChainParamBase + slot * 4, 3);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            run(kCurveParamBase + slot * 4, 3);
     }
 };
 static const ParamLayout kLayout;
@@ -675,7 +712,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             addParam(id(kEnvelopeRelease), slotTitle(slot, "Filter Release").c_str(), STR16("s"), normFromTime(0.1));
         }
         for(int slot = 0; slot < kNumSlots; ++slot)
-            for(int stage = 0; stage < kFilterStages; ++stage) {
+            for(int stage = 0; stage < kFilterStagesFirst; ++stage) {
                 const std::string name = "Filter " + std::to_string(stage + 1) + " ";
                 auto *type = addList(filterParamId(slot, stage, kFilterType), slotTitle(slot, (name + "Type").c_str()));
                 for(int t = 0; t < kFilterTypeCount; ++t)
@@ -694,7 +731,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         }
         // Filter gains (peak and shelves) last.
         for(int slot = 0; slot < kNumSlots; ++slot)
-            for(int stage = 0; stage < kFilterStages; ++stage)
+            for(int stage = 0; stage < kFilterStagesFirst; ++stage)
                 addParam(filterParamId(slot, stage, kFilterGain),
                          slotTitle(slot, ("Filter " + std::to_string(stage + 1) + " Gain").c_str()).c_str(), STR16("dB"), 0.5);
         // LFOs last. Depths default to 0, so an LFO does nothing until used.
@@ -777,6 +814,39 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         for(int slot = 0; slot < kNumSlots; ++slot) {
             addParam(static_cast<ParamID>(kSendParamBase + slot * 4), slotTitle(slot, "Send A").c_str(), nullptr, 0.0);
             addParam(static_cast<ParamID>(kSendParamBase + slot * 4 + 1), slotTitle(slot, "Send B").c_str(), nullptr, 0.0);
+        }
+        // Filter stages 3 and 4, off like the first two.
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = kFilterStagesFirst; stage < kFilterStages; ++stage) {
+                const std::string name = "Filter " + std::to_string(stage + 1) + " ";
+                auto *type = addList(filterParamId(slot, stage, kFilterType), slotTitle(slot, (name + "Type").c_str()));
+                for(int t = 0; t < kFilterTypeCount; ++t)
+                    type->appendString(utf16(t < kFilterTypesKnown ? kFilterTypeNames[t] : "(reserved)").c_str());
+                addParam(filterParamId(slot, stage, kFilterCutoff), slotTitle(slot, (name + "Cutoff").c_str()).c_str(), STR16("Hz"), 1.0);
+                addParam(filterParamId(slot, stage, kFilterResonance), slotTitle(slot, (name + "Resonance").c_str()).c_str(), STR16("dB"), 0.0);
+                addParam(filterParamId(slot, stage, kFilterEnvAmount), slotTitle(slot, (name + "Env").c_str()).c_str(), STR16("oct"), 0.5);
+                addParam(filterParamId(slot, stage, kFilterKeyTrack), slotTitle(slot, (name + "Key Track").c_str()).c_str(), nullptr, 0.0);
+                addParam(filterParamId(slot, stage, kFilterGain), slotTitle(slot, (name + "Gain").c_str()).c_str(), STR16("dB"), 0.5);
+            }
+        // The chain routing and tempo sync, then velocity and key curves.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *chain = addList(static_cast<ParamID>(kChainParamBase + slot * 4), slotTitle(slot, "Filter Chain"));
+            for(int k = 0; k < kChainCount; ++k)
+                chain->appendString(utf16(k < kChainsKnown ? kChainNames[k] : "(reserved)").c_str());
+            auto *sync = addList(static_cast<ParamID>(kChainParamBase + slot * 4 + 1), slotTitle(slot, "Tempo Sync"));
+            for(int k = 0; k < kSyncCount; ++k)
+                sync->appendString(utf16(k < kSyncsKnown ? kSyncNames[k] : "(reserved)").c_str());
+            auto *beats = addList(static_cast<ParamID>(kChainParamBase + slot * 4 + 2), slotTitle(slot, "Beats"));
+            for(int k = 0; k < kBeatsCount; ++k)
+                beats->appendString(utf16(k < kBeatsKnown ? kBeatNames[k] : "(reserved)").c_str());
+            setListDefault(beats, static_cast<ParamID>(kChainParamBase + slot * 4 + 2), 5.0 / (kBeatsCount - 1)); // 4 beats
+        }
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *curve = addList(static_cast<ParamID>(kCurveParamBase + slot * 4), slotTitle(slot, "Velocity Curve"));
+            for(int k = 0; k < kCurveCount; ++k)
+                curve->appendString(utf16(k < kCurvesKnown ? kCurveNames[k] : "(reserved)").c_str());
+            addParam(static_cast<ParamID>(kCurveParamBase + slot * 4 + 1), slotTitle(slot, "Velocity Depth").c_str(), nullptr, 1.0);
+            addParam(static_cast<ParamID>(kCurveParamBase + slot * 4 + 2), slotTitle(slot, "Key Level").c_str(), STR16("dB/oct"), 0.5);
         }
         return kResultOk;
     }
@@ -880,7 +950,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
            data.processContext->tempo > 0.0 && data.processContext->tempo != tempo_) {
             tempo_ = data.processContext->tempo;
             for(int slot = 0; slot < kNumSlots; ++slot)
-                applyLive(slot, false, false, false, true);
+                applyLive(slot, false, tempoSync(slot) != kSyncOff, false, true);
         }
         framesRendered_ += data.numSamples;
 
@@ -1418,6 +1488,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 lfoChanged[(id - kLfoParamBase) / kLfoSlotStride] = true;
             if(id >= kPitchEnvParamBase && id < kPitchEnvParamBase + kNumSlots * 4)
                 lfoChanged[(id - kPitchEnvParamBase) / 4] = true;
+            if(id >= kChainParamBase && id < kChainParamBase + kNumSlots * 4) {
+                if((id - kChainParamBase) % 4 == 0)
+                    filterChanged[(id - kChainParamBase) / 4] = true;
+                else
+                    soundChanged[(id - kChainParamBase) / 4] = true;
+            }
             if(id >= kRouteParamBase && id < kMaxParamId)
                 routeChanged[(id - kRouteParamBase) / kRouteSlotStride] = true;
             if((id >= kBendRangeParam && id <= kPitchBendParam) ||
@@ -1645,8 +1721,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(target == nullptr)
             return;
 
-        const float sensitivity = static_cast<float>(norm(kVelocityParam));
-        const float velocityGain = 1.0f - sensitivity + sensitivity * std::clamp(velocity, 0.0f, 1.0f);
+        const float velocityGain = noteGain(slot, pitch, velocity);
         const double frames = static_cast<double>(sample->frames);
 
         applyEnvelope(target->dsp, slot);
@@ -1656,6 +1731,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(glide != 0.0)
             mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(target->dsp, static_cast<float>(glide), glideSeconds(slot));
         applyLoop(target->dsp, slot, sample);
+        applyStretch(target->dsp, slot, sample);
         applyFilter(target->dsp, slot, pitch);
         applyLfo(target->dsp, slot);
         applyRoutes(target->dsp, slot);
@@ -1707,7 +1783,49 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     {
         const double semitones =
             semitonesFromNorm(norm(kTuneParam)) + semitonesFromNorm(slotNorm(slot, kSlotTune)) + keySemitones;
-        return sample->rate / sampleRate_ * std::pow(2.0, semitones / 12.0);
+        const double speed = tempoSync(slot) == kSyncRepitch ? tempoFactor(slot, sample) : 1.0;
+        return sample->rate / sampleRate_ * std::pow(2.0, semitones / 12.0) * speed;
+    }
+
+    int tempoSync(int slot) const
+    {
+        const int sync = static_cast<int>(std::lround(norm(static_cast<ParamID>(kChainParamBase + slot * 4 + 1)) * (kSyncCount - 1)));
+        return sync < kSyncsKnown ? sync : kSyncOff;
+    }
+
+    // How much faster than recorded a synced slot plays so its whole sample
+    // lasts its Beats at the host tempo.
+    double tempoFactor(int slot, const Sample *sample) const
+    {
+        const int index = static_cast<int>(std::lround(norm(static_cast<ParamID>(kChainParamBase + slot * 4 + 2)) * (kBeatsCount - 1)));
+        const double beats = kBeats[std::clamp(index, 0, kBeatsKnown - 1)];
+        const double seconds = static_cast<double>(sample->frames) / sample->rate;
+        return seconds / (beats * 60.0 / (tempo_ > 0.0 ? tempo_ : 120.0));
+    }
+
+    // A Stretch slot's playhead keeps the tempo while grains keep the pitch.
+    void applyStretch(SamplerVoice *dsp, int slot, const Sample *sample)
+    {
+        const double timeStep = tempoSync(slot) == kSyncStretch ? sample->rate / sampleRate_ * tempoFactor(slot, sample) : 0.0;
+        mlasampler_voice_set_stretch__ptr_struct_SamplerVoice_f64_f32(dsp, timeStep, kGrainSeconds);
+    }
+
+    // A note's gain from its velocity: the slot's curve, then the instance
+    // Velocity sensitivity times the slot's depth; and its key: Key Level
+    // dB per octave from C-4.
+    float noteGain(int slot, int pitch, float velocity) const
+    {
+        const int curve = static_cast<int>(std::lround(norm(static_cast<ParamID>(kCurveParamBase + slot * 4)) * (kCurveCount - 1)));
+        float v = std::clamp(velocity, 0.0f, 1.0f);
+        if(curve == 1)
+            v = std::sqrt(v);
+        else if(curve == 2)
+            v = v * v;
+        else if(curve == 3)
+            v = 1.0f;
+        const float sensitivity = static_cast<float>(norm(kVelocityParam) * norm(static_cast<ParamID>(kCurveParamBase + slot * 4 + 1)));
+        const double keyDb = (norm(static_cast<ParamID>(kCurveParamBase + slot * 4 + 2)) * 24.0 - 12.0) * (pitch - 60) / 12.0;
+        return (1.0f - sensitivity + sensitivity * v) * static_cast<float>(std::pow(10.0, keyDb / 20.0));
     }
 
     float voiceGain(int slot, float velocityGain) const
@@ -1741,6 +1859,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 envOctavesFromNorm(norm(filterParamId(slot, stage, kFilterEnvAmount))),
                 filterGainFromNorm(norm(filterParamId(slot, stage, kFilterGain))));
         }
+        const int chain = static_cast<int>(std::lround(norm(static_cast<ParamID>(kChainParamBase + slot * 4)) * (kChainCount - 1)));
+        mlasampler_voice_set_chain__ptr_struct_SamplerVoice_i32(dsp, chain < kChainsKnown ? chain : 0);
         const auto own = norm(static_cast<ParamID>(kSlotFilterEnvelopeParamBase + slot * kParamsPerEnvelope)) >= 0.5;
         const auto envelope = [&](int k) {
             return norm(static_cast<ParamID>(own ? kSlotFilterEnvelopeParamBase + slot * kParamsPerEnvelope + 1 + k
@@ -1764,6 +1884,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 continue;
             if(loop)
                 applyLoop(voice.dsp, slot, voice.sample);
+            if(loop || sound)
+                applyStretch(voice.dsp, slot, voice.sample);
             if(filter)
                 applyFilter(voice.dsp, slot, voice.pitch);
             if(lfo) {

@@ -712,7 +712,7 @@ Overlapping zones layer.
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
 | `v` | Key map of all slots (again returns to the table) |
-| `e` | Next page: keys & loops, Sound, Filter, LFO 1, LFO 2, Mod, Play |
+| `e` | Next page: keys & loops, Sound, Filter, Filter 3/4, LFO 1, LFO 2, Mod, Play, Vel/Tempo |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
 | `E` | Edit the slot's sample (see below) |
@@ -721,7 +721,7 @@ Overlapping zones layer.
 | `A` | Auto-map note-named samples as key zones from the slot (see below) |
 
 The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
-two stages in series: per stage its type (**F1**/**F2**: `Off`, `LP12`,
+its first two stages: per stage its type (**F1**/**F2**: `Off`, `LP12`,
 `LP24`, `HP12`, `HP24`, `BP12`, `BP24`, `Ldr12`, `Ldr24`, `Notch`, the
 state-variable `SvLP`, `SvHP`, `SvBP`, `SvNt`, `Peak`, `LoShf`, `HiShf`,
 `Vowel`, `Comb+`, `Comb-`, `Flang` and `Phasr`), **Cut** (20 Hz .. 20k), **Res** (dB), **Env** (octaves of filter
@@ -734,7 +734,12 @@ octave. The instance filter envelope is edited like its amp envelope, in the
 instrument's parameter editor. See the Mla Sampler README for the filter types
 and how the list grows.
 
-The **LFO 1** and **LFO 2** pages (`e` from the Filter page, then again) set
+The **Filter 3/4 page** (`e` from the Filter page) shows **Chain**, how the
+four stages connect (`Serial`; `Parall`: all side by side, summed; `2 x 2`:
+stages 1-2 beside 3-4), then filter stages 3 and 4 (**F3**, **F4**) with the
+same columns and keys as the first two.
+
+The **LFO 1** and **LFO 2** pages (`e` from the Filter 3/4 page, then again) set
 each slot's two LFOs alike: **Shape**
 (`Sine`, `Tri`, `SawUp`, `SawDn`, `Sqr`, `S&H`), **Rate** (0.05-20 Hz, dim
 while synced), **Sync** and **Div** (a division of the tempo: `1/1`..`1/32`,
@@ -764,6 +769,12 @@ a semitone, `[`/`]` an octave), **PAtk** and **PDec** (dim at depth 0), and the
 sends, **SnA%** and **SnB%**: how much of the slot goes to the instance's Send A
 and Send B buses as well, which feed aux effect channels 1 and 2 (see Plugin
 outputs), so one instance can send its snare to a reverb and not its kick.
+
+The **Vel/Tempo page** (`e` from Play) sets how velocity and key shape a
+note's level, **VCurve** (`Linear`, `Soft`, `Hard`, `Fixed`), **Vel%** (its
+depth; dim for Fixed) and **KeyL** (dB per octave from C-4), and tempo sync:
+**Sync** (`Off`, `Repitch` changes speed and pitch, `Stretch` keeps the pitch)
+plays the whole sample in **Beats** (dim while Sync is Off) at the tempo.
 
 The **key map** (`v`) draws every slot over the 128 MIDI keys, instead of the
 page's table: an octave ruler, a **Lyr** row counting the loaded slots under

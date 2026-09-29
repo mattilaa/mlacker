@@ -18,8 +18,10 @@
 /// was fading in and the seam does not click. `mlasampler_voice_shadow_frame`
 /// names that earlier frame.
 ///
-/// After the playhead, the signal runs through a chain of filter stages (two
-/// today, `filter1` then `filter2`), each with its own type, cutoff, resonance
+/// After the playhead, the signal runs through a chain of four filter stages
+/// (`filter1` .. `filter4`: in series, all four in parallel, or two series
+/// pairs in parallel; see `mlasampler_voice_set_chain`), each with its own
+/// type, cutoff, resonance
 /// and filter-envelope amount; then the amp envelope and pan. Filter types are
 /// stable numbers (`sampler_filter_kind_*`): new models are appended, a
 /// stage's fields and `SamplerFilter` gain what they need, and older types
@@ -47,6 +49,7 @@ extern fn calloc(count: i64, size: i64) -> ptr<SamplerVoice>;
 extern fn free(block: ptr<SamplerVoice>) -> void;
 extern fn floor(value: f64) -> f64;
 extern fn fmod(value: f64, divisor: f64) -> f64;
+extern fn fabs(value: f64) -> f64;
 extern fn sinf(value: f32) -> f32;
 extern fn cosf(value: f32) -> f32;
 extern fn exp2f(value: f32) -> f32;
@@ -408,6 +411,11 @@ struct SamplerVoice {
     var filter_envelope: Adsr;
     var filter1: SamplerFilter;
     var filter2: SamplerFilter;
+    var filter3: SamplerFilter;
+    var filter4: SamplerFilter;
+    /// How the stages connect: 0 in series, 1 in parallel, 2 two series
+    /// pairs (1-2, 3-4) in parallel.
+    var chain: i32;
     var filter_countdown: i32;
     var lfo1: SamplerLfo;
     var lfo2: SamplerLfo;
@@ -465,6 +473,17 @@ struct SamplerVoice {
     var fade: f32;
     var fade_step: f32;
     var active: i32;
+    /// Time-stretch: while `time_step` > 0 the playhead (`position`) moves
+    /// at `time_step` source frames per output frame, and two grains of
+    /// `grain` output frames, half a grain apart, read from it at `step`
+    /// (the pitch): each started at the playhead (`grain_age` output
+    /// frames ago for the first), drifted `offset_a` / `offset_b` source
+    /// frames from it, and crossfaded with triangle windows that sum to 1.
+    var time_step: f64;
+    var grain: f64;
+    var grain_age: f64;
+    var offset_a: f64;
+    var offset_b: f64;
 };
 
 fn clamp_sampler_f32(value: f32, low: f32, high: f32) -> f32 {
@@ -490,6 +509,8 @@ fn mlasampler_voice_create(sample_rate: f32) -> ptr<SamplerVoice> {
         (*voice).filter_envelope = Adsr::new(rate);
         (*voice).filter1 = SamplerFilter::new(rate);
         (*voice).filter2 = SamplerFilter::new(rate);
+        (*voice).filter3 = SamplerFilter::new(rate);
+        (*voice).filter4 = SamplerFilter::new(rate);
         (*voice).lfo1 = SamplerLfo::new(22695477);
         (*voice).lfo2 = SamplerLfo::new(1664525);
         (*voice).sample_rate = rate;
@@ -534,7 +555,80 @@ fn mlasampler_voice_set_filter(voice: ptr<SamplerVoice>, stage: i32, kind: i32, 
     unsafe {
         if stage == 0 { (*voice).filter1.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
         if stage == 1 { (*voice).filter2.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
+        if stage == 2 { (*voice).filter3.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
+        if stage == 3 { (*voice).filter4.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
         (*voice).filter_countdown = 0;
+    }
+}
+
+/// @brief How the filter stages connect: 0 in series (1, 2, 3, 4), 1 all in
+/// parallel (the sum of the stages that are not Off), 2 two series pairs in
+/// parallel (1-2 and 3-4, the sum of the pairs with a stage on). With no
+/// stage on the signal passes. Sounding voices follow.
+fn mlasampler_voice_set_chain(voice: ptr<SamplerVoice>, chain: i32) {
+    unsafe { (*voice).chain = chain >= 0 && chain <= 2 ? chain : 0; }
+}
+
+/// @brief Time-stretch: move the playhead `time_step` source frames per
+/// output frame (0 turns stretching off) while grains of `grain_seconds`
+/// read at the voice's pitch. Sounding voices follow.
+fn mlasampler_voice_set_stretch(voice: ptr<SamplerVoice>, time_step: f64, grain_seconds: f32) {
+    unsafe {
+        let grain: f64 = f64(grain_seconds * (*voice).sample_rate);
+        (*voice).time_step = time_step > 0.0 && grain >= 16.0 ? time_step : 0.0;
+        (*voice).grain = grain >= 16.0 ? grain : 16.0;
+        // Grains read the loop seam themselves; no crossfade while stretching.
+        if (*voice).time_step > 0.0 { (*voice).xfade = 0.0; }
+    }
+}
+
+/// A stretched voice's grain read position `offset` frames from the
+/// playhead, wrapped into a forward or bidirectional loop.
+fn sampler_grain_position(voice: ptr<SamplerVoice>, offset: f64) -> f64 {
+    unsafe {
+        var at: f64 = (*voice).position + offset;
+        if (*voice).loop_mode != 0 {
+            let start: f64 = (*voice).loop_start; let length: f64 = (*voice).loop_end - start;
+            if at >= (*voice).loop_end { at = start + fmod(at - start, length); }
+            if at < 0.0 { at = 0.0; }
+        }
+        return at < 0.0 ? 0.0 : at;
+    }
+}
+
+/// The filter chain on one frame (see `mlasampler_voice_set_chain`).
+fn sampler_filter_chain(voice: ptr<SamplerVoice>, left: f32, right: f32) -> StereoSample {
+    unsafe {
+        let on1: bool = (*voice).filter1.kind != 0; let on2: bool = (*voice).filter2.kind != 0;
+        let on3: bool = (*voice).filter3.kind != 0; let on4: bool = (*voice).filter4.kind != 0;
+        if (*voice).chain == 1 {
+            var sum_left: f32 = 0.0f; var sum_right: f32 = 0.0f;
+            if on1 { let o: StereoSample = (*voice).filter1.process(left, right); sum_left = sum_left + o.left; sum_right = sum_right + o.right; }
+            if on2 { let o: StereoSample = (*voice).filter2.process(left, right); sum_left = sum_left + o.left; sum_right = sum_right + o.right; }
+            if on3 { let o: StereoSample = (*voice).filter3.process(left, right); sum_left = sum_left + o.left; sum_right = sum_right + o.right; }
+            if on4 { let o: StereoSample = (*voice).filter4.process(left, right); sum_left = sum_left + o.left; sum_right = sum_right + o.right; }
+            if !on1 && !on2 && !on3 && !on4 { return StereoSample { left: left, right: right }; }
+            return StereoSample { left: sum_left, right: sum_right };
+        }
+        if (*voice).chain == 2 {
+            var sum_left: f32 = 0.0f; var sum_right: f32 = 0.0f;
+            if on1 || on2 {
+                let a: StereoSample = (*voice).filter1.process(left, right);
+                let b: StereoSample = (*voice).filter2.process(a.left, a.right);
+                sum_left = sum_left + b.left; sum_right = sum_right + b.right;
+            }
+            if on3 || on4 {
+                let c: StereoSample = (*voice).filter3.process(left, right);
+                let d: StereoSample = (*voice).filter4.process(c.left, c.right);
+                sum_left = sum_left + d.left; sum_right = sum_right + d.right;
+            }
+            if !on1 && !on2 && !on3 && !on4 { return StereoSample { left: left, right: right }; }
+            return StereoSample { left: sum_left, right: sum_right };
+        }
+        let first: StereoSample = (*voice).filter1.process(left, right);
+        let second: StereoSample = (*voice).filter2.process(first.left, first.right);
+        let third: StereoSample = (*voice).filter3.process(second.left, second.right);
+        return (*voice).filter4.process(third.left, third.right);
     }
 }
 
@@ -559,7 +653,12 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).filter_envelope.gate_on();
         (*voice).filter1.reset();
         (*voice).filter2.reset();
+        (*voice).filter3.reset();
+        (*voice).filter4.reset();
         (*voice).filter_countdown = 0;
+        (*voice).grain_age = 0.0;
+        (*voice).offset_a = 0.0;
+        (*voice).offset_b = 0.0;
         (*voice).fade = 1.0f;
         (*voice).fade_step = 0.0f;
         (*voice).lfo1.restart(0.0f);
@@ -777,6 +876,8 @@ fn mlasampler_voice_set_crossfade(voice: ptr<SamplerVoice>, frames: f64) {
 /// caller passes it and the next frame to `mlasampler_voice_render`.
 fn mlasampler_voice_shadow_frame(voice: ptr<SamplerVoice>) -> f64 {
     unsafe {
+        // Stretching: the second grain's frame.
+        if (*voice).time_step > 0.0 { return floor(sampler_grain_position(voice, (*voice).offset_b)); }
         if (*voice).xfade <= 0.0 || (*voice).position < (*voice).loop_end - (*voice).xfade { return -1.0; }
         return floor((*voice).position - ((*voice).loop_end - (*voice).loop_start));
     }
@@ -819,7 +920,11 @@ fn mlasampler_voice_is_active(voice: ptr<SamplerVoice>) -> i32 {
 /// @brief Integer source frame under the playhead (as f64): the first frame
 /// passed to `mlasampler_voice_render`.
 fn mlasampler_voice_frame(voice: ptr<SamplerVoice>) -> f64 {
-    unsafe { return floor((*voice).position); }
+    unsafe {
+        // Stretching: the first grain's frame.
+        if (*voice).time_step > 0.0 { return floor(sampler_grain_position(voice, (*voice).offset_a)); }
+        return floor((*voice).position);
+    }
 }
 
 /// @brief The frame the playhead interpolates towards: the next one, except
@@ -827,6 +932,7 @@ fn mlasampler_voice_frame(voice: ptr<SamplerVoice>) -> f64 {
 /// silent guard frame at `frames` ends a sample without a loop.
 fn mlasampler_voice_next_frame(voice: ptr<SamplerVoice>) -> f64 {
     unsafe {
+        if (*voice).time_step > 0.0 { return floor(sampler_grain_position(voice, (*voice).offset_a)) + 1.0; }
         let next: f64 = floor((*voice).position) + 1.0;
         if (*voice).loop_mode == 1 && next >= (*voice).loop_end { return (*voice).loop_start; }
         if (*voice).loop_mode == 2 && next >= (*voice).loop_end { return (*voice).loop_end - 1.0; }
@@ -838,7 +944,23 @@ fn mlasampler_voice_next_frame(voice: ptr<SamplerVoice>) -> f64 {
 /// reflecting (bidirectional) at the loop points.
 fn advance_sampler_voice(voice: ptr<SamplerVoice>) {
     unsafe {
-        var position: f64 = (*voice).position + (*voice).step * (*voice).direction;
+        // Stretching, the playhead keeps time; the grains drift from it at
+        // the pitch and restart on it, one every half grain.
+        var advance: f64 = (*voice).step;
+        if (*voice).time_step > 0.0 {
+            advance = (*voice).time_step;
+            let drift: f64 = (*voice).step - (*voice).time_step;
+            (*voice).offset_a = (*voice).offset_a + drift;
+            (*voice).offset_b = (*voice).offset_b + drift;
+            let half: f64 = (*voice).grain * 0.5;
+            let age: f64 = (*voice).grain_age + 1.0;
+            if age >= (*voice).grain { (*voice).grain_age = age - (*voice).grain; (*voice).offset_a = 0.0; }
+            else {
+                (*voice).grain_age = age;
+                if age >= half && age - 1.0 < half { (*voice).offset_b = 0.0; }
+            }
+        }
+        var position: f64 = (*voice).position + advance * (*voice).direction;
         let start: f64 = (*voice).loop_start;
         if (*voice).loop_mode == 1 {
             if position >= (*voice).loop_end { position = start + fmod(position - start, (*voice).loop_end - start); }
@@ -885,10 +1007,23 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
         let frac: f32 = clamp_sampler_f32(f32(position - floor(position)), 0.0f, 1.0f);
         var left: f32 = left0 + (left1 - left0) * frac;
         var right: f32 = right0 + (right1 - right0) * frac;
+        if (*voice).time_step > 0.0 {
+            // Two grains under triangle windows half a grain apart.
+            let at_a: f64 = sampler_grain_position(voice, (*voice).offset_a);
+            let at_b: f64 = sampler_grain_position(voice, (*voice).offset_b);
+            let frac_a: f32 = clamp_sampler_f32(f32(at_a - floor(at_a)), 0.0f, 1.0f);
+            let frac_b: f32 = clamp_sampler_f32(f32(at_b - floor(at_b)), 0.0f, 1.0f);
+            let phase_a: f64 = (*voice).grain_age / (*voice).grain;
+            var phase_b: f64 = phase_a + 0.5; if phase_b >= 1.0 { phase_b = phase_b - 1.0; }
+            let weight_a: f32 = f32(1.0 - fabs(2.0 * phase_a - 1.0));
+            let weight_b: f32 = f32(1.0 - fabs(2.0 * phase_b - 1.0));
+            left = (left0 + (left1 - left0) * frac_a) * weight_a + (shadow_left0 + (shadow_left1 - shadow_left0) * frac_b) * weight_b;
+            right = (right0 + (right1 - right0) * frac_a) * weight_a + (shadow_right0 + (shadow_right1 - shadow_right0) * frac_b) * weight_b;
+        }
         // Crossfade: the tail fades out as the audio before the loop start
         // (same fraction, a loop length back) fades in, equal-power.
         let fade_from: f64 = (*voice).loop_end - (*voice).xfade;
-        if (*voice).xfade > 0.0 && position >= fade_from {
+        if (*voice).xfade > 0.0 && (*voice).time_step <= 0.0 && position >= fade_from {
             let t: f32 = clamp_sampler_f32(f32((position - fade_from) / (*voice).xfade), 0.0f, 1.0f);
             let angle: f32 = t * 1.57079632679489661923f;
             let tail: f32 = cosf(angle); let head: f32 = sinf(angle);
@@ -914,6 +1049,8 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             let resonance_db: f32 = sampler_routes(voice, 3, lfo1_now, lfo2_now, filter_level);
             (*voice).filter1.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
             (*voice).filter2.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
+            (*voice).filter3.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
+            (*voice).filter4.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
             let semitones: f32 = (*voice).lfo1.pitch_semitones * lfo1_now + (*voice).lfo2.pitch_semitones * lfo2_now
                 + sampler_routes(voice, 1, lfo1_now, lfo2_now, filter_level) + (*voice).glide_semitones
                 + (*voice).bend * (*voice).bend_semitones + sampler_pitch_envelope(voice);
@@ -937,9 +1074,8 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             if passed { (*voice).glide_per_frame = 0.0f; }
         }
         (*voice).filter_countdown = (*voice).filter_countdown - 1;
-        let first: StereoSample = (*voice).filter1.process(left, right);
-        let second: StereoSample = (*voice).filter2.process(first.left, first.right);
-        left = second.left; right = second.right;
+        let filtered: StereoSample = sampler_filter_chain(voice, left, right);
+        left = filtered.left; right = filtered.right;
 
         // Tremolo: full level at an LFO's top, down by its depth at its bottom.
         let tremolo: f32 = (1.0f - (*voice).lfo1.level_depth * lfo1_depth * (0.5f - 0.5f * lfo1))

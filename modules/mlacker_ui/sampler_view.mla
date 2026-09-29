@@ -57,6 +57,10 @@ pub struct SamplerView {
     /// r (0-3) 3r source, 3r + 1 target, 3r + 2 amount. On the Play page
     /// (`page` 6): 0 mode, 1 glide, 2 unison voices, 3 detune, 4 spread,
     /// 5-7 pitch envelope depth, attack and decay, 8-9 send A and B levels.
+    /// On the Filter 3/4 page (`page` 7): 0 the chain, 1-6 filter 3 and
+    /// 7-12 filter 4 as the Filter page's stages. On the Vel/Tempo page
+    /// (`page` 8): 0 velocity curve, 1 velocity depth, 2 key level, 3 tempo
+    /// sync, 4 beats.
     var slot: i32; var column: i32; var scroll: i32; var page: i32;
     /// Wave view (`w`): the selected slot's waveform with its loop markers.
     /// `marker` 0 edits the loop start, 1 the loop end, 2 the sample start
@@ -112,8 +116,20 @@ impl SamplerView {
     /// The selected column as `column_id` takes it: Sound page columns are
     /// 100 + column.
     fn col(self: SamplerView) -> i32 { return self.page * 100 + self.column; }
+    /// The page `e` goes to: keys & loops, Sound, Filter, Filter 3/4 (7),
+    /// LFO 1, LFO 2, Mod, Play, Vel/Tempo (8), and round again. Pages keep
+    /// their numbers (column codes are page * 100 + column) as more are added.
+    fn next_page(page: i32) -> i32 {
+        if page == 2 { return 7; }
+        if page == 7 { return 3; }
+        if page == 6 { return 8; }
+        if page == 8 { return 0; }
+        return page + 1;
+    }
     /// Columns on a page: keys & loops, Sound, Filter.
     fn page_columns(page: i32) -> i32 {
+        if page == 8 { return 5; }
+        if page == 7 { return 13; }
         if page == 6 { return 10; }
         if page == 1 { return 12; }
         if page == 2 { return 17; }
@@ -123,6 +139,14 @@ impl SamplerView {
     /// Parameter ID of a column (see `column`; 100 + column on the Sound
     /// page) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
+        // Vel/Tempo page: velocity curve, depth, key level, then tempo sync
+        // and beats.
+        if col >= 803 { return 1800 + s * 4 + col - 802; }
+        if col >= 800 { return 1900 + s * 4 + col - 800; }
+        // Filter 3/4 page: the chain, then stages 3 and 4 as the Filter
+        // page's two.
+        if col == 700 { return 1800 + s * 4; }
+        if col >= 701 { return 2000 + s * 32 + (2 + (col - 701) / 6) * 8 + (col - 701) % 6; }
         if col >= 608 { return 1700 + s * 4 + col - 608; }
         if col >= 605 { return 1600 + s * 4 + col - 605; }
         if col >= 600 { return col < 602 ? 1500 + s * 4 + col - 600 : 1400 + s * 4 + col - 602; }
@@ -191,7 +215,7 @@ impl SamplerView {
     }
     fn slot_blocks() -> list<i64> {
         return [200, 7, 7, 400, 5, 5, 500, 1, 1, 600, 2, 2, 700, 5, 5, 800, 1, 1, 900, 1, 1,
-            1100, 5, 5, 1200, 1, 1, 1300, 1, 1, 1400, 4, 3, 1500, 4, 2, 1600, 4, 3, 1700, 4, 2, 2000, 32, 32, 3000, 32, 32, 4000, 32, 32];
+            1100, 5, 5, 1200, 1, 1, 1300, 1, 1, 1400, 4, 3, 1500, 4, 2, 1600, 4, 3, 1700, 4, 2, 1800, 4, 3, 1900, 4, 3, 2000, 32, 32, 3000, 32, 32, 4000, 32, 32];
     }
     fn value(output: AudioController, slot: i32, s: i32, col: i32) -> f64 {
         let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, col));
@@ -217,13 +241,24 @@ impl SamplerView {
         if col == 603 || col == 604 { return SamplerView::value(output, slot, s, 602) < 0.03; }
         // The pitch envelope's times while it has no depth.
         if col == 606 || col == 607 { let depth: f64 = SamplerView::value(output, slot, s, 605); return depth > 0.4995 && depth < 0.5005; }
+        // Filter 3/4: as the Filter page's stages.
+        if col >= 701 && col <= 712 {
+            let part: i32 = (col - 701) % 6;
+            if part == 0 { return false; }
+            let kind: i32 = SamplerView::filter_type(output, slot, s, col < 707 ? 701 : 707);
+            if part == 5 { return kind < 14 || kind > 16; }
+            return kind == 0;
+        }
+        // Vel/Tempo: the depth of a Fixed curve, beats without tempo sync.
+        if col == 801 { return SamplerView::value(output, slot, s, 800) > 0.4 && SamplerView::value(output, slot, s, 800) < 0.46; }
+        if col == 804 { return SamplerView::value(output, slot, s, 803) < 0.07; }
         // Mod: a route's target and amount while it has no source or target.
         if col >= 500 && col < 600 && (col - 500) % 3 > 0 {
             let first: i32 = col - (col - 500) % 3;
             return SamplerView::value(output, slot, s, first) < 0.03 || SamplerView::value(output, slot, s, first + 1) < 0.03;
         }
         if col >= 104 && col <= 107 { return !SamplerView::own_envelope(output, slot, s); }
-        if col >= 213 { return !SamplerView::own_filter_envelope(output, slot, s); }
+        if col >= 213 && col < 300 { return !SamplerView::own_filter_envelope(output, slot, s); }
         if col >= 201 && col <= 211 && col != 206 {
             let kind: i32 = SamplerView::filter_type(output, slot, s, col < 206 ? 200 : 206);
             if col == 205 || col == 211 { return kind < 14 || kind > 16; }
@@ -234,8 +269,11 @@ impl SamplerView {
     /// Normalized step of a continuous column: level 1 dB (6 with `big`),
     /// tune a semitone (an octave), everything else 1% (10%).
     fn continuous_step(col: i32, big: bool) -> f64 {
-        // LFO 2's columns step as LFO 1's.
+        // LFO 2's columns step as LFO 1's, filter stages 3 and 4 as 1 and 2.
         if col >= 400 && col < 500 { return SamplerView::continuous_step(col - 100, big); }
+        if col >= 701 && col <= 712 { return SamplerView::continuous_step(col - 501, big); }
+        // Key level +-12 dB/octave: 0.5 dB (3 dB).
+        if col == 802 { return (big ? 3.0 : 0.5) / 24.0; }
         // Mod amounts span -100 .. +100 %: 1 % (10 %).
         if col >= 500 && col < 600 { return big ? 0.05 : 0.005; }
         if col == 100 { return (big ? 6.0 : 1.0) / 66.0; }
@@ -275,7 +313,11 @@ impl SamplerView {
             let velocity_column: bool = col == 5 || col == 6;
             value = current + f64(delta) * (big && key_column ? 12.0 : (big && velocity_column ? 10.0 : 1.0));
             // Filter types stop at the last one the plugin knows.
-            if (col == 200 || col == 206) && value > 21.0 { value = 21.0; }
+            if (col == 200 || col == 206 || col == 701 || col == 707) && value > 21.0 { value = 21.0; }
+            // Chains, tempo syncs, beats and velocity curves likewise.
+            if (col == 700 || col == 803) && value > 2.0 { value = 2.0; }
+            if col == 804 && value > 13.0 { value = 13.0; }
+            if col == 800 && value > 3.0 { value = 3.0; }
             // LFO shapes and divisions likewise.
             if (col == 300 || col == 400) && value > 5.0 { value = 5.0; }
             if (col == 303 || col == 403) && value > 13.0 { value = 13.0; }
@@ -348,7 +390,7 @@ impl SamplerView {
         if left && self.column > 0 { self.column = self.column - 1; return 1; }
         if right && self.column < SamplerView::page_columns(self.page) - 1 { self.column = self.column + 1; return 1; }
         // e switches between the keys & loops page and the Sound page.
-        if event.code == 101 && event.modifiers == 1 { self.page = (self.page + 1) % 7; self.column = 0; return 1; }
+        if event.code == 101 && event.modifiers == 1 { self.page = SamplerView::next_page(self.page); self.column = 0; return 1; }
         if slot < 1 { return 0; }
         // Shift+J/K adjust, as everywhere else in the tracker; [ and ] take
         // octave / 10% steps.
@@ -739,14 +781,28 @@ impl SamplerView {
             let widths: list<i32> = [7, 7, 5, 5, 5, 6, 6, 6, 5, 5];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
                 ["Mode", "Glide", "Uni", "Det", "Spr%", "PEnv", "PAtk", "PDec", "SnA%", "SnB%"],
-                "Play | j/k slot  h/l col  J/K [ ] adjust  e keys & loops  W/R save/load slot  p play");
+                "Play | j/k slot  h/l col  J/K [ ] adjust  e vel/tempo  W/R save/load slot  p play");
+            return;
+        }
+        if self.page == 7 {
+            let widths: list<i32> = [7, 6, 6, 4, 5, 4, 5, 6, 6, 4, 5, 4, 5];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Chain", "F3", "Cut", "Res", "Env", "Key", "Gain", "F4", "Cut", "Res", "Env", "Key", "Gain"],
+                "Filter 3/4 | j/k slot  h/l col  J/K [ ] adjust  e lfo 1  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 8 {
+            let widths: list<i32> = [7, 5, 6, 8, 5];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["VCurve", "Vel%", "KeyL", "Sync", "Beats"],
+                "Vel/Tempo | j/k slot  h/l col  J/K [ ] adjust  e keys & loops  p play  Enter load");
             return;
         }
         if self.page == 2 {
             let widths: list<i32> = [6, 6, 4, 5, 4, 5, 6, 6, 4, 5, 4, 5, 5, 6, 6, 5, 6];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
                 ["F1", "Cut", "Res", "Env", "Key", "Gain", "F2", "Cut", "Res", "Env", "Key", "Gain", "FEnv", "Atk", "Dec", "Sus%", "Rel"],
-                "j/k slot  h/l col  J/K [ ] adjust  e lfo 1  w wave  p play  Enter load  Bksp clear");
+                "j/k slot  h/l col  J/K [ ] adjust  e filter 3/4  w wave  p play  Enter load  Bksp clear");
             return;
         }
         let root: i64 = output.instrument_sampler(slot, 0);
@@ -1070,8 +1126,26 @@ impl SamplerView {
     /// Owned display text of a column's normalized value.
     fn field_text(col: i32, value: f64) -> str8 {
         if value < 0.0 { return clone("-"); }
-        // LFO 2's columns read as LFO 1's.
+        // LFO 2's columns read as LFO 1's, filter stages 3 and 4 as 1 and 2.
         if col >= 400 && col < 500 { return SamplerView::field_text(col - 100, value); }
+        if col >= 701 && col <= 712 { return SamplerView::field_text(col - 501, value); }
+        // Filter chain; Vel/Tempo page.
+        if col == 700 || col == 800 || col == 803 {
+            let index: i32 = i32(std::math::floor(value * 7.0 + 0.5));
+            let chains: array<str8, 3> = {"Serial", "Parall", "2 x 2"};
+            let curves: array<str8, 4> = {"Linear", "Soft", "Hard", "Fixed"};
+            let syncs: array<str8, 3> = {"Off", "Repitch", "Stretch"};
+            if col == 700 { return index < 3 ? clone(chains[index]) : format!("#{}", index); }
+            if col == 800 { return index < 4 ? clone(curves[index]) : format!("#{}", index); }
+            return index < 3 ? clone(syncs[index]) : format!("#{}", index);
+        }
+        if col == 801 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 802 { return SamplerView::tenths_text(i32(std::math::floor((value * 24.0 - 12.0) * 10.0 + 0.5)), true); }
+        if col == 804 {
+            let beats: array<str8, 14> = {"1/4", "1/2", "1", "2", "3", "4", "6", "8", "12", "16", "24", "32", "48", "64"};
+            let index: i32 = i32(std::math::floor(value * 15.0 + 0.5));
+            return index < 14 ? clone(beats[index]) : format!("#{}", index);
+        }
         // Play page.
         if col == 600 {
             let modes: array<str8, 3> = {"Poly", "Mono", "Legato"};

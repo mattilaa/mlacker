@@ -220,6 +220,11 @@ def main():
             expect(tui.send(b"K"), b"Own")
             # e again: the LFO page. A synced square at 1/8 with 50% tremolo;
             # Rate dims once Sync is on.
+            # e: filter stages 3 and 4 and how the four connect.
+            expect(tui.send(b"e"), b"Filter 3/4 |", b"Chain", b"F3", b"F4", b"Serial")
+            expect(tui.send(b"K"), b"Parall")
+            tui.send(b"l")
+            expect(tui.send(b"KKKK"), b"HP24")
             expect(tui.send(b"e"), b"Shape", b"Rate", b"Trig", b"Sine", b"5.0Hz", b"1/4", b"Retrg")
             expect(tui.send(b"KKKK"), b"Sqr")
             tui.send(b"ll")
@@ -271,6 +276,15 @@ def main():
             expect(tui.send(b"w"), b"Slot 4 pad.wav")
             tui.send(b"w")
             tui.send(b"kkk")
+            # e: velocity curve and key level, then tempo sync.
+            expect(tui.send(b"e"), b"Vel/Tempo |", b"VCurve", b"Linear", b"Beats")
+            expect(tui.send(b"K"), b"Soft")
+            tui.send(b"ll")
+            expect(tui.send(b"KK"), b"+1.0")
+            tui.send(b"l")
+            expect(tui.send(b"KK"), b"Stretch")
+            tui.send(b"l")
+            expect(tui.send(b"K"), b"6")
             expect(tui.send(b"e"), b"Mode", b"Loop")
 
             # The virtual keyboard takes the pane over, and Shift+S takes it back.
@@ -293,10 +307,12 @@ def main():
             # The Sound page's edits survive it too.
             expect(tui.send(b"e"), b"Own", b"-1.0", b"R2", b"+12.0", b"2ms", b"90", b"Groups: Random")
             expect(tui.send(b"e"), b"LP24", b"10.0k", b"+1.0", b"+6.0", b"Own")
+            expect(tui.send(b"e"), b"Parall", b"HP24")
             expect(tui.send(b"e"), b"Sqr", b"On", b"1/8", b"50")
             tui.send(b"e")
             expect(tui.send(b"e"), b"Veloc", b"Level", b"-10", b"ModCC")
             expect(tui.send(b"e"), b"Legato", b"180ms", b"20", b"+12.0", b"30")
+            expect(tui.send(b"e"), b"Soft", b"+1.0", b"Stretch")
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
