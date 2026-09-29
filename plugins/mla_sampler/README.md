@@ -36,7 +36,13 @@ plays it, so slots layer. Slots in the same **Group** (1-8) take turns
 instead: of a group's slots that match a note, only one plays. **Group Mode**
 picks it round-robin, each in turn (the default), or at random, never the same
 slot twice in a row. Put several recordings of one hit on the same key in a
-group for natural repeats; slots without a group still layer on top. Keys no slot covers, and slots without a sample, are silent.
+group for natural repeats; slots without a group still layer on top.
+
+A **Choke** group (1-8) cuts notes off: when a slot in a choke group starts a
+note, every sounding note of that choke group fades out over 3 ms, the same
+slot's earlier notes included (a closed hi-hat stopping the open one, or a
+long sample that should not overlap itself). Slots that one note starts
+together, such as layers, do not choke each other. Keys no slot covers, and slots without a sample, are silent.
 Global and slot Tune add to the key tracking. Note-off releases the envelope. A looping slot keeps looping through the release until
 the envelope ends. A slot with loop off ends with its sample, even while the key
 is held.
@@ -168,6 +174,7 @@ mlacker's README, "Plugin outputs").
 | Slot N Filter T Resonance | 0 .. 36 dB             | Default 0. |
 | Slot N Filter T Env | -8 .. +8 octaves             | Filter envelope depth. Default 0. |
 | Slot N Filter T Key Track | 0 .. 100 %             | Default 0. |
+| Slot N Choke       | Off, 1 .. 8                   | Choke group. Default Off. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -181,13 +188,14 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `1100 + 5s` + 0 filter envelope, 1 attack, 2 decay, 3 sustain, 4 release
 - `2000 + 32s + 8t` + 0 type, 1 cutoff, 2 resonance, 3 env, 4 key track, for
   filter stage `t` (0-based; room for 4 stages of 8 fields)
+- `1200 + s`: choke group
 
 `950` is the Group Mode and `960`-`963` the instance filter envelope.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
-off.
+off, no choke group.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -207,7 +215,8 @@ from this directory:
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
 pads), filters (low-, high-pass and notch, two stages in series, a reserved type
-passing through, the filter envelope and a slot's own, key tracking), groups
+passing through, the filter envelope and a slot's own, key tracking), choke
+groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a
 bidirectional loop on its way back, tune and level), velocity layers (soft and hard layers, their boundary, a pad limited

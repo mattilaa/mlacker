@@ -65,6 +65,7 @@ extern "C" void mlasampler_voice_start__ptr_struct_SamplerVoice_f64_f64_f32_f32_
     double loopEnd);
 extern "C" void mlasampler_voice_release__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" void mlasampler_voice_stop__ptr_struct_SamplerVoice(SamplerVoice *voice);
+extern "C" void mlasampler_voice_choke__ptr_struct_SamplerVoice_f32(SamplerVoice *voice, float seconds);
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_next_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -131,6 +132,7 @@ enum ParamId : ParamID {
     kGroupModeParam = 950,     // how a group picks: Round-robin or Random
     kFilterEnvelopeParamBase = 960,     // instance filter ADSR: 960 attack .. 963 release
     kSlotFilterEnvelopeParamBase = 1100, // slot s: 1100 + 5s, see EnvelopeParam
+    kChokeParamBase = 1200,              // slot s: 1200 + s, choke group (Off, 1..8)
     kFilterParamBase = 2000,             // slot s, stage t: 2000 + 32s + 8t, see FilterField
 };
 
@@ -158,6 +160,8 @@ static const char *const kFilterTypeNames[] = {"Off", "LP 12", "LP 24", "HP 12",
 constexpr int kFilterTypesKnown = sizeof(kFilterTypeNames) / sizeof(kFilterTypeNames[0]);
 
 constexpr int kNumGroups = 8;
+constexpr int kNumChokeGroups = 8;
+constexpr float kChokeSeconds = 0.003f; // short but click-free, as Mla Drum's
 
 // Per-slot envelope offsets from kEnvelopeParamBase + s * kParamsPerEnvelope.
 enum EnvelopeParam : int {
@@ -199,14 +203,14 @@ constexpr int kNumVelocityParams = kNumSlots * 2;
 constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
-                            kNumSlots * kFilterStages * kFilterFields;
+                            kNumSlots * kFilterStages * kFilterFields + kNumSlots;
 constexpr ParamID kMaxParamId = kFilterParamBase + kNumSlots * kFilterSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
 // slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
 // starts, groups, group mode, the instance filter envelope, slot filter
-// envelopes and filter stages. Each block was appended after the ones before
-// it, so saved states keep their meaning.
+// envelopes, filter stages and choke groups. Each block was appended after the
+// ones before it, so saved states keep their meaning.
 struct ParamLayout {
     ParamID ids[kNumParams];
     int16_t index[kMaxParamId];
@@ -236,6 +240,7 @@ struct ParamLayout {
         for(int slot = 0; slot < kNumSlots; ++slot)
             for(int stage = 0; stage < kFilterStages; ++stage)
                 run(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride, kFilterFields);
+        run(kChokeParamBase, kNumSlots);
     }
 };
 static const ParamLayout kLayout;
@@ -521,6 +526,13 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 addParam(filterParamId(slot, stage, kFilterEnvAmount), slotTitle(slot, (name + "Env").c_str()).c_str(), STR16("oct"), 0.5);
                 addParam(filterParamId(slot, stage, kFilterKeyTrack), slotTitle(slot, (name + "Key Track").c_str()).c_str(), nullptr, 0.0);
             }
+        // Choke groups last.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *choke = addList(static_cast<ParamID>(kChokeParamBase + slot), slotTitle(slot, "Choke"));
+            choke->appendString(STR16("Off"));
+            for(int g = 1; g <= kNumChokeGroups; ++g)
+                choke->appendString(utf16(std::to_string(g)).c_str());
+        }
         return kResultOk;
     }
 
@@ -1033,7 +1045,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     // notes too (applyLive, pushEnvelope).
     //
     // Slots in a group (1-8) take turns instead: of a group's slots that
-    // match, one plays, chosen round-robin or at random (Group Mode).
+    // match, one plays, chosen round-robin or at random (Group Mode). A slot
+    // in a choke group (1-8) cuts off that group's sounding voices.
     void noteOn(int16 channel, int16 pitch, float velocity)
     {
         const int padSlot = pitch - rootKeyFromNorm(norm(kRootKeyParam));
@@ -1070,9 +1083,23 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             for(int k = 0; k < count; ++k)
                 matches[members[k]] = members[k] == chosen;
         }
+        // A slot in a choke group cuts off what that group is playing, its
+        // own earlier notes included, but not the slots this note starts.
+        bool choking[kNumChokeGroups + 1] = {};
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            if(matches[slot])
+                choking[chokeOf(slot)] = true;
+        for(auto &voice : voices_)
+            if(voice.dsp && voice.sample && voice.slot >= 0 && chokeOf(voice.slot) > 0 && choking[chokeOf(voice.slot)])
+                mlasampler_voice_choke__ptr_struct_SamplerVoice_f32(voice.dsp, kChokeSeconds);
         for(int slot = 0; slot < kNumSlots; ++slot)
             if(matches[slot])
                 startVoice(slot, channel, pitch, velocity, tracked[slot]);
+    }
+
+    int chokeOf(int slot) const
+    {
+        return static_cast<int>(std::lround(norm(static_cast<ParamID>(kChokeParamBase + slot)) * kNumChokeGroups));
     }
 
     int groupOf(int slot) const

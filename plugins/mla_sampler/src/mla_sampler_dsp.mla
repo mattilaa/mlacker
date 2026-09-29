@@ -138,6 +138,9 @@ struct SamplerVoice {
     var xfade: f64;
     var gain_left: f32;
     var gain_right: f32;
+    /// Choke fade: 1 while playing, ramps to 0 by `fade_step` once choked.
+    var fade: f32;
+    var fade_step: f32;
     var active: i32;
 };
 
@@ -231,6 +234,8 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).filter1.reset();
         (*voice).filter2.reset();
         (*voice).filter_countdown = 0;
+        (*voice).fade = 1.0f;
+        (*voice).fade_step = 0.0f;
         (*voice).active = frames > 0.0 ? 1 : 0;
     }
     mlasampler_voice_set_step(voice, step);
@@ -314,6 +319,17 @@ fn mlasampler_voice_release(voice: ptr<SamplerVoice>) {
     unsafe {
         (*voice).envelope.gate_off();
         (*voice).filter_envelope.gate_off();
+    }
+}
+
+/// @brief Fade the voice out over `seconds` (a choke group cut it off),
+/// whatever its envelope is doing. A faster choke already running wins.
+fn mlasampler_voice_choke(voice: ptr<SamplerVoice>, seconds: f32) {
+    unsafe {
+        if (*voice).active == 0 { return; }
+        let samples: f32 = seconds * (*voice).sample_rate;
+        let step: f32 = samples < 1.0f ? 1.0f : 1.0f / samples;
+        if step > (*voice).fade_step { (*voice).fade_step = step; }
     }
 }
 
@@ -423,7 +439,11 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
         let second: StereoSample = (*voice).filter2.process(first.left, first.right);
         left = second.left; right = second.right;
 
-        let amp: f32 = (*voice).envelope.process();
+        let amp: f32 = (*voice).envelope.process() * (*voice).fade;
+        if (*voice).fade_step > 0.0f {
+            (*voice).fade = (*voice).fade - (*voice).fade_step;
+            if (*voice).fade <= 0.0f { (*voice).fade = 0.0f; (*voice).active = 0; }
+        }
         *out_right = right * amp * (*voice).gain_right;
         let out_left: f32 = left * amp * (*voice).gain_left;
 

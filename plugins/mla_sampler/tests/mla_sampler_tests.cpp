@@ -73,6 +73,7 @@ constexpr ParamID envelopeParam(int slot, EnvelopeParam k) { return 700 + slot *
 constexpr ParamID startParam(int slot) { return 800 + slot; }
 constexpr ParamID groupParam(int slot) { return 900 + slot; }
 constexpr ParamID kGroupMode = 950;
+constexpr ParamID chokeParam(int slot) { return 1200 + slot; }
 constexpr ParamID kFilterEnvelope = 960; // + 0 attack, 1 decay, 2 sustain, 3 release
 constexpr ParamID slotFilterEnvelope(int slot, EnvelopeParam k) { return 1100 + slot * 5 + k; }
 enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack };
@@ -741,6 +742,47 @@ void testFilters(const std::string &path)
     CHECK(keyed(84) > 4 * keyed(60));
 }
 
+void testChokeGroups(const std::string &path)
+{
+    // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
+    // (key 38, 0.125) has none.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        const float levels[] = {0.5f, 0.25f, 0.125f};
+        for(int slot = 0; slot < 3; ++slot)
+            CHECK(loadPcm(plugin, slot, std::vector<float>(48000, levels[slot])) == kResultOk);
+        plugin.param(chokeParam(0), 1.0 / 8.0);
+        plugin.param(chokeParam(1), 1.0 / 8.0);
+        plugin.noteOn(kRootKey);
+        plugin.noteOn(kRootKey + 2);
+        plugin.render(kBlock);
+        // Pad 2 cuts pad 1 off within 3 ms; pad 3 plays on.
+        plugin.noteOn(kRootKey + 1);
+        const auto out = plugin.render(kBlock);
+        CHECK(std::fabs(left(out, 200) - (0.25f + 0.125f)) < 1e-3f);
+        // A retrigger chokes the slot's own earlier note: one pad 2 voice, not two.
+        plugin.noteOn(kRootKey + 1);
+        const auto again = plugin.render(kBlock);
+        CHECK(std::fabs(left(again, 200) - (0.25f + 0.125f)) < 1e-3f);
+    }
+    // Slots a note starts together do not choke each other: two zone layers
+    // in one choke group both sound.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, std::vector<float>(48000, 0.5f)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(48000, 0.25f)) == kResultOk);
+        for(int slot = 0; slot < 2; ++slot) {
+            zone(plugin, slot, 60, 60, 60);
+            plugin.param(chokeParam(slot), 2.0 / 8.0);
+        }
+        plugin.noteOn(60);
+        const auto out = plugin.render(kBlock);
+        CHECK(std::fabs(left(out, 200) - 0.75f) < 1e-3f);
+    }
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -816,12 +858,13 @@ int main(int argc, char **argv)
     testLiveEdits(path);
     testGroups(path);
     testFilters(path);
+    testChokeGroups(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

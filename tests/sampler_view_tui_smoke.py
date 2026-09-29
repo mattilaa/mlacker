@@ -167,7 +167,7 @@ def main():
 
             # e: the Sound page of slot 1. Level 0 dB, centred, the instance
             # envelope; its own A/D/S/R need Env set to Own first.
-            expect(tui.send(b"e"), b"Level", b"Env", b"Sus%", b"Grp", b"0.0", b"C", b"Inst")
+            expect(tui.send(b"e"), b"Level", b"Env", b"Sus%", b"Grp", b"Chk", b"0.0", b"C", b"Inst")
             tui.send(b"llll")
             expect(tui.send(b"K"), b"Slot 1 uses the instance envelope")
             tui.send(b"h")
@@ -185,6 +185,8 @@ def main():
             tui.send(b"l" * 7)
             expect(tui.send(b"K"), b"1")      # group 1
             expect(tui.send(b"G"), b"Groups: Random")
+            tui.send(b"l")
+            expect(tui.send(b"KK"), b"2")     # choke group 2
             # e again: the Filter page. Filter 1 to LP24, 10 kHz, 6 dB, +1 octave
             # of filter envelope, 10% key tracking; FEnv needs Own for its ADSR.
             expect(tui.send(b"e"), b"F1", b"F2", b"FEnv", b"Off", b"20.0k", b"Inst")

@@ -731,7 +731,9 @@ The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
 bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`
 uses the instance's envelope, `Own` the slot's) and the slot's own **Atk**,
 **Dec**, **Sus%** and **Rel**, **Ofs%**, where playback starts in the
-sample, and **Grp**, the slot's group (`-` or 1-8). Slots in one group take
+sample, **Grp**, the slot's group (`-` or 1-8), and **Chk**, its choke group
+(`-` or 1-8): a slot in a choke group cuts off that group's sounding notes,
+its own included, like a closed hi-hat stopping the open one. Slots in one group take
 turns on a note instead of layering: round-robin or random, as the pane title
 shows (`Groups: Round-robin`). `G` switches between the two. The four envelope columns are dimmed, and cannot be edited,
 until Env is `Own`. `J`/`K` step level by 1 dB, tune by a semitone and the
