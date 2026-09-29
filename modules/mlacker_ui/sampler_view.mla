@@ -13,8 +13,9 @@ use std::strbuf::free;
 
 // Mla Sampler's layout (plugins/mla_sampler/src/plugin.cpp): 16 slots and 8
 // outputs. Slot `s` parameter IDs are 200 + 7s + field (level, pan, tune,
-// output, loop, loop start, loop end) and 400 + 5s + field for its key zone
-// (mode, low key, high key, zone root, key track).
+// output, loop, loop start, loop end), 400 + 5s + field for its key zone
+// (mode, low key, high key, zone root, key track) and 500 + s for its loop
+// crossfade.
 
 /// Mla Sampler editor in the Pattern view's bottom pane (View menu / Shift+S),
 /// sharing it with the virtual keyboard. It edits the instance on the selected
@@ -25,7 +26,7 @@ pub struct SamplerView {
     var visible: bool;
     /// Selected slot 0-15, first slot shown, and the selected column: 0 key
     /// mode, 1 low key, 2 high key, 3 zone root, 4 key track, 5 loop mode,
-    /// 6 loop start, 7 loop end, 8 output.
+    /// 6 loop start, 7 loop end, 8 loop crossfade, 9 output.
     var slot: i32; var column: i32; var scroll: i32;
     /// Wave view (`w`): the selected slot's waveform with its loop markers.
     /// `marker` 0 edits the loop start, 1 the loop end. `zoom` halves the
@@ -71,7 +72,8 @@ impl SamplerView {
     /// Parameter ID of a column (see `column`) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
         if col < 5 { return 400 + s * 5 + col; }
-        if col == 8 { return 200 + s * 7 + 3; }
+        if col == 8 { return 500 + s; }
+        if col == 9 { return 200 + s * 7 + 3; }
         return 200 + s * 7 + col - 1;
     }
     /// Normalized value of a slot's column, or -1 when the plugin lacks it.
@@ -137,7 +139,7 @@ impl SamplerView {
         if up && self.slot > 0 { self.slot = self.slot - 1; return 1; }
         if down && self.slot < 15 { self.slot = self.slot + 1; return 1; }
         if left && self.column > 0 { self.column = self.column - 1; return 1; }
-        if right && self.column < 8 { self.column = self.column + 1; return 1; }
+        if right && self.column < 9 { self.column = self.column + 1; return 1; }
         if slot < 1 { return 0; }
         // Shift+J/K adjust, as everywhere else in the tracker; [ and ] take
         // octave / 10% steps.
@@ -190,6 +192,20 @@ impl SamplerView {
         }
         return frame;
     }
+    /// Crossfade of sample slot `s` in frames, clamped as the plugin clamps it:
+    /// to the loop length and to the frames before the loop start. 0 unless
+    /// the loop is forward.
+    fn crossfade_frames(output: AudioController, slot: i32, s: i32, frames: i64) -> i64 {
+        if i32(std::math::floor(SamplerView::value(output, slot, s, 5) * 2.0 + 0.5)) != 1 { return 0; }
+        let value: f64 = SamplerView::value(output, slot, s, 8);
+        if value <= 0.0 { return 0; }
+        var length: i64 = wide(i32(std::math::floor(value * f64(frames))));
+        let start: i64 = SamplerView::loop_frame(output, slot, s, false, frames);
+        let end: i64 = SamplerView::loop_frame(output, slot, s, true, frames);
+        if length > end - start { length = end - start; }
+        if length > start { length = start; }
+        return length < 0 ? 0 : length;
+    }
     /// Frames the wave view shows: the whole sample, halved per zoom step.
     fn span(self: SamplerView, frames: i64) -> i64 {
         var span: i64 = frames;
@@ -214,7 +230,9 @@ impl SamplerView {
         let zoom_out: bool = event.code == 45 && event.modifiers == 1;
         let toggle: bool = event.code == 109 && event.modifiers == 1;
         let snap: bool = event.code == 122 && event.modifiers == 1;
-        if !(left || right || fine_left || fine_right || zoom_in || zoom_out || toggle || snap) { return -1; }
+        let shorter: bool = event.code == 91 && event.modifiers == 1;
+        let longer: bool = event.code == 93 && event.modifiers == 1;
+        if !(left || right || fine_left || fine_right || zoom_in || zoom_out || toggle || snap || shorter || longer) { return -1; }
         if toggle { self.marker = 1 - self.marker; return 1; }
         if zoom_out { if self.zoom > 0 { self.zoom = self.zoom - 1; } return 1; }
         if zoom_in { if self.zoom < 20 { self.zoom = self.zoom + 1; } return 1; }
@@ -223,6 +241,17 @@ impl SamplerView {
         let frames: i64 = source.frames;
         if frames < 2 { return 6; }
         var probe: AudioClip = AudioClip {}; probe = source;
+        if shorter || longer {
+            // [ and ] change the crossfade by one dot of the waveform.
+            let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(self.slot, 8));
+            if index < 0 { return 0; }
+            let dots: i64 = self.dots > 0 ? wide(self.dots) : 160;
+            var step: i64 = self.span(frames) / dots; if step < 1 { step = 1; }
+            var length: i64 = SamplerView::crossfade_frames(output, slot, self.slot, frames) + (longer ? step : 0 - step);
+            if length < 0 { length = 0; }
+            let value: f64 = length == 0 ? 0.0 : (f64(length) + 0.5) / f64(frames);
+            return output.set_parameter(slot, index, value > 1.0 ? 1.0 : value) == 0 ? 1 : 0;
+        }
         let end: bool = self.marker == 1;
         let current: i64 = SamplerView::loop_frame(output, slot, self.slot, end, frames);
         var target: i64 = current;
@@ -278,7 +307,7 @@ impl SamplerView {
     }
     /// Output bus (0 = Main, 1-7 = Out 2-8) of the selected slot, or -1.
     pub fn output_bus(self: SamplerView, output: AudioController, slot: i32) -> i32 {
-        let value: f64 = SamplerView::value(output, slot, self.slot, 8);
+        let value: f64 = SamplerView::value(output, slot, self.slot, 9);
         return value < 0.0 ? -1 : i32(std::math::floor(value * 7.0 + 0.5));
     }
     /// Pane title, e.g. " Sampler | Mla Sampler #2 ".
@@ -290,8 +319,8 @@ impl SamplerView {
     fn width(col: i32) -> i32 {
         if col == 4 { return 4; }
         if col < 5 { return 5; }
-        if col == 5 { return 6; }
-        if col == 8 { return 10; }
+        if col == 5 || col == 8 { return 6; }
+        if col == 9 { return 10; }
         return 7;
     }
     /// Left edge of a column: the key columns, the sample name, then the rest.
@@ -321,10 +350,10 @@ impl SamplerView {
         let root: i64 = output.instrument_sampler(slot, 0);
         let occupied: i64 = output.instrument_sampler(slot, 2);
         var fixed: i32 = 1;
-        for c in 0..9 { fixed = fixed + SamplerView::width(i32(c)); }
+        for c in 0..10 { fixed = fixed + SamplerView::width(i32(c)); }
         let name_width: i32 = area.width - fixed > 8 ? area.width - fixed : 8;
-        let headings: array<str8, 9> = {"Mode", "Low", "High", "Root", "Trk", "Loop", "Start%", "End%", "Out"};
-        for c in 0..9 {
+        let headings: array<str8, 10> = {"Mode", "Low", "High", "Root", "Trk", "Loop", "Start%", "End%", "Xf%", "Out"};
+        for c in 0..10 {
             let col: i32 = i32(c);
             surface.text(Rect::new(SamplerView::column_x(area, col, name_width), area.y, SamplerView::width(col), 1), headings[c],
                 col == self.column ? theme.accent : theme.muted, theme.panel);
@@ -342,7 +371,7 @@ impl SamplerView {
             let background: i32 = selected ? theme.selection : theme.panel;
             surface.fill(Rect::new(area.x, y, area.width, 1), Cell { glyph: 32, foreground: theme.foreground, background: background });
             let zone: bool = SamplerView::is_zone(output, slot, s);
-            for c in 0..9 {
+            for c in 0..10 {
                 let col: i32 = i32(c);
                 let value: f64 = SamplerView::value(output, slot, s, col);
                 var text: str8 = clone("-");
@@ -351,7 +380,7 @@ impl SamplerView {
                 else if col >= 2 && col <= 4 && !zone { dim = true; }
                 else { free(text); text = SamplerView::field_text(col, value); }
                 // An aux bus routed away from Main shows where: "Out 2>A3".
-                let bus: i32 = col == 8 && value >= 0.0 ? i32(std::math::floor(value * 7.0 + 0.5)) : 0;
+                let bus: i32 = col == 9 && value >= 0.0 ? i32(std::math::floor(value * 7.0 + 0.5)) : 0;
                 if bus > 0 && bus < destinations.len() && destinations[bus] != "MAIN" {
                     let routed: str8 = format!("{}>{}", text, destinations[bus]); free(text); text = routed;
                 }
@@ -376,7 +405,7 @@ impl SamplerView {
         var names: list<str8> = []; names = labels;
         let help_y: i32 = area.y + area.height - 2;
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot | m start/end | h/l move, H/L 1 frame | z zero crossing | -/= zoom | p play | w table", theme.muted, theme.panel);
+            "j/k slot | m start/end | h/l move, H/L 1 frame | z zero crossing | [ ] crossfade | -/= zoom | p play | w table", theme.muted, theme.panel);
         let label: str8 = self.slot < names.len() ? names[self.slot] : "";
         var source: AudioClip = AudioClip {}; if has_clip { source = clip; }
         if !has_clip || source.frames < 2 {
@@ -389,9 +418,10 @@ impl SamplerView {
         let start_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, false, frames);
         let end_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, true, frames);
         let mode: str8 = SamplerView::field_text(5, SamplerView::value(output, slot, self.slot, 5));
-        let info: str8 = format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {} of {} frames | Zoom {}x",
+        let crossfade: i64 = SamplerView::crossfade_frames(output, slot, self.slot, frames);
+        let info: str8 = format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {} of {} | Xfade {} | Zoom {}x",
             self.slot + 1, label, mode, self.marker == 0 ? "[" : "", start_frame, self.marker == 0 ? "]" : "",
-            self.marker == 1 ? "[" : "", end_frame, self.marker == 1 ? "]" : "", end_frame - start_frame, frames, 1 << self.zoom);
+            self.marker == 1 ? "[" : "", end_frame, self.marker == 1 ? "]" : "", end_frame - start_frame, frames, crossfade, 1 << self.zoom);
         surface.text(Rect::new(area.x, area.y, area.width, 1), info, theme.foreground, theme.panel);
         free(info); free(mode);
         let rows: i32 = area.height - 3;
@@ -439,12 +469,16 @@ impl SamplerView {
                 }
                 let cell_frame: i64 = first + span * wide(i32(x)) / wide(area.width);
                 let looped: bool = cell_frame >= start_frame && cell_frame < end_frame;
+                // The crossfade region is shaded.
+                let fading: bool = crossfade > 0 && cell_frame >= end_frame - crossfade && cell_frame < end_frame;
                 let marker: bool = wide(i32(x)) == start_x || wide(i32(x)) == end_x;
                 if marker {
                     let selected: bool = (self.marker == 0 && wide(i32(x)) == start_x) || (self.marker == 1 && wide(i32(x)) == end_x);
                     surface.put(area.x + i32(x), y, Cell { glyph: 0x2502, foreground: selected ? theme.accent : theme.foreground, background: theme.panel });
                 } else if mask != 0 {
-                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2800 + mask, foreground: looped ? theme.accent : theme.muted, background: theme.panel });
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2800 + mask, foreground: looped ? theme.accent : theme.muted, background: fading ? theme.selection : theme.panel });
+                } else if fading {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 32, foreground: theme.foreground, background: theme.selection });
                 }
             }
         }
@@ -459,7 +493,7 @@ impl SamplerView {
             let mode: i32 = i32(std::math::floor(value * 2.0 + 0.5));
             return clone(mode == 1 ? "Fwd" : (mode == 2 ? "Bidir" : "Off"));
         }
-        if col == 8 {
+        if col == 9 {
             let bus: i32 = i32(std::math::floor(value * 7.0 + 0.5));
             return bus == 0 ? clone("Main") : format!("Out {}", bus + 1);
         }

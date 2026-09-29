@@ -692,6 +692,8 @@ Each of the 16 slots is one row with these columns:
 - The sample.
 - **Loop**: `Off`, `Fwd` forward, `Bidir` bidirectional.
 - **Start%** / **End%**: the loop points, in percent of the sample.
+- **Xf%**: a forward loop's crossfade length, in percent of the sample. It
+  smooths a clicking seam (see the Mla Sampler README).
 - **Out**: the output bus (`Main`, `Out 2`..`Out 8`).
 
 Overlapping zones layer.
@@ -709,9 +711,10 @@ Overlapping zones layer.
 | `p` | Play the slot: a pad at its key, a zone at its root |
 
 **Wave view** shows the selected slot's waveform across the pane, with the
-loop region highlighted and its start and end as `│` markers. The line above
+loop region highlighted, the crossfade region shaded, and its start and end as
+`│` markers. The line above
 names the slot and shows the loop mode, the loop start and end in frames (the
-one being edited in brackets), the loop length and the zoom. Frames are exact:
+one being edited in brackets), the loop length, the crossfade and the zoom. Frames are exact:
 a loop point set here plays from that frame.
 
 | Keys | Action |
@@ -720,6 +723,7 @@ a loop point set here plays from that frame.
 | `h` / `l` (Left / Right) | Move the marker one dot of the waveform |
 | `H` / `L` | Move the marker one frame |
 | `z` | Snap the marker to the nearest zero crossing (within 48000 frames) |
+| `[` / `]` | Shorten / lengthen the loop crossfade by one dot (forward loops) |
 | `=` / `-` | Zoom in / out, centred on the marker |
 | `j` / `k` | Next / previous slot |
 | `p` | Play the slot |

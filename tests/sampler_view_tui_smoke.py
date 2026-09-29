@@ -1,6 +1,6 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
 clearing slots, key zones, loop mode / loop point / output edits, the wave view's
-frame-accurate loop markers and zero-crossing snap, auditioning slots, routing an aux output to
+frame-accurate loop markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
 
@@ -105,7 +105,7 @@ def main():
             expect(tui.send(b"KKK"), b"3.0 ")
             tui.send(b"l")
             expect(tui.send(b"J"), b"99.0 ")
-            tui.send(b"l")
+            tui.send(b"ll")  # past Xf% to Out
             expect(tui.send(b"K"), b"Out 2")
             # o routes the slot's bus: Out 2 into A1's channel.
             expect(tui.send(b"o"), b"Output destination", b"MAIN with the instrument's output", b"MST  master", b"A1")
@@ -132,7 +132,7 @@ def main():
             tui.send(b"jj")
             expect(tui.send_until(b"\r", b"Load sample for pad 3"), b"Load sample for pad 3")
             expect(tui.send(b"\x15" + bytes(square) + b"\r", 0.7), b"Pad 3: square.wav")
-            expect(tui.send(b"w"), b"Slot 3 square.wav", b"Loop Off", b"[Start 0]", b"End 4800", b"Len 4800 of 4800 frames", b"Zoom 1x")
+            expect(tui.send(b"w"), b"Slot 3 square.wav", b"Loop Off", b"[Start 0]", b"End 4800", b"Len 4800 of 4800", b"Zoom 1x")
             # Shift+L moves a frame; z snaps to the nearest zero crossing.
             expect(tui.send(b"L" * 10), b"[Start 10]")
             expect(tui.send(b"z"), b"[Start 50]", b"Len 4750")
@@ -141,8 +141,15 @@ def main():
             expect(tui.send(b"H"), b"[End 4799]")
             expect(tui.send(b"z"), b"[End 4750]", b"Len 4700")
             expect(tui.send(b"="), b"Zoom 2x")
-            expect(tui.send(b"-"), b"Zoom 1x")
-            expect(tui.send(b"w"), b"Start%")
+            expect(tui.send(b"-"), b"Zoom 1x", b"Xfade 0")
+            # A forward loop can crossfade: [ and ] in the wave view. It is
+            # capped by the 50 frames before the loop start.
+            expect(tui.send(b"w"), b"Start%", b"Xf%")
+            tui.send(b"hhhh")  # Out -> Loop
+            expect(tui.send(b"K"), b"Fwd")
+            expect(tui.send(b"w"), b"Loop Fwd", b"Xfade 0")
+            expect(tui.send(b"]]]"), b"Xfade 50")
+            tui.send(b"w")
             tui.send(b"kk")
 
             # The virtual keyboard takes the pane over, and Shift+S takes it back.
@@ -164,7 +171,7 @@ def main():
             expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
-            expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750")
+            expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750", b"Xfade 50")
             tui.send(b"w")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:

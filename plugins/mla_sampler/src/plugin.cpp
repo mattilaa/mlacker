@@ -64,8 +64,11 @@ extern "C" void mlasampler_voice_stop__ptr_struct_SamplerVoice(SamplerVoice *voi
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_next_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
-extern "C" float mlasampler_voice_render__ptr_struct_SamplerVoice_f32_f32_f32_f32_ptr_f32(
-    SamplerVoice *voice, float left0, float right0, float left1, float right1, float *outRight);
+extern "C" void mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frames);
+extern "C" double mlasampler_voice_shadow_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
+extern "C" float mlasampler_voice_render__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32_f32_f32_f32_ptr_f32(
+    SamplerVoice *voice, float left0, float right0, float left1, float right1, float shadowLeft0,
+    float shadowRight0, float shadowLeft1, float shadowRight1, float *outRight);
 
 // --- MLang runtime PCM decoder (libmlang_std.a, std::audio::PcmAudio) --------
 struct MlangList {
@@ -107,6 +110,7 @@ enum ParamId : ParamID {
     kReleaseParam,
     kSlotParamBase = 200, // slot s: 200 + 7s, see SlotParam
     kZoneParamBase = 400, // slot s: 400 + 5s, see ZoneParam
+    kCrossfadeParamBase = 500, // slot s: 500 + s, loop crossfade (fraction of the sample)
 };
 
 // Per-slot parameter offsets from kSlotParamBase + s * kParamsPerSlot.
@@ -134,17 +138,20 @@ enum ZoneParam : int {
 
 constexpr int kNumGlobalParams = 8;
 constexpr int kNumSlotParams = kNumSlots * kParamsPerSlot;
-constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumSlots * kParamsPerZone;
+constexpr int kNumZoneParams = kNumSlots * kParamsPerZone;
+constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots;
 
 // Flat index <-> ParamID. Globals occupy 0..7, slot parameters follow, then
-// the key zones.
+// the key zones, then the loop crossfades.
 static ParamID paramIdAt(int index)
 {
     if(index < kNumGlobalParams)
         return static_cast<ParamID>(kLevelParam + index);
     if(index < kNumGlobalParams + kNumSlotParams)
         return static_cast<ParamID>(kSlotParamBase + (index - kNumGlobalParams));
-    return static_cast<ParamID>(kZoneParamBase + (index - kNumGlobalParams - kNumSlotParams));
+    if(index < kNumGlobalParams + kNumSlotParams + kNumZoneParams)
+        return static_cast<ParamID>(kZoneParamBase + (index - kNumGlobalParams - kNumSlotParams));
+    return static_cast<ParamID>(kCrossfadeParamBase + (index - kNumGlobalParams - kNumSlotParams - kNumZoneParams));
 }
 
 static int indexOf(ParamID id)
@@ -153,8 +160,10 @@ static int indexOf(ParamID id)
         return static_cast<int>(id - kLevelParam);
     if(id >= kSlotParamBase && id < kSlotParamBase + kNumSlotParams)
         return kNumGlobalParams + static_cast<int>(id - kSlotParamBase);
-    if(id >= kZoneParamBase && id < kZoneParamBase + kNumSlots * kParamsPerZone)
+    if(id >= kZoneParamBase && id < kZoneParamBase + kNumZoneParams)
         return kNumGlobalParams + kNumSlotParams + static_cast<int>(id - kZoneParamBase);
+    if(id >= kCrossfadeParamBase && id < kCrossfadeParamBase + kNumSlots)
+        return kNumGlobalParams + kNumSlotParams + kNumZoneParams + static_cast<int>(id - kCrossfadeParamBase);
     return -1;
 }
 
@@ -363,6 +372,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             track->setNormalized(1.0);
             norm_[indexOf(zoneParamId(slot, kZoneTrack))].store(1.0, std::memory_order_relaxed);
         }
+        // Loop crossfades come after the zones, again keeping indexes.
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            addParam(static_cast<ParamID>(kCrossfadeParamBase + slot), slotTitle(slot, "Crossfade").c_str(), nullptr, 0.0);
         return kResultOk;
     }
 
@@ -879,6 +891,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
         mlasampler_voice_start__ptr_struct_SamplerVoice_f64_f64_f32_f32_i32_f64_f64(
             target->dsp, frames, step, gain, pan, loopFromNorm(slotNorm(slot, kSlotLoop)), loopStart, loopEnd);
+        mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(
+            target->dsp, std::floor(norm(static_cast<ParamID>(kCrossfadeParamBase + slot)) * frames));
         target->sample = sample;
         target->slot = slot;
         target->channel = channel;
@@ -914,9 +928,14 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 next = std::clamp<int64_t>(next, 0, guard);
                 const float *a = pcm + frame * 2;
                 const float *b = pcm + next * 2;
+                // During a crossfade, the frames a loop length back fade in.
+                const double shadowFrame = mlasampler_voice_shadow_frame__ptr_struct_SamplerVoice(voice.dsp);
+                const int64_t shadow = shadowFrame < 0 ? 0 : std::clamp<int64_t>(static_cast<int64_t>(shadowFrame), 0, guard - 1);
+                const float *c = pcm + shadow * 2;
+                const float *d = pcm + (shadow + 1) * 2;
                 float right = 0.0f;
-                const float left = mlasampler_voice_render__ptr_struct_SamplerVoice_f32_f32_f32_f32_ptr_f32(
-                    voice.dsp, a[0], a[1], b[0], b[1], &right);
+                const float left = mlasampler_voice_render__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32_f32_f32_f32_ptr_f32(
+                    voice.dsp, a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1], &right);
                 outL[i] += left;
                 outR[i] += right;
                 if(!mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp)) {

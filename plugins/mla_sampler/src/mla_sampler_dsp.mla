@@ -11,6 +11,12 @@
 /// Loop modes: 0 = off (the voice ends with the sample), 1 = forward (jump
 /// from the loop end back to the loop start), 2 = bidirectional (play the loop
 /// forwards and backwards). Loops keep running through the release.
+///
+/// A forward loop can crossfade: over its last `xfade` frames the loop tail
+/// fades out while the audio just before the loop start fades in
+/// (equal-power), so the jump back to the loop start continues exactly what
+/// was fading in and the seam does not click. `mlasampler_voice_shadow_frame`
+/// names that earlier frame.
 
 mod dsp::envelope;
 use dsp::envelope::Adsr;
@@ -38,6 +44,8 @@ struct SamplerVoice {
     var loop_mode: i32;
     var loop_start: f64;
     var loop_end: f64;
+    /// Forward-loop crossfade length in frames (0 = none).
+    var xfade: f64;
     var gain_left: f32;
     var gain_right: f32;
     var active: i32;
@@ -108,12 +116,36 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).loop_mode = (loop_mode == 1 || loop_mode == 2) && end - start >= 2.0 ? loop_mode : 0;
         (*voice).loop_start = start;
         (*voice).loop_end = end;
+        (*voice).xfade = 0.0;
         // sqrt(2) keeps a centred voice at unity in both channels.
         (*voice).gain_left = gain * cosf(angle) * 1.41421356237309504880f;
         (*voice).gain_right = gain * sinf(angle) * 1.41421356237309504880f;
         (*voice).envelope.reset();
         (*voice).envelope.gate_on();
         (*voice).active = frames > 0.0 ? 1 : 0;
+    }
+}
+
+/// @brief Crossfade a forward loop's seam over `frames` frames. Call after
+/// `mlasampler_voice_start`. Clamped to the loop length and to the frames
+/// before the loop start (the audio faded in); other loop modes ignore it.
+fn mlasampler_voice_set_crossfade(voice: ptr<SamplerVoice>, frames: f64) {
+    unsafe {
+        var length: f64 = floor(frames);
+        let loop_length: f64 = (*voice).loop_end - (*voice).loop_start;
+        if length > loop_length { length = loop_length; }
+        if length > (*voice).loop_start { length = (*voice).loop_start; }
+        (*voice).xfade = (*voice).loop_mode == 1 && length >= 1.0 ? length : 0.0;
+    }
+}
+
+/// @brief The frame that fades in under the playhead during a crossfade (a
+/// loop length before it), or -1 when the voice is not crossfading. The
+/// caller passes it and the next frame to `mlasampler_voice_render`.
+fn mlasampler_voice_shadow_frame(voice: ptr<SamplerVoice>) -> f64 {
+    unsafe {
+        if (*voice).xfade <= 0.0 || (*voice).position < (*voice).loop_end - (*voice).xfade { return -1.0; }
+        return floor((*voice).position - ((*voice).loop_end - (*voice).loop_start));
     }
 }
 
@@ -190,9 +222,12 @@ fn advance_sampler_voice(voice: ptr<SamplerVoice>) {
 /// @brief Render one output frame and advance. Returns the left sample and
 /// writes the right one through `out_right`. `left0/right0` is the frame at
 /// `mlasampler_voice_frame`, `left1/right1` the one at
-/// `mlasampler_voice_next_frame`. The voice deactivates itself at the end of
-/// an unlooped sample or of the envelope.
-fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, left1: f32, right1: f32, out_right: ptr<f32>) -> f32 {
+/// `mlasampler_voice_next_frame`; `shadow_*` the frame at
+/// `mlasampler_voice_shadow_frame` and the one after it (ignored outside a
+/// crossfade). The voice deactivates itself at the end of an unlooped sample
+/// or of the envelope.
+fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, left1: f32, right1: f32,
+    shadow_left0: f32, shadow_right0: f32, shadow_left1: f32, shadow_right1: f32, out_right: ptr<f32>) -> f32 {
     unsafe {
         if (*voice).active == 0 {
             *out_right = 0.0f;
@@ -200,8 +235,18 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
         }
         let position: f64 = (*voice).position;
         let frac: f32 = clamp_sampler_f32(f32(position - floor(position)), 0.0f, 1.0f);
-        let left: f32 = left0 + (left1 - left0) * frac;
-        let right: f32 = right0 + (right1 - right0) * frac;
+        var left: f32 = left0 + (left1 - left0) * frac;
+        var right: f32 = right0 + (right1 - right0) * frac;
+        // Crossfade: the tail fades out as the audio before the loop start
+        // (same fraction, a loop length back) fades in, equal-power.
+        let fade_from: f64 = (*voice).loop_end - (*voice).xfade;
+        if (*voice).xfade > 0.0 && position >= fade_from {
+            let t: f32 = clamp_sampler_f32(f32((position - fade_from) / (*voice).xfade), 0.0f, 1.0f);
+            let angle: f32 = t * 1.57079632679489661923f;
+            let tail: f32 = cosf(angle); let head: f32 = sinf(angle);
+            left = left * tail + (shadow_left0 + (shadow_left1 - shadow_left0) * frac) * head;
+            right = right * tail + (shadow_right0 + (shadow_right1 - shadow_right0) * frac) * head;
+        }
 
         let amp: f32 = (*voice).envelope.process();
         *out_right = right * amp * (*voice).gain_right;

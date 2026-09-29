@@ -3,7 +3,7 @@
 // Loads the built .vst3 through the SDK hosting classes (as mlacker does),
 // fills slots through the mla_sampler_protocol messages and checks rendered
 // audio: the bus layout, slot/key mapping, key zones with pitch tracking and
-// layering, loop off / forward / bidirectional, per-slot output routing with
+// layering, loop off / forward (with and without a crossfade) / bidirectional, per-slot output routing with
 // the fallback to Main, and state round trips.
 //
 // Usage: mla_sampler_tests <path/to/MlaSampler.vst3> <scratch dir>
@@ -64,6 +64,7 @@ constexpr double kLoopForward = 0.5, kLoopBidirectional = 1.0;
 enum ZoneParam { kZoneMode, kZoneLow, kZoneHigh, kZoneRoot, kZoneTrack };
 constexpr ParamID zoneParam(int slot, ZoneParam k) { return 400 + slot * 5 + k; }
 constexpr double key(int midi) { return midi / 127.0; }
+constexpr ParamID crossfadeParam(int slot) { return 500 + slot; }
 
 class Application final : public HostApplication {
   public:
@@ -299,6 +300,42 @@ void testForwardLoop(const std::string &path)
     CHECK(energy(tail, 2048, 4096) == 0.0);
 }
 
+// Largest step between consecutive output frames in [from, to).
+float largestStep(const std::vector<float> &stereo, int from, int to)
+{
+    float largest = 0.0f;
+    for(int f = from + 1; f < to; ++f)
+        largest = std::max(largest, std::fabs(left(stereo, f) - left(stereo, f - 1)));
+    return largest;
+}
+
+void testLoopCrossfade(const std::string &path)
+{
+    // Frames 0..999 rise from -1 to +1: the loop 500..999 jumps from ~1 back
+    // to 0 at its seam, while the audio before it (400..499) rises into 0.
+    const int frames = 1000;
+    std::vector<float> pcm(frames);
+    for(int f = 0; f < frames; ++f)
+        pcm[f] = static_cast<float>(f - 500) / 500.0f;
+    for(double crossfade : {0.0, 0.1}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, pcm) == kResultOk);
+        plugin.param(slotParam(0, kSlotLoop), kLoopForward);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.5);
+        plugin.param(crossfadeParam(0), crossfade); // 100 frames
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(4096);
+        const float step = largestStep(out, 10, 4096);
+        if(crossfade == 0.0)
+            CHECK(step > 0.9f); // the click at the seam
+        else
+            CHECK(step < 0.03f); // smooth through several passes
+        // Away from the seam the loop plays unchanged.
+        CHECK(std::fabs(left(out, 1500 + 200) - static_cast<float>(700 - 500) / 500.0f) < 2e-3f);
+    }
+}
+
 void testBidirectionalLoop(const std::string &path)
 {
     Instance plugin;
@@ -458,6 +495,7 @@ int main(int argc, char **argv)
     testLoopOff(path);
     testForwardLoop(path);
     testBidirectionalLoop(path);
+    testLoopCrossfade(path);
     testKeyZones(path);
     testOutputRouting(path);
     testStateRoundTrip(path);

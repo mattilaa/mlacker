@@ -57,6 +57,14 @@ as Off. Interpolation across the loop end of a forward loop reads the loop
 start, so the seam has no jump to the frame after the loop. Loop settings are
 read when a note starts. Notes already sounding keep theirs.
 
+A forward loop whose end and start do not match (a click at the seam) can
+**crossfade**: over the loop's last *n* frames, the tail fades out while the
+audio the same distance before the loop start fades in (equal-power). The jump
+back to the loop start then continues exactly what was fading in. The
+**Crossfade** length is a fraction of the sample like the loop points. It is
+capped by the loop length and by the frames before the loop start, so a loop
+starting at frame 0 cannot crossfade. Off and bidirectional loops ignore it.
+
 ## Outputs
 
 Bus 0 is **Main**. Buses 1-7 are the auxiliary stereo outputs **Out 2**..**Out 8**,
@@ -90,12 +98,14 @@ mlacker's README, "Plugin outputs").
 | Slot N High Key    | MIDI 0..127                   | Zone's highest key. Default 127. |
 | Slot N Zone Root   | MIDI 0..127                   | Key at the recorded pitch. Default 60 (C-4). |
 | Slot N Key Track   | Off, On                       | Default On. |
+| Slot N Crossfade   | 0..1 of the sample            | Forward-loop crossfade length. Default 0 (none). |
 
 Parameter IDs are stable: globals are 100-107 and slot `s` (0-based) uses
 `200 + 7s` + (0 level, 1 pan, 2 tune, 3 output, 4 loop, 5 loop start, 6 loop
-end) and `400 + 5s` + (0 key mode, 1 low key, 2 high key, 3 zone root, 4 key
-track). The key zone parameters come after all the others, so presets and
-states saved before they existed load with every slot in Pad mode. With all 32 voices busy, the oldest is stolen.
+end), `400 + 5s` + (0 key mode, 1 low key, 2 high key, 3 zone root, 4 key
+track) and `500 + s` for the crossfade. Each later block comes after all
+earlier parameters, so presets and states saved before it load with its
+defaults: every slot in Pad mode, no crossfade. With all 32 voices busy, the oldest is stolen.
 
 ## Build
 
@@ -110,7 +120,7 @@ from this directory:
 `test` builds and runs `tests/mla_sampler_tests.cpp`, an offline host that
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
-pads), loop off / forward /
+pads), a forward loop's seam with and without a crossfade, loop off / forward /
 bidirectional, per-slot output routing with the fallback to Main, and state
 round trips. In mlacker's plugin tree it is also the CTest test
 `sampler_processor` (`./build.sh --test`). The SDK's `validator` passes (47/47).
