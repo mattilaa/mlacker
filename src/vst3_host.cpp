@@ -284,6 +284,37 @@ public:
         return attributes->getInt(id, value) == kResultOk ? value : -1;
     }
 
+    // Control thread: a sampler pad's slice markers (mla_sampler_protocol.h).
+    // Copies up to `max` into `out`; returns how many there are, -1 if none.
+    int32_t padMarkers(int32_t pad, double *out, int32_t max) {
+        auto connection = U::cast<IConnectionPoint>(component);
+        if(!connection || pad < 0) return -1;
+        auto message = owned(new HostMessage);
+        message->setMessageID(mla_sampler::kMarkersMessage);
+        auto *attributes = message->getAttributes();
+        attributes->setInt("pad", pad);
+        try { if(connection->notify(message) != kResultOk) return -1; } catch(...) { return -1; }
+        const void *data = nullptr; uint32 size = 0;
+        if(attributes->getBinary("frames", data, size) != kResultOk || !data || size % sizeof(double)) return -1;
+        const int32_t count = static_cast<int32_t>(size / sizeof(double));
+        if(out && max > 0) std::memcpy(out, data, static_cast<size_t>(std::min(count, max)) * sizeof(double));
+        return count;
+    }
+
+    // Control thread: replace a pad's markers, or detect them again (count < 0).
+    int32_t setPadMarkers(int32_t pad, const double *frames, int32_t count) {
+        auto connection = U::cast<IConnectionPoint>(component);
+        if(!connection || pad < 0) return -1;
+        auto message = owned(new HostMessage);
+        message->setMessageID(mla_sampler::kMarkersMessage);
+        auto *attributes = message->getAttributes();
+        attributes->setInt("pad", pad);
+        attributes->setInt("set", count < 0 ? 2 : 1);
+        if(count > 0 && frames) attributes->setBinary("frames", frames, static_cast<uint32>(count * sizeof(double)));
+        else if(count == 0) attributes->setBinary("frames", "", 0);
+        try { return connection->notify(message) == kResultOk ? 0 : -1; } catch(...) { return -1; }
+    }
+
     // Audio thread, before render: the sequencer's tempo and beat position.
     void transport(double tempo, double beat, int32_t playing) noexcept {
         transportState = 0;
@@ -382,6 +413,12 @@ int32_t load(const char *path, double rate, int32_t frames,
         };
         out->sampler_info = [](void *p, int32_t key) -> int64_t {
             try { return static_cast<Processor*>(p)->samplerInfo(key); } catch(...) { return -1; }
+        };
+        out->pad_markers = [](void *p, int32_t pad, double *frames, int32_t max) -> int32_t {
+            try { return static_cast<Processor*>(p)->padMarkers(pad, frames, max); } catch(...) { return -1; }
+        };
+        out->set_pad_markers = [](void *p, int32_t pad, const double *frames, int32_t count) -> int32_t {
+            try { return static_cast<Processor*>(p)->setPadMarkers(pad, frames, count); } catch(...) { return -1; }
         };
         plugin.release(); return 0;
     } catch(const std::exception &e) { std::snprintf(error, errorSize, "VST3 load failed: %s", e.what()); }

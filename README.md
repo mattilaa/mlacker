@@ -712,7 +712,7 @@ Overlapping zones layer.
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
 | `v` | Key map of all slots (again returns to the table) |
-| `e` | Next page: keys & loops, Sound, Filter, Filter 3/4, LFO 1, LFO 2, Mod, Play, Vel/Tempo |
+| `e` | Next page: keys & loops, Sound, Filter, Filter 3/4, Filter Mod, LFO 1, LFO 2, Mod, Play, Vel/Tempo |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
 | `E` | Edit the slot's sample (see below) |
@@ -739,7 +739,12 @@ four stages connect (`Serial`; `Parall`: all side by side, summed; `2 x 2`:
 stages 1-2 beside 3-4), then filter stages 3 and 4 (**F3**, **F4**) with the
 same columns and keys as the first two.
 
-The **LFO 1** and **LFO 2** pages (`e` from the Filter 3/4 page, then again) set
+The **Filter Mod page** (`e` from Filter 3/4) shows each stage's **Drv**
+(drive, %: saturation into the stage) and **Mod** (-100 .. +100 % of the LFO
+and mod-route cutoff movement it takes; +100 by default), dim while the stage
+is Off. Opposite Mod values sweep two stages apart.
+
+The **LFO 1** and **LFO 2** pages (`e` from the Filter Mod page, then again) set
 each slot's two LFOs alike: **Shape**
 (`Sine`, `Tri`, `SawUp`, `SawDn`, `Sqr`, `S&H`), **Rate** (0.05-20 Hz, dim
 while synced), **Sync** and **Div** (a division of the tempo: `1/1`..`1/32`,
@@ -790,7 +795,8 @@ slice 1 on that slot, slice 2 on the next, and so on, each a one-shot pad
 (Pad mode, loop off, whole slice, forwards), so the slices play on consecutive
 keys, Akai-style. `C` shows the wave view with the cuts marked; `J`/`K` (`[`/`]`
 by 4) set how many slices (2 up to the slots left), `t` switches between equal
-slices and slicing at transients, Enter slices, and `C` or Backspace cancels.
+slices, slicing at transients and slicing at the cuts (one slice per cut, see
+Wave view), Enter slices, and `C` or Backspace cancels.
 At transients the strongest rises in level are cut (at least 30 ms apart), just
 before each onset; a sample with fewer transients gets fewer slices. The slices
 join the Audio list as `name slice N.wav`; other settings of the slots they
@@ -846,7 +852,7 @@ a loop point set here plays from that frame.
 
 | Keys | Action |
 |------|--------|
-| `m` | Edit the loop start, the loop end or the sample start, in turn |
+| `m` | Edit the loop start, the loop end, the sample start or the cuts, in turn |
 | `h` / `l` (Left / Right) | Move the marker one dot of the waveform |
 | `H` / `L` | Move the marker one frame |
 | `z` | Snap the marker to the nearest zero crossing (within 48000 frames) |
@@ -854,6 +860,17 @@ a loop point set here plays from that frame.
 | `=` / `-` | Zoom in / out, centred on the marker |
 | `j` / `k` | Next / previous slot |
 | `p` | Play the slot |
+| `,` / `.` | Cuts: select the previous / next cut |
+| `n` / `x` | Cuts: add a cut half way to the next / delete the selected one |
+| `u` | Cuts: detect them again |
+
+The **cuts** are the slot's slice markers, shown as dotted `┊` lines: where
+its hits start, as Mla Sampler detects them when a sample loads. Beats tempo
+sync plays from one cut to the next, and `C` slicing can slice at them. With
+the Cut marker (`m` past the sample start) `h`/`l`, `H`/`L` and `z` move the
+selected cut between its neighbours (the first stays at frame 0). Cuts set by
+hand are kept with the session until the pad gets another sample, and `u`
+brings back the detected ones. A reversed slot's cuts are not drawn.
 
 `p` plays through the Instrument track like a key of the virtual keyboard, at
 velocity 100 or the nearest velocity in the slot's range, so
@@ -1370,7 +1387,8 @@ and checks that Space and `q` behave. The Sampler pane PTY test (run when
 `MlaSampler.vst3` is built) loads and clears slots, edits loops, outputs and
 every page, saves a slot preset and loads it into another slot, checks that
 the edits survive a session round trip, then slices a slot, auto-maps a
-note-named sample and shows the key map. Legacy widget tests opt in
+note-named sample and shows the key map; it also edits cuts and checks
+that they survive the round trip. Legacy widget tests opt in
 to seeded demo data with `MLACKER_DEMO=1`; normal mlacker startup does not.
 
 For a hardware-free manual run:

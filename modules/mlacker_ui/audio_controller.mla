@@ -21,6 +21,9 @@ use std::strbuf::free;
 pub struct EffectChannel { var path: str8{""}; var volume: i32{100}; };
 /// Sampler-instrument pad (0-based) filled from the session sample list.
 pub struct PadAssignment { var slot: i32; var pad: i32; var sample: i32; };
+/// Slice markers set by hand for a sampler pad (frames, ascending, the first
+/// 0); pads without an entry use the ones the instrument detects.
+pub struct PadMarkers { var slot: i32; var pad: i32; var frames: list<i64>; };
 pub struct SamplePlacement { var sample: i64; var track: i64; var start: i64; var duration: i64; var rate: i64; var next: i64; var head: i64; };
 /// PCM already registered with the controller. Clips are matched by content,
 /// so re-arming a pattern reuses the registration instead of stopping the
@@ -53,6 +56,7 @@ pub struct AudioSystem {
     var effects: list<EffectChannel>;
     var insert_paths: list<str8>;
     var pads: list<PadAssignment>;
+    var pad_markers: list<PadMarkers>;
     var sample_placements: list<SamplePlacement>; var samples_running: bool;
     var sample_output: i64; var sample_last: i64;
     /// Tick where row 0 of the pattern holding the placements falls, and the
@@ -82,6 +86,7 @@ impl AudioSystem {
         self.effects = next.effects;
         self.insert_paths = next.insert_paths;
         self.pads = next.pads;
+        self.pad_markers = next.pad_markers;
         self.samples_running = false; self.sample_placements = []; self.sample_output = 0;
         self.sample_epoch = 0; self.sample_start_row = -1; self.registered_clips = [];
         self.click_output = 0; self.click_high = -1; self.click_low = -1;
@@ -550,11 +555,13 @@ impl AudioSystem {
         }
         if !placed { next.push(PadAssignment { slot: slot, pad: pad, sample: sample }); }
         self.pads = next;
+        self.forget_markers(slot, pad);
         return "";
     }
     /// After a destructive edit of session sample `sample`, re-send every pad
     /// that uses it. Returns the number of pads refreshed, or -1 on failure.
-    pub fn refresh_pads(self: AudioSystem, sample: i32, clip: &AudioClip) -> i32 {
+    /// Their hand-set slice markers go: the instrument detects new ones.
+    pub fn refresh_pads(self: &mut Self, sample: i32, clip: &AudioClip) -> i32 {
         var source: AudioClip = AudioClip {}; source = clip;
         let name: str8 = base_name(source.source);
         var count: i32 = 0;
@@ -562,6 +569,7 @@ impl AudioSystem {
         for entry in pads {
             if entry.sample != sample { continue; }
             if self.output.instrument_pad(entry.slot, entry.pad, source.samples, source.channels, source.sample_rate, name) != 0 { count = -1; break; }
+            self.forget_markers(entry.slot, entry.pad);
             count = count + 1;
         }
         free(name);
@@ -573,6 +581,7 @@ impl AudioSystem {
         let old: list<PadAssignment> = self.pads; var next: list<PadAssignment> = [];
         for entry in old { if entry.slot != slot || entry.pad != pad { next.push(entry); } }
         self.pads = next;
+        self.forget_markers(slot, pad);
         return "";
     }
     /// Session sample index loaded into a pad, or -1.
@@ -589,6 +598,7 @@ impl AudioSystem {
         for entry in old {
             if entry.sample == sample {
                 if self.output.instrument_clear_pad(entry.slot, entry.pad) == 0 { cleared = cleared + 1; }
+                self.forget_markers(entry.slot, entry.pad);
             } else {
                 next.push(PadAssignment { slot: entry.slot, pad: entry.pad,
                     sample: entry.sample > sample ? entry.sample - 1 : entry.sample });
@@ -601,6 +611,34 @@ impl AudioSystem {
         let old: list<PadAssignment> = self.pads; var next: list<PadAssignment> = [];
         for entry in old { if entry.slot != slot { next.push(entry); } }
         self.pads = next;
+        self.forget_markers(slot, -1);
+    }
+    /// Drop hand-set markers of `slot`'s pad `pad` (every pad for -1): a new
+    /// sample brings its own.
+    fn forget_markers(self: &mut Self, slot: i32, pad: i32) -> void {
+        let old: list<PadMarkers> = self.pad_markers; var next: list<PadMarkers> = [];
+        for entry in old { if entry.slot != slot || (pad >= 0 && entry.pad != pad) { next.push(entry); } }
+        self.pad_markers = next;
+    }
+    /// A sampler pad's slice markers as the instrument plays them (empty for
+    /// an empty pad or an instrument without markers).
+    pub fn markers(self: AudioSystem, slot: i32, pad: i32) -> list<i64> {
+        let frames: list<f64> = self.output.instrument_markers(wide(slot), wide(pad));
+        var out: list<i64> = [];
+        for frame in frames { out.push(wide(i32(frame))); }
+        return out;
+    }
+    /// Set a pad's markers by hand (kept with the session), or with `detect`
+    /// let the instrument find them again. The markers as the instrument now
+    /// has them.
+    pub fn set_markers(self: &mut Self, slot: i32, pad: i32, frames: list<i64>, detect: bool) -> list<i64> {
+        var sent: list<f64> = [];
+        for frame in frames { sent.push(f64(frame)); }
+        if self.output.instrument_set_markers(wide(slot), wide(pad), sent, detect) != 0 { return self.markers(slot, pad); }
+        self.forget_markers(slot, pad);
+        let now: list<i64> = self.markers(slot, pad);
+        if !detect { self.pad_markers.push(PadMarkers { slot: slot, pad: pad, frames: now }); }
+        return self.markers(slot, pad);
     }
     /// Returns an owned status string. Load outside the audio callback; retain
     /// the old processor if the new bundle cannot initialize.
@@ -692,6 +730,6 @@ impl AudioSystem {
         self.instrument_paths = [];
         let insert_paths: list<str8> = self.insert_paths; for path in insert_paths { free(path); } self.insert_paths = [];
         let effects: list<EffectChannel> = self.effects; for effect in effects { if effect.path != "" { free(effect.path); } } self.effects = [];
-        self.pads = [];
+        self.pads = []; self.pad_markers = [];
     }
 }

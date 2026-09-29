@@ -103,7 +103,7 @@ double lfoShape(int shape) { return shape / 15.0; }
 double lfoRate(double hz) { return std::log(hz / 0.05) / std::log(400.0); }
 constexpr ParamID kFilterEnvelope = 960; // + 0 attack, 1 decay, 2 sustain, 3 release
 constexpr ParamID slotFilterEnvelope(int slot, EnvelopeParam k) { return 1100 + slot * 5 + k; }
-enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack, kFilterGain };
+enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack, kFilterGain, kFilterDrive, kFilterMod };
 constexpr ParamID filterParam(int slot, int stage, FilterField k) { return 2000 + slot * 32 + stage * 8 + k; }
 // Filter types (plugin.cpp kFilterTypeNames), as normalized list values.
 constexpr double filterType(int type) { return type / 63.0; }
@@ -196,11 +196,12 @@ struct Instance {
         provider.reset();
     }
 
-    void param(ParamID id, double value)
+    // A parameter change at frame `offset` of the next block.
+    void param(ParamID id, double value, int32 offset = 0)
     {
         int32 index = 0;
         if(auto *queue = changes.addParameterData(id, index))
-            queue->addPoint(0, value, index);
+            queue->addPoint(offset, value, index);
     }
 
     void noteOn(int pitch, float velocity = 1.0f, int32 offset = 0)
@@ -1146,6 +1147,22 @@ void testControllers(const std::string &path)
         plugin.param(kPitchBendId, 1.0);
         CHECK(std::fabs(rate(plugin.render(4096)) - 2.0f) < 1e-3f);
     }
+    // A bend at frame 128 of a block takes effect there, not at the block's
+    // start, and glides over a few ms rather than jumping.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, slope) == kResultOk);
+        plugin.param(kBendRangeId, 0.5);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(kPitchBendId, 1.0, 128);
+        const auto out = plugin.render(4096);
+        const auto at = [&](int frame) { return (left(out, frame + 1) - left(out, frame)) * 48000.0f; };
+        CHECK(std::fabs(at(100) - 1.0f) < 1e-3f);             // before it
+        CHECK(at(150) > 1.02f && at(150) < 1.9f);              // gliding
+        CHECK(std::fabs(at(1500) - 2.0f) < 1e-3f);             // there
+    }
     const auto route = [](int source, int target, double share) {
         return Params{{routeParam(0, 0, kRouteSource), listValue(source)}, {routeParam(0, 0, kRouteTarget), listValue(target)},
                       {routeParam(0, 0, kRouteAmount), amount(share)}};
@@ -1231,6 +1248,24 @@ void testChainCurvesAndTempo(const std::string &path)
     CHECK(std::fabs(dcLevel(join(pairs, {{chainParam(0, 0), kPairs}})) - 0.5f) < 0.01f);
     // With nothing on, every chain passes the signal.
     CHECK(std::fabs(dcLevel({{chainParam(0, 0), kParallel}}) - 0.5f) < 1e-3f);
+    // Drive saturates into a stage: DC 0.5 through an open low-pass comes out
+    // tanh(5) / tanh(10) at full drive, and unchanged without.
+    CHECK(std::fabs(dcLevel(stage(0, kLowpass24, 20000)) - 0.5f) < 0.01f);
+    CHECK(std::fabs(dcLevel(join(stage(0, kLowpass24, 20000), {{filterParam(0, 0, kFilterDrive), 1.0}})) -
+                    static_cast<float>(std::tanh(5.0) / std::tanh(10.0))) < 0.01f);
+    // A stage's Mod scales the LFO's cutoff movement: a 2 kHz tone through a
+    // 500 Hz low-pass that a square LFO opens 4 octaves on its top half.
+    std::vector<float> tone2k(48000);
+    for(size_t f = 0; f < tone2k.size(); ++f)
+        tone2k[f] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 2000.0 * f / 48000.0));
+    const Params wobble = join(stage(0, kLowpass24, 500), {{lfoParam(0, kLfoShape), lfoShape(kSquare)},
+                                                            {lfoParam(0, kLfoRate), lfoRate(10)}, {lfoParam(0, kLfoCutoff), 1.0}});
+    const auto modded = [&](double scale) { return filtered(path, tone2k, join(wobble, {{filterParam(0, 0, kFilterMod), scale}})); };
+    const auto full = modded(1.0), none = modded(0.5), inverted = modded(0.0);
+    CHECK(rms(full, 1000, 2000) > 0.2);      // top: open
+    CHECK(rms(none, 1000, 2000) < 0.05);     // Mod 0: the LFO does not reach it
+    CHECK(rms(inverted, 1000, 2000) < 0.05); // -100 %: closed on the top...
+    CHECK(rms(inverted, 3500, 4500) > 0.2);  // ...open on the bottom
 
     // Velocity curves on a half-hard note (DC 0.5): linear halves it, soft
     // takes sqrt(0.5), hard 0.25, fixed full; depth 0 ignores velocity.
@@ -1309,6 +1344,47 @@ void testChainCurvesAndTempo(const std::string &path)
         CHECK(energy(slow, h * 24000 + 400, h * 24000 + 23000) < 1e-3); // then nothing
     }
     CHECK(std::fabs(left(slow, 24000 + 50) - hits[50]) < 0.05f); // its shape kept
+    // The markers message reads the detected hits and replaces them: with
+    // only 0 and 24000, hits 1 and 2 play as one segment (hit 2 at its
+    // recorded distance, 12000 frames in), then silence until 48000.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, hits) == kResultOk);
+        const auto markers = [&](int set, std::vector<double> frames) {
+            auto msg = message(mla_sampler::kMarkersMessage);
+            msg->getAttributes()->setInt("pad", 0);
+            if(set) {
+                msg->getAttributes()->setInt("set", set);
+                msg->getAttributes()->setBinary("frames", frames.data(), static_cast<uint32>(frames.size() * sizeof(double)));
+            }
+            CHECK(plugin.send(msg) == kResultOk);
+            const void *data = nullptr;
+            uint32 size = 0;
+            std::vector<double> out;
+            if(msg->getAttributes()->getBinary("frames", data, size) == kResultOk && data)
+                out.assign(static_cast<const double *>(data), static_cast<const double *>(data) + size / sizeof(double));
+            return out;
+        };
+        const auto detected = markers(0, {});
+        CHECK(detected.size() == 4);
+        for(size_t h = 0; h < detected.size() && h < 4; ++h)
+            CHECK(std::fabs(detected[h] - h * 12000.0) <= 64.0);
+        // Set: sorted, inside the sample, 0 first, no repeats.
+        const auto set = markers(1, {24000.0, 90000.0, 24000.0});
+        CHECK(set.size() == 2 && set[0] == 0.0 && set[1] == 24000.0);
+        plugin.param(chainParam(0, 1), kBeatsSync);
+        plugin.param(chainParam(0, 2), beatsValue(5));
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(96000);
+        CHECK(energy(out, 12000, 12200) > 50.0);  // hit 2 inside segment 1
+        CHECK(energy(out, 24000, 24200) < 1e-3);  // not at its stretched time
+        CHECK(energy(out, 48000, 48200) > 50.0);  // hit 3 starts segment 2
+        CHECK(markers(2, {}).size() == 4);        // detected again
+        auto empty = message(mla_sampler::kMarkersMessage);
+        empty->getAttributes()->setInt("pad", 5);
+        CHECK(plugin.send(empty) != kResultOk);   // an empty pad has none
+    }
     // Faster, over 1 beat (0.5 s): the hits come every 6000 frames.
     const auto fast = play(kBeatsSync, beatsValue(2), 24064);
     for(int h = 0; h < 4; ++h) {

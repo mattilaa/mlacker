@@ -81,8 +81,15 @@ pub struct SamplerView {
     /// slices, evenly or at its transients, at `slice_points` (frame 0, the
     /// cuts, the end), shown in the wave view (`slice_wave`: whether it was
     /// on before). Enter puts slice k on slot + k.
-    var slicing: bool; var slice_count: i32{8}; var slice_transients: bool;
+    var slicing: bool; var slice_count: i32{8}; var slice_mode: i32;
     var slice_points: list<i64>; var slice_wave: bool;
+    /// The selected slot's slice markers ("cuts", frames ascending from 0) as
+    /// the instrument plays them with Beats tempo sync, fetched by the
+    /// application (`needs_cuts`, `take_cuts`) for the slot, pad sample and
+    /// its length they were read for; `cut` is the one the wave view's Cut
+    /// marker (`marker` 3) edits.
+    var cuts: list<i64>; var cut: i32;
+    var cuts_slot: i32{-1}; var cuts_pad: i32{-1}; var cuts_sample: i32{-1}; var cuts_frames: i64{-1};
 };
 impl SamplerView {
     /// Keys the focused pane keeps for itself: everything printable ("q"
@@ -117,17 +124,20 @@ impl SamplerView {
     /// 100 + column.
     fn col(self: SamplerView) -> i32 { return self.page * 100 + self.column; }
     /// The page `e` goes to: keys & loops, Sound, Filter, Filter 3/4 (7),
+    /// Filter Mod (9),
     /// LFO 1, LFO 2, Mod, Play, Vel/Tempo (8), and round again. Pages keep
     /// their numbers (column codes are page * 100 + column) as more are added.
     fn next_page(page: i32) -> i32 {
         if page == 2 { return 7; }
-        if page == 7 { return 3; }
+        if page == 7 { return 9; }
+        if page == 9 { return 3; }
         if page == 6 { return 8; }
         if page == 8 { return 0; }
         return page + 1;
     }
     /// Columns on a page: keys & loops, Sound, Filter.
     fn page_columns(page: i32) -> i32 {
+        if page == 9 { return 8; }
         if page == 8 { return 5; }
         if page == 7 { return 13; }
         if page == 6 { return 10; }
@@ -139,6 +149,8 @@ impl SamplerView {
     /// Parameter ID of a column (see `column`; 100 + column on the Sound
     /// page) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
+        // Filter Mod page: per stage its drive, then its mod scale.
+        if col >= 900 { return 2000 + s * 32 + (col - 900) / 2 * 8 + 6 + (col - 900) % 2; }
         // Vel/Tempo page: velocity curve, depth, key level, then tempo sync
         // and beats.
         if col >= 803 { return 1800 + s * 4 + col - 802; }
@@ -249,6 +261,11 @@ impl SamplerView {
             if part == 5 { return kind < 14 || kind > 16; }
             return kind == 0;
         }
+        // Filter Mod: a stage that is off.
+        if col >= 900 {
+            let stage: i32 = (col - 900) / 2;
+            return SamplerView::filter_type(output, slot, s, stage < 2 ? 200 + stage * 6 : 701 + (stage - 2) * 6) == 0;
+        }
         // Vel/Tempo: the depth of a Fixed curve, beats without tempo sync.
         if col == 801 { return SamplerView::value(output, slot, s, 800) > 0.4 && SamplerView::value(output, slot, s, 800) < 0.46; }
         if col == 804 { return SamplerView::value(output, slot, s, 803) < 0.07; }
@@ -272,6 +289,8 @@ impl SamplerView {
         // LFO 2's columns step as LFO 1's, filter stages 3 and 4 as 1 and 2.
         if col >= 400 && col < 500 { return SamplerView::continuous_step(col - 100, big); }
         if col >= 701 && col <= 712 { return SamplerView::continuous_step(col - 501, big); }
+        // Filter Mod: drive 1 % (10 %); mod -100 .. +100 %: 1 % (10 %).
+        if col >= 900 { return (col - 900) % 2 == 0 ? (big ? 0.1 : 0.01) : (big ? 0.05 : 0.005); }
         // Key level +-12 dB/octave: 0.5 dB (3 dB).
         if col == 802 { return (big ? 3.0 : 0.5) / 24.0; }
         // Mod amounts span -100 .. +100 %: 1 % (10 %).
@@ -372,7 +391,7 @@ impl SamplerView {
             self.slicing = true; self.slice_wave = self.wave; self.wave = true; self.zoom = 0;
             self.slice_count = 16 - self.slot < 8 ? 16 - self.slot : 8;
             var source: AudioClip = AudioClip {}; source = clip;
-            self.slice_points = source.slice_points(self.slice_count, self.slice_transients);
+            self.slice_points = self.plan_slices(source, self.slice_count);
             return 1;
         }
         if (event.code == 65 && event.modifiers == 1) || (event.code == 97 && event.modifiers == 2) { return slot < 1 ? 0 : 14; }
@@ -507,13 +526,90 @@ impl SamplerView {
         else if (event.code == 75 && event.modifiers == 1) || (event.code == 107 && event.modifiers == 2) { count = count + 1; }
         else if event.code == 91 && event.modifiers == 1 { count = count - 4; }
         else if event.code == 93 && event.modifiers == 1 { count = count + 4; }
-        else if event.code == 116 && event.modifiers == 1 { self.slice_transients = !self.slice_transients; }
+        else if event.code == 116 && event.modifiers == 1 { self.slice_mode = (self.slice_mode + 1) % 3; }
         else { return 0; }
         count = count < 2 ? 2 : (count > most ? most : count);
         self.slice_count = count;
         var source: AudioClip = AudioClip {}; source = clip;
-        self.slice_points = source.slice_points(count, self.slice_transients);
+        self.slice_points = self.plan_slices(source, count);
         return 1;
+    }
+    /// Slice points for `count` slices by the slice mode: equal, at
+    /// transients, or at the cuts (as many slices as cuts, up to the slots
+    /// left; equal when there are none).
+    fn plan_slices(self: SamplerView, source: AudioClip, count: i32) -> list<i64> {
+        if self.slice_mode == 2 && self.cuts.len() > 1 {
+            let most: i64 = wide(16 - self.slot);
+            var points: list<i64> = [];
+            let cuts: list<i64> = self.cuts;
+            for c in cuts { if points.len() < most && c < source.frames { points.push(c); } }
+            points.push(source.frames);
+            return points;
+        }
+        return source.slice_points(count, self.slice_mode == 1);
+    }
+    /// Name of the slice mode.
+    fn slice_mode_text(mode: i32) -> str8 { return mode == 1 ? "at transients" : (mode == 2 ? "at cuts" : "equal"); }
+    /// True when the cuts must be (re)read: the wave view or slicing shows
+    /// another slot, pad sample or length than they were read for.
+    pub fn needs_cuts(self: SamplerView, slot: i32, sample: i32, frames: i64) -> bool {
+        return (self.wave || self.slicing) && (slot != self.cuts_slot || self.slot != self.cuts_pad || sample != self.cuts_sample || frames != self.cuts_frames);
+    }
+    /// The cuts read for `slot`'s selected pad, holding `sample` of `frames`.
+    pub fn take_cuts(self: &mut Self, cuts: list<i64>, slot: i32, sample: i32, frames: i64) -> void {
+        self.cuts = cuts; self.cuts_slot = slot; self.cuts_pad = self.slot; self.cuts_sample = sample; self.cuts_frames = frames;
+        let count: i32 = i32(self.cuts.len());
+        if self.cut >= count { self.cut = count > 0 ? count - 1 : 0; }
+    }
+    /// Read the cuts again next time (a sample was edited).
+    pub fn forget_cuts(self: &mut Self) -> void { self.cuts_slot = -1; }
+    /// The wave view's Cut marker: `,`/`.` select, h/l/H/L and z move the
+    /// selected cut between its neighbours (the first stays at 0), n adds one
+    /// half way to the next, x deletes the selected one: 16 when the cuts
+    /// changed (the application sends them), u detects them again (17).
+    fn cut_event(self: &mut Self, event: InputEvent, clip: &AudioClip, frames: i64, left: bool, right: bool,
+        fine_left: bool, fine_right: bool, snap: bool) -> i32 {
+        var cuts: list<i64> = []; cuts = self.cuts;
+        let count: i32 = i32(cuts.len());
+        if count == 0 { return 0; }
+        var selected: i32 = self.cut < count ? self.cut : count - 1;
+        if event.code == 44 && event.modifiers == 1 { if selected > 0 { self.cut = selected - 1; } return 1; }
+        if event.code == 46 && event.modifiers == 1 { if selected < count - 1 { self.cut = selected + 1; } return 1; }
+        if event.code == 117 && event.modifiers == 1 { return 17; }
+        let next: i64 = selected + 1 < count ? cuts[selected + 1] : frames;
+        if event.code == 110 && event.modifiers == 1 {
+            let middle: i64 = (cuts[selected] + next) / 2;
+            if middle - cuts[selected] < 2 { return 0; }
+            var added: list<i64> = [];
+            for i in 0..count { added.push(cuts[i]); if i32(i) == selected { added.push(middle); } }
+            self.cuts = added; self.cut = selected + 1;
+            return 16;
+        }
+        if event.code == 120 && event.modifiers == 1 {
+            if selected == 0 { return 0; }
+            var kept: list<i64> = [];
+            for i in 0..count { if i32(i) != selected { kept.push(cuts[i]); } }
+            self.cuts = kept; self.cut = selected - 1;
+            return 16;
+        }
+        if selected == 0 || !(left || right || fine_left || fine_right || snap) { return 0; }
+        let current: i64 = cuts[selected];
+        var target: i64 = current;
+        if snap { target = SamplerView::zero_crossing(clip, current, false); }
+        else {
+            let dots: i64 = self.dots > 0 ? wide(self.dots) : 160;
+            var step: i64 = fine_left || fine_right ? 1 : self.span(frames) / dots;
+            if step < 1 { step = 1; }
+            target = left || fine_left ? current - step : current + step;
+        }
+        let low: i64 = cuts[selected - 1] + 1;
+        let high: i64 = next - 1;
+        if target < low { target = low; } if target > high { target = high; }
+        if target == current { return 0; }
+        var moved: list<i64> = [];
+        for i in 0..count { moved.push(i32(i) == selected ? target : cuts[i]); }
+        self.cuts = moved;
+        return 16;
     }
     /// Leave slice mode, the wave view as it was before.
     pub fn end_slicing(self: &mut Self) -> void {
@@ -593,8 +689,10 @@ impl SamplerView {
         let snap: bool = event.code == 122 && event.modifiers == 1;
         let shorter: bool = event.code == 91 && event.modifiers == 1;
         let longer: bool = event.code == 93 && event.modifiers == 1;
-        if !(left || right || fine_left || fine_right || zoom_in || zoom_out || toggle || snap || shorter || longer) { return -1; }
-        if toggle { self.marker = (self.marker + 1) % 3; return 1; }
+        let cut_key: bool = self.marker == 3 && event.modifiers == 1 &&
+            (event.code == 44 || event.code == 46 || event.code == 110 || event.code == 120 || event.code == 117);
+        if !(left || right || fine_left || fine_right || zoom_in || zoom_out || toggle || snap || shorter || longer || cut_key) { return -1; }
+        if toggle { self.marker = (self.marker + 1) % 4; return 1; }
         if zoom_out { if self.zoom > 0 { self.zoom = self.zoom - 1; } return 1; }
         if zoom_in { if self.zoom < 20 { self.zoom = self.zoom + 1; } return 1; }
         if slot < 1 || !has_clip { return 6; }
@@ -602,6 +700,9 @@ impl SamplerView {
         let frames: i64 = source.frames;
         if frames < 2 { return 6; }
         var probe: AudioClip = AudioClip {}; probe = source;
+        if self.marker == 3 && !shorter && !longer {
+            return self.cut_event(event, probe, frames, left, right, fine_left, fine_right, snap);
+        }
         if shorter || longer {
             // [ and ] change the crossfade by one dot of the waveform.
             let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(self.slot, 10));
@@ -789,7 +890,14 @@ impl SamplerView {
             let widths: list<i32> = [7, 6, 6, 4, 5, 4, 5, 6, 6, 4, 5, 4, 5];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
                 ["Chain", "F3", "Cut", "Res", "Env", "Key", "Gain", "F4", "Cut", "Res", "Env", "Key", "Gain"],
-                "Filter 3/4 | j/k slot  h/l col  J/K [ ] adjust  e lfo 1  w wave  p play  Enter load");
+                "Filter 3/4 | j/k slot  h/l col  J/K [ ] adjust  e filter mod  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 9 {
+            let widths: list<i32> = [5, 6, 5, 6, 5, 6, 5, 6];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Drv1", "Mod1", "Drv2", "Mod2", "Drv3", "Mod3", "Drv4", "Mod4"],
+                "Filter Mod | j/k slot  h/l col  J/K [ ] adjust  e lfo 1  w wave  p play  Enter load");
             return;
         }
         if self.page == 8 {
@@ -866,12 +974,14 @@ impl SamplerView {
         let slicing: bool = self.slicing;
         if slicing {
             let last: i32 = self.slot + i32(self.slice_points.len()) - 1;
+            let next_mode: str8 = SamplerView::slice_mode_text((self.slice_mode + 1) % 3);
             let help: str8 = format!("Slice to slots {}-{} | J/K [ ] count  t {}  Enter slice  C cancel",
-                self.slot + 1, last, self.slice_transients ? "equal" : "transients");
+                self.slot + 1, last, next_mode);
             surface.text(Rect::new(area.x, help_y, area.width, 1), help, theme.muted, theme.panel); free(help);
         } else {
-            surface.text(Rect::new(area.x, help_y, area.width, 1),
-                "m start/end/ofs  h/l dot  H/L frame  z zero  [ ] xfade  -/= zoom  j/k slot  p play  w table", theme.muted, theme.panel);
+            surface.text(Rect::new(area.x, help_y, area.width, 1), self.marker == 3
+                ? ", . cut  h/l H/L move  z zero  n add  x delete  u detect  m marker  -/= zoom  w table"
+                : "m start/end/ofs/cut  h/l dot  H/L frame  z zero  [ ] xfade  -/= zoom  j/k slot  p play  w table", theme.muted, theme.panel);
         }
         let label: str8 = self.slot < names.len() ? names[self.slot] : "";
         var source: AudioClip = AudioClip {}; if has_clip { source = clip; }
@@ -889,11 +999,20 @@ impl SamplerView {
         let mode: str8 = SamplerView::field_text(7, SamplerView::value(output, slot, self.slot, 7));
         let crossfade: i64 = slicing ? 0 : SamplerView::crossfade_frames(output, slot, self.slot, frames);
         let offset_frame: i64 = slicing ? -1 : SamplerView::frame_at(output, slot, self.slot, 108, frames);
-        let info: str8 = slicing ? format!("Slice slot {} {} | {} slices {} | {} frames", self.slot + 1, label,
-            self.slice_points.len() - 1, self.slice_transients ? "at transients" : "equal", frames) : format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {}/{} | Xfade {} | {}Ofs {}{} | Zoom {}x",
+        var info: str8 = slicing ? format!("Slice slot {} {} | {} slices {} | {} frames", self.slot + 1, label,
+            self.slice_points.len() - 1, SamplerView::slice_mode_text(self.slice_mode), frames) : format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {}/{} | Xfade {} | {}Ofs {}{} | Zoom {}x",
             self.slot + 1, label, mode, self.marker == 0 ? "[" : "", start_frame, self.marker == 0 ? "]" : "",
             self.marker == 1 ? "[" : "", end_frame, self.marker == 1 ? "]" : "", end_frame - start_frame, frames, crossfade,
             self.marker == 2 ? "[" : "", offset_frame, self.marker == 2 ? "]" : "", 1 << self.zoom);
+        let cut_count: i32 = i32(self.cuts.len());
+        let cut_index: i32 = self.cut < cut_count ? self.cut : (cut_count > 0 ? cut_count - 1 : 0);
+        let cut_frame: i64 = cut_count > 0 ? self.cuts[cut_index] : 0;
+        // The Cut marker: which of the cuts, and where.
+        if !slicing && self.marker == 3 {
+            free(info);
+            info = format!("Slot {} {} | {} cuts | [Cut {}/{} at {}] | Zoom {}x", self.slot + 1, label, cut_count,
+                cut_index + 1, cut_count, cut_frame, 1 << self.zoom);
+        }
         surface.text(Rect::new(area.x, area.y, area.width, 1), info, theme.foreground, theme.panel);
         free(info); free(mode);
         let rows: i32 = area.height - 3;
@@ -902,7 +1021,8 @@ impl SamplerView {
         let columns: i32 = area.width * 2;
         self.dots = columns;
         let span: i64 = self.span(frames);
-        let first: i64 = self.window_start(frames, self.marker == 1 ? end_frame : (self.marker == 2 ? offset_frame : start_frame));
+        let marker_frame: i64 = self.marker == 3 ? cut_frame : (self.marker == 1 ? end_frame : (self.marker == 2 ? offset_frame : start_frame));
+        let first: i64 = self.window_start(frames, marker_frame < 0 ? 0 : marker_frame);
         // Top and bottom dot row of each dot column, from its min and max.
         var tops: list<i32> = []; var bottoms: list<i32> = [];
         for px in 0..columns {
@@ -958,8 +1078,20 @@ impl SamplerView {
                 }
                 // The sample start is a dashed marker (under a loop marker
                 // sharing its column).
+                // Cuts (after the first, at 0), outside slicing and on forward
+                // slots: dotted, the selected one bright on the Cut marker.
+                var on_cut: bool = false; var selected_cut: bool = false;
+                if !slicing && !reversed {
+                    for c in 1..cut_count {
+                        if (self.cuts[c] - first) * wide(area.width) / (span > 0 ? span : 1) == wide(i32(x)) {
+                            on_cut = true; if i32(c) == cut_index && self.marker == 3 { selected_cut = true; }
+                        }
+                    }
+                }
                 if cut {
                     surface.put(area.x + i32(x), y, Cell { glyph: 0x2503, foreground: theme.accent, background: theme.panel });
+                } else if on_cut && !marker {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x250A, foreground: selected_cut ? theme.accent : theme.muted, background: theme.panel });
                 } else if wide(i32(x)) == offset_x && !marker {
                     surface.put(area.x + i32(x), y, Cell { glyph: 0x2506, foreground: self.marker == 2 ? theme.accent : theme.foreground, background: theme.panel });
                 } else if marker {
@@ -1130,6 +1262,12 @@ impl SamplerView {
         // LFO 2's columns read as LFO 1's, filter stages 3 and 4 as 1 and 2.
         if col >= 400 && col < 500 { return SamplerView::field_text(col - 100, value); }
         if col >= 701 && col <= 712 { return SamplerView::field_text(col - 501, value); }
+        // Filter Mod page: drive in %, mod scale in +-%.
+        if col >= 900 {
+            if (col - 900) % 2 == 0 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+            let percent: i32 = i32(std::math::floor((value * 2.0 - 1.0) * 100.0 + 0.5));
+            return percent > 0 ? format!("+{}", percent) : format!("{}", percent);
+        }
         // Filter chain; Vel/Tempo page.
         if col == 700 || col == 800 || col == 803 {
             let index: i32 = i32(std::math::floor(value * 7.0 + 0.5));

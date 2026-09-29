@@ -1376,6 +1376,10 @@ pub fn run() -> i32 {
                 let wave_used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, sampler.slot) : -1;
                 let wave_known: bool = wave_used >= 0 && wave_used < library.audio.samples.len();
                 var wave_clip: AudioClip = AudioClip {}; if wave_known { wave_clip = library.audio.samples[wave_used]; }
+                // The wave view shows the slot's slice markers (cuts).
+                if sampler_slot > 0 && sampler.needs_cuts(sampler_slot, wave_used, wave_known ? wave_clip.frames : -1) {
+                    sampler.take_cuts(midi.markers(sampler_slot, sampler.slot), sampler_slot, wave_used, wave_known ? wave_clip.frames : -1);
+                }
                 sampler.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), midi.output, sampler_slot, names, routes, wave_clip, wave_known, message);
                 for name in names { free(name); }
                 for route in routes { free(route); }
@@ -1546,6 +1550,7 @@ pub fn run() -> i32 {
                     let placed: i32 = library.replace_sample(index, sample_editor.take());
                     let edited: AudioClip = library.audio.samples[index];
                     let pads: i32 = midi.refresh_pads(index, edited);
+                    sampler.forget_cuts();
                     // Cropped to a Sampler slot's loop: that slot now loops,
                     // and starts, over the whole sample.
                     if loop_cropped { SamplerView::loop_to_whole(midi.output, editing_sampler_slot, editing_sampler_pad); }
@@ -1682,6 +1687,9 @@ pub fn run() -> i32 {
                 let used: i32 = target > 0 ? midi.pad_sample(target, sampler.slot) : -1;
                 let has_clip: bool = used >= 0 && used < library.audio.samples.len();
                 var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used]; }
+                if target > 0 && sampler.needs_cuts(target, used, has_clip ? clip.frames : -1) {
+                    sampler.take_cuts(midi.markers(target, sampler.slot), target, used, has_clip ? clip.frames : -1);
+                }
                 let request: i32 = sampler.on_event(event, midi.output, target, clip, has_clip);
                 if request == 2 { command = Action::LoadSamplerSlot; }
                 else if request == 3 { command = Action::ClearSamplerSlot; }
@@ -1703,6 +1711,17 @@ pub fn run() -> i32 {
                 }
                 else if request == 10 { command = Action::EditSamplerSample; }
                 else if request == 11 { command = Action::SaveSamplerSlot; }
+                else if request == 16 || request == 17 {
+                    // Cuts edited in the wave view (16), or detected again (17):
+                    // the instrument plays them with Beats; the session keeps them.
+                    let cuts: list<i64> = sampler.cuts;
+                    let now: list<i64> = midi.set_markers(target, sampler.slot, cuts, request == 17);
+                    let count: i64 = now.len();
+                    sampler.take_cuts(now, target, used, has_clip ? clip.frames : -1);
+                    free(message);
+                    message = request == 17 ? format!("Slot {}: {} cuts detected", sampler.slot + 1, count)
+                        : format!("Slot {}: {} cuts (Beats tempo sync and C slicing use them)", sampler.slot + 1, count);
+                }
                 else if request == 15 { free(message); message = clone("Slot 16 is the last: slice from an earlier slot, into the slots after it"); }
                 else if request == 14 {
                     adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;

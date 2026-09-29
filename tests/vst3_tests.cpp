@@ -10,6 +10,9 @@
 #include <string>
 extern "C" {
 struct FloatList { int64_t size; const float *data; };
+struct DoubleList { int64_t size; double *data; };
+DoubleList __mlang_std_audio_controller_instrument_markers(int64_t, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_instrument_set_markers(int64_t, int64_t, int64_t, DoubleList, int64_t);
 int64_t __mlang_std_audio_controller_sample_data(int64_t, FloatList, int64_t, int64_t);
 void mlacker_install_vst3_host();
 int64_t __mlang_std_audio_controller_new(int64_t, int64_t);
@@ -681,8 +684,25 @@ int main(int argc, char **argv) {
         CHECK(std::abs(hit() - 0.125f) < 1.e-4f);
         CHECK(__mlang_std_audio_controller_load_effect(d, 0, argv[2]) == 0);
         CHECK(std::abs(hit() - 0.1875f) < 1.e-4f);
+        // Slice markers: four hits a quarter second apart are four markers;
+        // the host can replace them and have them detected again.
+        std::vector<float> hits(48000, 0.f);
+        for(int h = 0; h < 4; ++h) for(int f = 0; f < 200; ++f) hits[h * 12000 + f] = (f % 8 < 4) ? .8f : -.8f;
+        CHECK(__mlang_std_audio_controller_instrument_pad(d, 1, 2, FloatList{48000, hits.data()}, 1, 48000, "hits") == 0);
+        const auto markers = [&]() {
+            DoubleList list = __mlang_std_audio_controller_instrument_markers(d, 1, 2);
+            std::vector<double> out(list.data, list.data + list.size); std::free(list.data); return out;
+        };
+        const auto found = markers();
+        CHECK(found.size() == 4 && found[0] == 0.0 && std::abs(found[3] - 36000.0) <= 64.0);
+        std::vector<double> two{0.0, 24000.0};
+        CHECK(__mlang_std_audio_controller_instrument_set_markers(d, 1, 2, DoubleList{2, two.data()}, 0) == 0);
+        CHECK(markers() == two);
+        CHECK(__mlang_std_audio_controller_instrument_set_markers(d, 1, 2, DoubleList{0, nullptr}, 1) == 0);
+        CHECK(markers().size() == 4);
+        CHECK(__mlang_std_audio_controller_instrument_markers(d, 1, 9).size == 0); // an empty pad
         CHECK(__mlang_std_audio_controller_close(d) == 0);
-        std::puts("PASS: Mla Sampler aux outputs follow Main or route to master, tracks and effect sends");
+        std::puts("PASS: Mla Sampler aux outputs follow Main or route to master, tracks and effect sends; slice markers");
     }
     {
         // Lane 2 carries sequencer events stamped with the frame they sound

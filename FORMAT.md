@@ -145,7 +145,15 @@ are accepted. Unsupported major or minor versions fail closed.
     its route: -1 to stay with the instrument's main output, 0 for master,
     a destination track index + 1, -2 - n to feed aux effect channel n (0–7)
     as a send, or -10 for nowhere. Readers before the effect routes reject
-    -2 .. -10. A track cannot route to itself. A route to
+    -2 .. -10. A track cannot route to itself.
+18. Optional `PAD_MARKERS` extension follows `AUX_OUTPUTS`: slice markers set
+    by hand for sampler pads. A count (0–4096), then per pad its instrument
+    slot (1–32) and pad (0–127), which must be one of the `SAMPLER_PADS`
+    pads, a marker count (1–65536) and the markers as frames (0–16777216),
+    the first 0 and each after it larger. On load they are sent to the
+    instrument after the pads. It is written only when some pad has hand-set
+    markers, and it requires the preceding tags (an `AUX_OUTPUTS` extension,
+    possibly empty of routes, is written with it). A route to
     a track that is not an AUDIO track plays as -1. It is written only when
     some Instrument track routes an aux bus, and it requires the preceding
     tags.

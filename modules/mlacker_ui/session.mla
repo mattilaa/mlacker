@@ -17,6 +17,7 @@ use mlacker_ui::audio_clip::*;
 use mlacker_ui::audio_controller::AudioSystem;
 use mlacker_ui::audio_controller::EffectChannel;
 use mlacker_ui::audio_controller::PadAssignment;
+use mlacker_ui::audio_controller::PadMarkers;
 use mlacker_ui::patterns::SongLane;
 use std::audio::controller::AudioController;
 use std::audio::PcmAudio;
@@ -97,7 +98,7 @@ pub struct SessionView {
 /// `pads[i]` is loaded from `clips[i]`; the caller owns the clips.
 pub struct PresetResult { var status: str8; var ok: bool; var has_pads: bool; var pads: list<i32>; var clips: list<AudioClip>; var keys: list<i64>; var values: list<f64>; };
 pub struct MidiLearnSnapshot { var key: i32; var slot: i32; var parameter_id: i64; };
-pub struct SessionData { var library: PatternLibrary; var plugins: list<PluginSnapshot>; var view: SessionView; var midi_learn: list<MidiLearnSnapshot>; var effect_volumes: list<i32>; var pads: list<PadAssignment>; };
+pub struct SessionData { var library: PatternLibrary; var plugins: list<PluginSnapshot>; var view: SessionView; var midi_learn: list<MidiLearnSnapshot>; var effect_volumes: list<i32>; var pads: list<PadAssignment>; var markers: list<PadMarkers>; };
 impl SessionData {
     pub fn release_plugins(self: &mut Self) -> void {
         let plugins: list<PluginSnapshot> = self.plugins; for plugin in plugins { free(plugin.path); }
@@ -161,6 +162,16 @@ impl SessionData {
             if sent != 0 { next.release(); return Err<AudioSystem, str8>("Cannot restore a sampler pad; session retained"); }
         }
         next.pads = self.pads;
+        // Hand-set slice markers follow their pads' samples.
+        let markers: list<PadMarkers> = self.markers;
+        for entry in markers {
+            var frames: list<f64> = []; let marks: list<i64> = entry.frames;
+            for frame in marks { frames.push(f64(frame)); }
+            if next.output.instrument_set_markers(wide(entry.slot), wide(entry.pad), frames, false) != 0 {
+                next.release(); return Err<AudioSystem, str8>("Cannot restore a pad's slice markers; session retained");
+            }
+        }
+        next.pad_markers = self.markers;
         return Ok<AudioSystem, str8>(next);
     }
 }
@@ -757,10 +768,13 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
+        // Hand-set slice markers of sampler pads.
+        let marked: bool = !self.reading && audio.pad_markers.len() > 0;
         // Plugin aux outputs routed away from their instrument's main output.
-        let aux_routed: bool = !self.reading && library.has_aux_routes();
+        let aux_routed: bool = !self.reading && (library.has_aux_routes() || marked);
         // Every extension is written when a later one is, so the chain stays
-        // in order; MASTER_BUS precedes MATRIX_LOOPS, which precedes AUX_OUTPUTS.
+        // in order; MASTER_BUS precedes MATRIX_LOOPS, which precedes
+        // AUX_OUTPUTS, which precedes PAD_MARKERS.
         let mastered: bool = mastered_view || looped || aux_routed;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
         // A project session (1.2) keeps samples and plugin state in files.
@@ -1142,11 +1156,37 @@ impl SessionCodec {
                 library.table.release(); library.table = entry.data.copy_pattern();
             }
         }
+        // Optional PAD_MARKERS extension: slice markers set by hand, per
+        // sampler pad (which must be one of the pads above), as frames
+        // ascending from 0.
+        var markers: list<PadMarkers> = [];
+        let markers_extension: bool = self.reading ? self.reader.remaining() > 0 : marked;
+        if markers_extension && !self.failed {
+            let tag: str8 = self.text("PAD_MARKERS"); if tag != "PAD_MARKERS" { self.failed = true; } if self.reading { free(tag); }
+            let count: i32 = self.number(i32(audio.pad_markers.len()), 0, 4096);
+            for i in 0..count {
+                if self.failed { break; }
+                var entry: PadMarkers = PadMarkers {}; if !self.reading { entry = audio.pad_markers[i]; }
+                let marker_slot: i32 = self.number(entry.slot, 1, 32);
+                let marker_pad: i32 = self.number(entry.pad, 0, 127);
+                var known: bool = false; for pad in pads { if pad.slot == marker_slot && pad.pad == marker_pad { known = true; } }
+                if !known { self.failed = true; break; }
+                let frame_count: i32 = self.number(i32(entry.frames.len()), 1, 65536);
+                var frames: list<i64> = [];
+                var previous: i64 = -1;
+                for f in 0..frame_count {
+                    let frame: i64 = self.integer(self.reading ? 0 : entry.frames[f], 0, 16777216);
+                    if (f == 0 && frame != 0) || frame <= previous { self.failed = true; break; }
+                    previous = frame; frames.push(frame);
+                }
+                markers.push(PadMarkers { slot: marker_slot, pad: marker_pad, frames: frames });
+            }
+        }
         if state.editor_slot > 32 {
             var found: bool = false; for plugin in plugins { if plugin.slot == state.editor_slot { found = true; } }
             if !found { self.failed = true; }
         }
-        return SessionData { library: library, plugins: plugins, view: state, midi_learn: mappings, effect_volumes: effect_volumes, pads: pads };
+        return SessionData { library: library, plugins: plugins, view: state, midi_learn: mappings, effect_volumes: effect_volumes, pads: pads, markers: markers };
     }
     pub fn save_pattern(path: str8, name: str8, source: &SequenceTable) -> bool {
         let created: result<SessionBuffer, str8> = SessionBuffer::new(4096);

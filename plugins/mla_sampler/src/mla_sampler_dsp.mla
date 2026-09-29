@@ -53,6 +53,7 @@ extern fn fabs(value: f64) -> f64;
 extern fn sinf(value: f32) -> f32;
 extern fn cosf(value: f32) -> f32;
 extern fn exp2f(value: f32) -> f32;
+extern fn tanhf(value: f32) -> f32;
 extern fn expf(value: f32) -> f32;
 extern fn log2f(value: f32) -> f32;
 extern fn powf(base: f32, exponent: f32) -> f32;
@@ -158,6 +159,11 @@ struct SamplerFilter {
     var env_octaves: f32;
     /// Peak and shelf gain in dB.
     var gain_db: f32;
+    /// Drive 0..1: the input saturates (tanh, full scale kept at full)
+    /// before the filter; 0 leaves it clean. Mod scale -1..1: how much of
+    /// the LFOs' and mod routes' cutoff movement this stage takes.
+    var drive: f32;
+    var mod_scale: f32;
     /// Envelope and LFO movement of the cutoff in octaves, smoothed: during a
     /// note a jump (a square LFO) glides over about 1.5 ms, since a biquad
     /// holding signal rings out of range when its cutoff leaps several
@@ -195,14 +201,15 @@ impl SamplerFilter {
         let frames: i32 = i32(sample_rate / 20.0f) + 4;
         let capacity: i64 = frames;
         return SamplerFilter { delay_left: RingBufferF32::new(capacity), delay_right: RingBufferF32::new(capacity),
-            delay_frames: 1.0f, feedback: 0.0f, phaser_left: SamplerPhaser::new(), phaser_right: SamplerPhaser::new(), kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f, gain_db: 0.0f, mod_octaves: 0.0f, fresh: true,
+            delay_frames: 1.0f, feedback: 0.0f, drive: 0.0f, mod_scale: 1.0f, phaser_left: SamplerPhaser::new(), phaser_right: SamplerPhaser::new(), kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f, gain_db: 0.0f, mod_octaves: 0.0f, fresh: true,
             left: MultimodeFilter::new(), right: MultimodeFilter::new(), biquad_left: Biquad::new(), biquad_right: Biquad::new(),
             svf_left: SamplerSvf::new(), svf_right: SamplerSvf::new(),
             formant1_left: Biquad::new(), formant1_right: Biquad::new(), formant2_left: Biquad::new(),
             formant2_right: Biquad::new(), formant3_left: Biquad::new(), formant3_right: Biquad::new() };
     }
     /// Type and settings; a new type starts from cleared history.
-    fn set(self: &mut Self, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32, gain_db: f32) -> void {
+    fn set(self: &mut Self, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32, gain_db: f32, drive: f32, mod_scale: f32) -> void {
+        self.drive = clamp_sampler_f32(drive, 0.0f, 1.0f); self.mod_scale = clamp_sampler_f32(mod_scale, -1.0f, 1.0f);
         if kind != self.kind {
             self.kind = kind;
             if kind >= 1 && kind <= 8 {
@@ -230,7 +237,7 @@ impl SamplerFilter {
         if !sampler_filter_known(self.kind) { return; }
         let resonance_db: f32 = clamp_sampler_f32(self.resonance_db + extra_resonance_db, 0.0f, 36.0f);
         // Called every 16 frames: a quarter of the way per call is ~1.5 ms.
-        let target: f32 = self.env_octaves * envelope + extra_octaves;
+        let target: f32 = self.env_octaves * envelope + extra_octaves * self.mod_scale;
         self.mod_octaves = self.fresh ? target : self.mod_octaves + (target - self.mod_octaves) * 0.25f;
         self.fresh = false;
         let hz: f32 = clamp_sampler_f32(self.cutoff_hz * exp2f(self.mod_octaves), 20.0f, sample_rate * 0.45f);
@@ -299,8 +306,15 @@ impl SamplerFilter {
         self.left.configure(hz, resonance_db, sample_rate);
         self.right.configure(hz, resonance_db, sample_rate);
     }
-    fn process(self: &mut Self, left: f32, right: f32) -> StereoSample {
-        if !sampler_filter_known(self.kind) { return StereoSample { left: left, right: right }; }
+    fn process(self: &mut Self, in_left: f32, in_right: f32) -> StereoSample {
+        if !sampler_filter_known(self.kind) { return StereoSample { left: in_left, right: in_right }; }
+        var left: f32 = in_left; var right: f32 = in_right;
+        if self.drive > 0.0f {
+            // Up to 10x into tanh, scaled so full scale stays at full.
+            let g: f32 = 1.0f + 9.0f * self.drive;
+            let norm: f32 = 1.0f / tanhf(g);
+            left = tanhf(g * left) * norm; right = tanhf(g * right) * norm;
+        }
         if self.kind == 9 || (self.kind >= 14 && self.kind <= 16) {
             return StereoSample { left: self.biquad_left.process(left), right: self.biquad_right.process(right) };
         }
@@ -452,6 +466,11 @@ struct SamplerVoice {
     var bend: f32;
     var cc: f32;
     var bend_semitones: f32;
+    /// Where the controllers glide to (see `mlasampler_voice_set_controllers`).
+    var wheel_target: f32;
+    var aftertouch_target: f32;
+    var bend_target: f32;
+    var cc_target: f32;
     var sample_rate: f32;
     /// Read position in source frames, advance per output frame, and the
     /// direction the playhead moves (1 or -1, only -1 in a bidirectional loop).
@@ -564,12 +583,13 @@ fn mlasampler_voice_set_filter_envelope(voice: ptr<SamplerVoice>, attack: f32, d
 /// resonance 0..36 dB, filter envelope depth in octaves and gain in dB (peak
 /// and shelves). Sounding voices follow at once; a new type clears that
 /// stage's history.
-fn mlasampler_voice_set_filter(voice: ptr<SamplerVoice>, stage: i32, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32, gain_db: f32) {
+fn mlasampler_voice_set_filter(voice: ptr<SamplerVoice>, stage: i32, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32, gain_db: f32,
+    drive: f32, mod_scale: f32) {
     unsafe {
-        if stage == 0 { (*voice).filter1.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
-        if stage == 1 { (*voice).filter2.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
-        if stage == 2 { (*voice).filter3.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
-        if stage == 3 { (*voice).filter4.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
+        if stage == 0 { (*voice).filter1.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db, drive, mod_scale); }
+        if stage == 1 { (*voice).filter2.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db, drive, mod_scale); }
+        if stage == 2 { (*voice).filter3.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db, drive, mod_scale); }
+        if stage == 3 { (*voice).filter4.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db, drive, mod_scale); }
         (*voice).filter_countdown = 0;
     }
 }
@@ -831,10 +851,15 @@ fn sampler_pitch_envelope(voice: ptr<SamplerVoice>) -> f32 {
 /// @brief The MIDI controllers' values as route sources: mod wheel,
 /// aftertouch and the chosen CC 0..1, pitch bend -1..1, which also bends the
 /// pitch by `bend_semitones`. Sounding voices follow.
-fn mlasampler_voice_set_controllers(voice: ptr<SamplerVoice>, wheel: f32, aftertouch: f32, bend: f32, cc: f32, bend_semitones: f32) {
+/// With `snap` (a new note) they apply at once; otherwise the voice glides to
+/// them with a 2 ms time constant, every 16 frames, so a stepped controller
+/// (a block's worth of live MIDI at once) does not zipper.
+fn mlasampler_voice_set_controllers(voice: ptr<SamplerVoice>, wheel: f32, aftertouch: f32, bend: f32, cc: f32, bend_semitones: f32, snap: bool) {
     unsafe {
-        (*voice).wheel = wheel; (*voice).aftertouch = aftertouch; (*voice).bend = bend;
-        (*voice).cc = cc; (*voice).bend_semitones = bend_semitones;
+        (*voice).wheel_target = wheel; (*voice).aftertouch_target = aftertouch; (*voice).bend_target = bend;
+        (*voice).cc_target = cc; (*voice).bend_semitones = bend_semitones;
+        if snap { (*voice).wheel = wheel; (*voice).aftertouch = aftertouch; (*voice).bend = bend; (*voice).cc = cc; }
+        (*voice).filter_countdown = 0;
     }
 }
 
@@ -1126,6 +1151,12 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
         // route level sets its next glide.
         let filter_level: f32 = (*voice).filter_envelope.process();
         if (*voice).filter_countdown <= 0 {
+            // Controllers glide: 1 - exp(-16 frames / 2 ms) of the way.
+            let glide: f32 = 1.0f - expf(-16.0f / (0.002f * (*voice).sample_rate));
+            (*voice).wheel = (*voice).wheel + ((*voice).wheel_target - (*voice).wheel) * glide;
+            (*voice).aftertouch = (*voice).aftertouch + ((*voice).aftertouch_target - (*voice).aftertouch) * glide;
+            (*voice).bend = (*voice).bend + ((*voice).bend_target - (*voice).bend) * glide;
+            (*voice).cc = (*voice).cc + ((*voice).cc_target - (*voice).cc) * glide;
             let lfo1_now: f32 = lfo1 * lfo1_depth;
             let lfo2_now: f32 = lfo2 * lfo2_depth;
             let cutoff_octaves: f32 = (*voice).lfo1.cutoff_octaves * lfo1_now + (*voice).lfo2.cutoff_octaves * lfo2_now

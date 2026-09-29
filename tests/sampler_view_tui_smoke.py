@@ -165,7 +165,7 @@ def main():
             expect(tui.send(b"m"), b"[Ofs 0]")
             expect(tui.send(b"LLL"), b"[Ofs 3]")
             expect(tui.send(b"z"), b"[Ofs 50]")
-            tui.send(b"m")
+            tui.send(b"mm")  # past the Cut marker, back to the loop start
             tui.send(b"w")
             # E edits the slot's sample with its loop (frames 50-4750)
             # selected; cropping to it makes the loop span the whole sample.
@@ -175,6 +175,18 @@ def main():
             expect(tui.send(b"w"), b"Start 0", b"End 4700", b"Len 4700/4700", b"Ofs 0")
             tui.send(b"w")
             tui.send(b"kk")
+            # The Cut marker (m after Ofs) edits slot 1's slice markers: a
+            # constant sample has only the one at 0; n adds one half way, L
+            # moves it a frame. The session keeps them.
+            expect(tui.send(b"w"), b"Slot 1 pad.wav")
+            expect(tui.send(b"mmm"), b"[Cut 1/1 at 0]", b"1 cuts")
+            expect(tui.send(b"n"), b"Slot 1: 2 cuts", b"[Cut 2/2 at 2400]")
+            expect(tui.send(b"L"), b"[Cut 2/2 at 2401]")
+            expect(tui.send(b"u"), b"Slot 1: 1 cuts detected", b"[Cut 1/1 at 0]")
+            tui.send(b"n")
+            expect(tui.send(b"L"), b"[Cut 2/2 at 2401]")
+            tui.send(b"m")
+            tui.send(b"w")
 
             # e: the Sound page of slot 1. Level 0 dB, centred, the instance
             # envelope; its own A/D/S/R need Env set to Own first.
@@ -225,6 +237,12 @@ def main():
             expect(tui.send(b"K"), b"Parall")
             tui.send(b"l")
             expect(tui.send(b"KKKK"), b"HP24")
+            # e: each stage's drive and mod scale; filter 1 drives at 20 %
+            # and takes 80 % of the LFO's cutoff movement.
+            expect(tui.send(b"e"), b"Filter Mod |", b"Drv1", b"Mod4", b"+100")
+            expect(tui.send(b"]]"), b"20")
+            tui.send(b"l")
+            expect(tui.send(b"[["), b"+80")
             expect(tui.send(b"e"), b"Shape", b"Rate", b"Trig", b"Sine", b"5.0Hz", b"1/4", b"Retrg")
             expect(tui.send(b"KKKK"), b"Sqr")
             tui.send(b"ll")
@@ -310,12 +328,19 @@ def main():
             expect(tui.send(b"e"), b"Own", b"-1.0", b"R2", b"+12.0", b"2ms", b"90", b"Groups: Random")
             expect(tui.send(b"e"), b"LP24", b"10.0k", b"+1.0", b"+6.0", b"Own")
             expect(tui.send(b"e"), b"Parall", b"HP24")
+            expect(tui.send(b"e"), b"Filter Mod |", b"20", b"+80")
             expect(tui.send(b"e"), b"Sqr", b"On", b"1/8", b"50")
             tui.send(b"e")
             expect(tui.send(b"e"), b"Veloc", b"Level", b"-10", b"ModCC")
             expect(tui.send(b"e"), b"Legato", b"180ms", b"20", b"+12.0", b"30")
             expect(tui.send(b"e"), b"Soft", b"+1.0", b"Stretch")
             tui.send(b"e")
+            # Hand-set cuts survive it too.
+            expect(tui.send(b"w"), b"Slot 1 pad.wav")
+            expect(tui.send(b"mmm"), b"2 cuts", b"[Cut 1/2 at 0]")
+            expect(tui.send(b"."), b"[Cut 2/2 at 2401]")
+            tui.send(b"m")
+            tui.send(b"w")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
             expect(tui.send(b"w"), b"Slot 3 square.wav", b"Start 0", b"End 4700", b"Ofs 0")
@@ -324,6 +349,7 @@ def main():
             # slices at first, down to 2, which Enter puts on slots 3 and 4.
             expect(tui.send(b"C"), b"Slice slot 3", b"8 slices equal", b"Slice to slots 3-10")
             expect(tui.send(b"t"), b"at transients")
+            expect(tui.send(b"t"), b"at cuts")
             expect(tui.send(b"t"), b"slices equal")
             expect(tui.send(b"JJJJJJJ"), b"2 slices equal", b"Slice to slots 3-4")
             expect(tui.send(b"\r", 0.6), b"Sliced slot 3 into slots 3-4")

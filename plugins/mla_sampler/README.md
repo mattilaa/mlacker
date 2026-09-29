@@ -109,7 +109,11 @@ formant pair beside a comb. Each stage has a **Type**, **Cutoff** (20 Hz .. 20 k
 **Resonance** (0 .. 36 dB), **Env** (how far the filter envelope moves the
 cutoff, -8 .. +8 octaves), **Key Track** (0 .. 100 % of the key's distance
 from C-4, so higher notes open the filter) and **Gain** (-24 .. +24 dB, for
-peak and shelves). A stage set to Off passes the
+peak and shelves), **Drive** (0 .. 100 %: the input saturates, tanh with up
+to 10x gain, full scale kept at full, before the stage) and **Mod** (-100 ..
++100 % of the LFOs' and mod routes' cutoff movement this stage takes, default
++100 %; 0 holds it still, negative moves it the other way, so two stages can
+sweep apart). A stage set to Off passes the
 signal through.
 
 | Number | Type      | Notes |
@@ -175,6 +179,12 @@ over 256-frame steps (at least 15 % of the strongest), at least 50 ms apart,
 each moved to where the hit starts. Frame 0 always starts the first segment.
 A reversed slot or a bidirectional loop would cross hits backwards, so Beats
 stretches it by grains, as Stretch.
+
+These **slice markers** can be read and replaced by the host
+(`mla_sampler_protocol.h`, `mlang.sampler.markers`): a replaced set is kept
+until the pad gets another sample, and "detect again" restores the detected
+one. mlacker edits them in the wave view and keeps them with the session.
+Sounding Beats voices follow a new set at once.
 
 Tempo changes reach sounding notes. Loops, the start and reverse work in
 the stretched timeline; a stretched voice skips the loop crossfade, since its
@@ -246,6 +256,13 @@ for the mapping once, so each choosable CC has a parameter of its own rather
 than one "any CC" parameter. The controller values reach sounding notes at the
 next 16-frame step and new notes from their start. Controllers apply to the
 whole instance: every channel, every slot.
+
+Controller changes are sample-accurate: every change the host sends in a
+block (VST3 parameter points) takes effect at its own frame, in order with
+the notes, instead of only the block's last value. Sounding voices then glide
+to the new value with a 2 ms time constant (every 16 frames), so a controller
+that arrives in steps, such as live MIDI a block at a time, moves pitch and
+filters without zipper noise; a new note starts at the value at once.
 
 ## Unison and play modes
 
@@ -339,6 +356,8 @@ runs every 16 frames, and restarts with each note but not on a legato note.
 | Slot N Choke       | Off, 1 .. 8                   | Choke group. Default Off. |
 | Slot N Reverse     | Off, On                       | Plays the sample backwards. Default Off. |
 | Slot N Filter T Gain | -24 .. +24 dB               | Peak and shelves. Default 0. |
+| Slot N Filter T Drive | 0 .. 100 %                 | Saturation into the stage. Default 0. |
+| Slot N Filter T Mod | -100 .. +100 %               | Share of LFO and route cutoff movement. Default +100 %. |
 | Slot N LFO 1 Shape | Sine, Triangle, Saw Up, Saw Down, Square, S&H | 16-entry list. Default Sine. |
 | Slot N LFO 1 Rate  | 0.05 .. 20 Hz                 | Without sync. Default 5 Hz. |
 | Slot N LFO 1 Sync  | Off, On                       | Default Off. |
@@ -386,7 +405,8 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `2000 + 32s + 8t` + 0 type, 1 cutoff, 2 resonance, 3 env, 4 key track, 5
   gain, for filter stage `t` (0-3, 8 fields each). Stages 0 and 1's gains
   were added later and are registered after the choke groups; stages 2 and
-  3 after the sends.
+  3 after the sends. Fields 6 (drive) and 7 (mod) of all four stages come
+  after the velocity curves.
 - `1200 + s`: choke group
 - `1300 + s`: reverse
 - `3000 + 32s + 16l` + 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch,
@@ -446,7 +466,10 @@ sources, pitch bend as a source), the pitch envelope (a decaying drop, an attack
 depth 0), the send buses (each slot's levels, Main unchanged), filter stages 3
 and 4 and the parallel and 2 x 2 chains, velocity curves, depth and key level,
 Repitch speeds, Stretch keeping pitch, length and level, Beats playing each
-hit whole and on its stretched time slower and faster, choke
+hit whole and on its stretched time slower and faster, the markers message
+(detected hits, a replaced set, detecting again), drive and per-stage mod
+(none, full, inverted), controller changes at their frame within a block and
+their glide, choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

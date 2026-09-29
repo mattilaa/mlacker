@@ -47,6 +47,7 @@
 #include "base/source/fstreamer.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -89,8 +90,8 @@ extern "C" void mlasampler_voice_set_stretch__ptr_struct_SamplerVoice_f64_f32(Sa
                                                                           float grainSeconds);
 extern "C" void mlasampler_voice_set_pitch_envelope__ptr_struct_SamplerVoice_f32_f32_f32(SamplerVoice *voice, float depth,
                                                                                          float attack, float decay);
-extern "C" void mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32(
-    SamplerVoice *voice, float wheel, float aftertouch, float bend, float cc, float bendSemitones);
+extern "C" void mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32_bool(
+    SamplerVoice *voice, float wheel, float aftertouch, float bend, float cc, float bendSemitones, bool snap);
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_next_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -100,9 +101,9 @@ extern "C" void mlasampler_voice_set_loop__ptr_struct_SamplerVoice_i32_f64_f64(S
                                                                            double loopStart, double loopEnd);
 extern "C" void mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frames);
 extern "C" void mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frame);
-extern "C" void mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32_f32(
+extern "C" void mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32_f32_f32_f32(
     SamplerVoice *voice, int32_t stage, int32_t kind, float cutoffHz, float resonanceDb, float envOctaves,
-    float gainDb);
+    float gainDb, float drive, float modScale);
 extern "C" void mlasampler_voice_set_filter_envelope__ptr_struct_SamplerVoice_f32_f32_f32_f32(
     SamplerVoice *voice, float attack, float decay, float sustain, float release);
 extern "C" double mlasampler_voice_shadow_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -287,6 +288,8 @@ enum FilterField : int {
     kFilterEnvAmount, // -8 .. +8 octaves of filter envelope
     kFilterKeyTrack,  // 0 .. 100 % of the key's distance from C-4
     kFilterGain,      // -24 .. +24 dB (peak and shelves); registered after the choke groups
+    kFilterDrive,     // 0 .. 100 % saturation into the stage; registered after the curves
+    kFilterMod,       // -100 .. +100 % of the LFO and route cutoff movement; likewise
     kFilterFields,
 };
 // The fields registered with the first filter block; later ones follow the
@@ -362,7 +365,8 @@ constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + 
                             kNumSlots * kFilterStagesFirst * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStagesFirst +
                             kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields + kNumSlots +
                             kNumSlots * 3 + kNumSlots * 2 + kControllerParams + kNumSlots * 3 + kNumSlots * kNumSends +
-                            kNumSlots * (kFilterStages - kFilterStagesFirst) * kFilterFieldsLater + kNumSlots * 3 + kNumSlots * 3;
+                            kNumSlots * (kFilterStages - kFilterStagesFirst) * kFilterFieldsLater + kNumSlots * 3 + kNumSlots * 3 +
+                            kNumSlots * kFilterStages * 2;
 constexpr ParamID kMaxParamId = kRouteParamBase + kNumSlots * kRouteSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
@@ -429,6 +433,9 @@ struct ParamLayout {
             run(kChainParamBase + slot * 4, 3);
         for(int slot = 0; slot < kNumSlots; ++slot)
             run(kCurveParamBase + slot * 4, 3);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = 0; stage < kFilterStages; ++stage)
+                run(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride + kFilterDrive, 2);
     }
 };
 static const ParamLayout kLayout;
@@ -503,9 +510,17 @@ struct Sample {
     int64_t frames = 0;
     double rate = 44100.0;
     std::string name;
-    // Where its hits start, in frames, frame 0 first: the segments Beats
-    // tempo sync plays (see detectOnsets).
+    // Where its hits start, in frames, frame 0 first, as detected when it
+    // loaded (see detectOnsets). A slot's markers start as these.
     std::vector<double> onsets;
+};
+
+// A slot's slice markers: where its hits start (frames, ascending, the first
+// 0), the segments Beats tempo sync plays. Detected with the sample, or set
+// by the host (mla_sampler_protocol.h kMarkersMessage); published to the
+// audio thread like samples.
+struct Markers {
+    std::vector<double> frames;
 };
 
 // A sample's hits: RMS per 256-frame hop, and the strongest rises in it (at
@@ -926,6 +941,13 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             addParam(static_cast<ParamID>(kCurveParamBase + slot * 4 + 1), slotTitle(slot, "Velocity Depth").c_str(), nullptr, 1.0);
             addParam(static_cast<ParamID>(kCurveParamBase + slot * 4 + 2), slotTitle(slot, "Key Level").c_str(), STR16("dB/oct"), 0.5);
         }
+        // Each stage's drive (clean) and mod scale (+100 %: as before).
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = 0; stage < kFilterStages; ++stage) {
+                const std::string name = "Filter " + std::to_string(stage + 1) + " ";
+                addParam(filterParamId(slot, stage, kFilterDrive), slotTitle(slot, (name + "Drive").c_str()).c_str(), nullptr, 0.0);
+                addParam(filterParamId(slot, stage, kFilterMod), slotTitle(slot, (name + "Mod").c_str()).c_str(), nullptr, 1.0);
+            }
         return kResultOk;
     }
 
@@ -937,8 +959,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             for(int slot = 0; slot < kNumSlots; ++slot) {
                 published_[slot].store(nullptr, std::memory_order_release);
                 owned_[slot].reset();
+                publishedMarkers_[slot].store(nullptr, std::memory_order_release);
+                ownedMarkers_[slot].reset();
             }
             graveyard_.clear();
+            markerGraveyard_.clear();
         }
         return SingleComponentEffect::terminate();
     }
@@ -1020,7 +1045,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 applyLive(slot, true, true, true, true);
             for(auto &voice : voices_)
                 if(voice.dsp && voice.sample && mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
-                    applyControllers(voice.dsp);
+                    applyControllers(voice.dsp, false);
         }
         handleParameterChanges(data.inputParameterChanges);
         // Synced LFOs follow the host tempo.
@@ -1033,6 +1058,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         framesRendered_ += data.numSamples;
 
         if(data.symbolicSampleSize != kSample32) {
+            flushControls();
             finishBlock();
             return kResultFalse;
         }
@@ -1053,6 +1079,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             }
         }
         if(buses[0][0] == nullptr) {
+            flushControls();
             finishBlock();
             return kResultOk;
         }
@@ -1066,8 +1093,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             if(events->getEvent(i, event) != kResultOk)
                 continue;
             const int32 at = std::clamp(event.sampleOffset, rendered, data.numSamples);
-            render(buses, rendered, at);
-            rendered = at;
+            renderTo(buses, rendered, at);
             if(event.type == Event::kNoteOnEvent) {
                 if(event.noteOn.velocity <= 0.0f)
                     noteOff(event.noteOn.channel, event.noteOn.pitch);
@@ -1077,7 +1103,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 noteOff(event.noteOff.channel, event.noteOff.pitch);
             }
         }
-        render(buses, rendered, data.numSamples);
+        renderTo(buses, rendered, data.numSamples);
+        flushControls();
         finishBlock();
         return kResultOk;
     }
@@ -1092,7 +1119,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         const bool loadPcm = std::strcmp(id, mla_sampler::kLoadPcmMessage) == 0;
         const bool clear = std::strcmp(id, mla_sampler::kClearMessage) == 0;
         const bool info = std::strcmp(id, mla_sampler::kInfoMessage) == 0;
-        if(!loadFile && !loadPcm && !clear && !info)
+        const bool markers = std::strcmp(id, mla_sampler::kMarkersMessage) == 0;
+        if(!loadFile && !loadPcm && !clear && !info && !markers)
             return SingleComponentEffect::notify(message);
 
         IAttributeList *attributes = message->getAttributes();
@@ -1115,6 +1143,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         int64 slot = -1;
         if(attributes->getInt("pad", slot) != kResultOk || slot < 0 || slot >= kNumSlots)
             return fail(attributes, "pad must be 0-15");
+        if(markers)
+            return handleMarkers(static_cast<int>(slot), attributes);
 
         std::unique_ptr<Sample> sample;
         if(loadFile) {
@@ -1248,6 +1278,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         bool beats = false;
         size_t nextOnset = 0;
         double lastPosition = 0.0;
+        // The slot's markers when the note started (updated when they change).
+        const Markers *markers = nullptr;
     };
 
     struct Retired {
@@ -1273,6 +1305,16 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     double framesRendered_ = 0.0;
     std::atomic<double> norm_[kNumParams];
     std::atomic<bool> paramsDirty_{false};
+    // This block's controller changes, by frame (see renderTo).
+    struct ControlEvent {
+        int32 offset;
+        int index;
+        double value;
+    };
+    static constexpr int kMaxControlEvents = 512;
+    std::array<ControlEvent, kMaxControlEvents> controlEvents_{};
+    int controlCount_ = 0;
+    int nextControl_ = 0;
     std::atomic<bool> outputActive_[kNumBuses];
 
     // Audio-thread view of the slots.
@@ -1284,6 +1326,15 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     std::mutex controlMutex_;
     std::unique_ptr<Sample> owned_[kNumSlots];
     std::vector<Retired> graveyard_;
+    // Slice markers, handed over like the samples (see publishMarkers).
+    struct RetiredMarkers {
+        std::unique_ptr<Markers> markers;
+        uint64_t freeAfterBlock = 0;
+    };
+    std::atomic<const Markers *> publishedMarkers_[kNumSlots]{};
+    std::unique_ptr<Markers> ownedMarkers_[kNumSlots];
+    const Markers *activeMarkers_[kNumSlots] = {};
+    std::vector<RetiredMarkers> markerGraveyard_;
 
     void addParam(ParamID id, const TChar *title, const TChar *units, double defaultNorm)
     {
@@ -1358,10 +1409,60 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     {
         std::lock_guard<std::mutex> lock(controlMutex_);
         collectGarbage();
+        // A new sample starts with the markers detected in it.
+        std::unique_ptr<Markers> detected;
+        if(sample)
+            detected = std::make_unique<Markers>(Markers{sample->onsets});
+        publishMarkers(slot, std::move(detected));
         published_[slot].store(sample.get());
         if(owned_[slot])
             graveyard_.push_back({std::move(owned_[slot]), blocksDone_.load() + 2});
         owned_[slot] = std::move(sample);
+    }
+
+    // Control thread, under controlMutex_: hand `markers` to the audio thread
+    // (syncSlots), retiring the old ones two blocks later.
+    void publishMarkers(int slot, std::unique_ptr<Markers> markers)
+    {
+        publishedMarkers_[slot].store(markers.get());
+        if(ownedMarkers_[slot])
+            markerGraveyard_.push_back({std::move(ownedMarkers_[slot]), blocksDone_.load() + 2});
+        ownedMarkers_[slot] = std::move(markers);
+    }
+
+    // kMarkersMessage: write back the slot's markers, after replacing them
+    // (set 1: "frames", sorted, inside the sample, 0 first) or detecting
+    // them again (set 2).
+    tresult handleMarkers(int slot, IAttributeList *attributes)
+    {
+        std::lock_guard<std::mutex> lock(controlMutex_);
+        collectGarbage();
+        if(!owned_[slot])
+            return fail(attributes, "pad is empty");
+        int64 set = 0;
+        attributes->getInt("set", set);
+        if(set == 1) {
+            const void *data = nullptr;
+            uint32 size = 0;
+            if(attributes->getBinary("frames", data, size) != kResultOk || size % sizeof(double) != 0)
+                return fail(attributes, "frames must be float64 values");
+            std::vector<double> frames(size / sizeof(double));
+            if(!frames.empty())
+                std::memcpy(frames.data(), data, size);
+            const double end = static_cast<double>(owned_[slot]->frames);
+            std::vector<double> clean{0.0};
+            for(double frame : frames)
+                if(std::isfinite(frame) && frame >= 1.0 && frame < end)
+                    clean.push_back(std::floor(frame));
+            std::sort(clean.begin(), clean.end());
+            clean.erase(std::unique(clean.begin(), clean.end()), clean.end());
+            publishMarkers(slot, std::make_unique<Markers>(Markers{std::move(clean)}));
+        } else if(set == 2) {
+            publishMarkers(slot, std::make_unique<Markers>(Markers{owned_[slot]->onsets}));
+        }
+        const auto &frames = ownedMarkers_[slot] ? ownedMarkers_[slot]->frames : owned_[slot]->onsets;
+        attributes->setBinary("frames", frames.data(), static_cast<uint32>(frames.size() * sizeof(double)));
+        return kResultOk;
     }
 
     // A block that started after the swap has seen the new pointer and
@@ -1372,6 +1473,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         graveyard_.erase(std::remove_if(graveyard_.begin(), graveyard_.end(),
                                         [&](const Retired &r) { return done >= r.freeAfterBlock; }),
                          graveyard_.end());
+        markerGraveyard_.erase(std::remove_if(markerGraveyard_.begin(), markerGraveyard_.end(),
+                                              [&](const RetiredMarkers &r) { return done >= r.freeAfterBlock; }),
+                               markerGraveyard_.end());
     }
 
     void destroyVoices()
@@ -1463,13 +1567,14 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     }
 
     // The controllers' values and the pitch bend, on a new or sounding voice.
-    void applyControllers(SamplerVoice *dsp)
+    // `snap`: a new note starts at the values; a sounding one glides there.
+    void applyControllers(SamplerVoice *dsp, bool snap)
     {
         const double range = std::lround(norm(kBendRangeParam) * kBendRangeMax);
-        mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32(
+        mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32_bool(
             dsp, static_cast<float>(controllerValue(kSourceModWheel)), static_cast<float>(controllerValue(kSourceAftertouch)),
             static_cast<float>(controllerValue(kSourcePitchBend)), static_cast<float>(controllerValue(kSourceModCc)),
-            static_cast<float>(range));
+            static_cast<float>(range), snap);
     }
 
     void syncSlots()
@@ -1484,6 +1589,19 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                     voice.sample = nullptr;
                 }
             active_[slot] = current;
+        }
+        // New markers reach the slot's Beats voices at once.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            const Markers *markers = publishedMarkers_[slot].load();
+            if(markers == activeMarkers_[slot])
+                continue;
+            activeMarkers_[slot] = markers;
+            for(auto &voice : voices_)
+                if(voice.dsp && voice.sample && voice.slot == slot) {
+                    voice.markers = markers;
+                    if(voice.beats)
+                        resyncBeats(voice);
+                }
         }
     }
 
@@ -1519,6 +1637,44 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 applyEnvelope(voice.dsp, voice.sample ? voice.slot : -1);
     }
 
+    // Controller values (mod wheel, aftertouch, pitch bend, the Mod CC
+    // choices) change at their exact frame.
+    static bool timedController(ParamID id)
+    {
+        return (id >= kModWheelParam && id <= kPitchBendParam) ||
+               (id >= kCcValueParamBase && id < kCcValueParamBase + kModCcsKnown);
+    }
+
+    // Render up to frame `at`, applying the controller changes due by then
+    // at their frames.
+    void renderTo(float *(&buses)[kNumBuses][2], int32 &rendered, int32 at)
+    {
+        while(nextControl_ < controlCount_ && controlEvents_[nextControl_].offset <= at) {
+            const ControlEvent &event = controlEvents_[nextControl_++];
+            const int32 when = std::clamp(event.offset, rendered, at);
+            render(buses, rendered, when);
+            rendered = when;
+            applyControl(event);
+        }
+        render(buses, rendered, at);
+        rendered = at;
+    }
+
+    void applyControl(const ControlEvent &event)
+    {
+        norm_[event.index].store(event.value, std::memory_order_relaxed);
+        for(auto &voice : voices_)
+            if(voice.dsp && voice.sample && mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
+                applyControllers(voice.dsp, false);
+    }
+
+    // Controller changes left when a block renders nothing.
+    void flushControls()
+    {
+        while(nextControl_ < controlCount_)
+            applyControl(controlEvents_[nextControl_++]);
+    }
+
     void handleParameterChanges(IParameterChanges *changes)
     {
         if(changes == nullptr)
@@ -1531,6 +1687,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         bool lfoChanged[kNumSlots] = {};
         bool routeChanged[kNumSlots] = {};
         bool controllersChanged = false;
+        controlCount_ = 0;
+        nextControl_ = 0;
         const int32 count = changes->getParameterCount();
         for(int32 q = 0; q < count; ++q) {
             IParamValueQueue *queue = changes->getParameterData(q);
@@ -1545,6 +1703,17 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             const int index = indexOf(id);
             if(index < 0 || !std::isfinite(value))
                 continue;
+            // Controller values take effect at their frames (see process),
+            // every point of the block in order; if too many, the last now.
+            if(timedController(id) && controlCount_ + points <= kMaxControlEvents) {
+                for(int32 p = 0; p < points; ++p) {
+                    int32 at = 0;
+                    ParamValue point = 0;
+                    if(queue->getPoint(p, at, point) == kResultOk && std::isfinite(point))
+                        controlEvents_[controlCount_++] = {at, index, std::clamp(point, 0.0, 1.0)};
+                }
+                continue;
+            }
             norm_[index].store(std::clamp(value, 0.0, 1.0), std::memory_order_relaxed);
             if((id >= kAttackParam && id <= kReleaseParam) ||
                (id >= kEnvelopeParamBase && id < kEnvelopeParamBase + kNumEnvelopeParams))
@@ -1583,10 +1752,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                (id >= kCcValueParamBase && id < kCcValueParamBase + kModCcsKnown))
                 controllersChanged = true;
         }
+        std::stable_sort(controlEvents_.begin(), controlEvents_.begin() + controlCount_,
+                         [](const ControlEvent &a, const ControlEvent &b) { return a.offset < b.offset; });
         if(controllersChanged)
             for(auto &voice : voices_)
                 if(voice.dsp && voice.sample && mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
-                    applyControllers(voice.dsp);
+                    applyControllers(voice.dsp, false);
         if(envelopeChanged)
             pushEnvelope();
         for(int slot = 0; slot < kNumSlots; ++slot)
@@ -1817,7 +1988,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         applyFilter(target->dsp, slot, pitch);
         applyLfo(target->dsp, slot);
         applyRoutes(target->dsp, slot);
-        applyControllers(target->dsp);
+        applyControllers(target->dsp, true);
         applyPitchEnvelope(target->dsp, slot);
         // Retrigger starts an LFO with the note; Free picks up where its
         // rate has taken it since activation.
@@ -1859,6 +2030,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         target->serial = nextSerial_++;
         // After the start frame: Beats begins its first segment there.
         target->beats = false;
+        target->markers = activeMarkers_[slot];
         applyStretch(*target);
     }
 
@@ -1919,7 +2091,26 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         double limit = static_cast<double>(sample->frames);
         if(loopFromNorm(slotNorm(voice.slot, kSlotLoop)) == kLoopForward)
             limit = std::min(limit, std::floor(slotNorm(voice.slot, kSlotLoopEnd) * sample->frames));
-        return next < sample->onsets.size() ? std::min(limit, sample->onsets[next]) : limit;
+        const auto &onsets = markerFrames(voice);
+        return next < onsets.size() ? std::min(limit, onsets[next]) : limit;
+    }
+
+    // Beats: the voice's markers, or the sample's own onsets before any.
+    const std::vector<double> &markerFrames(const Voice &voice) const
+    {
+        return voice.markers ? voice.markers->frames : voice.sample->onsets;
+    }
+
+    // Beats: markers changed under a sounding voice; its next onset is the
+    // first after the playhead, and the sounding segment ends before it.
+    void resyncBeats(Voice &voice)
+    {
+        const double at = mlasampler_voice_position__ptr_struct_SamplerVoice(voice.dsp);
+        const auto &onsets = markerFrames(voice);
+        size_t next = 0;
+        while(next < onsets.size() && onsets[next] <= at)
+            ++next;
+        voice.nextOnset = next;
     }
 
     // Beats: a segment from the playhead to the next onset (a note's start,
@@ -1927,7 +2118,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     void beginSegment(Voice &voice, bool cross)
     {
         const double at = mlasampler_voice_position__ptr_struct_SamplerVoice(voice.dsp);
-        const auto &onsets = voice.sample->onsets;
+        const auto &onsets = markerFrames(voice);
         size_t next = 0;
         while(next < onsets.size() && onsets[next] <= at)
             ++next;
@@ -1940,7 +2131,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     void followBeats(Voice &voice)
     {
         const double at = mlasampler_voice_position__ptr_struct_SamplerVoice(voice.dsp);
-        const auto &onsets = voice.sample->onsets;
+        const auto &onsets = markerFrames(voice);
         if(at < voice.lastPosition - 0.5) {
             beginSegment(voice, true);
             return;
@@ -1996,11 +2187,13 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             const double keyTrack = norm(filterParamId(slot, stage, kFilterKeyTrack));
             const float cutoff = cutoffFromNorm(norm(filterParamId(slot, stage, kFilterCutoff))) *
                                  static_cast<float>(std::pow(2.0, keyTrack * (pitch - 60) / 12.0));
-            mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32_f32(
+            mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32_f32_f32_f32(
                 dsp, stage, filterTypeFromNorm(norm(filterParamId(slot, stage, kFilterType))), cutoff,
                 resonanceFromNorm(norm(filterParamId(slot, stage, kFilterResonance))),
                 envOctavesFromNorm(norm(filterParamId(slot, stage, kFilterEnvAmount))),
-                filterGainFromNorm(norm(filterParamId(slot, stage, kFilterGain))));
+                filterGainFromNorm(norm(filterParamId(slot, stage, kFilterGain))),
+                static_cast<float>(norm(filterParamId(slot, stage, kFilterDrive))),
+                static_cast<float>(norm(filterParamId(slot, stage, kFilterMod)) * 2.0 - 1.0));
         }
         const int chain = static_cast<int>(std::lround(norm(static_cast<ParamID>(kChainParamBase + slot * 4)) * (kChainCount - 1)));
         mlasampler_voice_set_chain__ptr_struct_SamplerVoice_i32(dsp, chain < kChainsKnown ? chain : 0);
