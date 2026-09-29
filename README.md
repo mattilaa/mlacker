@@ -706,6 +706,7 @@ Overlapping zones layer.
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
+| `p` | Play the slot: a pad at its key, a zone at its root |
 
 **Wave view** shows the selected slot's waveform across the pane, with the
 loop region highlighted and its start and end as `│` markers. The line above
@@ -721,6 +722,14 @@ a loop point set here plays from that frame.
 | `z` | Snap the marker to the nearest zero crossing (within 48000 frames) |
 | `=` / `-` | Zoom in / out, centred on the marker |
 | `j` / `k` | Next / previous slot |
+| `p` | Play the slot |
+
+`p` plays through the Instrument track like a key of the virtual keyboard, so
+you hear loop and zone edits without leaving the pane. A zone plays at its root,
+or at the nearest key of the zone when the root lies outside it. Other slots
+whose key or zone holds that key sound too. On terminals that report key
+releases (the kitty keyboard protocol, see Virtual keyboard) the note lasts
+while `p` is held; elsewhere it ends once `p` stops repeating.
 
 The loop keeps at least two frames. The waveform comes from the slot's sample
 in the Audio list, so a slot filled only by a plugin preset has none. Enter

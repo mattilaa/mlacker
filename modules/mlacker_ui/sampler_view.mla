@@ -32,6 +32,12 @@ pub struct SamplerView {
     /// frames shown per step, centred on the marker. `dots` is the dot
     /// columns the waveform last painted, for moving a marker one dot.
     var wave: bool; var marker: i32; var zoom: i32; var dots: i32{160};
+    /// Audition (`p`): the note sounding (-1 for none) and the live target it
+    /// went to. Like the virtual keyboard, it lasts until the key's release,
+    /// or on terminals without key releases until the key stops repeating
+    /// (`until`).
+    var audition_note: i32{-1}; var audition_target: i64; var audition_until: i64;
+    var releases_seen: bool;
 };
 impl SamplerView {
     /// Keys the focused pane keeps for itself: everything printable ("q"
@@ -115,7 +121,8 @@ impl SamplerView {
     /// instrument slot (0 when the selected track has none). Returns what the
     /// application should do for the selected slot: 0 nothing, 1 repaint,
     /// 2 load a file into it, 3 clear it, 4 route its output bus, 5 tell that
-    /// its zone columns need Zone mode. (An i32 rather than an enum: MLang
+    /// its zone columns need Zone mode, 6 tell that it has no waveform, 7
+    /// audition it (see `audition_key`). (An i32 rather than an enum: MLang
     /// before its let-enum fix ran an enum `let` initializer twice.)
     pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
         if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; return 1; }
@@ -146,6 +153,7 @@ impl SamplerView {
         if event.code == 13 || event.code == 10 { return 2; }
         if event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace) { return 3; }
         if event.code == 111 && event.modifiers == 1 { return 4; }
+        if event.code == 112 && event.modifiers == 1 { return 7; }
         return 0;
     }
     /// Loop start and end of sample slot `s` in frames of a `frames`-long
@@ -232,6 +240,41 @@ impl SamplerView {
         else { if target > other - 2 { target = other - 2; } if target < 0 { target = 0; } }
         if target == current { return 0; }
         return SamplerView::set_loop_frame(output, slot, self.slot, end, target, frames) ? 1 : 0;
+    }
+    /// Key that auditions the selected slot at its recorded pitch: a pad's
+    /// key, or a zone's root (moved into the zone when it lies outside, as
+    /// the zone would not play it). -1 when unknown. Other slots whose key or
+    /// zone holds that key sound with it.
+    pub fn audition_key(self: SamplerView, output: AudioController, slot: i32) -> i32 {
+        if slot < 1 { return -1; }
+        if SamplerView::is_zone(output, slot, self.slot) {
+            let low: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 1));
+            let high: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 2));
+            let root: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 3));
+            let bottom: i32 = low < high ? low : high; let top: i32 = low < high ? high : low;
+            return root < bottom ? bottom : (root > top ? top : root);
+        }
+        let root: i64 = output.instrument_sampler(slot, 0);
+        let key: i32 = root < 0 ? -1 : i32(root) + self.slot;
+        return key > 127 ? -1 : key;
+    }
+    /// Start an audition note, or keep a held one sounding on a key repeat.
+    /// Returns the note to start, or -1 when it only extended the held one.
+    pub fn audition(self: &mut Self, note: i32, target: i64, now: i64) -> i32 {
+        self.audition_until = now + 400;
+        if self.audition_note >= 0 { return -1; }
+        self.audition_note = note; self.audition_target = target;
+        return note;
+    }
+    /// The held audition note when it should end now: on the key's release
+    /// (`released`), when the pane is hidden, or once the key stopped
+    /// repeating on a terminal without key releases. -1 otherwise. Clears it.
+    pub fn audition_due(self: &mut Self, now: i64, released: bool) -> i32 {
+        if self.audition_note < 0 { return -1; }
+        if released { self.releases_seen = true; }
+        if !released && self.visible && (self.releases_seen || now < self.audition_until) { return -1; }
+        let note: i32 = self.audition_note; self.audition_note = -1;
+        return note;
     }
     /// Output bus (0 = Main, 1-7 = Out 2-8) of the selected slot, or -1.
     pub fn output_bus(self: SamplerView, output: AudioController, slot: i32) -> i32 {
@@ -324,7 +367,7 @@ impl SamplerView {
                 loaded ? theme.foreground : theme.muted, background);
         }
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot | h/l column | J/K adjust, [ ] octave/10% | w wave | Enter load | Backspace clear | o route | Shift+S hide", theme.muted, theme.panel);
+            "j/k slot | h/l column | J/K adjust, [ ] octave/10% | p play | w wave | Enter load | Backspace clear | o route | Shift+S hide", theme.muted, theme.panel);
     }
     /// Wave view: a summary line, the selected slot's waveform with the loop
     /// region highlighted and its start/end markers, and a key help line.
@@ -333,7 +376,7 @@ impl SamplerView {
         var names: list<str8> = []; names = labels;
         let help_y: i32 = area.y + area.height - 2;
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot | m start/end | h/l move, H/L 1 frame | z zero crossing | -/= zoom | w table", theme.muted, theme.panel);
+            "j/k slot | m start/end | h/l move, H/L 1 frame | z zero crossing | -/= zoom | p play | w table", theme.muted, theme.panel);
         let label: str8 = self.slot < names.len() ? names[self.slot] : "";
         var source: AudioClip = AudioClip {}; if has_clip { source = clip; }
         if !has_clip || source.frames < 2 {

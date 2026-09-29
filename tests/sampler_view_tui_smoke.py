@@ -1,6 +1,6 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
 clearing slots, key zones, loop mode / loop point / output edits, the wave view's
-frame-accurate loop markers and zero-crossing snap, routing an aux output to
+frame-accurate loop markers and zero-crossing snap, auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
 
@@ -114,6 +114,13 @@ def main():
             # Track > Route plugin outputs lists every aux bus and its route.
             frame = expect(tui.send(F1 + b"lll" + b"j" * 11 + b"\r"), b"Plugin output to route", b"Out 2  > A1", b"Out 8  > MAIN")
             expect(tui.send(b"\x1b", 0.5), b"Cancelled.")
+
+            # p auditions the slot: a zone at its root (C-5), a pad at its key.
+            # Without key releases the note ends once p stops repeating.
+            expect(tui.send(b"p", 0.6), b"Playing slot 2 at C-5")
+            tui.send(b"k")
+            expect(tui.send(b"p", 0.6), b"Playing slot 1 at C-2")
+            tui.send(b"j")
 
             # Backspace clears the slot; its loop settings stay.
             expect(tui.send(BACKSPACE, 0.5), b"Pad 2 cleared")

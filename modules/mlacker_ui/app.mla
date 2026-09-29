@@ -49,6 +49,8 @@ use mlacker_ui::virtual_keyboard::VirtualKeyboard;
 use mlacker_ui::virtual_keyboard::HeldNote;
 mod mlacker_ui::sampler_view;
 use mlacker_ui::sampler_view::SamplerView;
+mod tui::piano;
+use tui::piano::piano_note_name;
 use mlacker_ui::sample_editor::SampleEditor;
 use mlacker_ui::audio_clip::base_name;
 mod mlacker_ui::bpm_dialog;
@@ -871,6 +873,11 @@ pub fn run() -> i32 {
         let released: list<HeldNote> = keyboard.release_due(now, !keyboard.visible);
         if released.len() > 0 { dirty = true; }
         for held in released { midi.keyboard_note(held.target, false, held.note, 0); }
+        // A Sampler audition ends once `p` stops repeating (no key releases)
+        // or the pane closes.
+        let audition_target: i64 = sampler.audition_target;
+        let audition_end: i32 = sampler.audition_due(now, false);
+        if audition_end >= 0 { midi.keyboard_note(audition_target, false, audition_end, 0); dirty = true; }
         midi.midi.inject(keyboard.take_events());
         // An Audio view preview ends at the clip's end, or when the selection,
         // the sidebar focus or the view changes, or a dialog opens.
@@ -1306,6 +1313,12 @@ pub fn run() -> i32 {
             // Key releases (reported only while the virtual keyboard shows)
             // end its notes and reach nothing else.
             if event.released {
+                // Releasing p ends a Sampler audition.
+                if event.code == 112 && sampler.audition_note >= 0 {
+                    let target: i64 = sampler.audition_target;
+                    let note: i32 = sampler.audition_due(now_ms(), true);
+                    if note >= 0 { midi.keyboard_note(target, false, note, 0); }
+                }
                 let ended: list<HeldNote> = keyboard.on_release(event, now_ms());
                 if ended.len() > 0 { dirty = true; }
                 for held in ended { midi.keyboard_note(held.target, false, held.note, 0); }
@@ -1554,6 +1567,21 @@ pub fn run() -> i32 {
                 if request == 2 { command = Action::LoadSamplerSlot; }
                 else if request == 3 { command = Action::ClearSamplerSlot; }
                 else if request == 4 { command = Action::RouteSamplerOutput; }
+                else if request == 7 {
+                    // p plays the slot on the track's instrument, like a key of
+                    // the virtual keyboard.
+                    let live: i64 = AudioSystem::live_target(library.table);
+                    let key: i32 = sampler.audition_key(midi.output, target);
+                    if target < 1 || live < 0 || key < 0 { free(message); message = clone("Nothing to play: select an unmuted Instrument track playing Mla Sampler"); }
+                    else {
+                        let note: i32 = sampler.audition(key, live, now_ms());
+                        if note >= 0 {
+                            midi.keyboard_note(live, true, note, 100);
+                            let name: str8 = piano_note_name(note);
+                            free(message); message = format!("Playing slot {} at {}", sampler.slot + 1, name); free(name);
+                        }
+                    }
+                }
                 else if request == 6 { free(message); message = clone("No waveform: load the slot from a file or the Audio list (Enter)"); }
                 else if request == 5 { free(message); message = format!("Slot {} is a pad (one key): set its Mode to Zone first", sampler.slot + 1); }
                 dirty = true;
@@ -2319,9 +2347,10 @@ pub fn run() -> i32 {
             else if command == Action::ToggleSampler {
                 sampler.visible = !sampler.visible;
                 // The sampler and the virtual keyboard share the pane.
-                if sampler.visible && keyboard.visible {
-                    keyboard.visible = false; terminal.report_key_releases(false); input.releases = false;
-                }
+                if sampler.visible && keyboard.visible { keyboard.visible = false; }
+                // Kitty-protocol terminals then report key releases, so an
+                // audition (p) lasts exactly as long as the key is held.
+                terminal.report_key_releases(sampler.visible); input.releases = sampler.visible;
                 menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                 // Keys only reach the sampler while the pane has focus.
                 if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
