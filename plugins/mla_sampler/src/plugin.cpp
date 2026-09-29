@@ -121,7 +121,11 @@ enum ParamId : ParamID {
     kVelocityParamBase = 600,  // slot s: 600 + 2s low, + 1 high velocity (MIDI 1..127)
     kEnvelopeParamBase = 700,  // slot s: 700 + 5s, see EnvelopeParam
     kStartParamBase = 800,     // slot s: 800 + s, sample start (fraction of the sample)
+    kGroupParamBase = 900,     // slot s: 900 + s, group (Off, 1..8)
+    kGroupModeParam = 950,     // how a group picks: Round-robin or Random
 };
+
+constexpr int kNumGroups = 8;
 
 // Per-slot envelope offsets from kEnvelopeParamBase + s * kParamsPerEnvelope.
 enum EnvelopeParam : int {
@@ -162,11 +166,11 @@ constexpr int kNumZoneParams = kNumSlots * kParamsPerZone;
 constexpr int kNumVelocityParams = kNumSlots * 2;
 constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
-                            kNumEnvelopeParams + kNumSlots;
+                            kNumEnvelopeParams + kNumSlots + kNumSlots + 1;
 
 // Flat index <-> ParamID. Globals occupy 0..7, slot parameters follow, then
-// the key zones, the loop crossfades, the velocity ranges, the envelopes and
-// the sample starts.
+// the key zones, the loop crossfades, the velocity ranges, the envelopes, the
+// sample starts, the groups and the group mode.
 static ParamID paramIdAt(int index)
 {
     if(index < kNumGlobalParams)
@@ -184,7 +188,12 @@ static ParamID paramIdAt(int index)
     const int envelopes = velocities + kNumVelocityParams;
     if(index < envelopes + kNumEnvelopeParams)
         return static_cast<ParamID>(kEnvelopeParamBase + (index - envelopes));
-    return static_cast<ParamID>(kStartParamBase + (index - envelopes - kNumEnvelopeParams));
+    const int starts = envelopes + kNumEnvelopeParams;
+    if(index < starts + kNumSlots)
+        return static_cast<ParamID>(kStartParamBase + (index - starts));
+    if(index < starts + 2 * kNumSlots)
+        return static_cast<ParamID>(kGroupParamBase + (index - starts - kNumSlots));
+    return kGroupModeParam;
 }
 
 static int indexOf(ParamID id)
@@ -202,9 +211,14 @@ static int indexOf(ParamID id)
     if(id >= kEnvelopeParamBase && id < kEnvelopeParamBase + kNumEnvelopeParams)
         return kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
                static_cast<int>(id - kEnvelopeParamBase);
+    const int starts = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
+                       kNumEnvelopeParams;
     if(id >= kStartParamBase && id < kStartParamBase + kNumSlots)
-        return kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
-               kNumEnvelopeParams + static_cast<int>(id - kStartParamBase);
+        return starts + static_cast<int>(id - kStartParamBase);
+    if(id >= kGroupParamBase && id < kGroupParamBase + kNumSlots)
+        return starts + kNumSlots + static_cast<int>(id - kGroupParamBase);
+    if(id == kGroupModeParam)
+        return starts + 2 * kNumSlots;
     return -1;
 }
 
@@ -439,6 +453,16 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         // Sample starts last.
         for(int slot = 0; slot < kNumSlots; ++slot)
             addParam(static_cast<ParamID>(kStartParamBase + slot), slotTitle(slot, "Start").c_str(), nullptr, 0.0);
+        // Groups, then the one group mode, last of all.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *group = addList(static_cast<ParamID>(kGroupParamBase + slot), slotTitle(slot, "Group"));
+            group->appendString(STR16("Off"));
+            for(int g = 1; g <= kNumGroups; ++g)
+                group->appendString(utf16(std::to_string(g)).c_str());
+        }
+        auto *groupMode = addList(kGroupModeParam, u"Group Mode");
+        groupMode->appendString(STR16("Round-robin"));
+        groupMode->appendString(STR16("Random"));
         return kResultOk;
     }
 
@@ -739,6 +763,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     };
 
     Voice voices_[kNumVoices];
+    // Audio thread: each group's last pick (random) or next turn (round-robin).
+    int groupTurn_[kNumGroups] = {};
+    uint32_t random_ = 0x9E3779B9u;
     uint64_t nextSerial_ = 1;
     double sampleRate_ = 44100.0;
     std::atomic<double> norm_[kNumParams];
@@ -939,10 +966,15 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     // switch between them. Zone, velocity and start settings are read when a
     // note starts; loop, level, pan, tune and envelope edits reach sounding
     // notes too (applyLive, pushEnvelope).
+    //
+    // Slots in a group (1-8) take turns instead: of a group's slots that
+    // match, one plays, chosen round-robin or at random (Group Mode).
     void noteOn(int16 channel, int16 pitch, float velocity)
     {
         const int padSlot = pitch - rootKeyFromNorm(norm(kRootKeyParam));
         const int hardness = std::clamp(static_cast<int>(std::lround(velocity * 127.0f)), 1, 127);
+        bool matches[kNumSlots] = {};
+        int tracked[kNumSlots] = {};
         for(int slot = 0; slot < kNumSlots; ++slot) {
             if(active_[slot] == nullptr)
                 continue;
@@ -951,17 +983,57 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             if(hardness < std::min(velocityLow, velocityHigh) || hardness > std::max(velocityLow, velocityHigh))
                 continue;
             if(zoneNorm(slot, kZoneMode) < 0.5) {
-                if(slot == padSlot)
-                    startVoice(slot, channel, pitch, velocity, 0);
+                matches[slot] = slot == padSlot;
                 continue;
             }
             const int low = rootKeyFromNorm(zoneNorm(slot, kZoneLow));
             const int high = rootKeyFromNorm(zoneNorm(slot, kZoneHigh));
             if(pitch < std::min(low, high) || pitch > std::max(low, high))
                 continue;
-            const int tracked = zoneNorm(slot, kZoneTrack) >= 0.5 ? pitch - rootKeyFromNorm(zoneNorm(slot, kZoneRoot)) : 0;
-            startVoice(slot, channel, pitch, velocity, tracked);
+            matches[slot] = true;
+            tracked[slot] = zoneNorm(slot, kZoneTrack) >= 0.5 ? pitch - rootKeyFromNorm(zoneNorm(slot, kZoneRoot)) : 0;
         }
+        for(int group = 1; group <= kNumGroups; ++group) {
+            int members[kNumSlots];
+            int count = 0;
+            for(int slot = 0; slot < kNumSlots; ++slot)
+                if(matches[slot] && groupOf(slot) == group)
+                    members[count++] = slot;
+            if(count == 0)
+                continue;
+            const int chosen = members[pickInGroup(group, count)];
+            for(int k = 0; k < count; ++k)
+                matches[members[k]] = members[k] == chosen;
+        }
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            if(matches[slot])
+                startVoice(slot, channel, pitch, velocity, tracked[slot]);
+    }
+
+    int groupOf(int slot) const
+    {
+        return static_cast<int>(std::lround(norm(static_cast<ParamID>(kGroupParamBase + slot)) * kNumGroups));
+    }
+
+    // Which of a group's `count` matching slots plays: the next in turn
+    // (round-robin), or a random one other than the last pick (random).
+    int pickInGroup(int group, int count)
+    {
+        int &turn = groupTurn_[group - 1];
+        if(norm(kGroupModeParam) < 0.5) {
+            const int pick = turn % count;
+            turn = pick + 1;
+            return pick;
+        }
+        // xorshift32: realtime-safe and deterministic per instance.
+        random_ ^= random_ << 13;
+        random_ ^= random_ >> 17;
+        random_ ^= random_ << 5;
+        int pick = static_cast<int>(random_ % static_cast<uint32_t>(count));
+        if(count > 1 && pick == turn)
+            pick = (pick + 1 + static_cast<int>((random_ >> 8) % static_cast<uint32_t>(count - 1))) % count;
+        turn = pick;
+        return pick;
     }
 
     // `keySemitones`: pitch offset from key tracking.

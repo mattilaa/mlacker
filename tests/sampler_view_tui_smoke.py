@@ -1,6 +1,6 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
 clearing slots, key zones, velocity ranges, the Sound page (level, pan, tune,
-per-slot envelopes), loop mode / loop point / output edits, the wave view's
+per-slot envelopes, sample start, groups and group mode), loop mode / loop point / output edits, the wave view's
 frame-accurate loop and sample start markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
@@ -69,7 +69,7 @@ def main():
 
             # Shift+S opens the pane on the selected track's instance: 16 empty
             # pad slots from the root key C-2, loop off over the whole sample, Main.
-            frame = expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"Mode", b"VLo", b"VHi", b"Pad", b"C-2", b"(empty)", b"Off", b"Start%", b"0.0 ", b"100.0", b"Main")
+            frame = expect(tui.send(b"S"), b"Sampler | Mla Sampler #1 | Groups: Round-robin", b"Mode", b"VLo", b"VHi", b"Pad", b"C-2", b"(empty)", b"Off", b"Start%", b"0.0 ", b"100.0", b"Main")
             assert frame.count(b"(empty)") >= 4, frame[-4000:]
 
             # The focused pane keeps its keys: "m" does not toggle the mixer,
@@ -166,7 +166,7 @@ def main():
 
             # e: the Sound page of slot 1. Level 0 dB, centred, the instance
             # envelope; its own A/D/S/R need Env set to Own first.
-            expect(tui.send(b"e"), b"Level", b"Env", b"Sus%", b"0.0", b"C", b"Inst")
+            expect(tui.send(b"e"), b"Level", b"Env", b"Sus%", b"Grp", b"0.0", b"C", b"Inst")
             tui.send(b"llll")
             expect(tui.send(b"K"), b"Slot 1 uses the instance envelope")
             tui.send(b"h")
@@ -181,6 +181,9 @@ def main():
             expect(tui.send(b"K"), b"R2")    # pan
             tui.send(b"l")
             expect(tui.send(b"]"), b"+12.0")  # tune, an octave up
+            tui.send(b"l" * 7)
+            expect(tui.send(b"K"), b"1")      # group 1
+            expect(tui.send(b"G"), b"Groups: Random")
             expect(tui.send(b"e"), b"Mode", b"Loop")
 
             # The virtual keyboard takes the pane over, and Shift+S takes it back.
@@ -201,7 +204,7 @@ def main():
             expect(tui.read(1.2), b"Opened:")
             expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"21", b"126", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
             # The Sound page's edits survive it too.
-            expect(tui.send(b"e"), b"Own", b"-1.0", b"R2", b"+12.0", b"2ms", b"90")
+            expect(tui.send(b"e"), b"Own", b"-1.0", b"R2", b"+12.0", b"2ms", b"90", b"Groups: Random")
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")

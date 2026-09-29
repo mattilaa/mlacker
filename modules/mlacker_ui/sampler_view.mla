@@ -17,7 +17,8 @@ use std::strbuf::free;
 // (mode, low key, high key, zone root, key track), 500 + s for its loop
 // crossfade, 600 + 2s + field for its velocity range (low, high) and
 // 700 + 5s + field for its envelope (own, attack, decay, sustain, release)
-// and 800 + s for its sample start.
+// 800 + s for its sample start and 900 + s for its group (Off, 1-8); 950 is
+// the instance's group mode (Round-robin, Random).
 
 /// Mla Sampler editor in the Pattern view's bottom pane (View menu / Shift+S),
 /// sharing it with the virtual keyboard. It edits the instance on the selected
@@ -31,7 +32,7 @@ pub struct SamplerView {
     /// 6 high velocity, 7 loop mode, 8 loop start, 9 loop end, 10 loop
     /// crossfade, 11 output. On the Sound page (`page` 1, key `e`): 0 level,
     /// 1 pan, 2 tune, 3 envelope (instance or own), 4-7 attack, decay,
-    /// sustain, release, 8 sample start.
+    /// sustain, release, 8 sample start, 9 group.
     var slot: i32; var column: i32; var scroll: i32; var page: i32;
     /// Wave view (`w`): the selected slot's waveform with its loop markers.
     /// `marker` 0 edits the loop start, 1 the loop end, 2 the sample start
@@ -82,6 +83,7 @@ impl SamplerView {
     /// page) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
         if col == 108 { return 800 + s; }
+        if col == 109 { return 900 + s; }
         if col >= 103 { return 700 + s * 5 + col - 103; }
         if col >= 100 { return 200 + s * 7 + col - 100; }
         if col < 5 { return 400 + s * 5 + col; }
@@ -165,7 +167,7 @@ impl SamplerView {
         if up && self.slot > 0 { self.slot = self.slot - 1; return 1; }
         if down && self.slot < 15 { self.slot = self.slot + 1; return 1; }
         if left && self.column > 0 { self.column = self.column - 1; return 1; }
-        if right && self.column < (self.page == 1 ? 8 : 11) { self.column = self.column + 1; return 1; }
+        if right && self.column < (self.page == 1 ? 9 : 11) { self.column = self.column + 1; return 1; }
         // e switches between the keys & loops page and the Sound page.
         if event.code == 101 && event.modifiers == 1 { self.page = 1 - self.page; self.column = 0; return 1; }
         if slot < 1 { return 0; }
@@ -184,6 +186,12 @@ impl SamplerView {
         if event.code == 13 || event.code == 10 { return 2; }
         if event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace) { return 3; }
         if event.code == 111 && event.modifiers == 1 { return 4; }
+        // G switches the instance's group mode: round-robin or random.
+        if (event.code == 71 && event.modifiers == 1) || (event.code == 103 && event.modifiers == 2) {
+            let index: i32 = SamplerView::parameter_index(output, slot, 950);
+            if index < 0 { return 0; }
+            return output.set_parameter(slot, index, output.parameter_info(slot, index, 2) >= 0.5 ? 0.0 : 1.0) == 0 ? 1 : 0;
+        }
         if event.code == 112 && event.modifiers == 1 { return 7; }
         return 0;
     }
@@ -360,10 +368,12 @@ impl SamplerView {
         let value: f64 = SamplerView::value(output, slot, self.slot, 11);
         return value < 0.0 ? -1 : i32(std::math::floor(value * 7.0 + 0.5));
     }
-    /// Pane title, e.g. " Sampler | Mla Sampler #2 ".
+    /// Pane title, e.g. " Sampler | Mla Sampler #2 | Groups: Round-robin ".
     pub fn title(self: SamplerView, output: AudioController, slot: i32) -> str8 {
         if slot < 1 { return clone(" Sampler "); }
-        return format!(" Sampler | {} #{} ", output.instrument_name(slot), slot);
+        let index: i32 = SamplerView::parameter_index(output, slot, 950);
+        let random: bool = index >= 0 && output.parameter_info(slot, index, 2) >= 0.5;
+        return format!(" Sampler | {} #{} | Groups: {} ", output.instrument_name(slot), slot, random ? "Random" : "Round-robin");
     }
     /// Width of a column; the sample name takes the space left over.
     fn width(col: i32) -> i32 {
@@ -543,18 +553,18 @@ impl SamplerView {
         }
     }
     /// Sound page: per slot its number, level, pan, tune, envelope source,
-    /// attack/decay/sustain/release (dim while it uses the instance's) and
-    /// sample start, then the sample name.
+    /// attack/decay/sustain/release (dim while it uses the instance's), sample
+    /// start and group, then the sample name.
     fn paint_sound(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, labels: &list<str8>) -> void {
         var names: list<str8> = []; names = labels;
         let help_y: i32 = area.y + area.height - 2;
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot  h/l col  J/K [ ] adjust  e keys & loops  w wave  p play  Enter load  Bksp clear", theme.muted, theme.panel);
-        let widths: array<i32, 9> = {7, 5, 6, 5, 7, 7, 5, 7, 7};
-        let headings: array<str8, 9> = {"Level", "Pan", "Tune", "Env", "Atk", "Dec", "Sus%", "Rel", "Ofs%"};
+            "j/k slot  h/l col  J/K [ ] adjust  G group mode  e keys & loops  w wave  p play  Enter load", theme.muted, theme.panel);
+        let widths: array<i32, 10> = {7, 5, 6, 5, 7, 7, 5, 7, 7, 4};
+        let headings: array<str8, 10> = {"Level", "Pan", "Tune", "Env", "Atk", "Dec", "Sus%", "Rel", "Ofs%", "Grp"};
         surface.text(Rect::new(area.x, area.y, 4, 1), " #", theme.muted, theme.panel);
         var x: i32 = area.x + 4;
-        for c in 0..9 {
+        for c in 0..10 {
             surface.text(Rect::new(x, area.y, widths[c], 1), headings[c], i32(c) == self.column ? theme.accent : theme.muted, theme.panel);
             x = x + widths[c];
         }
@@ -575,7 +585,7 @@ impl SamplerView {
             surface.text(Rect::new(area.x, y, 4, 1), number, theme.muted, background); free(number);
             let own: bool = SamplerView::own_envelope(output, slot, s);
             var cell_x: i32 = area.x + 4;
-            for c in 0..9 {
+            for c in 0..10 {
                 let col: i32 = 100 + i32(c);
                 let text: str8 = SamplerView::field_text(col, SamplerView::value(output, slot, s, col));
                 let dim: bool = c >= 4 && c <= 7 && !own;
@@ -617,6 +627,10 @@ impl SamplerView {
         }
         if col == 102 { return SamplerView::tenths_text(i32(std::math::floor((value * 48.0 - 24.0) * 10.0 + 0.5)), true); }
         if col == 103 { return clone(value >= 0.5 ? "Own" : "Inst"); }
+        if col == 109 {
+            let group: i32 = i32(std::math::floor(value * 8.0 + 0.5));
+            return group == 0 ? clone("-") : format!("{}", group);
+        }
         if col == 104 { return SamplerView::seconds_text(2.0 * value * value * value); }
         if col == 105 || col == 107 { return SamplerView::seconds_text(0.001 * std::math::pow(10000.0, value)); }
         if col == 106 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }

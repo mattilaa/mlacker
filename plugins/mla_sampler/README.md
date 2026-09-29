@@ -32,7 +32,11 @@ Two slots on the same keys with ranges 1-63 and 64-127 switch samples by how
 hard a key is hit.
 
 Zones may overlap: every slot whose key or zone and velocity range hold a note
-plays it, so slots layer. Keys no slot covers, and slots without a sample, are silent.
+plays it, so slots layer. Slots in the same **Group** (1-8) take turns
+instead: of a group's slots that match a note, only one plays. **Group Mode**
+picks it round-robin, each in turn (the default), or at random, never the same
+slot twice in a row. Put several recordings of one hit on the same key in a
+group for natural repeats; slots without a group still layer on top. Keys no slot covers, and slots without a sample, are silent.
 Global and slot Tune add to the key tracking. Note-off releases the envelope. A looping slot keeps looping through the release until
 the envelope ends. A slot with loop off ends with its sample, even while the key
 is held.
@@ -120,6 +124,8 @@ mlacker's README, "Plugin outputs").
 | Slot N Sustain     | 0..1                          | With Own. |
 | Slot N Release     | 1 ms .. 10 s                  | With Own. |
 | Slot N Start       | 0..1 of the sample            | Where playback begins. Default 0. |
+| Slot N Group       | Off, 1 .. 8                   | Slots in one group take turns. Default Off (layers). |
+| Group Mode         | Round-robin, Random           | How a group picks its slot. Default Round-robin. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -129,10 +135,13 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `600 + 2s` + 0 velocity low, 1 velocity high
 - `700 + 5s` + 0 envelope, 1 attack, 2 decay, 3 sustain, 4 release
 - `800 + s`: start
+- `900 + s`: group
+
+`950` is the Group Mode.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
-every velocity, the instance envelope, starting at frame 0.
+every velocity, the instance envelope, starting at frame 0, no group.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -151,7 +160,8 @@ from this directory:
 `test` builds and runs `tests/mla_sampler_tests.cpp`, an offline host that
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
-pads), live edits on a sounding note (a loop turned on or off, including a
+pads), groups (round-robin turns, random picks without repeats, an ungrouped slot
+layering on top), live edits on a sounding note (a loop turned on or off, including a
 bidirectional loop on its way back, tune and level), velocity layers (soft and hard layers, their boundary, a pad limited
 to soft notes), per-slot envelopes beside the instance one, the sample start
 (to the exact frame, and past a loop's end), a forward loop's seam with and without a crossfade, loop off / forward /

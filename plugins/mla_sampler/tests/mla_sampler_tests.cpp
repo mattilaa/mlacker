@@ -71,6 +71,8 @@ constexpr ParamID kDecay = 105, kSustain = 106;
 enum EnvelopeParam { kEnvelopeOwn, kEnvelopeAttack, kEnvelopeDecay, kEnvelopeSustain, kEnvelopeRelease };
 constexpr ParamID envelopeParam(int slot, EnvelopeParam k) { return 700 + slot * 5 + k; }
 constexpr ParamID startParam(int slot) { return 800 + slot; }
+constexpr ParamID groupParam(int slot) { return 900 + slot; }
+constexpr ParamID kGroupMode = 950;
 
 class Application final : public HostApplication {
   public:
@@ -585,6 +587,51 @@ void testLiveEdits(const std::string &path)
     }
 }
 
+void testGroups(const std::string &path)
+{
+    // Slots 1-3 (0.1, 0.2, 0.3) share key 60 in group 1; slot 4 (0.05) is on
+    // the same key without a group, so it layers on every hit.
+    const auto hits = [&](bool random, int count) -> std::vector<float> {
+        std::vector<float> levels;
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return levels;
+        }
+        for(int slot = 0; slot < 4; ++slot) {
+            CHECK(loadPcm(plugin, slot, std::vector<float>(4000, slot == 3 ? 0.05f : 0.1f * (slot + 1))) == kResultOk);
+            zone(plugin, slot, 60, 60, 60);
+            plugin.param(groupParam(slot), slot == 3 ? 0.0 : 1.0 / 8.0);
+        }
+        plugin.param(kGroupMode, random ? 1.0 : 0.0);
+        plugin.param(kRelease, 0.0);
+        for(int i = 0; i < count; ++i) {
+            plugin.noteOn(60);
+            const auto out = plugin.render(kBlock);
+            levels.push_back(left(out, 100) - 0.05f);
+            plugin.noteOff(60);
+            plugin.render(kBlock);
+        }
+        return levels;
+    };
+    const auto turns = hits(false, 5);
+    const float expected[] = {0.1f, 0.2f, 0.3f, 0.1f, 0.2f};
+    for(int i = 0; i < 5 && i < static_cast<int>(turns.size()); ++i)
+        CHECK(std::fabs(turns[i] - expected[i]) < 1e-3f);
+    // Random: every member plays, and never the same one twice in a row.
+    const auto picks = hits(true, 60);
+    int seen[3] = {};
+    for(size_t i = 0; i < picks.size(); ++i) {
+        const int member = static_cast<int>(std::lround(picks[i] * 10.0f)) - 1;
+        CHECK(member >= 0 && member < 3);
+        if(member >= 0 && member < 3)
+            ++seen[member];
+        if(i > 0)
+            CHECK(std::fabs(picks[i] - picks[i - 1]) > 1e-3f);
+    }
+    CHECK(seen[0] > 0 && seen[1] > 0 && seen[2] > 0);
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -658,12 +705,13 @@ int main(int argc, char **argv)
     testSlotEnvelopes(path);
     testSampleStart(path);
     testLiveEdits(path);
+    testGroups(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }
