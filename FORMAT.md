@@ -142,8 +142,10 @@ are accepted. Unsupported major or minor versions fail closed.
 17. Optional `AUX_OUTPUTS` extension follows `MATRIX_LOOPS`: per pattern, a
     track count that must match the pattern, then per track a bus count (0–15)
     and, for each of the track's instrument's aux output buses from Out 2 on,
-    its route: -1 to stay with the instrument's main output, 0 for master, or
-    a destination track index + 1. A track cannot route to itself. A route to
+    its route: -1 to stay with the instrument's main output, 0 for master,
+    a destination track index + 1, -2 - n to feed aux effect channel n (0–7)
+    as a send, or -10 for nowhere. Readers before the effect routes reject
+    -2 .. -10. A track cannot route to itself. A route to
     a track that is not an AUDIO track plays as -1. It is written only when
     some Instrument track routes an aux bus, and it requires the preceding
     tags.

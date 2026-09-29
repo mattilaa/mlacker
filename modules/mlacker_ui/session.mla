@@ -1126,7 +1126,8 @@ impl SessionCodec {
                     let buses: i32 = self.number(i32(track.aux_outputs.len()), 0, 15);
                     var aux: list<i32> = [];
                     for b in 0..buses {
-                        let destination: i32 = self.number(self.reading ? 0 : track.aux_outputs[b], -1, track_count);
+                        // -2 .. -9 feed an aux effect channel, -10 nowhere.
+                        let destination: i32 = self.number(self.reading ? 0 : track.aux_outputs[b], -10, track_count);
                         if destination - 1 == i32(t) { self.failed = true; }
                         aux.push(destination);
                     }

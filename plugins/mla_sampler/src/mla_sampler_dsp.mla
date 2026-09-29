@@ -50,6 +50,7 @@ extern fn fmod(value: f64, divisor: f64) -> f64;
 extern fn sinf(value: f32) -> f32;
 extern fn cosf(value: f32) -> f32;
 extern fn exp2f(value: f32) -> f32;
+extern fn expf(value: f32) -> f32;
 extern fn log2f(value: f32) -> f32;
 extern fn powf(base: f32, exponent: f32) -> f32;
 extern fn tanf(value: f32) -> f32;
@@ -431,6 +432,12 @@ struct SamplerVoice {
     /// Glide: semitones still to slide (toward 0) and the slide per frame.
     var glide_semitones: f32;
     var glide_per_frame: f32;
+    /// Pitch envelope: depth in semitones, attack and decay in seconds, and
+    /// the seconds since the note started (advanced every 16 frames).
+    var pitch_env_depth: f32;
+    var pitch_env_attack: f32;
+    var pitch_env_decay: f32;
+    var pitch_env_time: f32;
     /// MIDI controllers as sources (0..1, bend -1..1), and the bend range.
     var wheel: f32;
     var aftertouch: f32;
@@ -561,6 +568,7 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).route_level_step = 0.0f;
         (*voice).glide_semitones = 0.0f;
         (*voice).glide_per_frame = 0.0f;
+        (*voice).pitch_env_time = 0.0f;
         (*voice).amp_level = 0.0f;
         (*voice).active = frames > 0.0 ? 1 : 0;
     }
@@ -637,6 +645,27 @@ fn mlasampler_voice_set_route(voice: ptr<SamplerVoice>, route: i32, source: i32,
 /// sources. Call after `mlasampler_voice_start`.
 fn mlasampler_voice_set_note(voice: ptr<SamplerVoice>, velocity: f32, key: f32) {
     unsafe { (*voice).velocity = velocity; (*voice).key = key; }
+}
+
+/// @brief Pitch envelope: `depth` semitones at its peak, reached over
+/// `attack` seconds from the note's pitch (at once with no attack), then
+/// back over `decay` seconds (to 1 % of the depth). Sounding voices follow.
+fn mlasampler_voice_set_pitch_envelope(voice: ptr<SamplerVoice>, depth: f32, attack: f32, decay: f32) {
+    unsafe { (*voice).pitch_env_depth = depth; (*voice).pitch_env_attack = attack; (*voice).pitch_env_decay = decay; }
+}
+
+/// The pitch envelope's offset now, in semitones.
+fn sampler_pitch_envelope(voice: ptr<SamplerVoice>) -> f32 {
+    unsafe {
+        let depth: f32 = (*voice).pitch_env_depth;
+        if depth == 0.0f { return 0.0f; }
+        let t: f32 = (*voice).pitch_env_time;
+        let attack: f32 = (*voice).pitch_env_attack;
+        if t < attack { return depth * t / attack; }
+        let decay: f32 = (*voice).pitch_env_decay;
+        if decay <= 0.0f { return 0.0f; }
+        return depth * expf(-4.6f * (t - attack) / decay);
+    }
 }
 
 /// @brief The MIDI controllers' values as route sources: mod wheel,
@@ -887,7 +916,8 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             (*voice).filter2.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
             let semitones: f32 = (*voice).lfo1.pitch_semitones * lfo1_now + (*voice).lfo2.pitch_semitones * lfo2_now
                 + sampler_routes(voice, 1, lfo1_now, lfo2_now, filter_level) + (*voice).glide_semitones
-                + (*voice).bend * (*voice).bend_semitones;
+                + (*voice).bend * (*voice).bend_semitones + sampler_pitch_envelope(voice);
+            (*voice).pitch_env_time = (*voice).pitch_env_time + 16.0f / (*voice).sample_rate;
             (*voice).step = (*voice).base_step * f64(exp2f(semitones / 12.0f));
             let pan_shift: f32 = sampler_routes(voice, 5, lfo1_now, lfo2_now, filter_level);
             if pan_shift != 0.0f || (*voice).route1_target == 5 || (*voice).route2_target == 5

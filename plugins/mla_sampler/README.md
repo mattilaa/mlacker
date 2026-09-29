@@ -235,6 +235,22 @@ nothing goes silent in hosts that only use the main output. mlacker activates
 every bus: they play with Main until routed to their own mixer channels (see
 mlacker's README, "Plugin outputs").
 
+Buses 8 and 9 are **Send A** and **Send B**: every slot adds its sound to
+them again, times its **Send A** and **Send B** levels (0 .. 100 %, after its
+level, pan and output choice), so one instance can send its snare to a reverb
+and keep its kick dry. They are inactive by default too, and a slot's own
+output is unaffected by its sends. mlacker routes them to its aux effect
+channels 1 and 2.
+
+## Pitch envelope
+
+Each slot has a **Pitch Env**: **Depth** (-48 .. +48 semitones, 0 is off),
+**Attack** (0 .. 2 s) and **Decay** (1 ms .. 10 s). A note starts at its own
+pitch and rises to the depth over the attack, or starts at the depth with no
+attack, then returns over the decay (to 1 % of the depth), as for a kick's or
+tom's drop or a pluck's bite. It adds to the LFOs, mod routes, glide and bend,
+runs every 16 frames, and restarts with each note but not on a legato note.
+
 ## Parameters
 
 | Parameter          | Range                         | Notes |
@@ -299,6 +315,10 @@ mlacker's README, "Plugin outputs").
 | Slot N Spread      | 0 .. 100 %                    | Unison stereo spread. Default 0. |
 | Slot N Play Mode   | Poly, Mono, Legato            | 8-entry list. Default Poly. |
 | Slot N Glide       | 0 .. 2 s                      | Mono and Legato. Default 0. |
+| Slot N Pitch Env   | -48 .. +48 semitones          | Pitch envelope depth. Default 0 (off). |
+| Slot N Pitch Attack | 0 .. 2 s                     | Default 0. |
+| Slot N Pitch Decay | 1 ms .. 10 s                  | Default 100 ms. |
+| Slot N Send A, Send B | 0 .. 100 %                 | Level on the Send A / Send B bus. Default 0. |
 | Bend Range         | 0 .. 24 semitones             | Pitch bend either way. Default 2. |
 | Mod CC             | CC 2, 4, 11, 16, 17, 18, 19, 74 | Which CC the Mod CC source reads. 16-entry list. Default CC 2. |
 | Mod Wheel, Aftertouch | 0 .. 1                     | Set by CC 1 and channel pressure. Default 0. |
@@ -327,16 +347,19 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
   (0-based; room for 8 routes of 4 fields)
 - `1400 + 4s` + 0 unison voices, 1 detune, 2 spread
 - `1500 + 4s` + 0 play mode, 1 glide
+- `1600 + 4s` + 0 pitch envelope depth, 1 attack, 2 decay
+- `1700 + 4s` + 0 Send A, 1 Send B
 
 `950` is the Group Mode and `960`-`963` the instance filter envelope. The MIDI
 controllers are `110` Bend Range, `111` Mod CC, `112` Mod Wheel, `113`
-Aftertouch, `114` Pitch Bend and `120`-`127` the CC values, registered last.
+Aftertouch, `114` Pitch Bend and `120`-`127` the CC values, registered before
+the pitch envelopes and sends.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
 off, no choke group, LFO depths at 0, no mod routes, forwards, one voice, Poly,
-a 2-semitone bend range.
+a 2-semitone bend range, no pitch envelope and no sends.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -367,7 +390,8 @@ in the reversed timeline), unison (the stack's level, stereo spread and
 detune), Mono replacing a note, Legato keeping the envelope, glide and
 returning to a held key), MIDI controllers (the host mapping, pitch bend and
 its range on new and sounding notes, the mod wheel, aftertouch and chosen CC as
-sources, pitch bend as a source), choke
+sources, pitch bend as a source), the pitch envelope (a decaying drop, an attack, off at
+depth 0), the send buses (each slot's levels, Main unchanged), choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

@@ -122,7 +122,8 @@ def main():
             tui.send(b"jj")
             expect(tui.send(b"\r", 0.5), b"Out 2 > A1", b"Out 2>A1")
             # Track > Route plugin outputs lists every aux bus and its route.
-            frame = expect(tui.send(F1 + b"lll" + b"j" * 11 + b"\r"), b"Plugin output to route", b"Out 2  > A1", b"Out 8  > MAIN")
+            frame = expect(tui.send(F1 + b"lll" + b"j" * 11 + b"\r"), b"Plugin output to route", b"Out 2  > A1", b"Out 8  > MAIN",
+                           b"Send A  > FX1", b"Send B  > FX2")
             expect(tui.send(b"\x1b", 0.5), b"Cancelled.")
 
             # p auditions the slot: a zone at its root (C-5), a pad at its key.
@@ -248,6 +249,12 @@ def main():
             expect(tui.send(b"JJJJJ"), b"3")
             tui.send(b"l")
             expect(tui.send(b"]]"), b"20")
+            # Then the pitch envelope, an octave up, and Send A at 30 %.
+            tui.send(b"ll")
+            expect(tui.send(b"]"), b"+12.0")
+            tui.send(b"lll")
+            expect(tui.send(b"]]]"), b"30")
+            tui.send(b"hhhhh")
             # W saves slot 1 as a slot preset; R loads it into empty slot 4,
             # its sample and settings.
             slot_preset = root / "slot1.mlaslot"
@@ -289,7 +296,7 @@ def main():
             expect(tui.send(b"e"), b"Sqr", b"On", b"1/8", b"50")
             tui.send(b"e")
             expect(tui.send(b"e"), b"Veloc", b"Level", b"-10", b"ModCC")
-            expect(tui.send(b"e"), b"Legato", b"180ms", b"20")
+            expect(tui.send(b"e"), b"Legato", b"180ms", b"20", b"+12.0", b"30")
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
@@ -310,6 +317,9 @@ def main():
             expect(tui.send(b"\x15" + bytes(tone) + b"\r", 0.7), b"Auto-mapped 1 sample(s) to slots 10-10")
             expect(tui.send(b"w"), b"Slot 10 Tone_G4.wav")
             tui.send(b"w")
+            # v shows the key map: slot 10 over every key, slots 3 and 4 as pads.
+            expect(tui.send(b"v"), b"Key map | slot 10 Tone_G4.wav", b"Lyr", b"v1-127")
+            expect(tui.send(b"v"), b"Mode", b"Loop")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:
             tui.close()

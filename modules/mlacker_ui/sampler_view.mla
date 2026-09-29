@@ -26,9 +26,13 @@ use std::strbuf::free;
 // decay, sustain, release); 1200 + s is its choke group (Off, 1-8), 1300 + s
 // reverse (Off, On), and
 // 1400 + 4s + field its unison (voices, detune, spread), 1500 + 4s + field its
-// play mode and glide, 3000 + 32s + 16l + field its LFO l (shape, rate, sync, division, delay,
+// play mode and glide, 1600 + 4s + field its pitch envelope (depth, attack,
+// decay), 1700 + 4s + field its sends (A, B), 3000 + 32s + 16l + field its LFO l (shape, rate, sync, division, delay,
 // pitch, cutoff, level, trigger), and 4000 + 32s + 4r + field its mod route r
 // (source, target, amount).
+
+/// Keys a sample slot plays: `low` .. `high`, its sample at `root`.
+pub struct KeySpan { var low: i32; var high: i32; var root: i32; };
 
 /// Mla Sampler editor in the Pattern view's bottom pane (View menu / Shift+S),
 /// sharing it with the virtual keyboard. It edits the instance on the selected
@@ -51,7 +55,8 @@ pub struct SamplerView {
     /// depth, 6 cutoff depth, 7 level depth, 8 trigger; the LFO 2 page
     /// (`page` 4) the same for LFO 2. On the Mod page (`page` 5): per route
     /// r (0-3) 3r source, 3r + 1 target, 3r + 2 amount. On the Play page
-    /// (`page` 6): 0 mode, 1 glide, 2 unison voices, 3 detune, 4 spread.
+    /// (`page` 6): 0 mode, 1 glide, 2 unison voices, 3 detune, 4 spread,
+    /// 5-7 pitch envelope depth, attack and decay, 8-9 send A and B levels.
     var slot: i32; var column: i32; var scroll: i32; var page: i32;
     /// Wave view (`w`): the selected slot's waveform with its loop markers.
     /// `marker` 0 edits the loop start, 1 the loop end, 2 the sample start
@@ -59,6 +64,9 @@ pub struct SamplerView {
     /// frames shown per step, centred on the marker. `dots` is the dot
     /// columns the waveform last painted, for moving a marker one dot.
     var wave: bool; var marker: i32; var zoom: i32; var dots: i32{160};
+    /// Key map view (`v`): every slot's keys and velocities over the MIDI
+    /// keyboard, instead of the page's table. The page's columns still edit.
+    var key_map: bool;
     /// Audition (`p`): the note sounding (-1 for none) and the live target it
     /// went to. Like the virtual keyboard, it lasts until the key's release,
     /// or on terminals without key releases until the key stops repeating
@@ -106,7 +114,7 @@ impl SamplerView {
     fn col(self: SamplerView) -> i32 { return self.page * 100 + self.column; }
     /// Columns on a page: keys & loops, Sound, Filter.
     fn page_columns(page: i32) -> i32 {
-        if page == 6 { return 5; }
+        if page == 6 { return 10; }
         if page == 1 { return 12; }
         if page == 2 { return 17; }
         if page == 3 || page == 4 { return 9; }
@@ -115,6 +123,8 @@ impl SamplerView {
     /// Parameter ID of a column (see `column`; 100 + column on the Sound
     /// page) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
+        if col >= 608 { return 1700 + s * 4 + col - 608; }
+        if col >= 605 { return 1600 + s * 4 + col - 605; }
         if col >= 600 { return col < 602 ? 1500 + s * 4 + col - 600 : 1400 + s * 4 + col - 602; }
         if col >= 500 && col < 600 { return 4000 + s * 32 + (col - 500) / 3 * 4 + (col - 500) % 3; }
         if col >= 400 { return 3016 + s * 32 + col - 400; }
@@ -181,7 +191,7 @@ impl SamplerView {
     }
     fn slot_blocks() -> list<i64> {
         return [200, 7, 7, 400, 5, 5, 500, 1, 1, 600, 2, 2, 700, 5, 5, 800, 1, 1, 900, 1, 1,
-            1100, 5, 5, 1200, 1, 1, 1300, 1, 1, 1400, 4, 3, 1500, 4, 2, 2000, 32, 32, 3000, 32, 32, 4000, 32, 32];
+            1100, 5, 5, 1200, 1, 1, 1300, 1, 1, 1400, 4, 3, 1500, 4, 2, 1600, 4, 3, 1700, 4, 2, 2000, 32, 32, 3000, 32, 32, 4000, 32, 32];
     }
     fn value(output: AudioController, slot: i32, s: i32, col: i32) -> f64 {
         let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, col));
@@ -205,6 +215,8 @@ impl SamplerView {
         // Play: glide in poly mode, detune and spread without unison.
         if col == 601 { return SamplerView::value(output, slot, s, 600) < 0.07; }
         if col == 603 || col == 604 { return SamplerView::value(output, slot, s, 602) < 0.03; }
+        // The pitch envelope's times while it has no depth.
+        if col == 606 || col == 607 { let depth: f64 = SamplerView::value(output, slot, s, 605); return depth > 0.4995 && depth < 0.5005; }
         // Mod: a route's target and amount while it has no source or target.
         if col >= 500 && col < 600 && (col - 500) % 3 > 0 {
             let first: i32 = col - (col - 500) % 3;
@@ -228,6 +240,8 @@ impl SamplerView {
         if col >= 500 && col < 600 { return big ? 0.05 : 0.005; }
         if col == 100 { return (big ? 6.0 : 1.0) / 66.0; }
         if col == 102 { return (big ? 12.0 : 1.0) / 48.0; }
+        // Pitch envelope depth +-48 st: a semitone (an octave).
+        if col == 605 { return (big ? 12.0 : 1.0) / 96.0; }
         // Cutoff: about a semitone (an octave) of its 20 Hz .. 20 kHz sweep.
         if col == 201 || col == 207 { return big ? 0.1 : 1.0 / 120.0; }
         // Resonance 0-36 dB: 1 dB (6 dB).
@@ -319,7 +333,8 @@ impl SamplerView {
             return 1;
         }
         if (event.code == 65 && event.modifiers == 1) || (event.code == 97 && event.modifiers == 2) { return slot < 1 ? 0 : 14; }
-        if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; return 1; }
+        if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; if self.wave { self.key_map = false; } return 1; }
+        if event.code == 118 && event.modifiers == 1 { self.key_map = !self.key_map; if self.key_map { self.wave = false; } return 1; }
         if self.wave {
             let handled: i32 = self.wave_event(event, output, slot, clip, has_clip);
             if handled >= 0 { return handled; }
@@ -696,6 +711,7 @@ impl SamplerView {
         var labels: list<str8> = []; labels = names;
         var destinations: list<str8> = []; destinations = routes;
         if self.wave { self.paint_wave(surface, area, theme, output, slot, labels, clip, has_clip); return; }
+        if self.key_map { self.paint_map(surface, area, theme, output, slot, labels); return; }
         // Typed lists: a bare integer list literal would be i64.
         if self.page == 1 {
             let widths: list<i32> = [7, 5, 6, 5, 7, 7, 5, 7, 7, 4, 4, 4];
@@ -720,9 +736,9 @@ impl SamplerView {
             return;
         }
         if self.page == 6 {
-            let widths: list<i32> = [7, 7, 5, 5, 5];
+            let widths: list<i32> = [7, 7, 5, 5, 5, 6, 6, 6, 5, 5];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
-                ["Mode", "Glide", "Uni", "Det", "Spr%"],
+                ["Mode", "Glide", "Uni", "Det", "Spr%", "PEnv", "PAtk", "PDec", "SnA%", "SnB%"],
                 "Play | j/k slot  h/l col  J/K [ ] adjust  e keys & loops  W/R save/load slot  p play");
             return;
         }
@@ -900,6 +916,97 @@ impl SamplerView {
             }
         }
     }
+    /// Lowest and highest key sample slot `s` plays, and its root (a pad's
+    /// key is its root).
+    fn key_span(output: AudioController, slot: i32, s: i32) -> KeySpan {
+        if SamplerView::is_zone(output, slot, s) {
+            let low: i32 = SamplerView::key_of(SamplerView::value(output, slot, s, 1));
+            let high: i32 = SamplerView::key_of(SamplerView::value(output, slot, s, 2));
+            return KeySpan { low: low < high ? low : high, high: low < high ? high : low, root: SamplerView::key_of(SamplerView::value(output, slot, s, 3)) };
+        }
+        let key: i32 = i32(output.instrument_sampler(slot, 0)) + s;
+        return KeySpan { low: key, high: key, root: key };
+    }
+    /// The key map (`v`): a ruler of octaves, a layer row (how many loaded
+    /// slots play the keys under each column: blank for a gap, a dot for
+    /// one, the count for more), then a row per slot with its keys (its
+    /// root marked) and velocity range. Unloaded slots are dim.
+    fn paint_map(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, labels: &list<str8>) -> void {
+        var names: list<str8> = []; names = labels;
+        let help_y: i32 = area.y + area.height - 2;
+        surface.text(Rect::new(area.x, help_y, area.width, 1), "Map | j/k slot  h/l col  J/K [ ] adjust  e page  v table  w wave  p play", theme.muted, theme.panel);
+        let gutter: i32 = 3; let suffix: i32 = 9;
+        let keys_width: i32 = area.width - gutter - suffix;
+        if keys_width < 16 || area.height < 5 { return; }
+        let span: KeySpan = SamplerView::key_span(output, slot, self.slot);
+        let low_name: str8 = piano_note_name(span.low); let high_name: str8 = piano_note_name(span.high); let root_name: str8 = piano_note_name(span.root);
+        let label: str8 = self.slot < names.len() ? names[self.slot] : "";
+        let header: str8 = format!("Key map | slot {} {} | {}..{} root {} | vel {}-{}", self.slot + 1, label == "" ? "(empty)" : label,
+            low_name, high_name, root_name, SamplerView::key_of(SamplerView::value(output, slot, self.slot, 5)),
+            SamplerView::key_of(SamplerView::value(output, slot, self.slot, 6)));
+        surface.text(Rect::new(area.x, area.y, area.width, 1), header, theme.foreground, theme.panel);
+        free(header); free(low_name); free(high_name); free(root_name);
+        // Each column covers keys first_key(x) .. last_key(x).
+        var spans: list<KeySpan> = [];
+        for s in 0..16 { spans.push(SamplerView::key_span(output, slot, i32(s))); }
+        let ruler_y: i32 = area.y + 1;
+        for x in 0..keys_width {
+            let key: i32 = i32(x) * 128 / keys_width;
+            let previous: i32 = x == 0 ? -1 : (i32(x) - 1) * 128 / keys_width;
+            if key % 12 == 0 && key != previous {
+                let name: str8 = piano_note_name(key);
+                if i32(x) + 3 <= keys_width { surface.text(Rect::new(area.x + gutter + i32(x), ruler_y, 3, 1), name, theme.muted, theme.panel); }
+                free(name);
+            }
+        }
+        let layers_y: i32 = area.y + 2;
+        surface.text(Rect::new(area.x, layers_y, gutter, 1), "Lyr", theme.muted, theme.panel);
+        for x in 0..keys_width {
+            let first: i32 = i32(x) * 128 / keys_width;
+            let next: i32 = (i32(x) + 1) * 128 / keys_width;
+            let last: i32 = next - 1 < first ? first : next - 1;
+            var most: i32 = 0;
+            for key in first..last + 1 {
+                var count: i32 = 0;
+                for s in 0..16 {
+                    let occupied: bool = s < names.len() && names[s] != "";
+                    let span_s: KeySpan = spans[s];
+                    if occupied && i32(key) >= span_s.low && i32(key) <= span_s.high { count = count + 1; }
+                }
+                if count > most { most = count; }
+            }
+            let glyph: i32 = most == 0 ? 32 : (most == 1 ? 0x00B7 : (most < 10 ? 48 + most : 43));
+            surface.put(area.x + gutter + i32(x), layers_y, Cell { glyph: glyph, foreground: most > 1 ? theme.accent : theme.muted, background: theme.panel });
+        }
+        // Slot rows, scrolled to keep the selected slot in view.
+        let rows: i32 = area.height - 5;
+        if rows < 1 { return; }
+        var top: i32 = self.slot - rows / 2;
+        if top > 16 - rows { top = 16 - rows; }
+        if top < 0 { top = 0; }
+        for r in 0..rows {
+            let s: i32 = top + i32(r);
+            if s >= 16 { break; }
+            let y: i32 = area.y + 3 + i32(r);
+            let occupied: bool = s < names.len() && names[s] != "";
+            let selected: bool = s == self.slot;
+            let color: i32 = selected ? theme.accent : (occupied ? theme.foreground : theme.muted);
+            let number: str8 = format!("{}", s + 1);
+            surface.text(Rect::new(area.x, y, gutter, 1), number, color, selected ? theme.selection : theme.panel); free(number);
+            let span_s: KeySpan = spans[s];
+            for x in 0..keys_width {
+                let first: i32 = i32(x) * 128 / keys_width;
+                let next: i32 = (i32(x) + 1) * 128 / keys_width;
+                let last: i32 = next - 1 < first ? first : next - 1;
+                if last < span_s.low || first > span_s.high { continue; }
+                let root: bool = span_s.root >= first && span_s.root <= last;
+                let glyph: i32 = root ? (span_s.low == span_s.high ? 0x25CF : 0x25C6) : 0x2501;
+                surface.put(area.x + gutter + i32(x), y, Cell { glyph: glyph, foreground: color, background: theme.panel });
+            }
+            let velocity: str8 = format!(" v{}-{}", SamplerView::key_of(SamplerView::value(output, slot, s, 5)), SamplerView::key_of(SamplerView::value(output, slot, s, 6)));
+            surface.text(Rect::new(area.x + gutter + keys_width, y, suffix, 1), velocity, color, theme.panel); free(velocity);
+        }
+    }
     /// The Sound and Filter pages: per slot its number, the page's columns
     /// (`widths`, `headings`; codes page * 100 + column), dim where
     /// `column_dim` says, then the sample name in what is left.
@@ -973,7 +1080,10 @@ impl SamplerView {
         }
         if col == 601 { return SamplerView::seconds_text(2.0 * value * value); }
         if col == 602 { return format!("{}", i32(std::math::floor(value * 15.0 + 0.5)) + 1); }
-        if col == 603 || col == 604 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 603 || col == 604 || col == 608 || col == 609 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 605 { return SamplerView::tenths_text(i32(std::math::floor((value * 96.0 - 48.0) * 10.0 + 0.5)), true); }
+        if col == 606 { return SamplerView::seconds_text(2.0 * value * value * value); }
+        if col == 607 { return SamplerView::seconds_text(0.001 * std::math::pow(10000.0, value)); }
         // Mod page: source and target names, and the amount in percent.
         if col >= 500 && col < 600 {
             let part: i32 = (col - 500) % 3;

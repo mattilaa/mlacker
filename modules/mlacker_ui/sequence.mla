@@ -689,24 +689,25 @@ pub fn set_track_output(self: &mut Self, index: i32, destination: i32) -> bool {
     }
     self.revision = self.revision + 1; self.error = ""; return true;
 }
-/// Validated route of aux bus `bus` of the instrument track `index`: -1 =
-/// with the main output, 0 = master, otherwise an AUDIO track index + 1. A
-/// route to a missing or non-audio track reads as -1.
+/// Validated route of aux bus `bus` of the instrument track `index` (see
+/// `set_aux_output`). A route to a missing or non-audio track reads as -1.
 pub fn track_aux_output(self: SequenceTable, index: i32, bus: i32) -> i32 {
     if index < 0 || index >= self.tracks.len() { return -1; }
     let track: SequenceTrack = self.tracks[index];
     if !track.instrument { return -1; }
     let destination: i32 = track.aux_output(bus);
+    if destination >= -10 && destination <= -2 { return destination; }
     if destination < 0 || destination > self.tracks.len() { return -1; }
     if destination == 0 { return 0; }
     let target: SequenceTrack = self.tracks[destination - 1];
     return target.audio ? destination : -1;
 }
 /// Route aux bus `bus` (1-15) of an instrument track's instrument: -1 = with
-/// the main output, 0 = master, otherwise an AUDIO track index + 1. Tracks on
-/// the same instance share the routes, as they share its output channel.
+/// the main output, 0 = master, an AUDIO track index + 1, -2 - n = the input
+/// of aux effect channel n (0-7, a send), or -10 = nowhere. Tracks on the
+/// same instance share the routes, as they share its output channel.
 pub fn set_aux_output(self: &mut Self, index: i32, bus: i32, destination: i32) -> bool {
-    if index < 0 || index >= self.tracks.len() || bus < 1 || bus > 15 || destination < -1 || destination > self.tracks.len() { return false; }
+    if index < 0 || index >= self.tracks.len() || bus < 1 || bus > 15 || destination < -10 || destination > self.tracks.len() { return false; }
     let selected: SequenceTrack = self.tracks[index];
     if !selected.instrument || selected.instrument_id < 1 { self.error = "Select an Instrument track"; return false; }
     if destination > 0 {

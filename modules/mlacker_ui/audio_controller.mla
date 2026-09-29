@@ -337,6 +337,22 @@ impl AudioSystem {
         }
         self.samples_running = false; self.sample_placements = []; self.sample_start_row = row;
     }
+    /// The route aux bus `bus` of instrument `slot` takes (see
+    /// SequenceTable::set_aux_output) when the track stores `destination`.
+    /// A bus named "Send ..." (Mla Sampler's Send A and B) is a send: left
+    /// unrouted, the n-th one feeds aux effect channel n instead of joining
+    /// the main output.
+    pub fn aux_route(self: AudioSystem, slot: i32, bus: i32, destination: i32) -> i32 {
+        if destination != -1 { return destination; }
+        var sends: i32 = 0;
+        for b in 1..bus + 1 {
+            let name: str8 = self.output.instrument_output_name(wide(slot), b);
+            if !tui::table::table_matches("Send .*", name) { continue; }
+            if b == wide(bus) { return sends < 8 ? -2 - sends : -10; }
+            sends = sends + 1;
+        }
+        return -1;
+    }
     pub fn sync_volumes(self: AudioSystem, source: &SequenceTable) -> void {
         var table: SequenceTable = SequenceTable {}; table = source;
         // Publish final routes directly: never transiently bypass active chains.
@@ -374,8 +390,11 @@ impl AudioSystem {
                 if track.instrument && wide(track.instrument_id) == slot { selected = i32(t); }
             }
             for bus in 1..outputs {
-                let destination: i32 = selected >= 0 ? table.track_aux_output(selected, i32(bus)) : -1;
-                self.output.instrument_output_route(slot, bus, wide(destination));
+                let stored: i32 = selected >= 0 ? table.track_aux_output(selected, i32(bus)) : -1;
+                let destination: i32 = self.aux_route(i32(slot), i32(bus), stored);
+                // The controller's numbering: effect channels 65-72, nowhere 73.
+                let host: i32 = destination == -10 ? 73 : (destination <= -2 ? 65 + (-2 - destination) : destination);
+                self.output.instrument_output_route(slot, bus, wide(host));
             }
         }
         for i in 0..table.tracks.len() {

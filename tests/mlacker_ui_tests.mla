@@ -519,6 +519,20 @@ fn tui_clip_slice_points() {
 }
 
 #[test]
+fn tui_aux_routes_to_effect_channels() {
+    let area: Rect = Rect::new(0, 0, 100, 12);
+    var table: SequenceTable = SequenceTable::new();
+    table.create_instrument_track(1, area);
+    let index: i32 = i32(table.tracks.len()) - 1;
+    // An aux bus can feed effect channel 3 (a send) or go nowhere.
+    verify(table.set_aux_output(index, 8, -4) && table.track_aux_output(index, 8) == -4);
+    verify(table.set_aux_output(index, 9, -10) && table.track_aux_output(index, 9) == -10);
+    verify(!table.set_aux_output(index, 9, -11) && table.track_aux_output(index, 9) == -10);
+    verify(table.set_aux_output(index, 8, -1) && table.track_aux_output(index, 8) == -1);
+    table.release();
+}
+
+#[test]
 fn tui_project_paths() {
     verify(is_project_path("/a/Song.mlaproj") && is_project_path("Song.MLAPROJ/") && !is_project_path("/a/Song.mlack"));
     let appended: str8 = project_folder("/a/Song//"); verify(appended == "/a/Song.mlaproj"); free(appended);

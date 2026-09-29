@@ -711,6 +711,7 @@ Overlapping zones layer.
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
+| `v` | Key map of all slots (again returns to the table) |
 | `e` | Next page: keys & loops, Sound, Filter, LFO 1, LFO 2, Mod, Play |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
@@ -758,7 +759,19 @@ The **Play page** (`e` from Mod) sets how each slot plays notes: **Mode**
 note is played over a held one), **Glide** (the slide from the previous note in
 Mono and Legato; dim in Poly), **Uni** (1-8 unison voices per note), **Det**
 (their detune, cents) and **Spr%** (their stereo spread). Det and Spr% are dim
-with one voice.
+with one voice. Then the pitch envelope, **PEnv** (semitones at its peak; `J`/`K`
+a semitone, `[`/`]` an octave), **PAtk** and **PDec** (dim at depth 0), and the
+sends, **SnA%** and **SnB%**: how much of the slot goes to the instance's Send A
+and Send B buses as well, which feed aux effect channels 1 and 2 (see Plugin
+outputs), so one instance can send its snare to a reverb and not its kick.
+
+The **key map** (`v`) draws every slot over the 128 MIDI keys, instead of the
+page's table: an octave ruler, a **Lyr** row counting the loaded slots under
+each key (blank where no slot plays: a gap; a dot for one; the count, in the
+accent color, where slots layer), then a row per slot with its keys (`━`), root
+(`◆`, or `●` for a pad) and velocity range. The header describes the selected
+slot. The page's columns still edit, so moving a zone's Low or High on the keys
+& loops page shows at once. Empty slots are dim.
 
 **Slicing** (`C`) cuts the selected slot's sample into slices and puts
 slice 1 on that slot, slice 2 on the next, and so on, each a one-shot pad
@@ -861,7 +874,12 @@ route (`MAIN`, `MST` or `A3`). Pick one, then its destination. In the Sampler
 pane, `o` does the same for the selected slot's bus. The Out column then shows
 the route, e.g. `Out 2>A3`. A routed bus skips the instrument's own inserts,
 fader and sends and takes the destination track's instead; routed to `MST` it
-goes straight to the master bus. Routes belong to the Instrument track in each
+goes straight to the master bus. Routed to an aux effect channel (`FX1`..`FX8`)
+it feeds only that effect's input, as a send (nothing plays while the channel
+has no effect), and `OFF` silences it. A bus named `Send ...`, such as Mla
+Sampler's Send A and Send B, is a send: it defaults to aux effect channel 1,
+2, and so on instead of joining the main output (choosing `MAIN` for it picks
+that default again). Routes belong to the Instrument track in each
 pattern, like its output channel, and `.mlack` saves them.
 
 ### Destructive sample editing
@@ -1339,8 +1357,8 @@ virtual keyboard PTY test toggles the keyboard, changes octave, step-enters a no
 and checks that Space and `q` behave. The Sampler pane PTY test (run when
 `MlaSampler.vst3` is built) loads and clears slots, edits loops, outputs and
 every page, saves a slot preset and loads it into another slot, checks that
-the edits survive a session round trip, then slices a slot and auto-maps a
-note-named sample. Legacy widget tests opt in
+the edits survive a session round trip, then slices a slot, auto-maps a
+note-named sample and shows the key map. Legacy widget tests opt in
 to seeded demo data with `MLACKER_DEMO=1`; normal mlacker startup does not.
 
 For a hardware-free manual run:

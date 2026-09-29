@@ -55,7 +55,7 @@ int failures = 0;
 constexpr double kRate = 48000.0;
 constexpr int32 kBlock = 256;
 constexpr int kRootKey = 36;
-constexpr int kOutputs = 8;
+constexpr int kOutputs = 10; // Main, Out 2..8, Send A, Send B
 
 // Parameter IDs (see plugin.cpp).
 constexpr ParamID kRelease = 107;
@@ -88,6 +88,8 @@ constexpr ParamID routeParam(int slot, int route, RouteField k) { return 4000 + 
 enum { kSrcLfo1 = 1, kSrcLfo2, kSrcAmpEnv, kSrcFilterEnv, kSrcVelocity, kSrcKey, kSrcModWheel, kSrcAftertouch, kSrcPitchBend, kSrcModCc };
 // MIDI controllers: bend range (0..24 st), the Mod CC choice, and the values.
 constexpr ParamID kBendRangeId = 110, kModCcId = 111, kModWheelId = 112, kAftertouchId = 113, kPitchBendId = 114;
+constexpr ParamID pitchEnvParam(int slot, int k) { return 1600 + slot * 4 + k; } // 0 depth, 1 attack, 2 decay
+constexpr ParamID sendParam(int slot, int send) { return 1700 + slot * 4 + send; }
 constexpr ParamID ccValueParam(int choice) { return 120 + choice; } // CC 2, 4, 11, 16, 17, 18, 19, 74
 enum { kTgtPitch = 1, kTgtCutoff, kTgtResonance, kTgtLevel, kTgtPan, kTgtStart };
 double listValue(int index) { return index / 15.0; }
@@ -130,8 +132,9 @@ struct Instance {
     ProcessContext context{};
     std::vector<std::string> subCategories;
 
-    // `auxActive`: also activate bus 1 ("Out 2").
-    bool open(const std::string &path, bool auxActive = false)
+    // `auxActive`: also activate bus 1 ("Out 2"); `sendsActive`: the two
+    // send buses.
+    bool open(const std::string &path, bool auxActive = false, bool sendsActive = false)
     {
         std::string error;
         module = VST3::Hosting::Module::create(path, error);
@@ -160,6 +163,10 @@ struct Instance {
         component->activateBus(kAudio, kOutput, 0, true);
         if(auxActive)
             component->activateBus(kAudio, kOutput, 1, true);
+        if(sendsActive) {
+            component->activateBus(kAudio, kOutput, 8, true);
+            component->activateBus(kAudio, kOutput, 9, true);
+        }
         component->activateBus(kEvent, kInput, 0, true);
         ProcessSetup setup{kOffline, kSample32, kBlock, kRate};
         if(processor->setupProcessing(setup) != kResultOk || !data.prepare(*component, kBlock, kSample32))
@@ -292,6 +299,8 @@ void testLayout(const std::string &path)
         CHECK(plugin.component->getBusInfo(kAudio, kOutput, bus, info) == kResultOk);
         CHECK(info.channelCount == 2);
         CHECK(info.busType == (bus == 0 ? kMain : kAux));
+        if(bus == 8)
+            CHECK(std::u16string(info.name) == u"Send A");
         CHECK(((info.flags & BusInfo::kDefaultActive) != 0) == (bus == 0));
     }
     // mla_sampler.info: 16 slots from the root key, occupancy bitmask.
@@ -1152,6 +1161,51 @@ void testControllers(const std::string &path)
     CHECK(std::fabs(rate(filtered(path, slope, join(route(kSrcPitchBend, kTgtPitch, -1.0), {{kPitchBendId, 0.0}, {kBendRangeId, 0.0}}))) - 4.0f) < 1e-3f);
 }
 
+void testPitchEnvelopeAndSends(const std::string &path)
+{
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto rate = [](const std::vector<float> &out, int frame) { return (left(out, frame + 1) - left(out, frame)) * 48000.0f; };
+    // +12 semitones, no attack, 0.1 s decay: an octave up at the start,
+    // exp(-4.6 t / 0.1) of it later (t at the frame's 16-frame step).
+    const double up = 0.5 + 12.0 / 96.0;
+    const auto drop = filtered(path, slope, {{pitchEnvParam(0, 0), up}, {pitchEnvParam(0, 2), std::log10(100.0) / 4.0}});
+    CHECK(std::fabs(rate(drop, 5) - 2.0f) < 1e-3f);
+    const float t = 992.0f / 48000.0f;
+    CHECK(std::fabs(rate(drop, 1000) - std::pow(2.0f, std::exp(-4.6f * t / 0.1f))) < 1e-3f);
+    // A 0.1 s attack rises from the note's pitch: none at first, half way at 50 ms.
+    const auto rise = filtered(path, slope, {{pitchEnvParam(0, 0), up}, {pitchEnvParam(0, 1), std::cbrt(0.05)}});
+    CHECK(std::fabs(rate(rise, 5) - 1.0f) < 1e-3f);
+    CHECK(std::fabs(rate(rise, 2405) - std::pow(2.0f, 2400.0f / 4800.0f)) < 2e-3f);
+    // Depth 0 is off.
+    CHECK(std::fabs(rate(filtered(path, slope, {}), 5) - 1.0f) < 1e-4f);
+
+    // Sends: the slot's sound again on Send A / Send B, times their levels,
+    // while Main keeps all of it.
+    Instance plugin;
+    OPEN(plugin, path, false, true);
+    CHECK(loadPcm(plugin, 0, std::vector<float>(4096, 0.5f)) == kResultOk);
+    CHECK(loadPcm(plugin, 1, std::vector<float>(4096, 0.5f)) == kResultOk);
+    plugin.param(sendParam(0, 0), 0.5);
+    plugin.param(sendParam(0, 1), 0.25);
+    plugin.noteOn(kRootKey);
+    plugin.render(kBlock);
+    const auto &main = plugin.data.outputs[0];
+    const auto &sendA = plugin.data.outputs[8];
+    const auto &sendB = plugin.data.outputs[9];
+    CHECK(std::fabs(main.channelBuffers32[0][100] - 0.5f) < 1e-3f);
+    CHECK(std::fabs(sendA.channelBuffers32[0][100] - 0.25f) < 1e-3f);
+    CHECK(std::fabs(sendB.channelBuffers32[1][100] - 0.125f) < 1e-3f);
+    // Slot 2 sends nothing.
+    plugin.noteOff(kRootKey);
+    plugin.render(4096);
+    plugin.noteOn(kRootKey + 1);
+    plugin.render(kBlock);
+    CHECK(std::fabs(main.channelBuffers32[0][100] - 0.5f) < 1e-3f);
+    CHECK(sendA.channelBuffers32[0][100] == 0.0f);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -1276,12 +1330,13 @@ int main(int argc, char **argv)
     testReverse(path);
     testUnisonAndGlide(path);
     testControllers(path);
+    testPitchEnvelopeAndSends(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, pitch envelope and sends, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

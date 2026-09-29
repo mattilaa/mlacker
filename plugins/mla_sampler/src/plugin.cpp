@@ -80,6 +80,8 @@ extern "C" void mlasampler_voice_set_route__ptr_struct_SamplerVoice_i32_i32_i32_
 extern "C" void mlasampler_voice_set_note__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float velocity, float key);
 extern "C" void mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float semitones,
                                                                         float seconds);
+extern "C" void mlasampler_voice_set_pitch_envelope__ptr_struct_SamplerVoice_f32_f32_f32(SamplerVoice *voice, float depth,
+                                                                                         float attack, float decay);
 extern "C" void mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32(
     SamplerVoice *voice, float wheel, float aftertouch, float bend, float cc, float bendSemitones);
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -124,7 +126,11 @@ static const FUID kProcessorUID(0x4D6C6153, 0x616D706C, 0x9E27C1A4, 0x5B83D06F);
 
 constexpr int kNumSlots = 16;
 constexpr int kNumVoices = 32;
-constexpr int kNumOutputs = 8; // Main + Out 2..Out 8, all stereo.
+constexpr int kNumOutputs = 8; // Main + Out 2..Out 8, all stereo: what a slot's Output picks.
+// Then Send A and Send B: every slot adds its sound times its send levels.
+// A host routes them to effect inputs (mlacker: its aux effect channels).
+constexpr int kNumSends = 2;
+constexpr int kNumBuses = kNumOutputs + kNumSends;
 constexpr uint32 kStateMagic = 0x4D534C4D; // "MLSM" little-endian
 constexpr uint32 kStateVersion = 1;
 
@@ -161,6 +167,8 @@ enum ParamId : ParamID {
     kReverseParamBase = 1300,            // slot s: 1300 + s, Off or On
     kUnisonParamBase = 1400,             // slot s: 1400 + 4s: 0 voices, 1 detune, 2 spread
     kPlayParamBase = 1500,               // slot s: 1500 + 4s: 0 play mode, 1 glide time
+    kPitchEnvParamBase = 1600,           // slot s: 1600 + 4s: 0 depth, 1 attack, 2 decay
+    kSendParamBase = 1700,               // slot s: 1700 + 4s: 0 Send A, 1 Send B
     kFilterParamBase = 2000,             // slot s, stage t: 2000 + 32s + 8t, see FilterField
     kLfoParamBase = 3000,                // slot s, LFO l: 3000 + 32s + 16l, see LfoField
     kRouteParamBase = 4000,              // slot s, route r: 4000 + 32s + 4r, see RouteField
@@ -319,14 +327,15 @@ constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + 
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
                             kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages +
                             kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields + kNumSlots +
-                            kNumSlots * 3 + kNumSlots * 2 + kControllerParams;
+                            kNumSlots * 3 + kNumSlots * 2 + kControllerParams + kNumSlots * 3 + kNumSlots * kNumSends;
 constexpr ParamID kMaxParamId = kRouteParamBase + kNumSlots * kRouteSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
 // slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
 // starts, groups, group mode, the instance filter envelope, slot filter
 // envelopes, filter stages, choke groups, filter gains, LFO 1, LFO 2, mod
-// routes, reverse, unison, play mode and the MIDI controllers. Each block was appended after the
+// routes, reverse, unison, play mode, the MIDI controllers, pitch
+// envelopes and sends. Each block was appended after the
 // ones before it, so saved states keep their meaning.
 struct ParamLayout {
     ParamID ids[kNumParams];
@@ -374,6 +383,10 @@ struct ParamLayout {
             run(kPlayParamBase + slot * 4, 2);
         run(kBendRangeParam, 5);
         run(kCcValueParamBase, kModCcsKnown);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            run(kPitchEnvParamBase + slot * 4, 3);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            run(kSendParamBase + slot * 4, kNumSends);
     }
 };
 static const ParamLayout kLayout;
@@ -425,6 +438,7 @@ static float gainFromNorm(double norm)
 }
 
 static double semitonesFromNorm(double norm) { return norm * 48.0 - 24.0; } // +-2 octaves
+static float pitchEnvFromNorm(double norm) { return static_cast<float>(norm * 96.0 - 48.0); } // +-4 octaves
 static float panFromNorm(double norm) { return static_cast<float>(norm * 2.0 - 1.0); }
 static float attackFromNorm(double norm) { return static_cast<float>(2.0 * norm * norm * norm); } // 0..2 s
 static float timeFromNorm(double norm) { return static_cast<float>(0.001 * std::pow(10000.0, norm)); } // 1 ms..10 s
@@ -524,7 +538,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             slot.store(nullptr, std::memory_order_relaxed);
         for(auto &value : norm_)
             value.store(0.0, std::memory_order_relaxed);
-        for(int bus = 0; bus < kNumOutputs; ++bus)
+        for(int bus = 0; bus < kNumBuses; ++bus)
             outputActive_[bus].store(bus == 0, std::memory_order_relaxed);
     }
 
@@ -567,7 +581,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
         addAudioOutput(STR16("Main"), SpeakerArr::kStereo);
         // Aux buses start inactive, as VST3 expects; hosts enable what they route.
-        for(int bus = 1; bus < kNumOutputs; ++bus)
+        for(int bus = 1; bus < kNumBuses; ++bus)
             addAudioOutput(utf16(outputName(bus)).c_str(), SpeakerArr::kStereo, BusTypes::kAux, 0);
         addEventInput(STR16("MIDI In"), 16);
 
@@ -753,6 +767,17 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         addParam(kPitchBendParam, STR16("Pitch Bend"), nullptr, kBendCentre);
         for(int k = 0; k < kModCcsKnown; ++k)
             addParam(static_cast<ParamID>(kCcValueParamBase + k), utf16(kModCcNames[k]).c_str(), nullptr, 0.0);
+        // Pitch envelopes (off at depth 0), then sends, last.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            const auto id = [&](int field) { return static_cast<ParamID>(kPitchEnvParamBase + slot * 4 + field); };
+            addParam(id(0), slotTitle(slot, "Pitch Env").c_str(), STR16("st"), 0.5);
+            addParam(id(1), slotTitle(slot, "Pitch Attack").c_str(), STR16("s"), 0.0);
+            addParam(id(2), slotTitle(slot, "Pitch Decay").c_str(), STR16("s"), normFromTime(0.1));
+        }
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            addParam(static_cast<ParamID>(kSendParamBase + slot * 4), slotTitle(slot, "Send A").c_str(), nullptr, 0.0);
+            addParam(static_cast<ParamID>(kSendParamBase + slot * 4 + 1), slotTitle(slot, "Send B").c_str(), nullptr, 0.0);
+        }
         return kResultOk;
     }
 
@@ -796,7 +821,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement *inputs, int32 numIns,
                                           SpeakerArrangement *outputs, int32 numOuts) SMTG_OVERRIDE
     {
-        if(numIns != 0 || numOuts < 1 || numOuts > kNumOutputs || outputs == nullptr)
+        if(numIns != 0 || numOuts < 1 || numOuts > kNumBuses || outputs == nullptr)
             return kResultFalse;
         for(int32 bus = 0; bus < numOuts; ++bus)
             if(outputs[bus] != SpeakerArr::kStereo)
@@ -807,7 +832,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     tresult PLUGIN_API activateBus(MediaType type, BusDirection dir, int32 index, TBool state) SMTG_OVERRIDE
     {
         const tresult result = SingleComponentEffect::activateBus(type, dir, index, state);
-        if(result == kResultTrue && type == kAudio && dir == kOutput && index >= 0 && index < kNumOutputs)
+        if(result == kResultTrue && type == kAudio && dir == kOutput && index >= 0 && index < kNumBuses)
             outputActive_[index].store(state != 0, std::memory_order_relaxed);
         return result;
     }
@@ -865,8 +890,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         }
         // Buses this block may write: active, stereo and with buffers. Voices
         // on any other bus fall back to Main.
-        float *buses[kNumOutputs][2] = {};
-        const int32 busCount = std::min<int32>(data.numOutputs, kNumOutputs);
+        float *buses[kNumBuses][2] = {};
+        const int32 busCount = std::min<int32>(data.numOutputs, kNumBuses);
         for(int32 bus = 0; bus < busCount; ++bus) {
             AudioBusBuffers &out = data.outputs[bus];
             if(out.channelBuffers32 == nullptr || out.numChannels < 2)
@@ -1095,7 +1120,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     double framesRendered_ = 0.0;
     std::atomic<double> norm_[kNumParams];
     std::atomic<bool> paramsDirty_{false};
-    std::atomic<bool> outputActive_[kNumOutputs];
+    std::atomic<bool> outputActive_[kNumBuses];
 
     // Audio-thread view of the slots.
     const Sample *active_[kNumSlots] = {};
@@ -1136,7 +1161,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         norm_[indexOf(id)].store(key / 127.0, std::memory_order_relaxed);
     }
 
-    static std::string outputName(int bus) { return bus == 0 ? "Main" : "Out " + std::to_string(bus + 1); }
+    static std::string outputName(int bus)
+    {
+        if(bus >= kNumOutputs)
+            return bus == kNumOutputs ? "Send A" : "Send B";
+        return bus == 0 ? "Main" : "Out " + std::to_string(bus + 1);
+    }
 
     static std::u16string slotTitle(int slot, const char *what)
     {
@@ -1252,6 +1282,14 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 dsp, route, routeSource(slot, route), target == kTargetStart ? 0 : target,
                 static_cast<float>(routeAmount(slot, route)));
         }
+    }
+
+    // The slot's pitch envelope: depth in semitones, attack and decay.
+    void applyPitchEnvelope(SamplerVoice *dsp, int slot)
+    {
+        const auto field = [&](int k) { return norm(static_cast<ParamID>(kPitchEnvParamBase + slot * 4 + k)); };
+        mlasampler_voice_set_pitch_envelope__ptr_struct_SamplerVoice_f32_f32_f32(
+            dsp, pitchEnvFromNorm(field(0)), attackFromNorm(field(1)), timeFromNorm(field(2)));
     }
 
     // A controller source's value now: the mod wheel, aftertouch and the
@@ -1378,6 +1416,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 filterChanged[(id - kFilterParamBase) / kFilterSlotStride] = true;
             if(id >= kLfoParamBase && id < kLfoParamBase + kNumSlots * kLfoSlotStride)
                 lfoChanged[(id - kLfoParamBase) / kLfoSlotStride] = true;
+            if(id >= kPitchEnvParamBase && id < kPitchEnvParamBase + kNumSlots * 4)
+                lfoChanged[(id - kPitchEnvParamBase) / 4] = true;
             if(id >= kRouteParamBase && id < kMaxParamId)
                 routeChanged[(id - kRouteParamBase) / kRouteSlotStride] = true;
             if((id >= kBendRangeParam && id <= kPitchBendParam) ||
@@ -1620,6 +1660,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         applyLfo(target->dsp, slot);
         applyRoutes(target->dsp, slot);
         applyControllers(target->dsp);
+        applyPitchEnvelope(target->dsp, slot);
         // Retrigger starts an LFO with the note; Free picks up where its
         // rate has taken it since activation.
         const double elapsed = framesRendered_ / sampleRate_;
@@ -1728,6 +1769,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             if(lfo) {
                 applyLfo(voice.dsp, slot);
                 applyRoutes(voice.dsp, slot);
+                applyPitchEnvelope(voice.dsp, slot);
             }
             if(sound) {
                 mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(
@@ -1763,7 +1805,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     }
 
     // `buses[b]` is null for a bus this block cannot write; Main never is.
-    void render(float *(&buses)[kNumOutputs][2], int32 from, int32 to)
+    void render(float *(&buses)[kNumBuses][2], int32 from, int32 to)
     {
         if(from >= to)
             return;
@@ -1774,6 +1816,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             const bool routed = bus > 0 && bus < kNumOutputs && buses[bus][0] != nullptr;
             float *outL = routed ? buses[bus][0] : buses[0][0];
             float *outR = routed ? buses[bus][1] : buses[0][1];
+            // Sends: the voice's sound again, times the slot's send levels.
+            float sendLevel[kNumSends] = {};
+            for(int send = 0; send < kNumSends; ++send)
+                if(buses[kNumOutputs + send][0] != nullptr)
+                    sendLevel[send] = static_cast<float>(norm(static_cast<ParamID>(kSendParamBase + voice.slot * 4 + send)));
             const float *pcm = voice.sample->stereo.data();
             const int64_t guard = voice.sample->frames; // Index of the silent guard frame.
             // A reversed voice reads the sample mirrored: its frame f is the
@@ -1800,6 +1847,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                     voice.dsp, a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1], &right);
                 outL[i] += left;
                 outR[i] += right;
+                for(int send = 0; send < kNumSends; ++send)
+                    if(sendLevel[send] > 0.0f) {
+                        buses[kNumOutputs + send][0][i] += left * sendLevel[send];
+                        buses[kNumOutputs + send][1][i] += right * sendLevel[send];
+                    }
                 if(!mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp)) {
                     voice.sample = nullptr;
                     break;

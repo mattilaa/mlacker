@@ -265,10 +265,15 @@ fn aux_destinations(table: &SequenceTable) -> AuxChoices {
         if !track.audio { continue; }
         choices.ids.push(i32(t) + 1); choices.labels.push(format!("  A{}   {}", t + 1, track.name));
     }
+    // Aux effect channels take a bus as a send, into the effect only.
+    for fx in 0..8 { choices.ids.push(-2 - i32(fx)); choices.labels.push(format!("  FX{}  aux effect channel {} (send)", fx + 1, fx + 1)); }
+    choices.ids.push(-10); choices.labels.push(clone("  OFF  nowhere"));
     return choices;
 }
-/// Short route label: "MAIN", "MST" or "A3".
+/// Short route label: "MAIN", "MST", "A3", "FX1" or "OFF".
 fn aux_route_text(destination: i32) -> str8 {
+    if destination == -10 { return clone("OFF"); }
+    if destination <= -2 { return format!("FX{}", -1 - destination); }
     return destination < 0 ? clone("MAIN") : (destination == 0 ? clone("MST") : format!("A{}", destination));
 }
 
@@ -1367,7 +1372,7 @@ pub fn run() -> i32 {
                 }
                 // Where each output bus goes, for the Out column.
                 var routes: list<str8> = [clone("")];
-                for bus in 1..8 { routes.push(aux_route_text(library.table.track_aux_output(library.table.active_track(), i32(bus)))); }
+                for bus in 1..8 { routes.push(aux_route_text(midi.aux_route(sampler_slot, i32(bus), library.table.track_aux_output(library.table.active_track(), i32(bus))))); }
                 let wave_used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, sampler.slot) : -1;
                 let wave_known: bool = wave_used >= 0 && wave_used < library.audio.samples.len();
                 var wave_clip: AudioClip = AudioClip {}; if wave_known { wave_clip = library.audio.samples[wave_used]; }
@@ -2387,13 +2392,13 @@ pub fn run() -> i32 {
                     output_track = index; output_kind = 4; aux_bus = slot_bus;
                     let choices: AuxChoices = aux_destinations(library.table);
                     outputs.title = "Output destination";
-                    outputs.open(choices.ids, choices.labels, library.table.track_aux_output(index, aux_bus));
+                    outputs.open(choices.ids, choices.labels, midi.aux_route(slot, aux_bus, library.table.track_aux_output(index, aux_bus)));
                     focus.set_menu_active(true);
                 }
                 else {
                     var ids: list<i32> = []; var labels: list<str8> = [];
                     for bus in 1..bus_count {
-                        let route: str8 = aux_route_text(library.table.track_aux_output(index, i32(bus)));
+                        let route: str8 = aux_route_text(midi.aux_route(slot, i32(bus), library.table.track_aux_output(index, i32(bus))));
                         ids.push(i32(bus)); labels.push(format!("  {}  > {}", midi.output.instrument_output_name(wide(slot), bus), route));
                         free(route);
                     }
@@ -2408,7 +2413,7 @@ pub fn run() -> i32 {
                 let slot: i32 = library.table.active_instrument();
                 let choices: AuxChoices = aux_destinations(library.table);
                 outputs.title = "Output destination";
-                outputs.open(choices.ids, choices.labels, library.table.track_aux_output(output_track, aux_bus));
+                outputs.open(choices.ids, choices.labels, midi.aux_route(slot, aux_bus, library.table.track_aux_output(output_track, aux_bus)));
                 focus.set_menu_active(true);
             }
             else if command == Action::ApplyOutputChannel && output_kind == 4 {

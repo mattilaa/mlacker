@@ -598,20 +598,22 @@ int main(int argc, char **argv) {
         CHECK(std::llabs(slow - 24000) <= 2 && std::llabs(fast - 12000) <= 2);
         std::puts("PASS: Mla Delay follows the host tempo");
     }
-    // Mla Sampler has eight output buses. Its aux buses follow the main
-    // output until routed to master or a PCM track's channel.
+    // Mla Sampler has ten output buses: Main, Out 2-8, Send A and Send B.
+    // Its aux buses follow the main output until routed to master, a PCM
+    // track's channel, an aux effect channel's input or nowhere.
     if(const char *sampler = std::getenv("MLA_SAMPLER_VST3")) {
         int64_t d = __mlang_std_audio_controller_new(48000, 128);
         CHECK(__mlang_std_audio_controller_load_instrument(d, 1, sampler) == 0);
         CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Sampler") == 0);
         CHECK(__mlang_std_audio_controller_instrument_sampler(d, 1, 1) == 16);
-        CHECK(__mlang_std_audio_controller_instrument_outputs(d, 1) == 8);
+        CHECK(__mlang_std_audio_controller_instrument_outputs(d, 1) == 10);
         CHECK(__mlang_std_audio_controller_instrument_outputs(d, 2) == -1);
         CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 0), "Main") == 0);
         CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 1), "Out 2") == 0);
-        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 8), "") == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 8), "Send A") == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_output_name(d, 1, 10), "") == 0);
         CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 0, 0) == -1); // main is not an aux bus
-        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 1, 65) == -1);
+        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 1, 74) == -1);
         const std::vector<float> hit_pcm(4800, 0.5f);
         CHECK(__mlang_std_audio_controller_instrument_pad(d, 1, 0, FloatList{4800, hit_pcm.data()}, 1, 48000, "hit") == 0);
         // Parameter 11 is Slot 1 Output (ID 203), stepped: 1 = Out 2.
@@ -661,8 +663,26 @@ int main(int argc, char **argv) {
         CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 7, 0) == 0);
         CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
         CHECK(std::abs(hit() - 0.125f) < 1.e-4f);
+        // Send A (bus 8) at full on slot 1: left following Main it doubles
+        // the slot; routed nowhere it adds nothing...
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, 11, 0) == 0);
+        int send = -1;
+        for(int i = 0; i < __mlang_std_audio_controller_parameter_info(d, 1, 0, 0); ++i)
+            if(__mlang_std_audio_controller_parameter_info(d, 1, i, 4) == 1700) send = i;
+        CHECK(send >= 0);
+        CHECK(__mlang_std_audio_controller_set_parameter(d, 1, send, 1.0) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        CHECK(std::abs(hit() - 0.25f) < 1.e-4f);
+        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 8, 73) == 0);
+        CHECK(std::abs(hit() - 0.125f) < 1.e-4f);
+        // ...and into effect channel 1 it feeds only the effect (x0.5 here):
+        // silent while the channel is empty.
+        CHECK(__mlang_std_audio_controller_instrument_output_route(d, 1, 8, 65) == 0);
+        CHECK(std::abs(hit() - 0.125f) < 1.e-4f);
+        CHECK(__mlang_std_audio_controller_load_effect(d, 0, argv[2]) == 0);
+        CHECK(std::abs(hit() - 0.1875f) < 1.e-4f);
         CHECK(__mlang_std_audio_controller_close(d) == 0);
-        std::puts("PASS: Mla Sampler aux outputs follow Main or route to master and tracks");
+        std::puts("PASS: Mla Sampler aux outputs follow Main or route to master, tracks and effect sends");
     }
     {
         // Lane 2 carries sequencer events stamped with the frame they sound
