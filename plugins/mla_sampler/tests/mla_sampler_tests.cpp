@@ -76,11 +76,13 @@ constexpr ParamID kGroupMode = 950;
 constexpr ParamID chokeParam(int slot) { return 1200 + slot; }
 constexpr ParamID kFilterEnvelope = 960; // + 0 attack, 1 decay, 2 sustain, 3 release
 constexpr ParamID slotFilterEnvelope(int slot, EnvelopeParam k) { return 1100 + slot * 5 + k; }
-enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack };
+enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack, kFilterGain };
 constexpr ParamID filterParam(int slot, int stage, FilterField k) { return 2000 + slot * 32 + stage * 8 + k; }
 // Filter types (plugin.cpp kFilterTypeNames), as normalized list values.
 constexpr double filterType(int type) { return type / 63.0; }
 constexpr int kLowpass24 = 2, kHighpass24 = 4, kNotch = 9;
+constexpr int kSvfLowpass = 10, kSvfHighpass = 11, kSvfBandpass = 12, kPeak = 14, kLowShelf = 15, kVowel = 17;
+double gainNorm(double db) { return (db / 24.0 + 1.0) / 2.0; }
 // Cutoff normalized value for a frequency: 20 Hz * 1000^norm.
 double cutoff(double hz) { return std::log(hz / 20.0) / std::log(1000.0); }
 
@@ -742,6 +744,58 @@ void testFilters(const std::string &path)
     CHECK(keyed(84) > 4 * keyed(60));
 }
 
+// A 100 Hz sawtooth: broadband, for the vowel filter's formants.
+std::vector<float> saw()
+{
+    std::vector<float> pcm(48000);
+    for(size_t f = 0; f < pcm.size(); ++f)
+        pcm[f] = static_cast<float>(f % 480) / 480.0f - 0.5f;
+    return pcm;
+}
+
+void testMoreFilterTypes(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto stage = [](int type, double hz, Params extra = {}) {
+        Params params{{filterParam(0, 0, kFilterType), filterType(type)}, {filterParam(0, 0, kFilterCutoff), cutoff(hz)}};
+        for(const auto &p : extra)
+            params.push_back(p);
+        return params;
+    };
+    // State-variable low- and high-pass behave like the 24 dB ones.
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kSvfLowpass, 500)), 3000) - 0.5f) < 0.01f);
+    CHECK(rms(filtered(path, nyquist(), stage(kSvfLowpass, 500)), 2048, 4096) < 0.001);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kSvfHighpass, 500)), 3000)) < 0.01f);
+    CHECK(rms(filtered(path, nyquist(), stage(kSvfHighpass, 500)), 2048, 4096) > 0.4);
+    // Band-pass keeps a tone at its centre, not DC.
+    CHECK(rms(filtered(path, tone(), stage(kSvfBandpass, 6000)), 2048, 4096) > 0.2);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kSvfBandpass, 6000)), 3000)) < 0.01f);
+    // A fast full sweep at full resonance stays finite and bounded.
+    const auto sweep = filtered(path, saw(), stage(kSvfLowpass, 50, {{filterParam(0, 0, kFilterResonance), 1.0},
+                                                                     {filterParam(0, 0, kFilterEnvAmount), 1.0},
+                                                                     {kFilterEnvelope + 1, 0.2}}));
+    bool bounded = true;
+    for(float v : sweep)
+        bounded = bounded && std::isfinite(v) && std::fabs(v) < 20.0f;
+    CHECK(bounded);
+    // Peak: +12 dB lifts a tone at its centre; 0 dB leaves it alone.
+    const double plain = rms(filtered(path, tone(), {}), 2048, 4096);
+    CHECK(rms(filtered(path, tone(), stage(kPeak, 6000, {{filterParam(0, 0, kFilterGain), gainNorm(12)}})), 2048, 4096) > 1.5 * plain);
+    CHECK(std::fabs(rms(filtered(path, tone(), stage(kPeak, 6000, {{filterParam(0, 0, kFilterGain), gainNorm(0)}})), 2048, 4096) - plain) < 0.01);
+    // Low shelf -24 dB at 1 kHz: DC drops by 24 dB, a 6 kHz tone passes.
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kLowShelf, 1000, {{filterParam(0, 0, kFilterGain), gainNorm(-24)}})), 3000) -
+                    0.5f * std::pow(10.0f, -24.0f / 20.0f)) < 0.005f);
+    CHECK(rms(filtered(path, tone(), stage(kLowShelf, 1000, {{filterParam(0, 0, kFilterGain), gainNorm(-24)}})), 2048, 4096) > 0.8 * plain);
+    // Vowel: formants pass a sawtooth, and the A and U ends differ.
+    const auto vowelA = filtered(path, saw(), stage(kVowel, 20));
+    const auto vowelU = filtered(path, saw(), stage(kVowel, 20000));
+    CHECK(rms(vowelA, 2048, 4096) > 0.01);
+    double difference = 0.0;
+    for(int f = 2048; f < 4096; ++f)
+        difference += std::fabs(left(vowelA, f) - left(vowelU, f));
+    CHECK(difference / 2048 > 0.005);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -859,12 +913,13 @@ int main(int argc, char **argv)
     testGroups(path);
     testFilters(path);
     testChokeGroups(path);
+    testMoreFilterTypes(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

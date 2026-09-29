@@ -75,8 +75,9 @@ extern "C" void mlasampler_voice_set_loop__ptr_struct_SamplerVoice_i32_f64_f64(S
                                                                            double loopStart, double loopEnd);
 extern "C" void mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frames);
 extern "C" void mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frame);
-extern "C" void mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32(
-    SamplerVoice *voice, int32_t stage, int32_t kind, float cutoffHz, float resonanceDb, float envOctaves);
+extern "C" void mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32_f32(
+    SamplerVoice *voice, int32_t stage, int32_t kind, float cutoffHz, float resonanceDb, float envOctaves,
+    float gainDb);
 extern "C" void mlasampler_voice_set_filter_envelope__ptr_struct_SamplerVoice_f32_f32_f32_f32(
     SamplerVoice *voice, float attack, float decay, float sustain, float release);
 extern "C" double mlasampler_voice_shadow_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -146,8 +147,12 @@ enum FilterField : int {
     kFilterResonance, // 0 .. 36 dB
     kFilterEnvAmount, // -8 .. +8 octaves of filter envelope
     kFilterKeyTrack,  // 0 .. 100 % of the key's distance from C-4
+    kFilterGain,      // -24 .. +24 dB (peak and shelves); registered after the choke groups
     kFilterFields,
 };
+// The fields registered with the first filter block; later ones follow the
+// blocks after it, so no earlier parameter moves.
+constexpr int kFilterFieldsFirst = kFilterGain;
 constexpr int kFilterSlotStride = 32;
 constexpr int kFilterStageStride = 8;
 
@@ -155,8 +160,10 @@ constexpr int kFilterStageStride = 8;
 // parameter always has 64 entries, so its normalized values never move:
 // new filters take the next reserved number and name, older ones keep theirs.
 constexpr int kFilterTypeCount = 64;
-static const char *const kFilterTypeNames[] = {"Off", "LP 12", "LP 24", "HP 12", "HP 24", "BP 12", "BP 24",
-                                               "Ladder 12", "Ladder 24", "Notch"};
+static const char *const kFilterTypeNames[] = {"Off",       "LP 12",     "LP 24",     "HP 12",     "HP 24",
+                                               "BP 12",     "BP 24",     "Ladder 12", "Ladder 24", "Notch",
+                                               "SVF LP",    "SVF HP",    "SVF BP",    "SVF Notch", "Peak",
+                                               "Low Shelf", "High Shelf", "Vowel"};
 constexpr int kFilterTypesKnown = sizeof(kFilterTypeNames) / sizeof(kFilterTypeNames[0]);
 
 constexpr int kNumGroups = 8;
@@ -203,14 +210,14 @@ constexpr int kNumVelocityParams = kNumSlots * 2;
 constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
-                            kNumSlots * kFilterStages * kFilterFields + kNumSlots;
+                            kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages;
 constexpr ParamID kMaxParamId = kFilterParamBase + kNumSlots * kFilterSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
 // slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
 // starts, groups, group mode, the instance filter envelope, slot filter
-// envelopes, filter stages and choke groups. Each block was appended after the
-// ones before it, so saved states keep their meaning.
+// envelopes, filter stages, choke groups and filter gains. Each block was
+// appended after the ones before it, so saved states keep their meaning.
 struct ParamLayout {
     ParamID ids[kNumParams];
     int16_t index[kMaxParamId];
@@ -239,8 +246,11 @@ struct ParamLayout {
         run(kSlotFilterEnvelopeParamBase, kNumSlots * kParamsPerEnvelope);
         for(int slot = 0; slot < kNumSlots; ++slot)
             for(int stage = 0; stage < kFilterStages; ++stage)
-                run(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride, kFilterFields);
+                run(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride, kFilterFieldsFirst);
         run(kChokeParamBase, kNumSlots);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = 0; stage < kFilterStages; ++stage)
+                add(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride + kFilterGain);
     }
 };
 static const ParamLayout kLayout;
@@ -292,6 +302,7 @@ static int32_t filterTypeFromNorm(double norm) { return static_cast<int32_t>(std
 static float cutoffFromNorm(double norm) { return static_cast<float>(20.0 * std::pow(1000.0, norm)); } // 20 Hz..20 kHz
 static float resonanceFromNorm(double norm) { return static_cast<float>(norm * 36.0); }             // 0..36 dB
 static float envOctavesFromNorm(double norm) { return static_cast<float>((norm * 2.0 - 1.0) * 8.0); } // +-8 octaves
+static float filterGainFromNorm(double norm) { return static_cast<float>((norm * 2.0 - 1.0) * 24.0); } // +-24 dB
 
 // Immutable decoded sample: stereo interleaved with one silent guard frame at
 // the end, so interpolation may always read the frame after the last one.
@@ -533,6 +544,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             for(int g = 1; g <= kNumChokeGroups; ++g)
                 choke->appendString(utf16(std::to_string(g)).c_str());
         }
+        // Filter gains (peak and shelves) last.
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = 0; stage < kFilterStages; ++stage)
+                addParam(filterParamId(slot, stage, kFilterGain),
+                         slotTitle(slot, ("Filter " + std::to_string(stage + 1) + " Gain").c_str()).c_str(), STR16("dB"), 0.5);
         return kResultOk;
     }
 
@@ -1201,10 +1217,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             const double keyTrack = norm(filterParamId(slot, stage, kFilterKeyTrack));
             const float cutoff = cutoffFromNorm(norm(filterParamId(slot, stage, kFilterCutoff))) *
                                  static_cast<float>(std::pow(2.0, keyTrack * (pitch - 60) / 12.0));
-            mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32(
+            mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32_f32(
                 dsp, stage, filterTypeFromNorm(norm(filterParamId(slot, stage, kFilterType))), cutoff,
                 resonanceFromNorm(norm(filterParamId(slot, stage, kFilterResonance))),
-                envOctavesFromNorm(norm(filterParamId(slot, stage, kFilterEnvAmount))));
+                envOctavesFromNorm(norm(filterParamId(slot, stage, kFilterEnvAmount))),
+                filterGainFromNorm(norm(filterParamId(slot, stage, kFilterGain))));
         }
         const auto own = norm(static_cast<ParamID>(kSlotFilterEnvelopeParamBase + slot * kParamsPerEnvelope)) >= 0.5;
         const auto envelope = [&](int k) {

@@ -199,7 +199,9 @@ def main():
             expect(tui.send(b"]"), b"+1.0")
             tui.send(b"l")
             expect(tui.send(b"]"), b"10")
-            tui.send(b"l" * 7)  # to FEnv's Atk
+            tui.send(b"l")
+            expect(tui.send(b"]"), b"+6.0")  # gain (for peak and shelves)
+            tui.send(b"l" * 8)  # to FEnv's Atk
             expect(tui.send(b"K"), b"Slot 1 uses the instance filter envelope")
             tui.send(b"h")
             expect(tui.send(b"K"), b"Own")
@@ -224,7 +226,7 @@ def main():
             expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"21", b"126", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
             # The Sound page's edits survive it too.
             expect(tui.send(b"e"), b"Own", b"-1.0", b"R2", b"+12.0", b"2ms", b"90", b"Groups: Random")
-            expect(tui.send(b"e"), b"LP24", b"10.0k", b"+1.0", b"Own")
+            expect(tui.send(b"e"), b"LP24", b"10.0k", b"+1.0", b"+6.0", b"Own")
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")

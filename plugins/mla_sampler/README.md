@@ -94,8 +94,9 @@ Each voice runs through a **chain of filter stages** in series, after the
 playhead and before the amp envelope. There are two stages today (**Filter 1**
 then **Filter 2**). Each has a **Type**, **Cutoff** (20 Hz .. 20 kHz),
 **Resonance** (0 .. 36 dB), **Env** (how far the filter envelope moves the
-cutoff, -8 .. +8 octaves) and **Key Track** (0 .. 100 % of the key's distance
-from C-4, so higher notes open the filter). A stage set to Off passes the
+cutoff, -8 .. +8 octaves), **Key Track** (0 .. 100 % of the key's distance
+from C-4, so higher notes open the filter) and **Gain** (-24 .. +24 dB, for
+peak and shelves). A stage set to Off passes the
 signal through.
 
 | Number | Type      | Notes |
@@ -106,6 +107,14 @@ signal through.
 | 5, 6   | BP 12, BP 24 | Band-pass |
 | 7, 8   | Ladder 12, Ladder 24 | Moog-style ladder low-pass |
 | 9      | Notch     | Band-reject biquad |
+| 10-13  | SVF LP, SVF HP, SVF BP, SVF Notch | Topology-preserving state-variable filter (Cytomic): stays smooth and stable while the filter envelope sweeps it fast |
+| 14     | Peak      | Bell EQ: Gain at the cutoff, Resonance narrows it |
+| 15, 16 | Low Shelf, High Shelf | Gain below / above the cutoff |
+| 17     | Vowel     | Three formant band-passes; the cutoff's place in its range morphs A, E, I, O, U, so the filter envelope sweeps vowels. Resonance narrows the formants |
+
+Resonance is a Q for the state-variable, peak and shelf types: 0 dB is 0.707
+(Butterworth), 36 dB about 45. Filters that need a delay line (comb, phaser,
+flanger) wait for voices that can hold sample buffers in MLang.
 
 The type list is built to grow. Its parameter always has 64 entries, so a
 saved type never changes meaning. New filter models take the next number, and
@@ -175,6 +184,7 @@ mlacker's README, "Plugin outputs").
 | Slot N Filter T Env | -8 .. +8 octaves             | Filter envelope depth. Default 0. |
 | Slot N Filter T Key Track | 0 .. 100 %             | Default 0. |
 | Slot N Choke       | Off, 1 .. 8                   | Choke group. Default Off. |
+| Slot N Filter T Gain | -24 .. +24 dB               | Peak and shelves. Default 0. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -186,8 +196,9 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `800 + s`: start
 - `900 + s`: group
 - `1100 + 5s` + 0 filter envelope, 1 attack, 2 decay, 3 sustain, 4 release
-- `2000 + 32s + 8t` + 0 type, 1 cutoff, 2 resonance, 3 env, 4 key track, for
-  filter stage `t` (0-based; room for 4 stages of 8 fields)
+- `2000 + 32s + 8t` + 0 type, 1 cutoff, 2 resonance, 3 env, 4 key track, 5
+  gain, for filter stage `t` (0-based; room for 4 stages of 8 fields). The
+  gains were added later and are registered after the choke groups.
 - `1200 + s`: choke group
 
 `950` is the Group Mode and `960`-`963` the instance filter envelope.
@@ -215,7 +226,9 @@ from this directory:
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
 pads), filters (low-, high-pass and notch, two stages in series, a reserved type
-passing through, the filter envelope and a slot's own, key tracking), choke
+passing through, the filter envelope and a slot's own, key tracking; the
+state-variable types, a full-resonance sweep staying bounded, peak and shelf
+gains, vowel morphing), choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

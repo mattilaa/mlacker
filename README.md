@@ -717,12 +717,14 @@ Overlapping zones layer.
 
 The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
 two stages in series: per stage its type (**F1**/**F2**: `Off`, `LP12`,
-`LP24`, `HP12`, `HP24`, `BP12`, `BP24`, `Ldr12`, `Ldr24`, `Notch`), **Cut**
-(20 Hz .. 20k), **Res** (dB), **Env** (octaves of filter envelope) and **Key**
-(key tracking, %). Then **FEnv** (`Inst` uses the instance's filter envelope,
+`LP24`, `HP12`, `HP24`, `BP12`, `BP24`, `Ldr12`, `Ldr24`, `Notch`, the
+state-variable `SvLP`, `SvHP`, `SvBP`, `SvNt`, `Peak`, `LoShf`, `HiShf` and
+`Vowel`), **Cut** (20 Hz .. 20k), **Res** (dB), **Env** (octaves of filter
+envelope), **Key** (key tracking, %) and **Gain** (dB, for Peak and the
+shelves; dim otherwise). Then **FEnv** (`Inst` uses the instance's filter envelope,
 `Own` the slot's) and its **Atk**, **Dec**, **Sus%** and **Rel**, editable
-once FEnv is `Own`. `J`/`K` step the cutoff by about a semitone, resonance by
-1 dB and Env by a tenth of an octave; `[`/`]` by an octave, 6 dB and an
+once FEnv is `Own`. `J`/`K` step the cutoff by about a semitone, resonance and
+gain by 1 dB and Env by a tenth of an octave; `[`/`]` by an octave, 6 dB and an
 octave. The instance filter envelope is edited like its amp envelope, in the
 instrument's parameter editor. See the Mla Sampler README for the filter types
 and how the list grows.

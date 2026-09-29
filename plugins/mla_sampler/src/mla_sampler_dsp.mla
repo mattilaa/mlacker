@@ -41,13 +41,18 @@ extern fn fmod(value: f64, divisor: f64) -> f64;
 extern fn sinf(value: f32) -> f32;
 extern fn cosf(value: f32) -> f32;
 extern fn exp2f(value: f32) -> f32;
+extern fn log2f(value: f32) -> f32;
+extern fn powf(base: f32, exponent: f32) -> f32;
+extern fn tanf(value: f32) -> f32;
 
 /// A stereo pair of samples.
 struct StereoSample { var left: f32; var right: f32; };
 
 /// Filter type numbers of a stage. 0 = off; 1-8 are `dsp::multimode`'s
-/// models; 9 is a notch. Unknown numbers pass the signal through, so a
-/// state saved by a newer version plays unfiltered rather than wrong.
+/// models; 9 notch; 10-13 state-variable low-, high-, band-pass and notch;
+/// 14 peak, 15 low shelf, 16 high shelf; 17 vowel (formant). Unknown numbers
+/// pass the signal through, so a state saved by a newer version plays
+/// unfiltered rather than wrong.
 fn sampler_filter_model(kind: i32) -> FilterModel {
     if kind == 1 { return FilterModel::Lowpass12; }
     if kind == 2 { return FilterModel::Lowpass24; }
@@ -58,7 +63,44 @@ fn sampler_filter_model(kind: i32) -> FilterModel {
     if kind == 7 { return FilterModel::Moog12; }
     return FilterModel::Moog24;
 }
-fn sampler_filter_known(kind: i32) -> bool { return kind >= 1 && kind <= 9; }
+fn sampler_filter_known(kind: i32) -> bool { return kind >= 1 && kind <= 17; }
+
+/// Topology-preserving state-variable filter (Cytomic, A. Simper), one
+/// channel. It stays stable and smooth while its cutoff sweeps fast.
+struct SamplerSvf { var ic1: f32; var ic2: f32; var a1: f32; var a2: f32; var a3: f32; var k: f32; };
+
+impl SamplerSvf {
+    fn new() -> SamplerSvf { return SamplerSvf { ic1: 0.0f, ic2: 0.0f, a1: 0.0f, a2: 0.0f, a3: 0.0f, k: 1.41421356f }; }
+    fn reset(self: &mut Self) -> void { self.ic1 = 0.0f; self.ic2 = 0.0f; }
+    fn configure(self: &mut Self, cutoff_hz: f32, q: f32, sample_rate: f32) -> void {
+        let g: f32 = tanf(3.14159265358979323846f * cutoff_hz / sample_rate);
+        self.k = 1.0f / q;
+        self.a1 = 1.0f / (1.0f + g * (g + self.k));
+        self.a2 = g * self.a1;
+        self.a3 = g * self.a2;
+    }
+    /// `mode` 0 low-pass, 1 high-pass, 2 band-pass, 3 notch.
+    fn process(self: &mut Self, input: f32, mode: i32) -> f32 {
+        let v3: f32 = input - self.ic2;
+        let v1: f32 = self.a1 * self.ic1 + self.a2 * v3;
+        let v2: f32 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+        self.ic1 = 2.0f * v1 - self.ic1;
+        self.ic2 = 2.0f * v2 - self.ic2;
+        if mode == 0 { return v2; }
+        if mode == 1 { return input - self.k * v1 - v2; }
+        if mode == 2 { return v1; }
+        return input - self.k * v1;
+    }
+}
+
+/// Formant `formant` (0-2) of vowel `vowel` (0-4: A, E, I, O, U), in Hz.
+fn vowel_formant(vowel: i32, formant: i32) -> f32 {
+    if vowel == 0 { return formant == 0 ? 730.0f : (formant == 1 ? 1090.0f : 2440.0f); }
+    if vowel == 1 { return formant == 0 ? 530.0f : (formant == 1 ? 1840.0f : 2480.0f); }
+    if vowel == 2 { return formant == 0 ? 270.0f : (formant == 1 ? 2290.0f : 3010.0f); }
+    if vowel == 3 { return formant == 0 ? 570.0f : (formant == 1 ? 840.0f : 2410.0f); }
+    return formant == 0 ? 300.0f : (formant == 1 ? 870.0f : 2240.0f);
+}
 
 /// One stage of a voice's filter chain: a type, its settings, and the state
 /// of each model it can run (a new model adds its own fields here).
@@ -68,19 +110,34 @@ struct SamplerFilter {
     var resonance_db: f32;
     /// Filter envelope depth in octaves (negative closes the filter).
     var env_octaves: f32;
+    /// Peak and shelf gain in dB.
+    var gain_db: f32;
     var left: MultimodeFilter;
     var right: MultimodeFilter;
-    var notch_left: Biquad;
-    var notch_right: Biquad;
+    /// Notch, peak and shelves.
+    var biquad_left: Biquad;
+    var biquad_right: Biquad;
+    var svf_left: SamplerSvf;
+    var svf_right: SamplerSvf;
+    /// Vowel: three formant band-passes per channel.
+    var formant1_left: Biquad;
+    var formant1_right: Biquad;
+    var formant2_left: Biquad;
+    var formant2_right: Biquad;
+    var formant3_left: Biquad;
+    var formant3_right: Biquad;
 };
 
 impl SamplerFilter {
     fn new() -> SamplerFilter {
-        return SamplerFilter { kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f,
-            left: MultimodeFilter::new(), right: MultimodeFilter::new(), notch_left: Biquad::new(), notch_right: Biquad::new() };
+        return SamplerFilter { kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f, gain_db: 0.0f,
+            left: MultimodeFilter::new(), right: MultimodeFilter::new(), biquad_left: Biquad::new(), biquad_right: Biquad::new(),
+            svf_left: SamplerSvf::new(), svf_right: SamplerSvf::new(),
+            formant1_left: Biquad::new(), formant1_right: Biquad::new(), formant2_left: Biquad::new(),
+            formant2_right: Biquad::new(), formant3_left: Biquad::new(), formant3_right: Biquad::new() };
     }
     /// Type and settings; a new type starts from cleared history.
-    fn set(self: &mut Self, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32) -> void {
+    fn set(self: &mut Self, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32, gain_db: f32) -> void {
         if kind != self.kind {
             self.kind = kind;
             if kind >= 1 && kind <= 8 {
@@ -89,18 +146,63 @@ impl SamplerFilter {
             }
             self.reset();
         }
-        self.cutoff_hz = cutoff_hz; self.resonance_db = resonance_db; self.env_octaves = env_octaves;
+        self.cutoff_hz = cutoff_hz; self.resonance_db = resonance_db; self.env_octaves = env_octaves; self.gain_db = gain_db;
     }
     fn reset(self: &mut Self) -> void {
-        self.left.reset(); self.right.reset(); self.notch_left.reset(); self.notch_right.reset();
+        self.left.reset(); self.right.reset(); self.biquad_left.reset(); self.biquad_right.reset();
+        self.svf_left.reset(); self.svf_right.reset();
+        self.formant1_left.reset(); self.formant1_right.reset(); self.formant2_left.reset();
+        self.formant2_right.reset(); self.formant3_left.reset(); self.formant3_right.reset();
     }
     /// Coefficients for the cutoff moved by `envelope` (0..1) times the depth.
     fn configure(self: &mut Self, envelope: f32, sample_rate: f32) -> void {
         if !sampler_filter_known(self.kind) { return; }
         let hz: f32 = clamp_sampler_f32(self.cutoff_hz * exp2f(self.env_octaves * envelope), 20.0f, sample_rate * 0.45f);
+        // Resonance as Q: 0 dB is Butterworth (0.707), 36 dB about 45.
+        let q: f32 = 0.70710678f * powf(10.0f, self.resonance_db / 20.0f);
         if self.kind == 9 {
-            self.notch_left.set_bandreject(hz, self.resonance_db, sample_rate);
-            self.notch_right.set_bandreject(hz, self.resonance_db, sample_rate);
+            self.biquad_left.set_bandreject(hz, self.resonance_db, sample_rate);
+            self.biquad_right.set_bandreject(hz, self.resonance_db, sample_rate);
+            return;
+        }
+        if self.kind >= 10 && self.kind <= 13 {
+            self.svf_left.configure(hz, q, sample_rate);
+            self.svf_right.configure(hz, q, sample_rate);
+            return;
+        }
+        if self.kind == 14 {
+            self.biquad_left.set_peaking(hz, self.gain_db, q, sample_rate);
+            self.biquad_right.set_peaking(hz, self.gain_db, q, sample_rate);
+            return;
+        }
+        if self.kind == 15 || self.kind == 16 {
+            // Shelves keep a Butterworth slope; resonance adds a bump at the corner.
+            if self.kind == 15 {
+                self.biquad_left.set_low_shelf(hz, self.gain_db, q, sample_rate);
+                self.biquad_right.set_low_shelf(hz, self.gain_db, q, sample_rate);
+            } else {
+                self.biquad_left.set_high_shelf(hz, self.gain_db, q, sample_rate);
+                self.biquad_right.set_high_shelf(hz, self.gain_db, q, sample_rate);
+            }
+            return;
+        }
+        if self.kind == 17 {
+            // The cutoff's place in its 20 Hz .. 20 kHz range morphs A-E-I-O-U;
+            // resonance narrows the formants.
+            let morph: f32 = clamp_sampler_f32(log2f(hz / 20.0f) / 9.96578428f, 0.0f, 1.0f) * 4.0f;
+            var vowel: i32 = i32(morph);
+            if vowel > 3 { vowel = 3; }
+            let frac: f32 = morph - f32(vowel);
+            let formant_q: f32 = 5.0f * powf(10.0f, self.resonance_db / 40.0f);
+            let f1: f32 = vowel_formant(vowel, 0) + (vowel_formant(vowel + 1, 0) - vowel_formant(vowel, 0)) * frac;
+            let f2: f32 = vowel_formant(vowel, 1) + (vowel_formant(vowel + 1, 1) - vowel_formant(vowel, 1)) * frac;
+            let f3: f32 = vowel_formant(vowel, 2) + (vowel_formant(vowel + 1, 2) - vowel_formant(vowel, 2)) * frac;
+            self.formant1_left.set_bandpass_q(f1, formant_q, sample_rate);
+            self.formant1_right.set_bandpass_q(f1, formant_q, sample_rate);
+            self.formant2_left.set_bandpass_q(f2, formant_q, sample_rate);
+            self.formant2_right.set_bandpass_q(f2, formant_q, sample_rate);
+            self.formant3_left.set_bandpass_q(f3, formant_q, sample_rate);
+            self.formant3_right.set_bandpass_q(f3, formant_q, sample_rate);
             return;
         }
         self.left.configure(hz, self.resonance_db, sample_rate);
@@ -108,7 +210,18 @@ impl SamplerFilter {
     }
     fn process(self: &mut Self, left: f32, right: f32) -> StereoSample {
         if !sampler_filter_known(self.kind) { return StereoSample { left: left, right: right }; }
-        if self.kind == 9 { return StereoSample { left: self.notch_left.process(left), right: self.notch_right.process(right) }; }
+        if self.kind == 9 || (self.kind >= 14 && self.kind <= 16) {
+            return StereoSample { left: self.biquad_left.process(left), right: self.biquad_right.process(right) };
+        }
+        if self.kind >= 10 && self.kind <= 13 {
+            return StereoSample { left: self.svf_left.process(left, self.kind - 10), right: self.svf_right.process(right, self.kind - 10) };
+        }
+        if self.kind == 17 {
+            // Formants weighted 1, 1/2, 1/4, as a voice's are.
+            let vowel_left: f32 = self.formant1_left.process(left) + 0.5f * self.formant2_left.process(left) + 0.25f * self.formant3_left.process(left);
+            let vowel_right: f32 = self.formant1_right.process(right) + 0.5f * self.formant2_right.process(right) + 0.25f * self.formant3_right.process(right);
+            return StereoSample { left: vowel_left, right: vowel_right };
+        }
         return StereoSample { left: self.left.process(left), right: self.right.process(right) };
     }
 }
@@ -202,12 +315,13 @@ fn mlasampler_voice_set_filter_envelope(voice: ptr<SamplerVoice>, attack: f32, d
 
 /// @brief Stage `stage` (0, 1) of the filter chain: type (see
 /// `sampler_filter_model`, 0 = off), cutoff in Hz (key tracking applied),
-/// resonance 0..36 dB and filter envelope depth in octaves. Sounding voices
-/// follow at once; a new type clears that stage's history.
-fn mlasampler_voice_set_filter(voice: ptr<SamplerVoice>, stage: i32, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32) {
+/// resonance 0..36 dB, filter envelope depth in octaves and gain in dB (peak
+/// and shelves). Sounding voices follow at once; a new type clears that
+/// stage's history.
+fn mlasampler_voice_set_filter(voice: ptr<SamplerVoice>, stage: i32, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32, gain_db: f32) {
     unsafe {
-        if stage == 0 { (*voice).filter1.set(kind, cutoff_hz, resonance_db, env_octaves); }
-        if stage == 1 { (*voice).filter2.set(kind, cutoff_hz, resonance_db, env_octaves); }
+        if stage == 0 { (*voice).filter1.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
+        if stage == 1 { (*voice).filter2.set(kind, cutoff_hz, resonance_db, env_octaves, gain_db); }
         (*voice).filter_countdown = 0;
     }
 }
