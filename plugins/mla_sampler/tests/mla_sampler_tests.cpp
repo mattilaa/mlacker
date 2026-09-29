@@ -70,6 +70,7 @@ constexpr ParamID kVelocitySensitivity = 102;
 constexpr ParamID kDecay = 105, kSustain = 106;
 enum EnvelopeParam { kEnvelopeOwn, kEnvelopeAttack, kEnvelopeDecay, kEnvelopeSustain, kEnvelopeRelease };
 constexpr ParamID envelopeParam(int slot, EnvelopeParam k) { return 700 + slot * 5 + k; }
+constexpr ParamID startParam(int slot) { return 800 + slot; }
 
 class Application final : public HostApplication {
   public:
@@ -495,6 +496,40 @@ void testSlotEnvelopes(const std::string &path)
     CHECK(std::fabs(both(false) - 0.5f) < 1e-3f);
 }
 
+void testSampleStart(const std::string &path)
+{
+    const int frames = 1000;
+    // Mid-frame 0.2505 names frame 250 exactly: playback starts there and,
+    // with the loop off, ends 750 output frames later.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.param(startParam(0), 250.5 / frames);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(2048);
+        CHECK(std::fabs(left(out, 0) - 251.0f / frames) < 1e-4f);
+        CHECK(std::fabs(left(out, 700) - 951.0f / frames) < 1e-4f);
+        CHECK(energy(out, 751, 2048) == 0.0);
+    }
+    // A start past a forward loop's end plays on into the loop.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.param(slotParam(0, kSlotLoop), kLoopForward);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.2);
+        plugin.param(slotParam(0, kSlotLoopEnd), 0.5); // frames 200..499
+        plugin.param(startParam(0), 0.9);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(2048);
+        for(int f = 10; f < 2048; f += 97) {
+            const float value = left(out, f);
+            CHECK(value > 0.2f && value <= 0.5f + 1e-3f);
+        }
+    }
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -566,12 +601,13 @@ int main(int argc, char **argv)
     testKeyZones(path);
     testVelocityLayers(path);
     testSlotEnvelopes(path);
+    testSampleStart(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

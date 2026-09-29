@@ -58,7 +58,9 @@ rate. Slots are filled the same ways as Mla Drum's pads:
 
 Loop start and end are fractions of the sample length (0..1), so they stay
 valid when a slot gets a different sample. A loop shorter than two frames plays
-as Off. Interpolation across the loop end of a forward loop reads the loop
+as Off. A slot's **Start** skips the beginning of its sample (silence or an
+attack): playback begins there. A start past a forward or bidirectional loop's
+end plays on into the loop. Interpolation across the loop end of a forward loop reads the loop
 start, so the seam has no jump to the frame after the loop. Loop settings are
 read when a note starts. Notes already sounding keep theirs.
 
@@ -111,15 +113,20 @@ mlacker's README, "Plugin outputs").
 | Slot N Decay       | 1 ms .. 10 s                  | With Own. |
 | Slot N Sustain     | 0..1                          | With Own. |
 | Slot N Release     | 1 ms .. 10 s                  | With Own. |
+| Slot N Start       | 0..1 of the sample            | Where playback begins. Default 0. |
 
-Parameter IDs are stable: globals are 100-107 and slot `s` (0-based) uses
-`200 + 7s` + (0 level, 1 pan, 2 tune, 3 output, 4 loop, 5 loop start, 6 loop
-end), `400 + 5s` + (0 key mode, 1 low key, 2 high key, 3 zone root, 4 key
-track), `500 + s` for the crossfade and `600 + 2s` + (0 velocity low, 1
-velocity high) and `700 + 5s` + (0 envelope, 1 attack, 2 decay, 3 sustain, 4
-release). Each later block comes after all earlier parameters, so
-presets and states saved before it load with its defaults: every slot in Pad
-mode, no crossfade, every velocity, the instance envelope.
+Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
+
+- `200 + 7s` + 0 level, 1 pan, 2 tune, 3 output, 4 loop, 5 loop start, 6 loop end
+- `400 + 5s` + 0 key mode, 1 low key, 2 high key, 3 zone root, 4 key track
+- `500 + s`: crossfade
+- `600 + 2s` + 0 velocity low, 1 velocity high
+- `700 + 5s` + 0 envelope, 1 attack, 2 decay, 3 sustain, 4 release
+- `800 + s`: start
+
+Each later block comes after all earlier parameters, so presets and states
+saved before it load with its defaults: every slot in Pad mode, no crossfade,
+every velocity, the instance envelope, starting at frame 0.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -139,7 +146,8 @@ from this directory:
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
 pads), velocity layers (soft and hard layers, their boundary, a pad limited
-to soft notes), per-slot envelopes beside the instance one, a forward loop's seam with and without a crossfade, loop off / forward /
+to soft notes), per-slot envelopes beside the instance one, the sample start
+(to the exact frame, and past a loop's end), a forward loop's seam with and without a crossfade, loop off / forward /
 bidirectional, per-slot output routing with the fallback to Main, and state
 round trips. In mlacker's plugin tree it is also the CTest test
 `sampler_processor` (`./build.sh --test`). The SDK's `validator` passes (47/47).

@@ -1,7 +1,7 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
 clearing slots, key zones, velocity ranges, the Sound page (level, pan, tune,
 per-slot envelopes), loop mode / loop point / output edits, the wave view's
-frame-accurate loop markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
+frame-accurate loop and sample start markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
 
@@ -138,7 +138,7 @@ def main():
             tui.send(b"jj")
             expect(tui.send_until(b"\r", b"Load sample for pad 3"), b"Load sample for pad 3")
             expect(tui.send(b"\x15" + bytes(square) + b"\r", 0.7), b"Pad 3: square.wav")
-            expect(tui.send(b"w"), b"Slot 3 square.wav", b"Loop Off", b"[Start 0]", b"End 4800", b"Len 4800 of 4800", b"Zoom 1x")
+            expect(tui.send(b"w"), b"Slot 3 square.wav", b"Loop Off", b"[Start 0]", b"End 4800", b"Len 4800/4800", b"Zoom 1x")
             # Shift+L moves a frame; z snaps to the nearest zero crossing.
             expect(tui.send(b"L" * 10), b"[Start 10]")
             expect(tui.send(b"z"), b"[Start 50]", b"Len 4750")
@@ -155,6 +155,12 @@ def main():
             expect(tui.send(b"K"), b"Fwd")
             expect(tui.send(b"w"), b"Loop Fwd", b"Xfade 0")
             expect(tui.send(b"]]]"), b"Xfade 50")
+            # The third marker is the sample start: frames and snapping as
+            # for the loop points.
+            expect(tui.send(b"m"), b"[Ofs 0]")
+            expect(tui.send(b"LLL"), b"[Ofs 3]")
+            expect(tui.send(b"z"), b"[Ofs 50]")
+            tui.send(b"m")
             tui.send(b"w")
             tui.send(b"kk")
 
@@ -199,7 +205,7 @@ def main():
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
-            expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750", b"Xfade 50")
+            expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750", b"Xfade 50", b"Ofs 50")
             tui.send(b"w")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:

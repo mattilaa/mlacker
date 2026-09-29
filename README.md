@@ -717,22 +717,23 @@ Overlapping zones layer.
 The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
 bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`
 uses the instance's envelope, `Own` the slot's) and the slot's own **Atk**,
-**Dec**, **Sus%** and **Rel**. Those four are dimmed, and cannot be edited,
+**Dec**, **Sus%** and **Rel**, and **Ofs%**, where playback starts in the
+sample. The four envelope columns are dimmed, and cannot be edited,
 until Env is `Own`. `J`/`K` step level by 1 dB, tune by a semitone and the
 rest by 1%. `[`/`]` step by 6 dB, an octave and 10%. A slot on its own
 envelope keeps it, so a short pad and a sustained, looping zone can share one
 instance.
 
 **Wave view** shows the selected slot's waveform across the pane, with the
-loop region highlighted, the crossfade region shaded, and its start and end as
-`│` markers. The line above
+loop region highlighted, the crossfade region shaded, its start and end as `│`
+markers and the sample start (where playback begins) as a dashed `┆` marker. The line above
 names the slot and shows the loop mode, the loop start and end in frames (the
 one being edited in brackets), the loop length, the crossfade and the zoom. Frames are exact:
 a loop point set here plays from that frame.
 
 | Keys | Action |
 |------|--------|
-| `m` | Edit the loop start or the loop end |
+| `m` | Edit the loop start, the loop end or the sample start, in turn |
 | `h` / `l` (Left / Right) | Move the marker one dot of the waveform |
 | `H` / `L` | Move the marker one frame |
 | `z` | Snap the marker to the nearest zero crossing (within 48000 frames) |

@@ -126,6 +126,16 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
     }
 }
 
+/// @brief Begin playback at source frame `frame` instead of the first one.
+/// Call after `mlasampler_voice_start`. Clamped to the sample; a start past a
+/// forward or bidirectional loop's end plays on into the loop.
+fn mlasampler_voice_set_start(voice: ptr<SamplerVoice>, frame: f64) {
+    unsafe {
+        let last: f64 = (*voice).frames - 1.0;
+        (*voice).position = clamp_sampler_f64(floor(frame), 0.0, last > 0.0 ? last : 0.0);
+    }
+}
+
 /// @brief Crossfade a forward loop's seam over `frames` frames. Call after
 /// `mlasampler_voice_start`. Clamped to the loop length and to the frames
 /// before the loop start (the audio faded in); other loop modes ignore it.
