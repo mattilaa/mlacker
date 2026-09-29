@@ -1582,6 +1582,7 @@ pub fn run() -> i32 {
                         }
                     }
                 }
+                else if request == 8 { free(message); message = format!("Slot {} uses the instance envelope: set its Env to Own first", sampler.slot + 1); }
                 else if request == 6 { free(message); message = clone("No waveform: load the slot from a file or the Audio list (Enter)"); }
                 else if request == 5 { free(message); message = format!("Slot {} is a pad (one key): set its Mode to Zone first", sampler.slot + 1); }
                 dirty = true;

@@ -15,7 +15,8 @@ use std::strbuf::free;
 // outputs. Slot `s` parameter IDs are 200 + 7s + field (level, pan, tune,
 // output, loop, loop start, loop end), 400 + 5s + field for its key zone
 // (mode, low key, high key, zone root, key track), 500 + s for its loop
-// crossfade and 600 + 2s + field for its velocity range (low, high).
+// crossfade, 600 + 2s + field for its velocity range (low, high) and
+// 700 + 5s + field for its envelope (own, attack, decay, sustain, release).
 
 /// Mla Sampler editor in the Pattern view's bottom pane (View menu / Shift+S),
 /// sharing it with the virtual keyboard. It edits the instance on the selected
@@ -27,8 +28,10 @@ pub struct SamplerView {
     /// Selected slot 0-15, first slot shown, and the selected column: 0 key
     /// mode, 1 low key, 2 high key, 3 zone root, 4 key track, 5 low velocity,
     /// 6 high velocity, 7 loop mode, 8 loop start, 9 loop end, 10 loop
-    /// crossfade, 11 output.
-    var slot: i32; var column: i32; var scroll: i32;
+    /// crossfade, 11 output. On the Sound page (`page` 1, key `e`): 0 level,
+    /// 1 pan, 2 tune, 3 envelope (instance or own), 4-7 attack, decay,
+    /// sustain, release.
+    var slot: i32; var column: i32; var scroll: i32; var page: i32;
     /// Wave view (`w`): the selected slot's waveform with its loop markers.
     /// `marker` 0 edits the loop start, 1 the loop end. `zoom` halves the
     /// frames shown per step, centred on the marker. `dots` is the dot
@@ -70,8 +73,14 @@ impl SamplerView {
         }
         return -1;
     }
-    /// Parameter ID of a column (see `column`) of sample slot `s`.
+    /// The selected column as `column_id` takes it: Sound page columns are
+    /// 100 + column.
+    fn col(self: SamplerView) -> i32 { return self.page == 1 ? 100 + self.column : self.column; }
+    /// Parameter ID of a column (see `column`; 100 + column on the Sound
+    /// page) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
+        if col >= 103 { return 700 + s * 5 + col - 103; }
+        if col >= 100 { return 200 + s * 7 + col - 100; }
         if col < 5 { return 400 + s * 5 + col; }
         if col == 5 || col == 6 { return 600 + s * 2 + col - 5; }
         if col == 10 { return 500 + s; }
@@ -85,13 +94,21 @@ impl SamplerView {
     }
     fn key_of(value: f64) -> i32 { return i32(std::math::floor(value * 127.0 + 0.5)); }
     fn is_zone(output: AudioController, slot: i32, s: i32) -> bool { return SamplerView::value(output, slot, s, 0) >= 0.5; }
+    fn own_envelope(output: AudioController, slot: i32, s: i32) -> bool { return SamplerView::value(output, slot, s, 103) >= 0.5; }
+    /// Normalized step of a continuous column: level 1 dB (6 with `big`),
+    /// tune a semitone (an octave), everything else 1% (10%).
+    fn continuous_step(col: i32, big: bool) -> f64 {
+        if col == 100 { return (big ? 6.0 : 1.0) / 66.0; }
+        if col == 102 { return (big ? 12.0 : 1.0) / 48.0; }
+        return big ? 0.1 : 0.01;
+    }
     /// Steps the selected column by `delta`: choices and velocities by one,
     /// keys by a semitone, loop points by 1%. `big` steps keys by an octave,
     /// velocities by 10 and loop points by 10%. Each range's low end stays at
     /// or below its high end (velocities within 1-127), and the loop start
     /// below the loop end. False when nothing changed.
     fn adjust(self: SamplerView, output: AudioController, slot: i32, delta: i32, big: bool) -> bool {
-        let col: i32 = self.column;
+        let col: i32 = self.col();
         let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(self.slot, col));
         if index < 0 { return false; }
         let steps: f64 = output.parameter_info(slot, index, 1);
@@ -109,7 +126,7 @@ impl SamplerView {
             if value > steps { value = steps; }
             if value == current { return false; }
         } else {
-            value = normalized + f64(delta) * (big ? 0.1 : 0.01);
+            value = normalized + f64(delta) * SamplerView::continuous_step(col, big);
             if col == 8 {
                 let end: f64 = SamplerView::value(output, slot, self.slot, 9);
                 if value > end - 0.01 { value = end - 0.01; }
@@ -129,7 +146,8 @@ impl SamplerView {
     /// application should do for the selected slot: 0 nothing, 1 repaint,
     /// 2 load a file into it, 3 clear it, 4 route its output bus, 5 tell that
     /// its zone columns need Zone mode, 6 tell that it has no waveform, 7
-    /// audition it (see `audition_key`). (An i32 rather than an enum: MLang
+    /// audition it (see `audition_key`), 8 tell that its envelope columns
+    /// need Env set to Own. (An i32 rather than an enum: MLang
     /// before its let-enum fix ran an enum `let` initializer twice.)
     pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
         if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; return 1; }
@@ -144,7 +162,9 @@ impl SamplerView {
         if up && self.slot > 0 { self.slot = self.slot - 1; return 1; }
         if down && self.slot < 15 { self.slot = self.slot + 1; return 1; }
         if left && self.column > 0 { self.column = self.column - 1; return 1; }
-        if right && self.column < 11 { self.column = self.column + 1; return 1; }
+        if right && self.column < (self.page == 1 ? 7 : 11) { self.column = self.column + 1; return 1; }
+        // e switches between the keys & loops page and the Sound page.
+        if event.code == 101 && event.modifiers == 1 { self.page = 1 - self.page; self.column = 0; return 1; }
         if slot < 1 { return 0; }
         // Shift+J/K adjust, as everywhere else in the tracker; [ and ] take
         // octave / 10% steps.
@@ -153,7 +173,8 @@ impl SamplerView {
         let big_lower: bool = event.code == 91 && event.modifiers == 1;
         let big_raise: bool = event.code == 93 && event.modifiers == 1;
         if lower || raise || big_lower || big_raise {
-            if self.column >= 1 && self.column <= 4 && !SamplerView::is_zone(output, slot, self.slot) { return 5; }
+            if self.page == 0 && self.column >= 1 && self.column <= 4 && !SamplerView::is_zone(output, slot, self.slot) { return 5; }
+            if self.page == 1 && self.column >= 4 && !SamplerView::own_envelope(output, slot, self.slot) { return 8; }
             return self.adjust(output, slot, raise || big_raise ? 1 : -1, big_lower || big_raise) ? 1 : 0;
         }
         if event.kind == InputKind::Menu && event.key == Key::Enter { return 2; }
@@ -362,6 +383,7 @@ impl SamplerView {
         var labels: list<str8> = []; labels = names;
         var destinations: list<str8> = []; destinations = routes;
         if self.wave { self.paint_wave(surface, area, theme, output, slot, labels, clip, has_clip); return; }
+        if self.page == 1 { self.paint_sound(surface, area, theme, output, slot, labels); return; }
         let root: i64 = output.instrument_sampler(slot, 0);
         let occupied: i64 = output.instrument_sampler(slot, 2);
         var fixed: i32 = 1;
@@ -411,7 +433,7 @@ impl SamplerView {
                 loaded ? theme.foreground : theme.muted, background);
         }
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot | h/l column | J/K adjust, [ ] octave/10% | p play | w wave | Enter load | Backspace clear | o route | Shift+S hide", theme.muted, theme.panel);
+            "j/k slot  h/l col  J/K [ ] adjust  e sound  w wave  p play  Enter load  Bksp clear  o route", theme.muted, theme.panel);
     }
     /// Wave view: a summary line, the selected slot's waveform with the loop
     /// region highlighted and its start/end markers, and a key help line.
@@ -420,7 +442,7 @@ impl SamplerView {
         var names: list<str8> = []; names = labels;
         let help_y: i32 = area.y + area.height - 2;
         surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "j/k slot | m start/end | h/l move, H/L 1 frame | z zero crossing | [ ] crossfade | -/= zoom | p play | w table", theme.muted, theme.panel);
+            "m start/end  h/l dot  H/L frame  z zero  [ ] xfade  -/= zoom  j/k slot  p play  w table", theme.muted, theme.panel);
         let label: str8 = self.slot < names.len() ? names[self.slot] : "";
         var source: AudioClip = AudioClip {}; if has_clip { source = clip; }
         if !has_clip || source.frames < 2 {
@@ -498,9 +520,84 @@ impl SamplerView {
             }
         }
     }
+    /// Sound page: per slot its number, level, pan, tune, envelope source and
+    /// attack/decay/sustain/release (dim while it uses the instance's), then
+    /// the sample name.
+    fn paint_sound(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, labels: &list<str8>) -> void {
+        var names: list<str8> = []; names = labels;
+        let help_y: i32 = area.y + area.height - 2;
+        surface.text(Rect::new(area.x, help_y, area.width, 1),
+            "j/k slot  h/l col  J/K [ ] adjust  e keys & loops  w wave  p play  Enter load  Bksp clear", theme.muted, theme.panel);
+        let widths: array<i32, 8> = {7, 5, 6, 5, 7, 7, 5, 7};
+        let headings: array<str8, 8> = {"Level", "Pan", "Tune", "Env", "Atk", "Dec", "Sus%", "Rel"};
+        surface.text(Rect::new(area.x, area.y, 4, 1), " #", theme.muted, theme.panel);
+        var x: i32 = area.x + 4;
+        for c in 0..8 {
+            surface.text(Rect::new(x, area.y, widths[c], 1), headings[c], i32(c) == self.column ? theme.accent : theme.muted, theme.panel);
+            x = x + widths[c];
+        }
+        surface.text(Rect::new(x, area.y, area.width - (x - area.x), 1), "Sample", theme.muted, theme.panel);
+        let occupied: i64 = output.instrument_sampler(slot, 2);
+        let rows: i32 = area.height - 3;
+        if rows < 1 { return; }
+        if self.slot < self.scroll { self.scroll = self.slot; }
+        if self.slot >= self.scroll + rows { self.scroll = self.slot - rows + 1; }
+        for r in 0..rows {
+            let s: i32 = self.scroll + i32(r);
+            if s >= 16 { break; }
+            let y: i32 = area.y + 1 + i32(r);
+            let selected: bool = s == self.slot;
+            let background: i32 = selected ? theme.selection : theme.panel;
+            surface.fill(Rect::new(area.x, y, area.width, 1), Cell { glyph: 32, foreground: theme.foreground, background: background });
+            let number: str8 = format!(" {}", s + 1);
+            surface.text(Rect::new(area.x, y, 4, 1), number, theme.muted, background); free(number);
+            let own: bool = SamplerView::own_envelope(output, slot, s);
+            var cell_x: i32 = area.x + 4;
+            for c in 0..8 {
+                let col: i32 = 100 + i32(c);
+                let text: str8 = SamplerView::field_text(col, SamplerView::value(output, slot, s, col));
+                let dim: bool = c >= 4 && !own;
+                let focused: bool = selected && i32(c) == self.column;
+                surface.text(Rect::new(cell_x, y, widths[c] - 1, 1), text, focused ? theme.accent : (dim ? theme.muted : theme.foreground), background);
+                free(text);
+                cell_x = cell_x + widths[c];
+            }
+            let loaded: bool = occupied >= 0 && ((occupied >> wide(s)) & 1) == 1;
+            let label: str8 = s < names.len() ? names[s] : "";
+            let name: str8 = loaded ? (label != "" ? label : "(loaded)") : "(empty)";
+            surface.text(Rect::new(cell_x, y, area.width - (cell_x - area.x), 1), name, loaded ? theme.foreground : theme.muted, background);
+        }
+    }
+    /// Tenths as text, e.g. -35 -> "-3.5"; `plus` marks positive values.
+    fn tenths_text(tenths: i32, plus: bool) -> str8 {
+        let magnitude: i32 = tenths < 0 ? 0 - tenths : tenths;
+        let sign: str8 = tenths < 0 ? "-" : (plus && tenths > 0 ? "+" : "");
+        return format!("{}{}.{}", sign, magnitude / 10, magnitude % 10);
+    }
+    /// A duration in seconds as "35ms" or "1.2s".
+    fn seconds_text(seconds: f64) -> str8 {
+        let ms: i32 = i32(std::math::floor(seconds * 1000.0 + 0.5));
+        if ms < 1000 { return format!("{}ms", ms); }
+        return format!("{}s", SamplerView::tenths_text(i32(std::math::floor(seconds * 10.0 + 0.5)), false));
+    }
     /// Owned display text of a column's normalized value.
     fn field_text(col: i32, value: f64) -> str8 {
         if value < 0.0 { return clone("-"); }
+        // Sound page, as the plugin maps them (plugins/mla_sampler/src/plugin.cpp).
+        if col == 100 {
+            if value <= 0.0 { return clone("off"); }
+            let db: str8 = SamplerView::tenths_text(i32(std::math::floor((value * 66.0 - 60.0) * 10.0 + 0.5)), true);
+            return db;
+        }
+        if col == 101 {
+            let percent: i32 = i32(std::math::floor((value * 2.0 - 1.0) * 100.0 + 0.5));
+            return percent == 0 ? clone("C") : (percent < 0 ? format!("L{}", 0 - percent) : format!("R{}", percent));
+        }
+        if col == 102 { return SamplerView::tenths_text(i32(std::math::floor((value * 48.0 - 24.0) * 10.0 + 0.5)), true); }
+        if col == 103 { return clone(value >= 0.5 ? "Own" : "Inst"); }
+        if col == 104 { return SamplerView::seconds_text(2.0 * value * value * value); }
+        if col == 105 || col == 107 { return SamplerView::seconds_text(0.001 * std::math::pow(10000.0, value)); }
+        if col == 106 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
         if col == 0 { return clone(value >= 0.5 ? "Zone" : "Pad"); }
         if col >= 1 && col <= 3 { return piano_note_name(SamplerView::key_of(value)); }
         if col == 4 { return clone(value >= 0.5 ? "On" : "Off"); }

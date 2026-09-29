@@ -1,5 +1,6 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
-clearing slots, key zones, velocity ranges, loop mode / loop point / output edits, the wave view's
+clearing slots, key zones, velocity ranges, the Sound page (level, pan, tune,
+per-slot envelopes), loop mode / loop point / output edits, the wave view's
 frame-accurate loop markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
@@ -157,6 +158,25 @@ def main():
             tui.send(b"w")
             tui.send(b"kk")
 
+            # e: the Sound page of slot 1. Level 0 dB, centred, the instance
+            # envelope; its own A/D/S/R need Env set to Own first.
+            expect(tui.send(b"e"), b"Level", b"Env", b"Sus%", b"0.0", b"C", b"Inst")
+            tui.send(b"llll")
+            expect(tui.send(b"K"), b"Slot 1 uses the instance envelope")
+            tui.send(b"h")
+            expect(tui.send(b"K"), b"Own")
+            tui.send(b"l")
+            expect(tui.send(b"]"), b"2ms")  # attack 10% of its curve
+            tui.send(b"ll")
+            expect(tui.send(b"["), b"90")   # sustain
+            tui.send(b"hhhhhh")
+            expect(tui.send(b"J"), b"-1.0")  # level, 1 dB down
+            tui.send(b"l")
+            expect(tui.send(b"K"), b"R2")    # pan
+            tui.send(b"l")
+            expect(tui.send(b"]"), b"+12.0")  # tune, an octave up
+            expect(tui.send(b"e"), b"Mode", b"Loop")
+
             # The virtual keyboard takes the pane over, and Shift+S takes it back.
             frame = expect(tui.send(b"P"), b"Keyboard")
             assert b"Sampler |" not in frame, frame[-4000:]
@@ -174,6 +194,9 @@ def main():
         try:
             expect(tui.read(1.2), b"Opened:")
             expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"21", b"126", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
+            # The Sound page's edits survive it too.
+            expect(tui.send(b"e"), b"Own", b"-1.0", b"R2", b"+12.0", b"2ms", b"90")
+            tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
             expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750", b"Xfade 50")

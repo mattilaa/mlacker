@@ -5,8 +5,9 @@
 // Key Track is on. A velocity range limits either to notes that hard.
 // Overlapping zones layer. Each slot holds one sample with
 // its own level, pan, tune, loop (off, forward or bidirectional, between a
-// start and an end point) and output bus. The instance has one amp ADSR;
-// note-off releases it, and looping slots keep looping through the release.
+// start and an end point) and output bus. A slot uses the instance's amp
+// ADSR or its own; note-off releases it, and looping slots keep looping
+// through the release.
 //
 // Outputs: bus 0 "Main" plus seven auxiliary stereo buses "Out 2".."Out 8".
 // A slot sent to an aux bus the host has not activated plays on Main, so the
@@ -113,6 +114,17 @@ enum ParamId : ParamID {
     kZoneParamBase = 400, // slot s: 400 + 5s, see ZoneParam
     kCrossfadeParamBase = 500, // slot s: 500 + s, loop crossfade (fraction of the sample)
     kVelocityParamBase = 600,  // slot s: 600 + 2s low, + 1 high velocity (MIDI 1..127)
+    kEnvelopeParamBase = 700,  // slot s: 700 + 5s, see EnvelopeParam
+};
+
+// Per-slot envelope offsets from kEnvelopeParamBase + s * kParamsPerEnvelope.
+enum EnvelopeParam : int {
+    kEnvelopeOwn = 0, // Instance: the global ADSR. Own: the four below.
+    kEnvelopeAttack,
+    kEnvelopeDecay,
+    kEnvelopeSustain,
+    kEnvelopeRelease,
+    kParamsPerEnvelope,
 };
 
 // Per-slot parameter offsets from kSlotParamBase + s * kParamsPerSlot.
@@ -142,10 +154,12 @@ constexpr int kNumGlobalParams = 8;
 constexpr int kNumSlotParams = kNumSlots * kParamsPerSlot;
 constexpr int kNumZoneParams = kNumSlots * kParamsPerZone;
 constexpr int kNumVelocityParams = kNumSlots * 2;
-constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams;
+constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
+constexpr int kNumParams =
+    kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams + kNumEnvelopeParams;
 
 // Flat index <-> ParamID. Globals occupy 0..7, slot parameters follow, then
-// the key zones, the loop crossfades and the velocity ranges.
+// the key zones, the loop crossfades, the velocity ranges and the envelopes.
 static ParamID paramIdAt(int index)
 {
     if(index < kNumGlobalParams)
@@ -157,7 +171,10 @@ static ParamID paramIdAt(int index)
     const int crossfades = kNumGlobalParams + kNumSlotParams + kNumZoneParams;
     if(index < crossfades + kNumSlots)
         return static_cast<ParamID>(kCrossfadeParamBase + (index - crossfades));
-    return static_cast<ParamID>(kVelocityParamBase + (index - crossfades - kNumSlots));
+    const int velocities = crossfades + kNumSlots;
+    if(index < velocities + kNumVelocityParams)
+        return static_cast<ParamID>(kVelocityParamBase + (index - velocities));
+    return static_cast<ParamID>(kEnvelopeParamBase + (index - velocities - kNumVelocityParams));
 }
 
 static int indexOf(ParamID id)
@@ -172,12 +189,20 @@ static int indexOf(ParamID id)
         return kNumGlobalParams + kNumSlotParams + kNumZoneParams + static_cast<int>(id - kCrossfadeParamBase);
     if(id >= kVelocityParamBase && id < kVelocityParamBase + kNumVelocityParams)
         return kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + static_cast<int>(id - kVelocityParamBase);
+    if(id >= kEnvelopeParamBase && id < kEnvelopeParamBase + kNumEnvelopeParams)
+        return kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
+               static_cast<int>(id - kEnvelopeParamBase);
     return -1;
 }
 
 static ParamID slotParamId(int slot, SlotParam param)
 {
     return static_cast<ParamID>(kSlotParamBase + slot * kParamsPerSlot + param);
+}
+
+static ParamID envelopeParamId(int slot, EnvelopeParam param)
+{
+    return static_cast<ParamID>(kEnvelopeParamBase + slot * kParamsPerEnvelope + param);
 }
 
 static ParamID zoneParamId(int slot, ZoneParam param)
@@ -387,6 +412,16 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         for(int slot = 0; slot < kNumSlots; ++slot) {
             addKey(static_cast<ParamID>(kVelocityParamBase + slot * 2), slotTitle(slot, "Vel Low"), 1);
             addKey(static_cast<ParamID>(kVelocityParamBase + slot * 2 + 1), slotTitle(slot, "Vel High"), 127);
+        }
+        // Per-slot envelopes last. Defaults match the instance envelope's.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *own = addList(envelopeParamId(slot, kEnvelopeOwn), slotTitle(slot, "Envelope"));
+            own->appendString(STR16("Instance"));
+            own->appendString(STR16("Own"));
+            addParam(envelopeParamId(slot, kEnvelopeAttack), slotTitle(slot, "Attack").c_str(), STR16("s"), 0.0);
+            addParam(envelopeParamId(slot, kEnvelopeDecay), slotTitle(slot, "Decay").c_str(), STR16("s"), normFromTime(0.5));
+            addParam(envelopeParamId(slot, kEnvelopeSustain), slotTitle(slot, "Sustain").c_str(), nullptr, 1.0);
+            addParam(envelopeParamId(slot, kEnvelopeRelease), slotTitle(slot, "Release").c_str(), STR16("s"), normFromTime(0.1));
         }
         return kResultOk;
     }
@@ -811,16 +846,25 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         }
     }
 
+    // The envelope a slot's voices use: its own, or the instance's (slot -1
+    // always takes the instance's).
+    void applyEnvelope(SamplerVoice *dsp, int slot)
+    {
+        const bool own = slot >= 0 && norm(envelopeParamId(slot, kEnvelopeOwn)) >= 0.5;
+        const double attack = own ? norm(envelopeParamId(slot, kEnvelopeAttack)) : norm(kAttackParam);
+        const double decay = own ? norm(envelopeParamId(slot, kEnvelopeDecay)) : norm(kDecayParam);
+        const double sustain = own ? norm(envelopeParamId(slot, kEnvelopeSustain)) : norm(kSustainParam);
+        const double release = own ? norm(envelopeParamId(slot, kEnvelopeRelease)) : norm(kReleaseParam);
+        mlasampler_voice_set_envelope__ptr_struct_SamplerVoice_f32_f32_f32_f32(
+            dsp, attackFromNorm(attack), timeFromNorm(decay), static_cast<float>(sustain), timeFromNorm(release));
+    }
+
+    // Envelope edits reach sounding voices too.
     void pushEnvelope()
     {
-        const float attack = attackFromNorm(norm(kAttackParam));
-        const float decay = timeFromNorm(norm(kDecayParam));
-        const float sustain = static_cast<float>(norm(kSustainParam));
-        const float release = timeFromNorm(norm(kReleaseParam));
         for(auto &voice : voices_)
             if(voice.dsp)
-                mlasampler_voice_set_envelope__ptr_struct_SamplerVoice_f32_f32_f32_f32(voice.dsp, attack, decay,
-                                                                                     sustain, release);
+                applyEnvelope(voice.dsp, voice.sample ? voice.slot : -1);
     }
 
     void handleParameterChanges(IParameterChanges *changes)
@@ -843,7 +887,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             if(index < 0 || !std::isfinite(value))
                 continue;
             norm_[index].store(std::clamp(value, 0.0, 1.0), std::memory_order_relaxed);
-            if(id >= kAttackParam && id <= kReleaseParam)
+            if((id >= kAttackParam && id <= kReleaseParam) ||
+               (id >= kEnvelopeParamBase && id < kEnvelopeParamBase + kNumEnvelopeParams))
                 envelopeChanged = true;
         }
         if(envelopeChanged)
@@ -908,6 +953,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         const double loopStart = std::floor(slotNorm(slot, kSlotLoopStart) * frames);
         const double loopEnd = std::floor(slotNorm(slot, kSlotLoopEnd) * frames);
 
+        applyEnvelope(target->dsp, slot);
         mlasampler_voice_start__ptr_struct_SamplerVoice_f64_f64_f32_f32_i32_f64_f64(
             target->dsp, frames, step, gain, pan, loopFromNorm(slotNorm(slot, kSlotLoop)), loopStart, loopEnd);
         mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(

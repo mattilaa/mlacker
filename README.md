@@ -711,7 +711,17 @@ Overlapping zones layer.
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
+| `e` | Sound page (again returns to the keys & loops page) |
 | `p` | Play the slot: a pad at its key, a zone at its root |
+
+The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
+bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`
+uses the instance's envelope, `Own` the slot's) and the slot's own **Atk**,
+**Dec**, **Sus%** and **Rel**. Those four are dimmed, and cannot be edited,
+until Env is `Own`. `J`/`K` step level by 1 dB, tune by a semitone and the
+rest by 1%. `[`/`]` step by 6 dB, an octave and 10%. A slot on its own
+envelope keeps it, so a short pad and a sustained, looping zone can share one
+instance.
 
 **Wave view** shows the selected slot's waveform across the pane, with the
 loop region highlighted, the crossfade region shaded, and its start and end as

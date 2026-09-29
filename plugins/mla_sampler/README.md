@@ -2,7 +2,7 @@
 
 A VST3 **sampler instrument** (subcategory `Instrument|Sampler`) with looping
 samples, key zones and multiple outputs. Each instance holds up to 16 samples
-("slots") with one amp ADSR. A slot plays on one key like
+("slots"), each on the instance's amp ADSR or its own. A slot plays on one key like
 [Mla Drum](../mla_drum)'s pads, or across a key zone, pitched from its root
 key. Every slot has its own loop, set to off, forward or bidirectional between a
 start and an end point, and its own output bus.
@@ -106,14 +106,24 @@ mlacker's README, "Plugin outputs").
 | Slot N Crossfade   | 0..1 of the sample            | Forward-loop crossfade length. Default 0 (none). |
 | Slot N Vel Low     | MIDI velocity 1..127          | Softest note the slot plays. Default 1. |
 | Slot N Vel High    | MIDI velocity 1..127          | Hardest note the slot plays. Default 127. |
+| Slot N Envelope    | Instance, Own                 | Instance (the default) uses Attack..Release above. |
+| Slot N Attack      | 0 .. 2 s                      | With Own. Ranges as the instance's. |
+| Slot N Decay       | 1 ms .. 10 s                  | With Own. |
+| Slot N Sustain     | 0..1                          | With Own. |
+| Slot N Release     | 1 ms .. 10 s                  | With Own. |
 
 Parameter IDs are stable: globals are 100-107 and slot `s` (0-based) uses
 `200 + 7s` + (0 level, 1 pan, 2 tune, 3 output, 4 loop, 5 loop start, 6 loop
 end), `400 + 5s` + (0 key mode, 1 low key, 2 high key, 3 zone root, 4 key
 track), `500 + s` for the crossfade and `600 + 2s` + (0 velocity low, 1
-velocity high). Each later block comes after all earlier parameters, so
+velocity high) and `700 + 5s` + (0 envelope, 1 attack, 2 decay, 3 sustain, 4
+release). Each later block comes after all earlier parameters, so
 presets and states saved before it load with its defaults: every slot in Pad
-mode, no crossfade, every velocity. With all 32 voices busy, the oldest is stolen.
+mode, no crossfade, every velocity, the instance envelope.
+
+A slot set to its own envelope keeps it for every note, so a short one-shot pad
+and a sustained, looping zone can share one instance. Envelope edits reach
+notes already sounding, as the instance envelope's do. With all 32 voices busy, the oldest is stolen.
 
 ## Build
 
@@ -129,7 +139,7 @@ from this directory:
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
 pads), velocity layers (soft and hard layers, their boundary, a pad limited
-to soft notes), a forward loop's seam with and without a crossfade, loop off / forward /
+to soft notes), per-slot envelopes beside the instance one, a forward loop's seam with and without a crossfade, loop off / forward /
 bidirectional, per-slot output routing with the fallback to Main, and state
 round trips. In mlacker's plugin tree it is also the CTest test
 `sampler_processor` (`./build.sh --test`). The SDK's `validator` passes (47/47).

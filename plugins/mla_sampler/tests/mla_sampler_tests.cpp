@@ -67,6 +67,9 @@ constexpr double key(int midi) { return midi / 127.0; }
 constexpr ParamID crossfadeParam(int slot) { return 500 + slot; }
 constexpr ParamID velocityParam(int slot, bool high) { return 600 + slot * 2 + (high ? 1 : 0); }
 constexpr ParamID kVelocitySensitivity = 102;
+constexpr ParamID kDecay = 105, kSustain = 106;
+enum EnvelopeParam { kEnvelopeOwn, kEnvelopeAttack, kEnvelopeDecay, kEnvelopeSustain, kEnvelopeRelease };
+constexpr ParamID envelopeParam(int slot, EnvelopeParam k) { return 700 + slot * 5 + k; }
 
 class Application final : public HostApplication {
   public:
@@ -463,6 +466,35 @@ void testVelocityLayers(const std::string &path)
     CHECK(std::fabs(layered(0.1f) - (0.25f + 0.125f)) < 1e-3f); // 13: soft layer and the pad
 }
 
+void testSlotEnvelopes(const std::string &path)
+{
+    // Slot 1 (key 36) holds 0.5 and slot 2 (key 37) 0.25; both play at once.
+    // A 1 ms decay to sustain 0 silences a voice long before frame 1500.
+    const auto both = [&](bool own_dies) -> float {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, std::vector<float>(4000, 0.5f)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(4000, 0.25f)) == kResultOk);
+        plugin.param(envelopeParam(0, kEnvelopeOwn), 1.0);
+        plugin.param(envelopeParam(0, kEnvelopeDecay), 0.0);
+        plugin.param(envelopeParam(0, kEnvelopeSustain), own_dies ? 0.0 : 1.0);
+        plugin.param(kDecay, 0.0);
+        plugin.param(kSustain, own_dies ? 1.0 : 0.0);
+        plugin.noteOn(kRootKey);
+        plugin.noteOn(kRootKey + 1);
+        const auto out = plugin.render(2048);
+        CHECK(std::fabs(left(out, 0) - 0.75f) < 1e-2f); // both start
+        return left(out, 1500);
+    };
+    // Slot 1's own envelope ends it; slot 2 keeps the instance's sustain...
+    CHECK(std::fabs(both(true) - 0.25f) < 1e-3f);
+    // ...and the other way round: the instance envelope ends slot 2 only.
+    CHECK(std::fabs(both(false) - 0.5f) < 1e-3f);
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -533,12 +565,13 @@ int main(int argc, char **argv)
     testLoopCrossfade(path);
     testKeyZones(path);
     testVelocityLayers(path);
+    testSlotEnvelopes(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, loop off/forward/bidirectional, output routing, state");
     return 0;
 }
