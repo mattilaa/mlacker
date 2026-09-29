@@ -82,6 +82,40 @@ back to the loop start then continues exactly what was fading in. The
 capped by the loop length and by the frames before the loop start, so a loop
 starting at frame 0 cannot crossfade. Off and bidirectional loops ignore it.
 
+## Filters
+
+Each voice runs through a **chain of filter stages** in series, after the
+playhead and before the amp envelope. There are two stages today (**Filter 1**
+then **Filter 2**). Each has a **Type**, **Cutoff** (20 Hz .. 20 kHz),
+**Resonance** (0 .. 36 dB), **Env** (how far the filter envelope moves the
+cutoff, -8 .. +8 octaves) and **Key Track** (0 .. 100 % of the key's distance
+from C-4, so higher notes open the filter). A stage set to Off passes the
+signal through.
+
+| Number | Type      | Notes |
+|--------|-----------|-------|
+| 0      | Off       | |
+| 1, 2   | LP 12, LP 24 | Low-pass, 12 or 24 dB/octave (`dsp::multimode`) |
+| 3, 4   | HP 12, HP 24 | High-pass |
+| 5, 6   | BP 12, BP 24 | Band-pass |
+| 7, 8   | Ladder 12, Ladder 24 | Moog-style ladder low-pass |
+| 9      | Notch     | Band-reject biquad |
+
+The type list is built to grow. Its parameter always has 64 entries, so a
+saved type never changes meaning. New filter models take the next number, and
+the ones not yet written show as `(reserved)` and pass the signal through.
+The parameter IDs also leave room for up to four stages of up to eight fields
+per slot, so more stages in the chain, or more settings per stage (drive,
+modulation), only add parameters after the existing ones. In the voice
+(`src/mla_sampler_dsp.mla`), a stage is a `SamplerFilter`: a new model adds its
+state there and a branch to `configure`/`process`.
+
+The **filter envelope** mirrors the amp envelope: the instance has one
+(**Filter Attack/Decay/Sustain/Release**, a pluck by default: no sustain), and
+each slot uses it or its own (**Slot N Filter Envelope**: Instance or Own). It
+starts and releases with the note. Coefficients follow it every 16 frames.
+Filter and filter envelope edits reach notes already sounding.
+
 ## Outputs
 
 Bus 0 is **Main**. Buses 1-7 are the auxiliary stereo outputs **Out 2**..**Out 8**,
@@ -126,6 +160,14 @@ mlacker's README, "Plugin outputs").
 | Slot N Start       | 0..1 of the sample            | Where playback begins. Default 0. |
 | Slot N Group       | Off, 1 .. 8                   | Slots in one group take turns. Default Off (layers). |
 | Group Mode         | Round-robin, Random           | How a group picks its slot. Default Round-robin. |
+| Filter Attack .. Release | as the amp envelope's   | The instance filter envelope. Sustain defaults to 0. |
+| Slot N Filter Envelope | Instance, Own             | Own uses the four below. |
+| Slot N Filter Attack .. Release | as above         | With Own. |
+| Slot N Filter T Type | 64-entry list (see Filters) | Stage T = 1, 2. Default Off. |
+| Slot N Filter T Cutoff | 20 Hz .. 20 kHz           | Logarithmic. Default 20 kHz. |
+| Slot N Filter T Resonance | 0 .. 36 dB             | Default 0. |
+| Slot N Filter T Env | -8 .. +8 octaves             | Filter envelope depth. Default 0. |
+| Slot N Filter T Key Track | 0 .. 100 %             | Default 0. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -136,12 +178,16 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `700 + 5s` + 0 envelope, 1 attack, 2 decay, 3 sustain, 4 release
 - `800 + s`: start
 - `900 + s`: group
+- `1100 + 5s` + 0 filter envelope, 1 attack, 2 decay, 3 sustain, 4 release
+- `2000 + 32s + 8t` + 0 type, 1 cutoff, 2 resonance, 3 env, 4 key track, for
+  filter stage `t` (0-based; room for 4 stages of 8 fields)
 
-`950` is the Group Mode.
+`950` is the Group Mode and `960`-`963` the instance filter envelope.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
-every velocity, the instance envelope, starting at frame 0, no group.
+every velocity, the instance envelope, starting at frame 0, no group, filters
+off.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -160,7 +206,9 @@ from this directory:
 `test` builds and runs `tests/mla_sampler_tests.cpp`, an offline host that
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
-pads), groups (round-robin turns, random picks without repeats, an ungrouped slot
+pads), filters (low-, high-pass and notch, two stages in series, a reserved type
+passing through, the filter envelope and a slot's own, key tracking), groups
+(round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a
 bidirectional loop on its way back, tune and level), velocity layers (soft and hard layers, their boundary, a pad limited
 to soft notes), per-slot envelopes beside the instance one, the sample start

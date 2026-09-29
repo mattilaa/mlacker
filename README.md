@@ -711,9 +711,21 @@ Overlapping zones layer.
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
-| `e` | Sound page (again returns to the keys & loops page) |
+| `e` | Next page: keys & loops, Sound, Filter |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
+
+The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
+two stages in series: per stage its type (**F1**/**F2**: `Off`, `LP12`,
+`LP24`, `HP12`, `HP24`, `BP12`, `BP24`, `Ldr12`, `Ldr24`, `Notch`), **Cut**
+(20 Hz .. 20k), **Res** (dB), **Env** (octaves of filter envelope) and **Key**
+(key tracking, %). Then **FEnv** (`Inst` uses the instance's filter envelope,
+`Own` the slot's) and its **Atk**, **Dec**, **Sus%** and **Rel**, editable
+once FEnv is `Own`. `J`/`K` step the cutoff by about a semitone, resonance by
+1 dB and Env by a tenth of an octave; `[`/`]` by an octave, 6 dB and an
+octave. The instance filter envelope is edited like its amp envelope, in the
+instrument's parameter editor. See the Mla Sampler README for the filter types
+and how the list grows.
 
 The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
 bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`

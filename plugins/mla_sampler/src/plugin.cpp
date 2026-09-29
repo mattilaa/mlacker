@@ -7,7 +7,9 @@
 // its own level, pan, tune, loop (off, forward or bidirectional, between a
 // start and an end point) and output bus. A slot uses the instance's amp
 // ADSR or its own; note-off releases it, and looping slots keep looping
-// through the release. Playback begins at the slot's start point.
+// through the release. Playback begins at the slot's start point. Each voice
+// then runs a chain of filter stages (types from an extensible list) moved by
+// the instance's or the slot's own filter envelope.
 //
 // Outputs: bus 0 "Main" plus seven auxiliary stereo buses "Out 2".."Out 8".
 // A slot sent to an aux bus the host has not activated plays on Main, so the
@@ -72,6 +74,10 @@ extern "C" void mlasampler_voice_set_loop__ptr_struct_SamplerVoice_i32_f64_f64(S
                                                                            double loopStart, double loopEnd);
 extern "C" void mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frames);
 extern "C" void mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frame);
+extern "C" void mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32(
+    SamplerVoice *voice, int32_t stage, int32_t kind, float cutoffHz, float resonanceDb, float envOctaves);
+extern "C" void mlasampler_voice_set_filter_envelope__ptr_struct_SamplerVoice_f32_f32_f32_f32(
+    SamplerVoice *voice, float attack, float decay, float sustain, float release);
 extern "C" double mlasampler_voice_shadow_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" float mlasampler_voice_render__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32_f32_f32_f32_ptr_f32(
     SamplerVoice *voice, float left0, float right0, float left1, float right1, float shadowLeft0,
@@ -123,7 +129,33 @@ enum ParamId : ParamID {
     kStartParamBase = 800,     // slot s: 800 + s, sample start (fraction of the sample)
     kGroupParamBase = 900,     // slot s: 900 + s, group (Off, 1..8)
     kGroupModeParam = 950,     // how a group picks: Round-robin or Random
+    kFilterEnvelopeParamBase = 960,     // instance filter ADSR: 960 attack .. 963 release
+    kSlotFilterEnvelopeParamBase = 1100, // slot s: 1100 + 5s, see EnvelopeParam
+    kFilterParamBase = 2000,             // slot s, stage t: 2000 + 32s + 8t, see FilterField
 };
+
+// The filter chain. IDs leave room for 4 stages of 8 fields per slot; the
+// chain runs kFilterStages of kFilterFields today, and more of either only
+// add parameters after the existing ones.
+constexpr int kFilterStages = 2;
+enum FilterField : int {
+    kFilterType = 0,  // one of kFilterTypeNames, as a 64-entry list (see there)
+    kFilterCutoff,    // 20 Hz .. 20 kHz
+    kFilterResonance, // 0 .. 36 dB
+    kFilterEnvAmount, // -8 .. +8 octaves of filter envelope
+    kFilterKeyTrack,  // 0 .. 100 % of the key's distance from C-4
+    kFilterFields,
+};
+constexpr int kFilterSlotStride = 32;
+constexpr int kFilterStageStride = 8;
+
+// Filter types, as the voice numbers them (mla_sampler_dsp.mla). The list
+// parameter always has 64 entries, so its normalized values never move:
+// new filters take the next reserved number and name, older ones keep theirs.
+constexpr int kFilterTypeCount = 64;
+static const char *const kFilterTypeNames[] = {"Off", "LP 12", "LP 24", "HP 12", "HP 24", "BP 12", "BP 24",
+                                               "Ladder 12", "Ladder 24", "Notch"};
+constexpr int kFilterTypesKnown = sizeof(kFilterTypeNames) / sizeof(kFilterTypeNames[0]);
 
 constexpr int kNumGroups = 8;
 
@@ -166,60 +198,54 @@ constexpr int kNumZoneParams = kNumSlots * kParamsPerZone;
 constexpr int kNumVelocityParams = kNumSlots * 2;
 constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
-                            kNumEnvelopeParams + kNumSlots + kNumSlots + 1;
+                            kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
+                            kNumSlots * kFilterStages * kFilterFields;
+constexpr ParamID kMaxParamId = kFilterParamBase + kNumSlots * kFilterSlotStride;
 
-// Flat index <-> ParamID. Globals occupy 0..7, slot parameters follow, then
-// the key zones, the loop crossfades, the velocity ranges, the envelopes, the
-// sample starts, the groups and the group mode.
-static ParamID paramIdAt(int index)
-{
-    if(index < kNumGlobalParams)
-        return static_cast<ParamID>(kLevelParam + index);
-    if(index < kNumGlobalParams + kNumSlotParams)
-        return static_cast<ParamID>(kSlotParamBase + (index - kNumGlobalParams));
-    if(index < kNumGlobalParams + kNumSlotParams + kNumZoneParams)
-        return static_cast<ParamID>(kZoneParamBase + (index - kNumGlobalParams - kNumSlotParams));
-    const int crossfades = kNumGlobalParams + kNumSlotParams + kNumZoneParams;
-    if(index < crossfades + kNumSlots)
-        return static_cast<ParamID>(kCrossfadeParamBase + (index - crossfades));
-    const int velocities = crossfades + kNumSlots;
-    if(index < velocities + kNumVelocityParams)
-        return static_cast<ParamID>(kVelocityParamBase + (index - velocities));
-    const int envelopes = velocities + kNumVelocityParams;
-    if(index < envelopes + kNumEnvelopeParams)
-        return static_cast<ParamID>(kEnvelopeParamBase + (index - envelopes));
-    const int starts = envelopes + kNumEnvelopeParams;
-    if(index < starts + kNumSlots)
-        return static_cast<ParamID>(kStartParamBase + (index - starts));
-    if(index < starts + 2 * kNumSlots)
-        return static_cast<ParamID>(kGroupParamBase + (index - starts - kNumSlots));
-    return kGroupModeParam;
-}
+// Flat index <-> ParamID, in the order parameters are registered: globals,
+// slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
+// starts, groups, group mode, the instance filter envelope, slot filter
+// envelopes and filter stages. Each block was appended after the ones before
+// it, so saved states keep their meaning.
+struct ParamLayout {
+    ParamID ids[kNumParams];
+    int16_t index[kMaxParamId];
+    ParamLayout()
+    {
+        std::fill(std::begin(index), std::end(index), static_cast<int16_t>(-1));
+        int n = 0;
+        const auto add = [&](int id) {
+            index[id] = static_cast<int16_t>(n);
+            ids[n++] = static_cast<ParamID>(id);
+        };
+        const auto run = [&](int base, int count) {
+            for(int i = 0; i < count; ++i)
+                add(base + i);
+        };
+        run(kLevelParam, kNumGlobalParams);
+        run(kSlotParamBase, kNumSlotParams);
+        run(kZoneParamBase, kNumZoneParams);
+        run(kCrossfadeParamBase, kNumSlots);
+        run(kVelocityParamBase, kNumVelocityParams);
+        run(kEnvelopeParamBase, kNumEnvelopeParams);
+        run(kStartParamBase, kNumSlots);
+        run(kGroupParamBase, kNumSlots);
+        add(kGroupModeParam);
+        run(kFilterEnvelopeParamBase, 4);
+        run(kSlotFilterEnvelopeParamBase, kNumSlots * kParamsPerEnvelope);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = 0; stage < kFilterStages; ++stage)
+                run(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride, kFilterFields);
+    }
+};
+static const ParamLayout kLayout;
 
-static int indexOf(ParamID id)
+static ParamID paramIdAt(int index) { return kLayout.ids[index]; }
+static int indexOf(ParamID id) { return id < kMaxParamId ? kLayout.index[id] : -1; }
+
+static ParamID filterParamId(int slot, int stage, FilterField field)
 {
-    if(id >= kLevelParam && id < kLevelParam + kNumGlobalParams)
-        return static_cast<int>(id - kLevelParam);
-    if(id >= kSlotParamBase && id < kSlotParamBase + kNumSlotParams)
-        return kNumGlobalParams + static_cast<int>(id - kSlotParamBase);
-    if(id >= kZoneParamBase && id < kZoneParamBase + kNumZoneParams)
-        return kNumGlobalParams + kNumSlotParams + static_cast<int>(id - kZoneParamBase);
-    if(id >= kCrossfadeParamBase && id < kCrossfadeParamBase + kNumSlots)
-        return kNumGlobalParams + kNumSlotParams + kNumZoneParams + static_cast<int>(id - kCrossfadeParamBase);
-    if(id >= kVelocityParamBase && id < kVelocityParamBase + kNumVelocityParams)
-        return kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + static_cast<int>(id - kVelocityParamBase);
-    if(id >= kEnvelopeParamBase && id < kEnvelopeParamBase + kNumEnvelopeParams)
-        return kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
-               static_cast<int>(id - kEnvelopeParamBase);
-    const int starts = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
-                       kNumEnvelopeParams;
-    if(id >= kStartParamBase && id < kStartParamBase + kNumSlots)
-        return starts + static_cast<int>(id - kStartParamBase);
-    if(id >= kGroupParamBase && id < kGroupParamBase + kNumSlots)
-        return starts + kNumSlots + static_cast<int>(id - kGroupParamBase);
-    if(id == kGroupModeParam)
-        return starts + 2 * kNumSlots;
-    return -1;
+    return static_cast<ParamID>(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride + field);
 }
 
 static ParamID slotParamId(int slot, SlotParam param)
@@ -257,6 +283,10 @@ static double normFromTime(double seconds) { return std::log10(seconds / 0.001) 
 static int rootKeyFromNorm(double norm) { return static_cast<int>(std::lround(norm * 127.0)); }
 static int outputFromNorm(double norm) { return static_cast<int>(std::lround(norm * (kNumOutputs - 1))); }
 static int32_t loopFromNorm(double norm) { return static_cast<int32_t>(std::lround(norm * 2.0)); }
+static int32_t filterTypeFromNorm(double norm) { return static_cast<int32_t>(std::lround(norm * (kFilterTypeCount - 1))); }
+static float cutoffFromNorm(double norm) { return static_cast<float>(20.0 * std::pow(1000.0, norm)); } // 20 Hz..20 kHz
+static float resonanceFromNorm(double norm) { return static_cast<float>(norm * 36.0); }             // 0..36 dB
+static float envOctavesFromNorm(double norm) { return static_cast<float>((norm * 2.0 - 1.0) * 8.0); } // +-8 octaves
 
 // Immutable decoded sample: stereo interleaved with one silent guard frame at
 // the end, so interpolation may always read the frame after the last one.
@@ -463,6 +493,34 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         auto *groupMode = addList(kGroupModeParam, u"Group Mode");
         groupMode->appendString(STR16("Round-robin"));
         groupMode->appendString(STR16("Random"));
+        // The instance filter envelope, then each slot's own, then the filter
+        // chains. A filter envelope defaults to a pluck (no sustain); it moves
+        // the cutoff only as far as a stage's Env amount says.
+        addParam(kFilterEnvelopeParamBase, STR16("Filter Attack"), STR16("s"), 0.0);
+        addParam(kFilterEnvelopeParamBase + 1, STR16("Filter Decay"), STR16("s"), normFromTime(0.5));
+        addParam(kFilterEnvelopeParamBase + 2, STR16("Filter Sustain"), nullptr, 0.0);
+        addParam(kFilterEnvelopeParamBase + 3, STR16("Filter Release"), STR16("s"), normFromTime(0.1));
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            const auto id = [&](EnvelopeParam k) { return static_cast<ParamID>(kSlotFilterEnvelopeParamBase + slot * kParamsPerEnvelope + k); };
+            auto *own = addList(id(kEnvelopeOwn), slotTitle(slot, "Filter Envelope"));
+            own->appendString(STR16("Instance"));
+            own->appendString(STR16("Own"));
+            addParam(id(kEnvelopeAttack), slotTitle(slot, "Filter Attack").c_str(), STR16("s"), 0.0);
+            addParam(id(kEnvelopeDecay), slotTitle(slot, "Filter Decay").c_str(), STR16("s"), normFromTime(0.5));
+            addParam(id(kEnvelopeSustain), slotTitle(slot, "Filter Sustain").c_str(), nullptr, 0.0);
+            addParam(id(kEnvelopeRelease), slotTitle(slot, "Filter Release").c_str(), STR16("s"), normFromTime(0.1));
+        }
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int stage = 0; stage < kFilterStages; ++stage) {
+                const std::string name = "Filter " + std::to_string(stage + 1) + " ";
+                auto *type = addList(filterParamId(slot, stage, kFilterType), slotTitle(slot, (name + "Type").c_str()));
+                for(int t = 0; t < kFilterTypeCount; ++t)
+                    type->appendString(utf16(t < kFilterTypesKnown ? kFilterTypeNames[t] : "(reserved)").c_str());
+                addParam(filterParamId(slot, stage, kFilterCutoff), slotTitle(slot, (name + "Cutoff").c_str()).c_str(), STR16("Hz"), 1.0);
+                addParam(filterParamId(slot, stage, kFilterResonance), slotTitle(slot, (name + "Resonance").c_str()).c_str(), STR16("dB"), 0.0);
+                addParam(filterParamId(slot, stage, kFilterEnvAmount), slotTitle(slot, (name + "Env").c_str()).c_str(), STR16("oct"), 0.5);
+                addParam(filterParamId(slot, stage, kFilterKeyTrack), slotTitle(slot, (name + "Key Track").c_str()).c_str(), nullptr, 0.0);
+            }
         return kResultOk;
     }
 
@@ -546,7 +604,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(paramsDirty_.exchange(false, std::memory_order_acquire)) {
             pushEnvelope();
             for(int slot = 0; slot < kNumSlots; ++slot)
-                applyLive(slot, true, true);
+                applyLive(slot, true, true, true);
         }
         handleParameterChanges(data.inputParameterChanges);
 
@@ -924,6 +982,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         // Slots whose sounding voices take a changed loop or level/pan/tune.
         bool loopChanged[kNumSlots] = {};
         bool soundChanged[kNumSlots] = {};
+        bool filterChanged[kNumSlots] = {};
         const int32 count = changes->getParameterCount();
         for(int32 q = 0; q < count; ++q) {
             IParamValueQueue *queue = changes->getParameterData(q);
@@ -954,11 +1013,17 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             }
             if(id >= kCrossfadeParamBase && id < kCrossfadeParamBase + kNumSlots)
                 loopChanged[id - kCrossfadeParamBase] = true;
+            if(id >= kFilterEnvelopeParamBase && id < kFilterEnvelopeParamBase + 4)
+                std::fill(std::begin(filterChanged), std::end(filterChanged), true);
+            if(id >= kSlotFilterEnvelopeParamBase && id < kSlotFilterEnvelopeParamBase + kNumSlots * kParamsPerEnvelope)
+                filterChanged[(id - kSlotFilterEnvelopeParamBase) / kParamsPerEnvelope] = true;
+            if(id >= kFilterParamBase && id < kMaxParamId)
+                filterChanged[(id - kFilterParamBase) / kFilterSlotStride] = true;
         }
         if(envelopeChanged)
             pushEnvelope();
         for(int slot = 0; slot < kNumSlots; ++slot)
-            applyLive(slot, loopChanged[slot], soundChanged[slot]);
+            applyLive(slot, loopChanged[slot], soundChanged[slot], filterChanged[slot]);
     }
 
     // Every slot whose key (Pad) or key range (Zone) and velocity range hold
@@ -1063,6 +1128,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             target->dsp, frames, voiceStep(slot, sample, keySemitones), voiceGain(slot, velocityGain),
             panFromNorm(slotNorm(slot, kSlotPan)), 0, 0.0, 0.0);
         applyLoop(target->dsp, slot, sample);
+        applyFilter(target->dsp, slot, pitch);
         mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(
             target->dsp, std::floor(norm(static_cast<ParamID>(kStartParamBase + slot)) * frames));
         target->keySemitones = keySemitones;
@@ -1099,11 +1165,36 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             dsp, std::floor(norm(static_cast<ParamID>(kCrossfadeParamBase + slot)) * frames));
     }
 
-    // Live edits: sounding voices of `slot` take its current loop and/or its
-    // level, pan and tune (with the instance's), keeping their playhead.
-    void applyLive(int slot, bool loop, bool sound)
+    // The slot's filter chain and filter envelope, on a new or sounding
+    // voice. Key tracking moves each stage's cutoff by its share of the key's
+    // distance from C-4 (MIDI 60).
+    void applyFilter(SamplerVoice *dsp, int slot, int pitch)
     {
-        if(!loop && !sound)
+        for(int stage = 0; stage < kFilterStages; ++stage) {
+            const double keyTrack = norm(filterParamId(slot, stage, kFilterKeyTrack));
+            const float cutoff = cutoffFromNorm(norm(filterParamId(slot, stage, kFilterCutoff))) *
+                                 static_cast<float>(std::pow(2.0, keyTrack * (pitch - 60) / 12.0));
+            mlasampler_voice_set_filter__ptr_struct_SamplerVoice_i32_i32_f32_f32_f32(
+                dsp, stage, filterTypeFromNorm(norm(filterParamId(slot, stage, kFilterType))), cutoff,
+                resonanceFromNorm(norm(filterParamId(slot, stage, kFilterResonance))),
+                envOctavesFromNorm(norm(filterParamId(slot, stage, kFilterEnvAmount))));
+        }
+        const auto own = norm(static_cast<ParamID>(kSlotFilterEnvelopeParamBase + slot * kParamsPerEnvelope)) >= 0.5;
+        const auto envelope = [&](int k) {
+            return norm(static_cast<ParamID>(own ? kSlotFilterEnvelopeParamBase + slot * kParamsPerEnvelope + 1 + k
+                                                 : kFilterEnvelopeParamBase + k));
+        };
+        mlasampler_voice_set_filter_envelope__ptr_struct_SamplerVoice_f32_f32_f32_f32(
+            dsp, attackFromNorm(envelope(0)), timeFromNorm(envelope(1)), static_cast<float>(envelope(2)),
+            timeFromNorm(envelope(3)));
+    }
+
+    // Live edits: sounding voices of `slot` take its current loop, its level,
+    // pan and tune (with the instance's) and/or its filter, keeping their
+    // playhead.
+    void applyLive(int slot, bool loop, bool sound, bool filter)
+    {
+        if(!loop && !sound && !filter)
             return;
         for(auto &voice : voices_) {
             if(!voice.dsp || !voice.sample || voice.slot != slot ||
@@ -1111,6 +1202,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 continue;
             if(loop)
                 applyLoop(voice.dsp, slot, voice.sample);
+            if(filter)
+                applyFilter(voice.dsp, slot, voice.pitch);
             if(sound) {
                 mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(voice.dsp, voiceStep(slot, voice.sample, voice.keySemitones));
                 mlasampler_voice_set_gain__ptr_struct_SamplerVoice_f32_f32(

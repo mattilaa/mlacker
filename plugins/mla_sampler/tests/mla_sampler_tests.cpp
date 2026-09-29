@@ -73,6 +73,15 @@ constexpr ParamID envelopeParam(int slot, EnvelopeParam k) { return 700 + slot *
 constexpr ParamID startParam(int slot) { return 800 + slot; }
 constexpr ParamID groupParam(int slot) { return 900 + slot; }
 constexpr ParamID kGroupMode = 950;
+constexpr ParamID kFilterEnvelope = 960; // + 0 attack, 1 decay, 2 sustain, 3 release
+constexpr ParamID slotFilterEnvelope(int slot, EnvelopeParam k) { return 1100 + slot * 5 + k; }
+enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack };
+constexpr ParamID filterParam(int slot, int stage, FilterField k) { return 2000 + slot * 32 + stage * 8 + k; }
+// Filter types (plugin.cpp kFilterTypeNames), as normalized list values.
+constexpr double filterType(int type) { return type / 63.0; }
+constexpr int kLowpass24 = 2, kHighpass24 = 4, kNotch = 9;
+// Cutoff normalized value for a frequency: 20 Hz * 1000^norm.
+double cutoff(double hz) { return std::log(hz / 20.0) / std::log(1000.0); }
 
 class Application final : public HostApplication {
   public:
@@ -632,6 +641,106 @@ void testGroups(const std::string &path)
     CHECK(seen[0] > 0 && seen[1] > 0 && seen[2] > 0);
 }
 
+double rms(const std::vector<float> &stereo, int from, int to)
+{
+    double sum = 0.0;
+    for(int f = from; f < to; ++f)
+        sum += static_cast<double>(left(stereo, f)) * left(stereo, f);
+    return std::sqrt(sum / std::max(1, to - from));
+}
+
+// A constant (DC) and a Nyquist-rate square: what low- and high-pass keep.
+std::vector<float> dc() { return std::vector<float>(48000, 0.5f); }
+std::vector<float> nyquist()
+{
+    std::vector<float> pcm(48000);
+    for(size_t f = 0; f < pcm.size(); ++f)
+        pcm[f] = f % 2 ? -0.5f : 0.5f;
+    return pcm;
+}
+// A 6 kHz square (8-frame period): above a closed filter, below an open one.
+std::vector<float> tone()
+{
+    std::vector<float> pcm(48000);
+    for(size_t f = 0; f < pcm.size(); ++f)
+        pcm[f] = (f / 4) % 2 ? -0.5f : 0.5f;
+    return pcm;
+}
+
+// Render a held note on slot 1 (key 36) and return 4096 frames.
+std::vector<float> filtered(const std::string &path, const std::vector<float> &pcm,
+                            const std::vector<std::pair<ParamID, double>> &params, int pitch = kRootKey)
+{
+    Instance plugin;
+    if(!plugin.open(path)) {
+        CHECK(!"cannot open the bundle");
+        return std::vector<float>(8192, 0.0f);
+    }
+    CHECK(loadPcm(plugin, 0, pcm) == kResultOk);
+    for(const auto &[id, value] : params)
+        plugin.param(id, value);
+    plugin.noteOn(pitch);
+    return plugin.render(4096);
+}
+
+void testFilters(const std::string &path)
+{
+    const auto stage = [](int t, int type, double hz) {
+        return std::vector<std::pair<ParamID, double>>{{filterParam(0, t, kFilterType), filterType(type)},
+                                                       {filterParam(0, t, kFilterCutoff), cutoff(hz)}};
+    };
+    // Low-pass keeps DC and removes the top of the spectrum; high-pass the reverse.
+    const auto lpDc = filtered(path, dc(), stage(0, kLowpass24, 500));
+    const auto lpTop = filtered(path, nyquist(), stage(0, kLowpass24, 500));
+    CHECK(std::fabs(left(lpDc, 3000) - 0.5f) < 0.01f);
+    CHECK(rms(lpTop, 2048, 4096) < 0.001);
+    const auto hpDc = filtered(path, dc(), stage(0, kHighpass24, 500));
+    const auto hpTop = filtered(path, nyquist(), stage(0, kHighpass24, 500));
+    CHECK(std::fabs(left(hpDc, 3000)) < 0.01f);
+    CHECK(rms(hpTop, 2048, 4096) > 0.4);
+    // Two stages run in series: low-pass then high-pass keep neither.
+    auto both = stage(0, kLowpass24, 500);
+    for(const auto &p : stage(1, kHighpass24, 2000))
+        both.push_back(p);
+    CHECK(rms(filtered(path, dc(), both), 2048, 4096) < 0.01);
+    CHECK(rms(filtered(path, nyquist(), both), 2048, 4096) < 0.01);
+    // A notch leaves DC alone; a reserved type is a pass-through.
+    CHECK(std::fabs(left(filtered(path, dc(), stage(0, kNotch, 5000)), 3000) - 0.5f) < 0.01f);
+    const auto reserved = filtered(path, nyquist(), stage(0, 40, 100));
+    CHECK(std::fabs(left(reserved, 3001) - -0.5f) < 1e-4f); // odd frames of the square are -0.5
+
+    // The filter envelope opens a closed low-pass (+8 octaves from 100 Hz)
+    // and decays back: bright at first, dark once it has fallen.
+    auto swept = stage(0, kLowpass24, 100);
+    swept.push_back({filterParam(0, 0, kFilterEnvAmount), 1.0});
+    swept.push_back({kFilterEnvelope + 1, 0.25}); // decay ~10 ms
+    const auto sweep = filtered(path, tone(), swept);
+    CHECK(rms(sweep, 0, 64) > 20 * rms(sweep, 3000, 4096));
+    CHECK(rms(sweep, 0, 64) > 0.05);
+    // No envelope amount: dark from the start.
+    CHECK(rms(filtered(path, tone(), stage(0, kLowpass24, 100)), 0, 64) < 0.02);
+    // A slot's own filter envelope replaces the instance's: here it holds the
+    // filter open (sustain 1) while the instance one would close it.
+    auto own = swept;
+    own.push_back({slotFilterEnvelope(0, kEnvelopeOwn), 1.0});
+    own.push_back({slotFilterEnvelope(0, kEnvelopeSustain), 1.0});
+    CHECK(rms(filtered(path, tone(), own), 3000, 4096) > 0.3);
+
+    // Key tracking: at 100 %, an octave up doubles the cutoff, so the higher
+    // note is brighter. (Key Track of the zone is off, so the sample itself
+    // plays at the same rate on both keys.)
+    const auto keyed = [&](int pitch) {
+        auto params = stage(0, kLowpass24, 3000);
+        params.push_back({filterParam(0, 0, kFilterKeyTrack), 1.0});
+        params.push_back({zoneParam(0, kZoneMode), 1.0});
+        params.push_back({zoneParam(0, kZoneLow), key(0)});
+        params.push_back({zoneParam(0, kZoneHigh), key(127)});
+        params.push_back({zoneParam(0, kZoneTrack), 0.0});
+        return rms(filtered(path, tone(), params, pitch), 2048, 4096);
+    };
+    CHECK(keyed(84) > 4 * keyed(60));
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -706,12 +815,13 @@ int main(int argc, char **argv)
     testSampleStart(path);
     testLiveEdits(path);
     testGroups(path);
+    testFilters(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

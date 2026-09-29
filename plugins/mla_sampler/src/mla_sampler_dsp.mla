@@ -17,9 +17,22 @@
 /// (equal-power), so the jump back to the loop start continues exactly what
 /// was fading in and the seam does not click. `mlasampler_voice_shadow_frame`
 /// names that earlier frame.
+///
+/// After the playhead, the signal runs through a chain of filter stages (two
+/// today, `filter1` then `filter2`), each with its own type, cutoff, resonance
+/// and filter-envelope amount; then the amp envelope and pan. Filter types are
+/// stable numbers (`sampler_filter_kind_*`): new models are appended, a
+/// stage's fields and `SamplerFilter` gain what they need, and older types
+/// keep their numbers. Coefficients follow the filter envelope every 16
+/// frames.
 
 mod dsp::envelope;
+mod dsp::filter;
+mod dsp::multimode;
 use dsp::envelope::Adsr;
+use dsp::filter::Biquad;
+use dsp::multimode::MultimodeFilter;
+use dsp::multimode::FilterModel;
 
 extern fn calloc(count: i64, size: i64) -> ptr<SamplerVoice>;
 extern fn free(block: ptr<SamplerVoice>) -> void;
@@ -27,10 +40,87 @@ extern fn floor(value: f64) -> f64;
 extern fn fmod(value: f64, divisor: f64) -> f64;
 extern fn sinf(value: f32) -> f32;
 extern fn cosf(value: f32) -> f32;
+extern fn exp2f(value: f32) -> f32;
+
+/// A stereo pair of samples.
+struct StereoSample { var left: f32; var right: f32; };
+
+/// Filter type numbers of a stage. 0 = off; 1-8 are `dsp::multimode`'s
+/// models; 9 is a notch. Unknown numbers pass the signal through, so a
+/// state saved by a newer version plays unfiltered rather than wrong.
+fn sampler_filter_model(kind: i32) -> FilterModel {
+    if kind == 1 { return FilterModel::Lowpass12; }
+    if kind == 2 { return FilterModel::Lowpass24; }
+    if kind == 3 { return FilterModel::Highpass12; }
+    if kind == 4 { return FilterModel::Highpass24; }
+    if kind == 5 { return FilterModel::Bandpass12; }
+    if kind == 6 { return FilterModel::Bandpass24; }
+    if kind == 7 { return FilterModel::Moog12; }
+    return FilterModel::Moog24;
+}
+fn sampler_filter_known(kind: i32) -> bool { return kind >= 1 && kind <= 9; }
+
+/// One stage of a voice's filter chain: a type, its settings, and the state
+/// of each model it can run (a new model adds its own fields here).
+struct SamplerFilter {
+    var kind: i32;
+    var cutoff_hz: f32;
+    var resonance_db: f32;
+    /// Filter envelope depth in octaves (negative closes the filter).
+    var env_octaves: f32;
+    var left: MultimodeFilter;
+    var right: MultimodeFilter;
+    var notch_left: Biquad;
+    var notch_right: Biquad;
+};
+
+impl SamplerFilter {
+    fn new() -> SamplerFilter {
+        return SamplerFilter { kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f,
+            left: MultimodeFilter::new(), right: MultimodeFilter::new(), notch_left: Biquad::new(), notch_right: Biquad::new() };
+    }
+    /// Type and settings; a new type starts from cleared history.
+    fn set(self: &mut Self, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32) -> void {
+        if kind != self.kind {
+            self.kind = kind;
+            if kind >= 1 && kind <= 8 {
+                self.left.set_model(sampler_filter_model(kind));
+                self.right.set_model(sampler_filter_model(kind));
+            }
+            self.reset();
+        }
+        self.cutoff_hz = cutoff_hz; self.resonance_db = resonance_db; self.env_octaves = env_octaves;
+    }
+    fn reset(self: &mut Self) -> void {
+        self.left.reset(); self.right.reset(); self.notch_left.reset(); self.notch_right.reset();
+    }
+    /// Coefficients for the cutoff moved by `envelope` (0..1) times the depth.
+    fn configure(self: &mut Self, envelope: f32, sample_rate: f32) -> void {
+        if !sampler_filter_known(self.kind) { return; }
+        let hz: f32 = clamp_sampler_f32(self.cutoff_hz * exp2f(self.env_octaves * envelope), 20.0f, sample_rate * 0.45f);
+        if self.kind == 9 {
+            self.notch_left.set_bandreject(hz, self.resonance_db, sample_rate);
+            self.notch_right.set_bandreject(hz, self.resonance_db, sample_rate);
+            return;
+        }
+        self.left.configure(hz, self.resonance_db, sample_rate);
+        self.right.configure(hz, self.resonance_db, sample_rate);
+    }
+    fn process(self: &mut Self, left: f32, right: f32) -> StereoSample {
+        if !sampler_filter_known(self.kind) { return StereoSample { left: left, right: right }; }
+        if self.kind == 9 { return StereoSample { left: self.notch_left.process(left), right: self.notch_right.process(right) }; }
+        return StereoSample { left: self.left.process(left), right: self.right.process(right) };
+    }
+}
 
 /// @brief One playing (or idle) sample voice.
 struct SamplerVoice {
     var envelope: Adsr;
+    /// Filter envelope and chain, and frames until coefficients follow it.
+    var filter_envelope: Adsr;
+    var filter1: SamplerFilter;
+    var filter2: SamplerFilter;
+    var filter_countdown: i32;
     var sample_rate: f32;
     /// Read position in source frames, advance per output frame, and the
     /// direction the playhead moves (1 or -1, only -1 in a bidirectional loop).
@@ -71,6 +161,9 @@ fn mlasampler_voice_create(sample_rate: f32) -> ptr<SamplerVoice> {
     let voice: ptr<SamplerVoice> = calloc(1, size_of(SamplerVoice));
     unsafe {
         (*voice).envelope = Adsr::new(rate);
+        (*voice).filter_envelope = Adsr::new(rate);
+        (*voice).filter1 = SamplerFilter::new();
+        (*voice).filter2 = SamplerFilter::new();
         (*voice).sample_rate = rate;
         (*voice).direction = 1.0;
     }
@@ -93,6 +186,29 @@ fn mlasampler_voice_set_envelope(voice: ptr<SamplerVoice>, attack: f32, decay: f
     }
 }
 
+/// @brief Filter envelope times in seconds and sustain level 0..1. Takes
+/// effect immediately, including on sounding voices.
+fn mlasampler_voice_set_filter_envelope(voice: ptr<SamplerVoice>, attack: f32, decay: f32, sustain: f32, release: f32) {
+    unsafe {
+        (*voice).filter_envelope.set_attack_seconds(attack);
+        (*voice).filter_envelope.set_decay_seconds(decay);
+        (*voice).filter_envelope.set_sustain(sustain);
+        (*voice).filter_envelope.set_release_seconds(release);
+    }
+}
+
+/// @brief Stage `stage` (0, 1) of the filter chain: type (see
+/// `sampler_filter_model`, 0 = off), cutoff in Hz (key tracking applied),
+/// resonance 0..36 dB and filter envelope depth in octaves. Sounding voices
+/// follow at once; a new type clears that stage's history.
+fn mlasampler_voice_set_filter(voice: ptr<SamplerVoice>, stage: i32, kind: i32, cutoff_hz: f32, resonance_db: f32, env_octaves: f32) {
+    unsafe {
+        if stage == 0 { (*voice).filter1.set(kind, cutoff_hz, resonance_db, env_octaves); }
+        if stage == 1 { (*voice).filter2.set(kind, cutoff_hz, resonance_db, env_octaves); }
+        (*voice).filter_countdown = 0;
+    }
+}
+
 /// @brief Start a sample from its first frame.
 /// @param frames Source length in frames (> 0).
 /// @param step Source frames per output frame (rate ratio times pitch ratio).
@@ -110,6 +226,11 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).xfade = 0.0;
         (*voice).envelope.reset();
         (*voice).envelope.gate_on();
+        (*voice).filter_envelope.reset();
+        (*voice).filter_envelope.gate_on();
+        (*voice).filter1.reset();
+        (*voice).filter2.reset();
+        (*voice).filter_countdown = 0;
         (*voice).active = frames > 0.0 ? 1 : 0;
     }
     mlasampler_voice_set_step(voice, step);
@@ -190,7 +311,10 @@ fn mlasampler_voice_shadow_frame(voice: ptr<SamplerVoice>) -> f64 {
 /// @brief Note-off: enter the envelope release. A looping voice keeps looping
 /// until the release ends.
 fn mlasampler_voice_release(voice: ptr<SamplerVoice>) {
-    unsafe { (*voice).envelope.gate_off(); }
+    unsafe {
+        (*voice).envelope.gate_off();
+        (*voice).filter_envelope.gate_off();
+    }
 }
 
 /// @brief Silence immediately (sample swapped out, transport reset, stolen).
@@ -198,6 +322,7 @@ fn mlasampler_voice_stop(voice: ptr<SamplerVoice>) {
     unsafe {
         (*voice).active = 0;
         (*voice).envelope.reset();
+        (*voice).filter_envelope.reset();
     }
 }
 
@@ -285,6 +410,18 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             left = left * tail + (shadow_left0 + (shadow_left1 - shadow_left0) * frac) * head;
             right = right * tail + (shadow_right0 + (shadow_right1 - shadow_right0) * frac) * head;
         }
+
+        // The filter chain, its coefficients following the filter envelope.
+        let filter_level: f32 = (*voice).filter_envelope.process();
+        if (*voice).filter_countdown <= 0 {
+            (*voice).filter1.configure(filter_level, (*voice).sample_rate);
+            (*voice).filter2.configure(filter_level, (*voice).sample_rate);
+            (*voice).filter_countdown = 16;
+        }
+        (*voice).filter_countdown = (*voice).filter_countdown - 1;
+        let first: StereoSample = (*voice).filter1.process(left, right);
+        let second: StereoSample = (*voice).filter2.process(first.left, first.right);
+        left = second.left; right = second.right;
 
         let amp: f32 = (*voice).envelope.process();
         *out_right = right * amp * (*voice).gain_right;
