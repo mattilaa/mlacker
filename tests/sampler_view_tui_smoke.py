@@ -1,7 +1,7 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
 clearing slots, key zones, velocity ranges, the Sound page (level, pan, tune,
 per-slot envelopes, sample start, groups and group mode), the Filter page (a
-two-stage filter chain and filter envelope), the LFO pages, the Mod page, loop mode / loop point / output edits, the wave view's
+two-stage filter chain and filter envelope), the LFO pages, the Mod page, the Play page (mode, glide, unison), loop mode / loop point / output edits, the wave view's
 frame-accurate loop and sample start markers, zero-crossing snap and crossfade,
 editing a slot's sample (crop to its loop), auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
@@ -233,6 +233,32 @@ def main():
             expect(tui.send(b"KKKK"), b"Level")
             tui.send(b"l")
             expect(tui.send(b"["), b"-10")
+            # e: the Play page. Legato with a glide, three unison voices.
+            expect(tui.send(b"e"), b"Play |", b"Glide", b"Uni", b"Poly")
+            expect(tui.send(b"KK"), b"Legato")
+            tui.send(b"l")
+            expect(tui.send(b"]]]"), b"180ms")
+            tui.send(b"l")
+            expect(tui.send(b"KKKKKKKKK"), b"8")  # up to 8 voices, no further
+            expect(tui.send(b"JJJJJ"), b"3")
+            tui.send(b"l")
+            expect(tui.send(b"]]"), b"20")
+            # W saves slot 1 as a slot preset; R loads it into empty slot 4,
+            # its sample and settings.
+            slot_preset = root / "slot1.mlaslot"
+            expect(tui.send_until(b"W", b"Save slot 1 (.mlaslot)"), b"Save slot 1 (.mlaslot)")
+            expect(tui.send(b"\x15" + bytes(root / "slot1") + b"\r", 0.7), b"Saved slot preset:")
+            assert slot_preset.exists()
+            tui.send(b"jjj")
+            expect(tui.send_until(b"R", b"Load preset into slot 4"), b"Load preset into slot 4")
+            expect(tui.send(b"\x15" + bytes(slot_preset) + b"\r", 0.7), b"Slot 4: loaded")
+            # Slot 4 plays Legato now: one step down is Mono (Poly would stay).
+            tui.send(b"hhhh")
+            expect(tui.send(b"J"), b"Mono")
+            expect(tui.send(b"K"), b"Legato")
+            expect(tui.send(b"w"), b"Slot 4 pad.wav")
+            tui.send(b"w")
+            tui.send(b"kkk")
             expect(tui.send(b"e"), b"Mode", b"Loop")
 
             # The virtual keyboard takes the pane over, and Shift+S takes it back.
@@ -258,6 +284,7 @@ def main():
             expect(tui.send(b"e"), b"Sqr", b"On", b"1/8", b"50")
             tui.send(b"e")
             expect(tui.send(b"e"), b"Veloc", b"Level", b"-10")
+            expect(tui.send(b"e"), b"Legato", b"180ms", b"20")
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")

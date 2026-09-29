@@ -95,7 +95,7 @@ pub struct SessionView {
 };
 /// Plugin preset outcome. Kit presets (MLAPRE 1.1) also carry sampler pads:
 /// `pads[i]` is loaded from `clips[i]`; the caller owns the clips.
-pub struct PresetResult { var status: str8; var ok: bool; var has_pads: bool; var pads: list<i32>; var clips: list<AudioClip>; };
+pub struct PresetResult { var status: str8; var ok: bool; var has_pads: bool; var pads: list<i32>; var clips: list<AudioClip>; var keys: list<i64>; var values: list<f64>; };
 pub struct MidiLearnSnapshot { var key: i32; var slot: i32; var parameter_id: i64; };
 pub struct SessionData { var library: PatternLibrary; var plugins: list<PluginSnapshot>; var view: SessionView; var midi_learn: list<MidiLearnSnapshot>; var effect_volumes: list<i32>; var pads: list<PadAssignment>; };
 impl SessionData {
@@ -319,6 +319,66 @@ impl SessionCodec {
         result.ok = !codec.failed;
         if restart { if output.start() != 0 { free(status); status = clone("Preset processed but audio restart failed; reopen Settings"); } }
         free(actual); result.status = status; return result;
+    }
+    /// Mla Sampler slot preset (.mlaslot): one slot's parameters, as
+    /// slot-independent `keys` (see SamplerView::slot_key) with their
+    /// normalized `values`, and its sample when `has_clip`. Loading returns
+    /// them in the result (`clips` empty for a slot without a sample) and
+    /// leaves applying them to the caller.
+    pub fn sampler_slot_file(path: str8, plugin_name: str8, saving: bool, keys: list<i64>, values: list<f64>, clip: AudioClip, has_clip: bool) -> PresetResult {
+        var result: PresetResult = PresetResult { status: "" };
+        let actual: str8 = saving && !tui::table::table_matches(".*\\.[mM][lL][aA][sS][lL][oO][tT]", path) ? format!("{}.mlaslot", path) : clone(path);
+        var codec: SessionCodec = SessionCodec { reading: !saving };
+        if saving {
+            let created: result<SessionBuffer, str8> = SessionBuffer::new(4096);
+            if created.is_err() { free(actual); result.status = clone("Cannot allocate slot preset"); return result; }
+            codec.binary = created.unwrap();
+        } else {
+            let opened: result<File, str8> = File::open(actual);
+            if opened.is_err() { free(actual); result.status = clone("Cannot open slot preset"); return result; }
+            let file: File = opened.unwrap(); let size: result<i64, str8> = file.size(); file.close();
+            if size.is_err() || size.unwrap() > 268435456 { free(actual); result.status = clone("Cannot read slot preset"); return result; }
+            let read: result<SessionReader, str8> = SessionReader::from_file(actual);
+            if read.is_err() { free(actual); result.status = clone("Cannot read slot preset"); return result; }
+            codec.reader = read.unwrap();
+        }
+        let magic: str8 = codec.text("MLASLOT");
+        if magic != "MLASLOT" { codec.failed = true; } if !saving { free(magic); }
+        codec.number(1, 1, 1); codec.number(0, 0, 0);
+        let name: str8 = codec.text(plugin_name);
+        if name != plugin_name { codec.failed = true; } if !saving { free(name); }
+        let count: i32 = codec.number(i32(keys.len()), 0, 4096);
+        for i in 0..count {
+            if codec.failed { break; }
+            let key: i64 = codec.integer(saving ? keys[i] : 0, 0, 1048575);
+            let value: f64 = codec.real(saving ? values[i] : 0.0, 0.0, 1.0);
+            if !saving {
+                let seen: list<i64> = result.keys;
+                for other in seen { if other == key { codec.failed = true; } }
+                result.keys.push(key); result.values.push(value);
+            }
+        }
+        let sampled: bool = codec.flag(has_clip);
+        if sampled && !codec.failed {
+            var source: AudioClip = AudioClip {}; if saving { source = clip; }
+            let decoded: AudioClip = codec.clip(source);
+            if !saving { result.clips.push(decoded); }
+        }
+        if saving {
+            if !codec.failed { let written: result<i32, str8> = codec.binary.write_atomic(actual); if written.is_err() { codec.failed = true; } }
+            codec.binary.close();
+            result.ok = !codec.failed;
+            result.status = codec.failed ? clone("Cannot save slot preset") : format!("Saved slot preset: {}", actual);
+            free(actual); return result;
+        }
+        if codec.reader.remaining() != 0 { codec.failed = true; } codec.reader.close();
+        if codec.failed {
+            let decoded: list<AudioClip> = result.clips; for unused in decoded { unused.release(); }
+            result.clips = []; result.keys = []; result.values = [];
+            free(actual); result.status = clone("Invalid/incompatible slot preset; slot unchanged"); return result;
+        }
+        result.ok = true; result.status = format!("Loaded slot preset: {}", actual);
+        free(actual); return result;
     }
     pub fn learn_suggestion(name: str8) -> str8 {
         let safe: str8 = file_safe(name);

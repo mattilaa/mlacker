@@ -404,6 +404,8 @@ pub fn run() -> i32 {
     // The Sampler slot (instrument slot and sample slot) whose sample the
     // editor is editing, or -1: a crop to its loop resets the loop.
     var editing_sampler_slot: i32 = -1; var editing_sampler_pad: i32 = -1;
+    // Sampler slot a slot preset saves from or loads into (W / R).
+    var preset_sampler_pad: i32 = 0;
     if !fixture {
         let arguments: list<str8> = __env_args();
         if arguments.len() == 2 { free(request_path); request_path = clone(arguments[1]); session_request = 1; }
@@ -785,7 +787,8 @@ pub fn run() -> i32 {
             }
             else if adding_effect >= 0 { message = midi.load_effect(adding_effect, first); adding_effect = -1; }
             else if learn_action != Action::None {
-                if learn_action == Action::SaveInstrumentPreset || learn_action == Action::LoadInstrumentPreset || learn_action == Action::LoadEffectPreset || learn_action == Action::SaveEffectPreset {
+                if learn_action == Action::SaveInstrumentPreset || learn_action == Action::LoadInstrumentPreset || learn_action == Action::LoadEffectPreset || learn_action == Action::SaveEffectPreset
+                    || learn_action == Action::SaveSamplerSlot || learn_action == Action::LoadSamplerSlotPreset {
                     // Handled below; kit presets also touch the Audio list.
                     free(preset_path); preset_path = clone(first); preset_request = learn_action; preset_worker = midi.midi.worker.raw != 0;
                     message = clone("");
@@ -816,6 +819,59 @@ pub fn run() -> i32 {
                 if !fixture { free(request_path); request_path = clone(first); session_request = saving_session ? (saving_project ? 4 : 2) : 1; }
             }
             dirty = true;
+        }
+        if preset_request == Action::SaveSamplerSlot || preset_request == Action::LoadSamplerSlotPreset {
+            // A slot preset: the slot's parameters, keyed independently of the
+            // slot (SamplerView::slot_key), and its sample.
+            let slot: i32 = i32(learn_slot);
+            let count: i64 = midi.output.parameter_info(slot, 0, 0);
+            let name: str8 = midi.output.instrument_name(slot);
+            if preset_request == Action::SaveSamplerSlot {
+                var keys: list<i64> = []; var values: list<f64> = [];
+                for i in 0..count {
+                    let key: i64 = SamplerView::slot_key(wide(i32(midi.output.parameter_info(slot, i, 4))), preset_sampler_pad);
+                    if key >= 0 { keys.push(key); values.push(midi.output.parameter_info(slot, i, 2)); }
+                }
+                let used: i32 = midi.pad_sample(slot, preset_sampler_pad);
+                let has_clip: bool = used >= 0 && used < library.audio.samples.len();
+                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used]; }
+                let saved: PresetResult = SessionCodec::sampler_slot_file(preset_path, name, true, keys, values, clip, has_clip);
+                free(message); message = saved.status;
+            } else {
+                let loaded: PresetResult = SessionCodec::sampler_slot_file(preset_path, name, false, [], [], AudioClip {}, false);
+                free(message); message = loaded.status;
+                if loaded.ok {
+                    // Fields the plugin lacks (a newer preset) are skipped;
+                    // fields the preset lacks keep their values.
+                    for i in 0..count {
+                        let key: i64 = SamplerView::slot_key(wide(i32(midi.output.parameter_info(slot, i, 4))), preset_sampler_pad);
+                        if key < 0 { continue; }
+                        // A list parameter takes its step number.
+                        let steps: f64 = midi.output.parameter_info(slot, i, 1);
+                        for k in 0..loaded.keys.len() {
+                            if loaded.keys[k] == key { midi.output.set_parameter(slot, i, steps > 0.0 ? std::math::floor(loaded.values[k] * steps + 0.5) : loaded.values[k]); }
+                        }
+                    }
+                    var failed: str8 = "";
+                    if loaded.clips.len() > 0 {
+                        let clip: AudioClip = loaded.clips[0];
+                        let clip_name: str8 = base_name(clip.source);
+                        let index: i32 = library.audio.add_clip(clip);
+                        if index < 0 { failed = clone(library.audio.error); }
+                        else {
+                            let added: AudioClip = library.audio.samples[index];
+                            failed = midi.assign_pad(slot, preset_sampler_pad, index, added.samples, added.channels, added.sample_rate, clip_name);
+                        }
+                        free(clip_name);
+                    } else {
+                        // A preset of an empty slot empties it.
+                        failed = midi.clear_pad(slot, preset_sampler_pad);
+                    }
+                    if failed != "" { free(message); message = format!("Slot preset settings loaded, but its sample failed: {}", failed); }
+                    else { free(message); message = format!("Slot {}: loaded {}", preset_sampler_pad + 1, preset_path); }
+                }
+            }
+            preset_request = Action::None; dirty = true;
         }
         if preset_request != Action::None {
             // Instrument presets may carry pads; FX presets contain parameters only.
@@ -1592,6 +1648,8 @@ pub fn run() -> i32 {
                     }
                 }
                 else if request == 10 { command = Action::EditSamplerSample; }
+                else if request == 11 { command = Action::SaveSamplerSlot; }
+                else if request == 12 { command = Action::LoadSamplerSlotPreset; }
                 else if request == 9 { free(message); message = format!("Slot {} uses the instance filter envelope: set its FEnv to Own first", sampler.slot + 1); }
                 else if request == 8 { free(message); message = format!("Slot {} uses the instance envelope: set its Env to Own first", sampler.slot + 1); }
                 else if request == 6 { free(message); message = clone("No waveform: load the slot from a file or the Audio list (Enter)"); }
@@ -2066,6 +2124,27 @@ pub fn run() -> i32 {
                     dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
                     dialog.open(last_audio_dir); focus.set_menu_active(true);
                     if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
+                }
+            }
+            else if command == Action::SaveSamplerSlot || command == Action::LoadSamplerSlotPreset {
+                let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
+                if target < 1 { free(message); message = clone("Select an Instrument track playing Mla Sampler"); }
+                else {
+                    learn_action = command; learn_slot = target; preset_sampler_pad = sampler.slot;
+                    adding_effect = -1; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
+                    dialog.save_mode = command == Action::SaveSamplerSlot; dialog.bundle_pattern = ""; dialog.multi_select = false;
+                    dialog.title = format!("{} slot {} (.mlaslot)", command == Action::SaveSamplerSlot ? "Save" : "Load preset into", sampler.slot + 1);
+                    dialog.file_pattern = command == Action::SaveSamplerSlot ? "" : ".*\\.[mM][lL][aA][sS][lL][oO][tT]";
+                    dialog.open(last_preset_dir);
+                    if command == Action::SaveSamplerSlot {
+                        // Suggest the slot's sample name.
+                        let used: i32 = midi.pad_sample(target, sampler.slot);
+                        if used >= 0 && used < library.audio.samples.len() {
+                            let clip: AudioClip = library.audio.samples[used];
+                            let suggested: str8 = base_name(clip.source); dialog.path_field.set_text(suggested); free(suggested);
+                        }
+                    }
+                    focus.set_menu_active(true);
                 }
             }
             else if command == Action::EditSamplerSample {

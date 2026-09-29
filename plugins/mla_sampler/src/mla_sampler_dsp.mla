@@ -427,6 +427,9 @@ struct SamplerVoice {
     var pan: f32;
     /// Playback rate before pitch modulation.
     var base_step: f64;
+    /// Glide: semitones still to slide (toward 0) and the slide per frame.
+    var glide_semitones: f32;
+    var glide_per_frame: f32;
     var sample_rate: f32;
     /// Read position in source frames, advance per output frame, and the
     /// direction the playhead moves (1 or -1, only -1 in a bidirectional loop).
@@ -549,6 +552,8 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).lfo2.restart(0.0f);
         (*voice).route_level = 1.0f;
         (*voice).route_level_step = 0.0f;
+        (*voice).glide_semitones = 0.0f;
+        (*voice).glide_per_frame = 0.0f;
         (*voice).amp_level = 0.0f;
         (*voice).active = frames > 0.0 ? 1 : 0;
     }
@@ -563,6 +568,18 @@ fn mlasampler_voice_set_step(voice: ptr<SamplerVoice>, step: f64) {
     unsafe {
         (*voice).base_step = step > 0.0 ? step : 1.0;
         (*voice).step = (*voice).base_step;
+    }
+}
+
+/// @brief Glide: start `semitones` away from the voice's pitch (the previous
+/// note's pitch minus this one's) and slide there over `seconds` (at once
+/// when 0). Call after setting the new pitch with `mlasampler_voice_set_step`.
+fn mlasampler_voice_set_glide(voice: ptr<SamplerVoice>, semitones: f32, seconds: f32) {
+    unsafe {
+        let frames: f32 = seconds * (*voice).sample_rate;
+        (*voice).glide_semitones = frames >= 1.0f ? semitones : 0.0f;
+        (*voice).glide_per_frame = frames >= 1.0f ? semitones / frames : 0.0f;
+        (*voice).filter_countdown = 0;
     }
 }
 
@@ -848,7 +865,7 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             (*voice).filter1.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
             (*voice).filter2.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
             let semitones: f32 = (*voice).lfo1.pitch_semitones * lfo1_now + (*voice).lfo2.pitch_semitones * lfo2_now
-                + sampler_routes(voice, 1, lfo1_now, lfo2_now, filter_level);
+                + sampler_routes(voice, 1, lfo1_now, lfo2_now, filter_level) + (*voice).glide_semitones;
             (*voice).step = (*voice).base_step * f64(exp2f(semitones / 12.0f));
             let pan_shift: f32 = sampler_routes(voice, 5, lfo1_now, lfo2_now, filter_level);
             if pan_shift != 0.0f || (*voice).route1_target == 5 || (*voice).route2_target == 5
@@ -860,6 +877,13 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             (*voice).filter_countdown = 16;
         }
         (*voice).route_level = (*voice).route_level + (*voice).route_level_step;
+        // Glide toward the note's pitch, stopping on it.
+        if (*voice).glide_per_frame != 0.0f {
+            let next: f32 = (*voice).glide_semitones - (*voice).glide_per_frame;
+            let passed: bool = (*voice).glide_per_frame > 0.0f ? next <= 0.0f : next >= 0.0f;
+            (*voice).glide_semitones = passed ? 0.0f : next;
+            if passed { (*voice).glide_per_frame = 0.0f; }
+        }
         (*voice).filter_countdown = (*voice).filter_countdown - 1;
         let first: StereoSample = (*voice).filter1.process(left, right);
         let second: StereoSample = (*voice).filter2.process(first.left, first.right);

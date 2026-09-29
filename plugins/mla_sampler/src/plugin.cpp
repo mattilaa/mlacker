@@ -78,6 +78,8 @@ extern "C" void mlasampler_voice_set_route__ptr_struct_SamplerVoice_i32_i32_i32_
                                                                                 int32_t source, int32_t target,
                                                                                 float amount);
 extern "C" void mlasampler_voice_set_note__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float velocity, float key);
+extern "C" void mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float semitones,
+                                                                        float seconds);
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_next_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -147,6 +149,8 @@ enum ParamId : ParamID {
     kSlotFilterEnvelopeParamBase = 1100, // slot s: 1100 + 5s, see EnvelopeParam
     kChokeParamBase = 1200,              // slot s: 1200 + s, choke group (Off, 1..8)
     kReverseParamBase = 1300,            // slot s: 1300 + s, Off or On
+    kUnisonParamBase = 1400,             // slot s: 1400 + 4s: 0 voices, 1 detune, 2 spread
+    kPlayParamBase = 1500,               // slot s: 1500 + 4s: 0 play mode, 1 glide time
     kFilterParamBase = 2000,             // slot s, stage t: 2000 + 32s + 8t, see FilterField
     kLfoParamBase = 3000,                // slot s, LFO l: 3000 + 32s + 16l, see LfoField
     kRouteParamBase = 4000,              // slot s, route r: 4000 + 32s + 4r, see RouteField
@@ -232,6 +236,15 @@ static const char *const kFilterTypeNames[] = {"Off",       "LP 12",     "LP 24"
 constexpr int kFilterTypesKnown = sizeof(kFilterTypeNames) / sizeof(kFilterTypeNames[0]);
 
 constexpr int kNumGroups = 8;
+// Unison: up to 8 voices per note, their list fixed at 16 entries so saved
+// values never move. Play modes likewise (8 entries).
+constexpr int kUnisonMax = 8;
+constexpr int kUnisonListCount = 16;
+constexpr int kPlayModeCount = 8;
+static const char *const kPlayModeNames[] = {"Poly", "Mono", "Legato"};
+constexpr int kPlayModesKnown = sizeof(kPlayModeNames) / sizeof(kPlayModeNames[0]);
+enum PlayMode : int { kPlayPoly = 0, kPlayMono = 1, kPlayLegato = 2 };
+constexpr int kHeldMax = 16; // keys a mono or legato slot remembers
 constexpr int kNumChokeGroups = 8;
 constexpr float kChokeSeconds = 0.003f; // short but click-free, as Mla Drum's
 
@@ -276,15 +289,16 @@ constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
                             kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages +
-                            kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields + kNumSlots;
+                            kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields + kNumSlots +
+                            kNumSlots * 3 + kNumSlots * 2;
 constexpr ParamID kMaxParamId = kRouteParamBase + kNumSlots * kRouteSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
 // slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
 // starts, groups, group mode, the instance filter envelope, slot filter
 // envelopes, filter stages, choke groups, filter gains, LFO 1, LFO 2, mod
-// routes and reverse. Each block was appended after the ones before it, so
-// saved states keep their meaning.
+// routes, reverse, unison and play mode. Each block was appended after the
+// ones before it, so saved states keep their meaning.
 struct ParamLayout {
     ParamID ids[kNumParams];
     int16_t index[kMaxParamId];
@@ -325,6 +339,10 @@ struct ParamLayout {
             for(int route = 0; route < kRoutes; ++route)
                 run(kRouteParamBase + slot * kRouteSlotStride + route * kRouteStride, kRouteFields);
         run(kReverseParamBase, kNumSlots);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            run(kUnisonParamBase + slot * 4, 3);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            run(kPlayParamBase + slot * 4, 2);
     }
 };
 static const ParamLayout kLayout;
@@ -676,6 +694,20 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             reverse->appendString(STR16("Off"));
             reverse->appendString(STR16("On"));
         }
+        // Unison, then play mode and glide.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *voices = addList(static_cast<ParamID>(kUnisonParamBase + slot * 4), slotTitle(slot, "Unison"));
+            for(int k = 0; k < kUnisonListCount; ++k)
+                voices->appendString(utf16(k < kUnisonMax ? std::to_string(k + 1) : "(reserved)").c_str());
+            addParam(static_cast<ParamID>(kUnisonParamBase + slot * 4 + 1), slotTitle(slot, "Detune").c_str(), STR16("ct"), 0.0);
+            addParam(static_cast<ParamID>(kUnisonParamBase + slot * 4 + 2), slotTitle(slot, "Spread").c_str(), nullptr, 0.0);
+        }
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *mode = addList(static_cast<ParamID>(kPlayParamBase + slot * 4), slotTitle(slot, "Play Mode"));
+            for(int k = 0; k < kPlayModeCount; ++k)
+                mode->appendString(utf16(k < kPlayModesKnown ? kPlayModeNames[k] : "(reserved)").c_str());
+            addParam(static_cast<ParamID>(kPlayParamBase + slot * 4 + 1), slotTitle(slot, "Glide").c_str(), STR16("s"), 0.0);
+        }
         return kResultOk;
     }
 
@@ -978,6 +1010,10 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         float velocityGain = 1.0f;
         // Plays its sample backwards (read when the note started).
         bool reversed = false;
+        // Its place in a unison stack: pitch and pan offsets, and gain.
+        double detune = 0.0;
+        float panOffset = 0.0f;
+        float unisonGain = 1.0f;
     };
 
     struct Retired {
@@ -986,6 +1022,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     };
 
     Voice voices_[kNumVoices];
+    // Audio thread: keys held on each mono or legato slot, newest last, and
+    // each slot's last note (-1 for none) and its key tracking, for glides.
+    int held_[kNumSlots][kHeldMax] = {};
+    int heldCount_[kNumSlots] = {};
+    int lastPitch_[kNumSlots] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+    int lastKey_[kNumSlots] = {};
     // Audio thread: each group's last pick (random) or next turn (round-robin).
     int groupTurn_[kNumGroups] = {};
     uint32_t random_ = 0x9E3779B9u;
@@ -1173,6 +1215,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
     void stopAllVoices()
     {
+        std::fill(std::begin(heldCount_), std::end(heldCount_), 0);
+        std::fill(std::begin(lastPitch_), std::end(lastPitch_), -1);
         for(auto &voice : voices_) {
             if(voice.dsp)
                 mlasampler_voice_stop__ptr_struct_SamplerVoice(voice.dsp);
@@ -1313,9 +1357,109 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         for(auto &voice : voices_)
             if(voice.dsp && voice.sample && voice.slot >= 0 && chokeOf(voice.slot) > 0 && choking[chokeOf(voice.slot)])
                 mlasampler_voice_choke__ptr_struct_SamplerVoice_f32(voice.dsp, kChokeSeconds);
-        for(int slot = 0; slot < kNumSlots; ++slot)
-            if(matches[slot])
-                startVoice(slot, channel, pitch, velocity, tracked[slot]);
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            if(!matches[slot])
+                continue;
+            const int mode = playMode(slot);
+            if(mode == kPlayPoly) {
+                startVoices(slot, channel, pitch, velocity, tracked[slot], 0.0);
+                continue;
+            }
+            // Mono and legato: one note per slot. Legato while a key is still
+            // held moves the sounding note; otherwise the old note gives way
+            // (a short fade) to a new one, gliding from the last note's pitch.
+            const bool stillHeld = heldCount_[slot] > 0 && slotSounding(slot);
+            pushHeld(slot, pitch);
+            if(mode == kPlayLegato && stillHeld)
+                retarget(slot, pitch, velocity, tracked[slot]);
+            else {
+                for(auto &voice : voices_)
+                    if(voice.dsp && voice.sample && voice.slot == slot)
+                        mlasampler_voice_choke__ptr_struct_SamplerVoice_f32(voice.dsp, kChokeSeconds);
+                startVoices(slot, channel, pitch, velocity, tracked[slot],
+                            lastPitch_[slot] >= 0 ? static_cast<double>(lastKey_[slot] - tracked[slot]) : 0.0);
+            }
+            lastPitch_[slot] = pitch;
+            lastKey_[slot] = tracked[slot];
+        }
+    }
+
+    int playMode(int slot) const
+    {
+        const int mode = static_cast<int>(std::lround(norm(static_cast<ParamID>(kPlayParamBase + slot * 4)) * (kPlayModeCount - 1)));
+        return mode < kPlayModesKnown ? mode : kPlayPoly;
+    }
+
+    float glideSeconds(int slot) const
+    {
+        const double n = norm(static_cast<ParamID>(kPlayParamBase + slot * 4 + 1));
+        return static_cast<float>(2.0 * n * n); // 0 .. 2 s
+    }
+
+    bool slotSounding(int slot) const
+    {
+        for(const auto &voice : voices_)
+            if(voice.dsp && voice.sample && voice.slot == slot &&
+               mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
+                return true;
+        return false;
+    }
+
+    void pushHeld(int slot, int pitch)
+    {
+        removeHeld(slot, pitch);
+        if(heldCount_[slot] == kHeldMax) {
+            std::copy(held_[slot] + 1, held_[slot] + kHeldMax, held_[slot]);
+            --heldCount_[slot];
+        }
+        held_[slot][heldCount_[slot]++] = pitch;
+    }
+
+    void removeHeld(int slot, int pitch)
+    {
+        int kept = 0;
+        for(int k = 0; k < heldCount_[slot]; ++k)
+            if(held_[slot][k] != pitch)
+                held_[slot][kept++] = held_[slot][k];
+        heldCount_[slot] = kept;
+    }
+
+    // The sounding note of a mono/legato slot moves to `pitch`, gliding from
+    // where it was; its envelope carries on.
+    void retarget(int slot, int16 pitch, float velocity, int keySemitones)
+    {
+        for(auto &voice : voices_) {
+            if(!voice.dsp || !voice.sample || voice.slot != slot ||
+               !mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
+                continue;
+            const int from = voice.keySemitones;
+            voice.keySemitones = keySemitones;
+            voice.pitch = pitch;
+            mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(
+                voice.dsp, voiceStep(slot, voice.sample, keySemitones + voice.detune));
+            mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(voice.dsp, static_cast<float>(from - keySemitones),
+                                                                    glideSeconds(slot));
+            applyFilter(voice.dsp, slot, pitch);
+            mlasampler_voice_set_note__ptr_struct_SamplerVoice_f32_f32(voice.dsp, std::clamp(velocity, 0.0f, 1.0f),
+                                                                     static_cast<float>(pitch - 60) / 60.0f);
+        }
+    }
+
+    // A note's unison stack: `voices` voices spread evenly over +-detune in
+    // pitch and +-spread in pan, each at 1/sqrt(voices) so the stack keeps
+    // its level. `glide` semitones to slide from (mono, legato), or 0.
+    void startVoices(int slot, int16 channel, int16 pitch, float velocity, int keySemitones, double glide)
+    {
+        const int voices = std::clamp(static_cast<int>(std::lround(norm(static_cast<ParamID>(kUnisonParamBase + slot * 4)) *
+                                                                   (kUnisonListCount - 1))) + 1, 1, kUnisonMax);
+        const double detuneCents = norm(static_cast<ParamID>(kUnisonParamBase + slot * 4 + 1)) * 100.0;
+        const double spread = norm(static_cast<ParamID>(kUnisonParamBase + slot * 4 + 2));
+        const float gain = 1.0f / std::sqrt(static_cast<float>(voices));
+        for(int v = 0; v < voices; ++v) {
+            const double position = voices > 1 ? static_cast<double>(v) / (voices - 1) * 2.0 - 1.0 : 0.0;
+            startVoice(slot, channel, pitch, velocity, keySemitones, position * detuneCents / 100.0,
+                       static_cast<float>(position * spread), gain, glide);
+        }
     }
 
     int chokeOf(int slot) const
@@ -1349,8 +1493,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         return pick;
     }
 
-    // `keySemitones`: pitch offset from key tracking.
-    void startVoice(int slot, int16 channel, int16 pitch, float velocity, int keySemitones)
+    // `keySemitones`: pitch offset from key tracking; `detune`, `panOffset`
+    // and `unisonGain` place it in a unison stack; `glide` semitones to
+    // slide from.
+    void startVoice(int slot, int16 channel, int16 pitch, float velocity, int keySemitones, double detune,
+                    float panOffset, float unisonGain, double glide)
     {
         const Sample *sample = active_[slot];
         Voice *target = nullptr;
@@ -1373,8 +1520,10 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
         applyEnvelope(target->dsp, slot);
         mlasampler_voice_start__ptr_struct_SamplerVoice_f64_f64_f32_f32_i32_f64_f64(
-            target->dsp, frames, voiceStep(slot, sample, keySemitones), voiceGain(slot, velocityGain),
-            panFromNorm(slotNorm(slot, kSlotPan)), 0, 0.0, 0.0);
+            target->dsp, frames, voiceStep(slot, sample, keySemitones + detune), voiceGain(slot, velocityGain) * unisonGain,
+            panFromNorm(slotNorm(slot, kSlotPan)) + panOffset, 0, 0.0, 0.0);
+        if(glide != 0.0)
+            mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(target->dsp, static_cast<float>(glide), glideSeconds(slot));
         applyLoop(target->dsp, slot, sample);
         applyFilter(target->dsp, slot, pitch);
         applyLfo(target->dsp, slot);
@@ -1405,6 +1554,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(target->dsp,
                                                                 std::floor(std::clamp(startShare, 0.0, 1.0) * frames));
         target->keySemitones = keySemitones;
+        target->detune = detune;
+        target->panOffset = panOffset;
+        target->unisonGain = unisonGain;
         target->reversed = norm(static_cast<ParamID>(kReverseParamBase + slot)) >= 0.5;
         target->velocityGain = velocityGain;
         target->sample = sample;
@@ -1416,7 +1568,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
     // Playback rate for a slot's note: sample rate ratio, instance and slot
     // tune, and key tracking.
-    double voiceStep(int slot, const Sample *sample, int keySemitones) const
+    double voiceStep(int slot, const Sample *sample, double keySemitones) const
     {
         const double semitones =
             semitonesFromNorm(norm(kTuneParam)) + semitonesFromNorm(slotNorm(slot, kSlotTune)) + keySemitones;
@@ -1484,15 +1636,33 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 applyRoutes(voice.dsp, slot);
             }
             if(sound) {
-                mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(voice.dsp, voiceStep(slot, voice.sample, voice.keySemitones));
+                mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(
+                    voice.dsp, voiceStep(slot, voice.sample, voice.keySemitones + voice.detune));
                 mlasampler_voice_set_gain__ptr_struct_SamplerVoice_f32_f32(
-                    voice.dsp, voiceGain(slot, voice.velocityGain), panFromNorm(slotNorm(slot, kSlotPan)));
+                    voice.dsp, voiceGain(slot, voice.velocityGain) * voice.unisonGain,
+                    panFromNorm(slotNorm(slot, kSlotPan)) + voice.panOffset);
             }
         }
     }
 
     void noteOff(int16 channel, int16 pitch)
     {
+        // A mono or legato slot whose sounding key comes up goes back to the
+        // newest key still held, gliding, instead of releasing.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            if(playMode(slot) == kPlayPoly || heldCount_[slot] == 0)
+                continue;
+            removeHeld(slot, pitch);
+            if(heldCount_[slot] == 0 || lastPitch_[slot] != pitch || !slotSounding(slot))
+                continue;
+            const int back = held_[slot][heldCount_[slot] - 1];
+            int keySemitones = 0;
+            if(zoneNorm(slot, kZoneMode) >= 0.5 && zoneNorm(slot, kZoneTrack) >= 0.5)
+                keySemitones = back - rootKeyFromNorm(zoneNorm(slot, kZoneRoot));
+            retarget(slot, static_cast<int16>(back), 1.0f, keySemitones);
+            lastPitch_[slot] = back;
+            lastKey_[slot] = keySemitones;
+        }
         for(auto &voice : voices_)
             if(voice.dsp && voice.channel == channel && voice.pitch == pitch)
                 mlasampler_voice_release__ptr_struct_SamplerVoice(voice.dsp);

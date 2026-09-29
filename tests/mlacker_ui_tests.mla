@@ -44,6 +44,7 @@ use mlacker_ui::patterns::SongCover;
 mod std::env;
 use std::env::println;
 use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::PresetResult;
 use mlacker_ui::session::SessionData;
 use mlacker_ui::session::SessionView;
 use mlacker_ui::session::is_project_path;
@@ -89,6 +90,8 @@ use tui::textfield::TextField;
 mod mlacker_ui::sample_editor;
 mod mlacker_ui::piano_dialog;
 mod tui::piano;
+mod mlacker_ui::sampler_view;
+use mlacker_ui::sampler_view::SamplerView;
 mod mlacker_ui::virtual_keyboard;
 use mlacker_ui::virtual_keyboard::*;
 use mlacker_ui::midi_controller::MidiInputEvent;
@@ -444,6 +447,39 @@ fn test_clip(source: str8, channels: i64, frames: i64) -> AudioClip {
     for _i in 0..rows { clip.peaks.push(WavePeak { left: 375, right: 375, left_body: 200, right_body: 200 }); }
     for _i in 0..details { clip.detail_peaks.push(WavePeak { left: 375, right: 375 }); }
     return clip;
+}
+
+#[test]
+fn tui_sampler_slot_preset_keys_and_file() {
+    // Keys name a field independently of the slot, so a preset loads into any slot.
+    verify(SamplerView::slot_key(200, 0) == 200 * 64 && SamplerView::slot_key(207 + 6, 1) == 200 * 64 + 6);
+    verify(SamplerView::slot_key(1512, 3) == 1500 * 64 && SamplerView::slot_key(2000 + 32 * 5 + 13, 5) == 2000 * 64 + 13);
+    verify(SamplerView::slot_key(1512, 2) < 0 && SamplerView::slot_key(950, 0) < 0 && SamplerView::slot_key(1415, 3) < 0);
+    verify(SamplerView::slot_id(1500 * 64 + 1, 3) == 1513 && SamplerView::slot_id(4000 * 64 + 7, 15) == 4000 + 32 * 15 + 7);
+    verify(SamplerView::slot_id(1400 * 64 + 3, 0) < 0 && SamplerView::slot_id(950 * 64, 0) < 0);
+    for s in 0..16 {
+        for id in 200..4600 {
+            let key: i64 = SamplerView::slot_key(wide(id), i32(s));
+            if key >= 0 { verify(SamplerView::slot_id(key, i32(s)) == wide(id)); }
+        }
+    }
+    let directory: str8 = clone("/private/tmp/mlacker-slot-test-XXXXXX"); mkdtemp(directory);
+    let path: str8 = format!("{}/kick", directory);
+    let clip: AudioClip = test_clip("/samples/kick.wav", 2, 40);
+    let saved: PresetResult = SessionCodec::sampler_slot_file(path, "Mla Sampler", true, [1500 * 64, 200 * 64 + 1], [0.25, 0.75], clip, true);
+    verify(saved.ok);
+    let file: str8 = format!("{}.mlaslot", path);
+    let loaded: PresetResult = SessionCodec::sampler_slot_file(file, "Mla Sampler", false, [], [], AudioClip {}, false);
+    verify(loaded.ok && loaded.keys.len() == 2 && loaded.keys[1] == 200 * 64 + 1 && loaded.values[0] == 0.25);
+    verify(loaded.clips.len() == 1 && loaded.clips[0].frames == 40 && loaded.clips[0].channels == 2 && loaded.clips[0].samples[5] == 0.25f);
+    let foreign: PresetResult = SessionCodec::sampler_slot_file(file, "Mla Drum", false, [], [], AudioClip {}, false);
+    verify(!foreign.ok && foreign.clips.len() == 0);
+    // An empty slot saves without a sample.
+    let empty: PresetResult = SessionCodec::sampler_slot_file(path, "Mla Sampler", true, [], [], AudioClip {}, false);
+    verify(empty.ok);
+    let reread: PresetResult = SessionCodec::sampler_slot_file(file, "Mla Sampler", false, [], [], AudioClip {}, false);
+    verify(reread.ok && reread.keys.len() == 0 && reread.clips.len() == 0);
+    let removed: result<i32, str8> = std::fs::remove_tree(directory); verify(removed.is_ok()); free(path); free(file); free(directory);
 }
 
 #[test]

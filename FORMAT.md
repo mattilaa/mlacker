@@ -240,3 +240,19 @@ non-finite values, values outside 0–1, and trailing/truncated data are rejecte
 before applying. Read-only parameters are recorded but not written on restore.
 Unchanged values are not resent, preserving the session restoration safeguards.
 MIDI bindings and opaque VST3 component/controller state are not part of a preset.
+
+## Sampler slot preset files (`.mlaslot`, version 1.0)
+
+One Mla Sampler slot, loadable into any slot. String `MLASLOT`, i64 major 1
+and minor 0, plugin display-name string (`Mla Sampler`), i64 field count
+(0–4096), then `(i64 key, f64 normalized value)` pairs, then an i64 flag (0 or
+1) and, when 1, the slot's sample in the session's sample-list encoding. Same
+little-endian primitives and limits as `.mlapre`.
+
+A key names a slot field independently of the slot: `base * 64 + field`,
+where the slot's parameter ID is `base + stride * slot + field` for one of
+Mla Sampler's per-slot ID blocks (see its README: `200 + 7s`, `400 + 5s`, …,
+`4000 + 32s`). The plugin name must match; duplicate keys, values outside 0–1
+and trailing/truncated data are rejected before anything is applied. Keys the
+plugin lacks are skipped, and slot fields the file lacks keep their values.
+Without a sample, loading empties the slot.

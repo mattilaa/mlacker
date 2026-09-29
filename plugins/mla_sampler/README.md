@@ -183,6 +183,27 @@ LFO) glides over about 1.5 ms: a biquad holding signal rings far out of range
 when its cutoff leaps several octaves at once. A note's first cutoff is not
 smoothed, so an instant filter attack still opens at once.
 
+## Unison and play modes
+
+**Unison** stacks up to 8 voices per note on a slot (a 16-entry list; 1 is
+off). **Detune** (0 .. 100 cents) spreads their pitch evenly between minus and
+plus that amount, and **Spread** (0 .. 100 %) pans them across the stereo field
+the same way. The stack is scaled by 1/sqrt(voices), so adding voices keeps
+the loudness roughly even. Each voice counts against the 32-voice pool.
+
+**Play Mode** (an 8-entry list):
+
+| Mode   | Playing |
+|--------|---------|
+| Poly   | Every note plays its own voices. |
+| Mono   | One note at a time: a new note cuts the slot's sounding one and restarts. |
+| Legato | As Mono, but a note played while another is held keeps the playhead and envelopes, and only changes pitch. |
+
+In Mono and Legato a slot remembers the keys held, so releasing the newest
+returns to the previous one still held. **Glide** (0 .. 2 s, quadratic) slides
+from the previous note's pitch to the new one in Mono and Legato; in Poly it
+does nothing.
+
 ## Outputs
 
 Bus 0 is **Main**. Buses 1-7 are the auxiliary stereo outputs **Out 2**..**Out 8**,
@@ -251,6 +272,11 @@ mlacker's README, "Plugin outputs").
 | Slot N Mod R Source | Off, LFO 1, LFO 2, Amp Env, Filter Env, Velocity, Key | Route R = 1 .. 4. 16-entry list. Default Off. |
 | Slot N Mod R Target | Off, Pitch, Cutoff, Resonance, Level, Pan, Start | 16-entry list. Default Off. |
 | Slot N Mod R Amount | -100 .. +100 %               | Default 0. |
+| Slot N Unison      | 1 .. 8 voices                 | 16-entry list. Default 1. |
+| Slot N Detune      | 0 .. 100 cents                | Unison pitch spread. Default 0. |
+| Slot N Spread      | 0 .. 100 %                    | Unison stereo spread. Default 0. |
+| Slot N Play Mode   | Poly, Mono, Legato            | 8-entry list. Default Poly. |
+| Slot N Glide       | 0 .. 2 s                      | Mono and Legato. Default 0. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -272,13 +298,15 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
   fields each; LFO 2 was added later and is registered after LFO 1's block)
 - `4000 + 32s + 4r` + 0 source, 1 target, 2 amount, for mod route `r`
   (0-based; room for 8 routes of 4 fields)
+- `1400 + 4s` + 0 unison voices, 1 detune, 2 spread
+- `1500 + 4s` + 0 play mode, 1 glide
 
 `950` is the Group Mode and `960`-`963` the instance filter envelope.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
-off, no choke group, LFO depths at 0, no mod routes, forwards.
+off, no choke group, LFO depths at 0, no mod routes, forwards, one voice, Poly.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -305,7 +333,9 @@ staying bounded), the LFO (tremolo, vibrato, a filter wobble that stays in
 range, tempo sync, delay, retrigger and free, sample & hold), LFO 2 and the mod
 matrix (LFO 2 to pan, velocity to level and start, filter envelope to pitch,
 LFO 1 to resonance staying bounded, a route edited mid-note), reverse (backwards, with a start and a forward loop
-in the reversed timeline), choke
+in the reversed timeline), unison (the stack's level, stereo spread and
+detune), Mono replacing a note, Legato keeping the envelope, glide and
+returning to a held key, choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

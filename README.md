@@ -711,10 +711,11 @@ Overlapping zones layer.
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
-| `e` | Next page: keys & loops, Sound, Filter, LFO 1, LFO 2, Mod |
+| `e` | Next page: keys & loops, Sound, Filter, LFO 1, LFO 2, Mod, Play |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
 | `E` | Edit the slot's sample (see below) |
+| `W` / `R` | Save the slot as a slot preset / load one into it (see below) |
 
 The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
 two stages in series: per stage its type (**F1**/**F2**: `Off`, `LP12`,
@@ -747,6 +748,20 @@ target (**Tgt**: `Pitch`, `Cut`, `Reso`, `Level`, `Pan`, `Start`) and amount
 (**Amt**, -100 .. +100 %). A route's target and amount are dim until it has
 both a source and a target. `J`/`K` step the amount by 1 %, `[`/`]` by 10 %.
 See the Mla Sampler README for what each target moves at 100 %.
+
+The **Play page** (`e` from Mod) sets how each slot plays notes: **Mode**
+(`Poly`, `Mono`, or `Legato`, which keeps the playhead and envelopes when a
+note is played over a held one), **Glide** (the slide from the previous note in
+Mono and Legato; dim in Poly), **Uni** (1-8 unison voices per note), **Det**
+(their detune, cents) and **Spr%** (their stereo spread). Det and Spr% are dim
+with one voice.
+
+**Slot presets** keep one slot, its sample and every setting on all pages, in a
+`.mlaslot` file. `W` saves the selected slot (the file name suggested is the
+sample's); `R` loads a preset into the selected slot, whichever slot it was
+saved from. The sample joins the Audio list; a preset of an empty slot empties
+the slot. Settings a newer Mla Sampler added that the preset lacks keep their
+values, and settings this Mla Sampler lacks are skipped.
 
 The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
 bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`
@@ -1298,8 +1313,9 @@ parameter/editor-state round trips and rejected files. The spectrum PTY test tog
 analyzer, edits the master bus and checks it survives a session round trip. The
 virtual keyboard PTY test toggles the keyboard, changes octave, step-enters a note
 and checks that Space and `q` behave. The Sampler pane PTY test (run when
-`MlaSampler.vst3` is built) loads and clears slots, edits loops and outputs, and
-checks that they survive a session round trip. Legacy widget tests opt in
+`MlaSampler.vst3` is built) loads and clears slots, edits loops, outputs and
+every page, saves a slot preset and loads it into another slot, and checks that
+the edits survive a session round trip. Legacy widget tests opt in
 to seeded demo data with `MLACKER_DEMO=1`; normal mlacker startup does not.
 
 For a hardware-free manual run:

@@ -75,6 +75,10 @@ constexpr ParamID groupParam(int slot) { return 900 + slot; }
 constexpr ParamID kGroupMode = 950;
 constexpr ParamID chokeParam(int slot) { return 1200 + slot; }
 constexpr ParamID reverseParam(int slot) { return 1300 + slot; }
+constexpr ParamID unisonParam(int slot, int k) { return 1400 + slot * 4 + k; } // 0 voices, 1 detune, 2 spread
+constexpr ParamID playParam(int slot, int k) { return 1500 + slot * 4 + k; }   // 0 mode, 1 glide
+constexpr double kMono = 1.0 / 7.0, kLegato = 2.0 / 7.0;
+constexpr ParamID kAttack = 104;
 enum LfoField { kLfoShape, kLfoRate, kLfoSync, kLfoDivision, kLfoDelay, kLfoPitch, kLfoCutoff, kLfoLevel, kLfoTrigger };
 constexpr ParamID lfoParam(int slot, LfoField k) { return 3000 + slot * 32 + k; }
 constexpr ParamID lfo2Param(int slot, LfoField k) { return 3016 + slot * 32 + k; }
@@ -1001,6 +1005,91 @@ void testReverse(const std::string &path)
     CHECK(energy(looped, 3000, 4096) > 10.0);
 }
 
+void testUnisonAndGlide(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    // Three unison voices at 1/sqrt(3) each: DC sums to sqrt(3) x 0.5.
+    const Params three = {{unisonParam(0, 0), 2.0 / 15.0}};
+    CHECK(std::fabs(left(filtered(path, dc(), three), 100) - 0.5f * std::sqrt(3.0f)) < 1e-3f);
+    // Full spread pans them left, centre and right (constant power).
+    Params spread = three;
+    spread.push_back({unisonParam(0, 2), 1.0});
+    CHECK(std::fabs(left(filtered(path, dc(), spread), 100) - 0.5f / std::sqrt(3.0f) * (std::sqrt(2.0f) + 1.0f)) < 1e-3f);
+    // +-100 cents: the three ramps run a semitone down, level and a semitone up.
+    Params detuned = three;
+    detuned.push_back({unisonParam(0, 1), 1.0});
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto stacked = filtered(path, slope, detuned);
+    const float expected = (std::pow(2.0f, -1.0f / 12) + 1.0f + std::pow(2.0f, 1.0f / 12)) / std::sqrt(3.0f) / 48000.0f;
+    CHECK(std::fabs((left(stacked, 1001) - left(stacked, 1000)) - expected) < 1e-6f);
+
+    // A zone slot over C-3 .. C-5 that tracks the key, on a slow ramp.
+    const auto zoned = [&](Params extra) {
+        Params params{{zoneParam(0, kZoneMode), 1.0}, {zoneParam(0, kZoneLow), key(48)}, {zoneParam(0, kZoneHigh), key(72)},
+                      {zoneParam(0, kZoneRoot), key(60)}, {zoneParam(0, kZoneTrack), 1.0}};
+        for(const auto &p : extra)
+            params.push_back(p);
+        return params;
+    };
+    const auto run = [&](const Params &params, const std::vector<float> &pcm, auto play) {
+        Instance plugin;
+        std::vector<float> out;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return out;
+        }
+        CHECK(loadPcm(plugin, 0, pcm) == kResultOk);
+        for(const auto &[id, value] : params)
+            plugin.param(id, value);
+        play(plugin, out);
+        return out;
+    };
+    // Mono: a second note replaces the first instead of stacking on it.
+    const auto mono = run(zoned({{playParam(0, 0), kMono}}), dc(), [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(kBlock);
+        plugin.noteOn(64);
+        plugin.render(kBlock);
+        out = plugin.render(kBlock);
+    });
+    CHECK(std::fabs(left(mono, 100) - 0.5f) < 1e-3f);
+    // Legato: with a slow attack, a second note held over the first carries
+    // the envelope on rather than starting it again from silence.
+    const auto legato = run(zoned({{playParam(0, 0), kLegato}, {kAttack, 0.8}}), dc(), [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(4096);
+        out = plugin.render(kBlock);
+        plugin.noteOn(64);
+        const auto next = plugin.render(kBlock);
+        out.insert(out.end(), next.begin(), next.end());
+    });
+    CHECK(left(legato, kBlock + 10) >= left(legato, kBlock - 1) - 1e-4f);
+    CHECK(left(legato, kBlock + 10) > 0.01f);
+    // Glide: a legato octave up over 0.1 s leaves at the old pitch and
+    // arrives at the new one (the ramp's slope doubles).
+    const auto glide = run(zoned({{playParam(0, 0), kLegato}, {playParam(0, 1), std::sqrt(0.05)}}), slope,
+                           [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(kBlock);
+        plugin.noteOn(72);
+        out = plugin.render(8192);
+    });
+    CHECK(std::fabs((left(glide, 21) - left(glide, 20)) - 1.0f / 48000) < 2e-7f);
+    CHECK(std::fabs((left(glide, 7001) - left(glide, 7000)) - 2.0f / 48000) < 2e-7f);
+    // Releasing the top key goes back to the one still held.
+    const auto back = run(zoned({{playParam(0, 0), kLegato}}), slope, [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(kBlock);
+        plugin.noteOn(72);
+        plugin.render(kBlock);
+        plugin.noteOff(72);
+        out = plugin.render(kBlock);
+    });
+    CHECK(std::fabs((left(back, 101) - left(back, 100)) - 1.0f / 48000) < 2e-7f);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -1123,12 +1212,13 @@ int main(int argc, char **argv)
     testDelayLineFilters(path);
     testModMatrix(path);
     testReverse(path);
+    testUnisonAndGlide(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

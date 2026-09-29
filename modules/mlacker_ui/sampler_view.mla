@@ -23,7 +23,8 @@ use std::strbuf::free;
 // track, gain) and 1100 + 5s + field for the slot's filter envelope (own, attack,
 // decay, sustain, release); 1200 + s is its choke group (Off, 1-8), 1300 + s
 // reverse (Off, On), and
-// 3000 + 32s + 16l + field its LFO l (shape, rate, sync, division, delay,
+// 1400 + 4s + field its unison (voices, detune, spread), 1500 + 4s + field its
+// play mode and glide, 3000 + 32s + 16l + field its LFO l (shape, rate, sync, division, delay,
 // pitch, cutoff, level, trigger), and 4000 + 32s + 4r + field its mod route r
 // (source, target, amount).
 
@@ -47,7 +48,8 @@ pub struct SamplerView {
     /// (`page` 3): 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch
     /// depth, 6 cutoff depth, 7 level depth, 8 trigger; the LFO 2 page
     /// (`page` 4) the same for LFO 2. On the Mod page (`page` 5): per route
-    /// r (0-3) 3r source, 3r + 1 target, 3r + 2 amount.
+    /// r (0-3) 3r source, 3r + 1 target, 3r + 2 amount. On the Play page
+    /// (`page` 6): 0 mode, 1 glide, 2 unison voices, 3 detune, 4 spread.
     var slot: i32; var column: i32; var scroll: i32; var page: i32;
     /// Wave view (`w`): the selected slot's waveform with its loop markers.
     /// `marker` 0 edits the loop start, 1 the loop end, 2 the sample start
@@ -96,6 +98,7 @@ impl SamplerView {
     fn col(self: SamplerView) -> i32 { return self.page * 100 + self.column; }
     /// Columns on a page: keys & loops, Sound, Filter.
     fn page_columns(page: i32) -> i32 {
+        if page == 6 { return 5; }
         if page == 1 { return 12; }
         if page == 2 { return 17; }
         if page == 3 || page == 4 { return 9; }
@@ -104,7 +107,8 @@ impl SamplerView {
     /// Parameter ID of a column (see `column`; 100 + column on the Sound
     /// page) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
-        if col >= 500 { return 4000 + s * 32 + (col - 500) / 3 * 4 + (col - 500) % 3; }
+        if col >= 600 { return col < 602 ? 1500 + s * 4 + col - 600 : 1400 + s * 4 + col - 602; }
+        if col >= 500 && col < 600 { return 4000 + s * 32 + (col - 500) / 3 * 4 + (col - 500) % 3; }
         if col >= 400 { return 3016 + s * 32 + col - 400; }
         if col >= 300 { return 3000 + s * 32 + col - 300; }
         if col >= 212 { return 1100 + s * 5 + col - 212; }
@@ -122,6 +126,30 @@ impl SamplerView {
         return 200 + s * 7 + col - 3;
     }
     /// Normalized value of a slot's column, or -1 when the plugin lacks it.
+    /// Slot preset key of parameter `id` of sample slot `s`: its block's
+    /// base * 64 + its field there, or -1 when `id` is not one of the slot's.
+    /// The per-slot blocks are (base, stride, width), the slot's IDs being
+    /// base + stride * s + field for field < width.
+    pub fn slot_key(id: i64, s: i32) -> i64 {
+        let blocks: list<i64> = SamplerView::slot_blocks(); let count: i64 = blocks.len() / 3;
+        for b in 0..count {
+            let offset: i64 = id - blocks[b * 3] - blocks[b * 3 + 1] * wide(s);
+            if offset >= 0 && offset < blocks[b * 3 + 2] { return blocks[b * 3] * 64 + offset; }
+        }
+        return -1;
+    }
+    /// The parameter ID a slot preset `key` has on sample slot `s`, or -1.
+    pub fn slot_id(key: i64, s: i32) -> i64 {
+        let blocks: list<i64> = SamplerView::slot_blocks(); let count: i64 = blocks.len() / 3;
+        for b in 0..count {
+            if key / 64 == blocks[b * 3] && key % 64 < blocks[b * 3 + 2] { return blocks[b * 3] + blocks[b * 3 + 1] * wide(s) + key % 64; }
+        }
+        return -1;
+    }
+    fn slot_blocks() -> list<i64> {
+        return [200, 7, 7, 400, 5, 5, 500, 1, 1, 600, 2, 2, 700, 5, 5, 800, 1, 1, 900, 1, 1,
+            1100, 5, 5, 1200, 1, 1, 1300, 1, 1, 1400, 4, 3, 1500, 4, 2, 2000, 32, 32, 3000, 32, 32, 4000, 32, 32];
+    }
     fn value(output: AudioController, slot: i32, s: i32, col: i32) -> f64 {
         let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, col));
         return index < 0 ? -1.0 : output.parameter_info(slot, index, 2);
@@ -141,8 +169,11 @@ impl SamplerView {
         // LFO: Rate without sync, Division with it.
         if col == 301 || col == 401 { return SamplerView::value(output, slot, s, col + 1) >= 0.5; }
         if col == 303 || col == 403 { return SamplerView::value(output, slot, s, col - 1) < 0.5; }
+        // Play: glide in poly mode, detune and spread without unison.
+        if col == 601 { return SamplerView::value(output, slot, s, 600) < 0.07; }
+        if col == 603 || col == 604 { return SamplerView::value(output, slot, s, 602) < 0.03; }
         // Mod: a route's target and amount while it has no source or target.
-        if col >= 500 && (col - 500) % 3 > 0 {
+        if col >= 500 && col < 600 && (col - 500) % 3 > 0 {
             let first: i32 = col - (col - 500) % 3;
             return SamplerView::value(output, slot, s, first) < 0.03 || SamplerView::value(output, slot, s, first + 1) < 0.03;
         }
@@ -161,7 +192,7 @@ impl SamplerView {
         // LFO 2's columns step as LFO 1's.
         if col >= 400 && col < 500 { return SamplerView::continuous_step(col - 100, big); }
         // Mod amounts span -100 .. +100 %: 1 % (10 %).
-        if col >= 500 { return big ? 0.05 : 0.005; }
+        if col >= 500 && col < 600 { return big ? 0.05 : 0.005; }
         if col == 100 { return (big ? 6.0 : 1.0) / 66.0; }
         if col == 102 { return (big ? 12.0 : 1.0) / 48.0; }
         // Cutoff: about a semitone (an octave) of its 20 Hz .. 20 kHz sweep.
@@ -201,8 +232,11 @@ impl SamplerView {
             // LFO shapes and divisions likewise.
             if (col == 300 || col == 400) && value > 5.0 { value = 5.0; }
             if (col == 303 || col == 403) && value > 13.0 { value = 13.0; }
+            // Play modes and unison voice counts likewise.
+            if col == 600 && value > 2.0 { value = 2.0; }
+            if col == 602 && value > 7.0 { value = 7.0; }
             // Mod sources and targets likewise.
-            if col >= 500 && (col - 500) % 3 < 2 && value > 6.0 { value = 6.0; }
+            if col >= 500 && col < 600 && (col - 500) % 3 < 2 && value > 6.0 { value = 6.0; }
             if col == 1 || col == 5 { let high: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col + 1))); if value > high { value = high; } }
             if col == 2 || col == 6 { let low: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col - 1))); if value < low { value = low; } }
             if velocity_column && value < 1.0 { value = 1.0; }
@@ -232,7 +266,8 @@ impl SamplerView {
     /// its zone columns need Zone mode, 6 tell that it has no waveform, 7
     /// audition it (see `audition_key`), 8 tell that its envelope columns
     /// need Env set to Own, 9 that its filter envelope columns need FEnv set
-    /// to Own, 10 edit its sample. (An i32 rather than an enum: MLang
+    /// to Own, 10 edit its sample, 11 save it as a slot preset, 12 load a
+    /// slot preset into it. (An i32 rather than an enum: MLang
     /// before its let-enum fix ran an enum `let` initializer twice.)
     pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
         if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; return 1; }
@@ -249,7 +284,7 @@ impl SamplerView {
         if left && self.column > 0 { self.column = self.column - 1; return 1; }
         if right && self.column < SamplerView::page_columns(self.page) - 1 { self.column = self.column + 1; return 1; }
         // e switches between the keys & loops page and the Sound page.
-        if event.code == 101 && event.modifiers == 1 { self.page = (self.page + 1) % 6; self.column = 0; return 1; }
+        if event.code == 101 && event.modifiers == 1 { self.page = (self.page + 1) % 7; self.column = 0; return 1; }
         if slot < 1 { return 0; }
         // Shift+J/K adjust, as everywhere else in the tracker; [ and ] take
         // octave / 10% steps.
@@ -276,6 +311,9 @@ impl SamplerView {
         if event.code == 112 && event.modifiers == 1 { return 7; }
         // E edits the slot's sample in the sample editor.
         if (event.code == 69 && event.modifiers == 1) || (event.code == 101 && event.modifiers == 2) { return 10; }
+        // W / R save the slot as a slot preset / load one into it.
+        if (event.code == 87 && event.modifiers == 1) || (event.code == 119 && event.modifiers == 2) { return 11; }
+        if (event.code == 82 && event.modifiers == 1) || (event.code == 114 && event.modifiers == 2) { return 12; }
         return 0;
     }
     /// Column a wave view marker edits: loop start, loop end, sample start.
@@ -542,7 +580,14 @@ impl SamplerView {
             let widths: list<i32> = [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
                 ["Src1", "Tgt1", "Amt1", "Src2", "Tgt2", "Amt2", "Src3", "Tgt3", "Amt3", "Src4", "Tgt4", "Amt4"],
-                "Mod | j/k slot  h/l col  J/K [ ] adjust  e keys & loops  w wave  p play  Enter load");
+                "Mod | j/k slot  h/l col  J/K [ ] adjust  e play  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 6 {
+            let widths: list<i32> = [7, 7, 5, 5, 5];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Mode", "Glide", "Uni", "Det", "Spr%"],
+                "Play | j/k slot  h/l col  J/K [ ] adjust  e keys & loops  W/R save/load slot  p play");
             return;
         }
         if self.page == 2 {
@@ -763,8 +808,17 @@ impl SamplerView {
         if value < 0.0 { return clone("-"); }
         // LFO 2's columns read as LFO 1's.
         if col >= 400 && col < 500 { return SamplerView::field_text(col - 100, value); }
+        // Play page.
+        if col == 600 {
+            let modes: array<str8, 3> = {"Poly", "Mono", "Legato"};
+            let mode: i32 = i32(std::math::floor(value * 7.0 + 0.5));
+            return mode < 3 ? clone(modes[mode]) : format!("#{}", mode);
+        }
+        if col == 601 { return SamplerView::seconds_text(2.0 * value * value); }
+        if col == 602 { return format!("{}", i32(std::math::floor(value * 15.0 + 0.5)) + 1); }
+        if col == 603 || col == 604 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
         // Mod page: source and target names, and the amount in percent.
-        if col >= 500 {
+        if col >= 500 && col < 600 {
             let part: i32 = (col - 500) % 3;
             let index: i32 = i32(std::math::floor(value * 15.0 + 0.5));
             if part == 0 {
