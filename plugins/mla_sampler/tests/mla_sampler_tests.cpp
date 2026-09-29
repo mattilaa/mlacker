@@ -74,6 +74,11 @@ constexpr ParamID startParam(int slot) { return 800 + slot; }
 constexpr ParamID groupParam(int slot) { return 900 + slot; }
 constexpr ParamID kGroupMode = 950;
 constexpr ParamID chokeParam(int slot) { return 1200 + slot; }
+enum LfoField { kLfoShape, kLfoRate, kLfoSync, kLfoDivision, kLfoDelay, kLfoPitch, kLfoCutoff, kLfoLevel, kLfoTrigger };
+constexpr ParamID lfoParam(int slot, LfoField k) { return 3000 + slot * 32 + k; }
+constexpr int kSquare = 4, kSampleHold = 5;
+double lfoShape(int shape) { return shape / 15.0; }
+double lfoRate(double hz) { return std::log(hz / 0.05) / std::log(400.0); }
 constexpr ParamID kFilterEnvelope = 960; // + 0 attack, 1 decay, 2 sustain, 3 release
 constexpr ParamID slotFilterEnvelope(int slot, EnvelopeParam k) { return 1100 + slot * 5 + k; }
 enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack, kFilterGain };
@@ -796,6 +801,77 @@ void testMoreFilterTypes(const std::string &path)
     CHECK(difference / 2048 > 0.005);
 }
 
+void testLfo(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const Params square10 = {{lfoParam(0, kLfoShape), lfoShape(kSquare)}, {lfoParam(0, kLfoRate), lfoRate(10)}};
+    const auto with = [](Params base, Params extra) { for(const auto &p : extra) base.push_back(p); return base; };
+    // Tremolo: a 10 Hz square at full depth, full level for 2400 frames, then silent.
+    const auto tremolo = filtered(path, dc(), with(square10, {{lfoParam(0, kLfoLevel), 1.0}}));
+    CHECK(std::fabs(left(tremolo, 1000) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(left(tremolo, 3500)) < 1e-3f);
+    // Vibrato: +-12 semitones doubles, then halves, a ramp's slope.
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto vibrato = filtered(path, slope, with(square10, {{lfoParam(0, kLfoPitch), 1.0}}));
+    CHECK(std::fabs((left(vibrato, 1001) - left(vibrato, 1000)) - 2.0f / 48000) < 2e-6f);
+    CHECK(std::fabs((left(vibrato, 3501) - left(vibrato, 3500)) - 0.5f / 48000) < 2e-6f);
+    // Filter: +-4 octaves around a 1 kHz low-pass opens it for a 6 kHz tone,
+    // then shuts it.
+    const auto wobble = filtered(path, tone(), with(square10, {{lfoParam(0, kLfoCutoff), 1.0},
+                                                               {filterParam(0, 0, kFilterType), filterType(kLowpass24)},
+                                                               {filterParam(0, 0, kFilterCutoff), cutoff(1000)}}));
+    CHECK(rms(wobble, 1000, 2200) > 0.3);
+    CHECK(rms(wobble, 3500, 4096) < 0.05);
+    // The cutoff's jump glides rather than ringing the filter out of range.
+    double loudest = 0.0;
+    for(int f = 0; f < 4096; ++f)
+        loudest = std::max(loudest, static_cast<double>(std::fabs(left(wobble, f))));
+    CHECK(loudest < 1.0);
+    // Sync: a quarter note at the default 120 BPM is a 2 Hz cycle (24000 frames).
+    Params synced = {{lfoParam(0, kLfoShape), lfoShape(kSquare)}, {lfoParam(0, kLfoSync), 1.0},
+                     {lfoParam(0, kLfoDivision), 2.0 / 15.0}, {lfoParam(0, kLfoLevel), 1.0}};
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : synced)
+            plugin.param(id, value);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(20480);
+        CHECK(std::fabs(left(out, 5000) - 0.5f) < 1e-3f);
+        CHECK(std::fabs(left(out, 17000)) < 1e-3f);
+    }
+    // Delay: the depth fades in over 0.5 s, so the first dip is shallow.
+    const auto delayed = filtered(path, dc(), with(square10, {{lfoParam(0, kLfoLevel), 1.0}, {lfoParam(0, kLfoDelay), 0.25}}));
+    CHECK(left(delayed, 3500) > 0.3f);
+    // Retrigger starts the cycle with the note; Free runs in time, so a note
+    // 3000 frames in starts partway through a dip.
+    for(double trigger : {1.0, 0.0}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : with(square10, {{lfoParam(0, kLfoLevel), 1.0}, {lfoParam(0, kLfoTrigger), trigger}}))
+            plugin.param(id, value);
+        plugin.render(3072);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(kBlock);
+        if(trigger > 0.5)
+            CHECK(std::fabs(left(out, 10) - 0.5f) < 1e-3f);
+        else
+            CHECK(left(out, 10) < 0.01f);
+    }
+    // Sample & hold: levels stay in range and change from step to step.
+    const auto held = filtered(path, dc(), {{lfoParam(0, kLfoShape), lfoShape(kSampleHold)},
+                                             {lfoParam(0, kLfoRate), lfoRate(20)}, {lfoParam(0, kLfoLevel), 1.0}});
+    bool inRange = true;
+    for(int f = 0; f < 4096; ++f)
+        inRange = inRange && left(held, f) >= -1e-4f && left(held, f) <= 0.5f + 1e-4f;
+    CHECK(inRange);
+    CHECK(std::fabs(left(held, 100) - left(held, 2500)) > 1e-3f);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -914,12 +990,13 @@ int main(int argc, char **argv)
     testFilters(path);
     testChokeGroups(path);
     testMoreFilterTypes(path);
+    testLfo(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, LFO, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

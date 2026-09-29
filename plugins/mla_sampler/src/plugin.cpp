@@ -9,7 +9,8 @@
 // ADSR or its own; note-off releases it, and looping slots keep looping
 // through the release. Playback begins at the slot's start point. Each voice
 // then runs a chain of filter stages (types from an extensible list) moved by
-// the instance's or the slot's own filter envelope.
+// the instance's or the slot's own filter envelope, and an LFO modulates its
+// pitch, filter cutoff and level.
 //
 // Outputs: bus 0 "Main" plus seven auxiliary stereo buses "Out 2".."Out 8".
 // A slot sent to an aux bus the host has not activated plays on Main, so the
@@ -66,6 +67,10 @@ extern "C" void mlasampler_voice_start__ptr_struct_SamplerVoice_f64_f64_f32_f32_
 extern "C" void mlasampler_voice_release__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" void mlasampler_voice_stop__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" void mlasampler_voice_choke__ptr_struct_SamplerVoice_f32(SamplerVoice *voice, float seconds);
+extern "C" void mlasampler_voice_set_lfo__ptr_struct_SamplerVoice_i32_f32_f32_f32_f32_f32(
+    SamplerVoice *voice, int32_t shape, float rateHz, float delaySeconds, float pitchSemitones, float cutoffOctaves,
+    float levelDepth);
+extern "C" void mlasampler_voice_set_lfo_phase__ptr_struct_SamplerVoice_f32(SamplerVoice *voice, float phase);
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_next_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -135,7 +140,38 @@ enum ParamId : ParamID {
     kSlotFilterEnvelopeParamBase = 1100, // slot s: 1100 + 5s, see EnvelopeParam
     kChokeParamBase = 1200,              // slot s: 1200 + s, choke group (Off, 1..8)
     kFilterParamBase = 2000,             // slot s, stage t: 2000 + 32s + 8t, see FilterField
+    kLfoParamBase = 3000,                // slot s, LFO l: 3000 + 32s + 16l, see LfoField
 };
+
+// Per-slot LFOs. IDs leave room for 2 LFOs of 16 fields per slot; one runs
+// today, and more LFOs or fields only add parameters after the existing ones.
+constexpr int kLfos = 1;
+enum LfoField : int {
+    kLfoShape = 0, // one of kLfoShapeNames, a 16-entry list
+    kLfoRate,      // 0.05 .. 20 Hz (without sync)
+    kLfoSync,      // Off: Rate. On: Division of the host tempo
+    kLfoDivision,  // one of kLfoDivisionNames, a 16-entry list
+    kLfoDelay,     // 0 .. 2 s before full depth
+    kLfoPitch,     // -12 .. +12 semitones
+    kLfoCutoff,    // -4 .. +4 octaves of filter cutoff
+    kLfoLevel,     // 0 .. 100 % tremolo
+    kLfoTrigger,   // Free (runs in time) or Retrigger (restarts with each note)
+    kLfoFields,
+};
+constexpr int kLfoSlotStride = 32;
+constexpr int kLfoStride = 16;
+// As with the filter types, both lists keep a fixed length so saved values
+// never move; the voice treats a reserved shape as no modulation.
+constexpr int kLfoShapeCount = 16;
+static const char *const kLfoShapeNames[] = {"Sine", "Triangle", "Saw Up", "Saw Down", "Square", "S&H"};
+constexpr int kLfoShapesKnown = sizeof(kLfoShapeNames) / sizeof(kLfoShapeNames[0]);
+constexpr int kLfoDivisionCount = 16;
+static const char *const kLfoDivisionNames[] = {"1/1",  "1/2",  "1/4",  "1/8",  "1/16", "1/32", "1/2.",
+                                                "1/4.", "1/8.", "1/16.", "1/2T", "1/4T", "1/8T", "1/16T"};
+// Beats (quarter notes) per LFO cycle of each division.
+static const double kLfoDivisionBeats[] = {4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 3.0, 1.5, 0.75, 0.375,
+                                           8.0 / 3.0, 4.0 / 3.0, 2.0 / 3.0, 1.0 / 3.0};
+constexpr int kLfoDivisionsKnown = sizeof(kLfoDivisionNames) / sizeof(kLfoDivisionNames[0]);
 
 // The filter chain. IDs leave room for 4 stages of 8 fields per slot; the
 // chain runs kFilterStages of kFilterFields today, and more of either only
@@ -210,14 +246,15 @@ constexpr int kNumVelocityParams = kNumSlots * 2;
 constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
-                            kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages;
-constexpr ParamID kMaxParamId = kFilterParamBase + kNumSlots * kFilterSlotStride;
+                            kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages +
+                            kNumSlots * kLfos * kLfoFields;
+constexpr ParamID kMaxParamId = kLfoParamBase + kNumSlots * kLfoSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
 // slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
 // starts, groups, group mode, the instance filter envelope, slot filter
-// envelopes, filter stages, choke groups and filter gains. Each block was
-// appended after the ones before it, so saved states keep their meaning.
+// envelopes, filter stages, choke groups, filter gains and LFOs. Each block
+// was appended after the ones before it, so saved states keep their meaning.
 struct ParamLayout {
     ParamID ids[kNumParams];
     int16_t index[kMaxParamId];
@@ -251,12 +288,20 @@ struct ParamLayout {
         for(int slot = 0; slot < kNumSlots; ++slot)
             for(int stage = 0; stage < kFilterStages; ++stage)
                 add(kFilterParamBase + slot * kFilterSlotStride + stage * kFilterStageStride + kFilterGain);
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int lfo = 0; lfo < kLfos; ++lfo)
+                run(kLfoParamBase + slot * kLfoSlotStride + lfo * kLfoStride, kLfoFields);
     }
 };
 static const ParamLayout kLayout;
 
 static ParamID paramIdAt(int index) { return kLayout.ids[index]; }
 static int indexOf(ParamID id) { return id < kMaxParamId ? kLayout.index[id] : -1; }
+
+static ParamID lfoParamId(int slot, int lfo, LfoField field)
+{
+    return static_cast<ParamID>(kLfoParamBase + slot * kLfoSlotStride + lfo * kLfoStride + field);
+}
 
 static ParamID filterParamId(int slot, int stage, FilterField field)
 {
@@ -303,6 +348,8 @@ static float cutoffFromNorm(double norm) { return static_cast<float>(20.0 * std:
 static float resonanceFromNorm(double norm) { return static_cast<float>(norm * 36.0); }             // 0..36 dB
 static float envOctavesFromNorm(double norm) { return static_cast<float>((norm * 2.0 - 1.0) * 8.0); } // +-8 octaves
 static float filterGainFromNorm(double norm) { return static_cast<float>((norm * 2.0 - 1.0) * 24.0); } // +-24 dB
+static float lfoRateFromNorm(double norm) { return static_cast<float>(0.05 * std::pow(400.0, norm)); }  // 0.05..20 Hz
+static double normFromLfoRate(double hz) { return std::log(hz / 0.05) / std::log(400.0); }
 
 // Immutable decoded sample: stereo interleaved with one silent guard frame at
 // the end, so interpolation may always read the frame after the last one.
@@ -474,9 +521,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             auto *track = addList(zoneParamId(slot, kZoneTrack), slotTitle(slot, "Key Track"));
             track->appendString(STR16("Off"));
             track->appendString(STR16("On"));
-            track->getInfo().defaultNormalizedValue = 1.0;
-            track->setNormalized(1.0);
-            norm_[indexOf(zoneParamId(slot, kZoneTrack))].store(1.0, std::memory_order_relaxed);
+            setListDefault(track, zoneParamId(slot, kZoneTrack), 1.0);
         }
         // Loop crossfades come after the zones, again keeping indexes.
         for(int slot = 0; slot < kNumSlots; ++slot)
@@ -549,6 +594,31 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             for(int stage = 0; stage < kFilterStages; ++stage)
                 addParam(filterParamId(slot, stage, kFilterGain),
                          slotTitle(slot, ("Filter " + std::to_string(stage + 1) + " Gain").c_str()).c_str(), STR16("dB"), 0.5);
+        // LFOs last. Depths default to 0, so an LFO does nothing until used.
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            for(int lfo = 0; lfo < kLfos; ++lfo) {
+                const std::string name = "LFO " + std::to_string(lfo + 1) + " ";
+                const auto title = [&](const char *what) { return slotTitle(slot, (name + what).c_str()); };
+                auto *shape = addList(lfoParamId(slot, lfo, kLfoShape), title("Shape"));
+                for(int k = 0; k < kLfoShapeCount; ++k)
+                    shape->appendString(utf16(k < kLfoShapesKnown ? kLfoShapeNames[k] : "(reserved)").c_str());
+                addParam(lfoParamId(slot, lfo, kLfoRate), title("Rate").c_str(), STR16("Hz"), normFromLfoRate(5.0));
+                auto *sync = addList(lfoParamId(slot, lfo, kLfoSync), title("Sync"));
+                sync->appendString(STR16("Off"));
+                sync->appendString(STR16("On"));
+                auto *division = addList(lfoParamId(slot, lfo, kLfoDivision), title("Division"));
+                for(int k = 0; k < kLfoDivisionCount; ++k)
+                    division->appendString(utf16(k < kLfoDivisionsKnown ? kLfoDivisionNames[k] : "(reserved)").c_str());
+                setListDefault(division, lfoParamId(slot, lfo, kLfoDivision), 2.0 / (kLfoDivisionCount - 1)); // 1/4
+                addParam(lfoParamId(slot, lfo, kLfoDelay), title("Delay").c_str(), STR16("s"), 0.0);
+                addParam(lfoParamId(slot, lfo, kLfoPitch), title("Pitch").c_str(), STR16("st"), 0.5);
+                addParam(lfoParamId(slot, lfo, kLfoCutoff), title("Cutoff").c_str(), STR16("oct"), 0.5);
+                addParam(lfoParamId(slot, lfo, kLfoLevel), title("Level").c_str(), nullptr, 0.0);
+                auto *trigger = addList(lfoParamId(slot, lfo, kLfoTrigger), title("Trigger"));
+                trigger->appendString(STR16("Free"));
+                trigger->appendString(STR16("Retrigger"));
+                setListDefault(trigger, lfoParamId(slot, lfo, kLfoTrigger), 1.0);
+            }
         return kResultOk;
     }
 
@@ -632,9 +702,17 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(paramsDirty_.exchange(false, std::memory_order_acquire)) {
             pushEnvelope();
             for(int slot = 0; slot < kNumSlots; ++slot)
-                applyLive(slot, true, true, true);
+                applyLive(slot, true, true, true, true);
         }
         handleParameterChanges(data.inputParameterChanges);
+        // Synced LFOs follow the host tempo.
+        if(data.processContext && (data.processContext->state & ProcessContext::kTempoValid) &&
+           data.processContext->tempo > 0.0 && data.processContext->tempo != tempo_) {
+            tempo_ = data.processContext->tempo;
+            for(int slot = 0; slot < kNumSlots; ++slot)
+                applyLive(slot, false, false, false, true);
+        }
+        framesRendered_ += data.numSamples;
 
         if(data.symbolicSampleSize != kSample32) {
             finishBlock();
@@ -854,6 +932,10 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     uint32_t random_ = 0x9E3779B9u;
     uint64_t nextSerial_ = 1;
     double sampleRate_ = 44100.0;
+    // Audio thread: the host tempo (for synced LFOs) and frames rendered
+    // since activation (the time a free LFO runs in).
+    double tempo_ = 120.0;
+    double framesRendered_ = 0.0;
     std::atomic<double> norm_[kNumParams];
     std::atomic<bool> paramsDirty_{false};
     std::atomic<bool> outputActive_[kNumOutputs];
@@ -872,6 +954,13 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     {
         parameters.addParameter(title, units, 0, defaultNorm, ParameterInfo::kCanAutomate, id);
         norm_[indexOf(id)].store(defaultNorm, std::memory_order_relaxed);
+    }
+
+    void setListDefault(StringListParameter *list, ParamID id, double value)
+    {
+        list->getInfo().defaultNormalizedValue = value;
+        list->setNormalized(value);
+        norm_[indexOf(id)].store(value, std::memory_order_relaxed);
     }
 
     StringListParameter *addList(ParamID id, const std::u16string &title)
@@ -957,6 +1046,28 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     // --- Audio thread --------------------------------------------------------
     void finishBlock() { blocksDone_.fetch_add(1); }
 
+    // An LFO's rate in Hz: its own, or its division of the host tempo.
+    float lfoRate(int slot, int lfo) const
+    {
+        if(norm(lfoParamId(slot, lfo, kLfoSync)) < 0.5)
+            return lfoRateFromNorm(norm(lfoParamId(slot, lfo, kLfoRate)));
+        const int division = std::clamp(static_cast<int>(std::lround(norm(lfoParamId(slot, lfo, kLfoDivision)) *
+                                                                     (kLfoDivisionCount - 1))),
+                                        0, kLfoDivisionsKnown - 1);
+        return static_cast<float>(tempo_ / 60.0 / kLfoDivisionBeats[division]);
+    }
+
+    // The slot's LFO settings, on a new or sounding voice (its phase runs on).
+    void applyLfo(SamplerVoice *dsp, int slot)
+    {
+        mlasampler_voice_set_lfo__ptr_struct_SamplerVoice_i32_f32_f32_f32_f32_f32(
+            dsp, static_cast<int32_t>(std::lround(norm(lfoParamId(slot, 0, kLfoShape)) * (kLfoShapeCount - 1))),
+            lfoRate(slot, 0), static_cast<float>(norm(lfoParamId(slot, 0, kLfoDelay)) * 2.0),
+            static_cast<float>((norm(lfoParamId(slot, 0, kLfoPitch)) * 2.0 - 1.0) * 12.0),
+            static_cast<float>((norm(lfoParamId(slot, 0, kLfoCutoff)) * 2.0 - 1.0) * 4.0),
+            static_cast<float>(norm(lfoParamId(slot, 0, kLfoLevel))));
+    }
+
     void syncSlots()
     {
         for(int slot = 0; slot < kNumSlots; ++slot) {
@@ -1011,6 +1122,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         bool loopChanged[kNumSlots] = {};
         bool soundChanged[kNumSlots] = {};
         bool filterChanged[kNumSlots] = {};
+        bool lfoChanged[kNumSlots] = {};
         const int32 count = changes->getParameterCount();
         for(int32 q = 0; q < count; ++q) {
             IParamValueQueue *queue = changes->getParameterData(q);
@@ -1045,13 +1157,15 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 std::fill(std::begin(filterChanged), std::end(filterChanged), true);
             if(id >= kSlotFilterEnvelopeParamBase && id < kSlotFilterEnvelopeParamBase + kNumSlots * kParamsPerEnvelope)
                 filterChanged[(id - kSlotFilterEnvelopeParamBase) / kParamsPerEnvelope] = true;
-            if(id >= kFilterParamBase && id < kMaxParamId)
+            if(id >= kFilterParamBase && id < kFilterParamBase + kNumSlots * kFilterSlotStride)
                 filterChanged[(id - kFilterParamBase) / kFilterSlotStride] = true;
+            if(id >= kLfoParamBase && id < kMaxParamId)
+                lfoChanged[(id - kLfoParamBase) / kLfoSlotStride] = true;
         }
         if(envelopeChanged)
             pushEnvelope();
         for(int slot = 0; slot < kNumSlots; ++slot)
-            applyLive(slot, loopChanged[slot], soundChanged[slot], filterChanged[slot]);
+            applyLive(slot, loopChanged[slot], soundChanged[slot], filterChanged[slot], lfoChanged[slot]);
     }
 
     // Every slot whose key (Pad) or key range (Zone) and velocity range hold
@@ -1172,6 +1286,13 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             panFromNorm(slotNorm(slot, kSlotPan)), 0, 0.0, 0.0);
         applyLoop(target->dsp, slot, sample);
         applyFilter(target->dsp, slot, pitch);
+        applyLfo(target->dsp, slot);
+        // Retrigger starts the LFO with the note; Free picks up where its
+        // rate has taken it since activation.
+        const bool retrigger = norm(lfoParamId(slot, 0, kLfoTrigger)) >= 0.5;
+        const double elapsed = framesRendered_ / sampleRate_;
+        mlasampler_voice_set_lfo_phase__ptr_struct_SamplerVoice_f32(
+            target->dsp, retrigger ? 0.0f : static_cast<float>(std::fmod(elapsed * lfoRate(slot, 0), 1.0)));
         mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(
             target->dsp, std::floor(norm(static_cast<ParamID>(kStartParamBase + slot)) * frames));
         target->keySemitones = keySemitones;
@@ -1236,9 +1357,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     // Live edits: sounding voices of `slot` take its current loop, its level,
     // pan and tune (with the instance's) and/or its filter, keeping their
     // playhead.
-    void applyLive(int slot, bool loop, bool sound, bool filter)
+    void applyLive(int slot, bool loop, bool sound, bool filter, bool lfo)
     {
-        if(!loop && !sound && !filter)
+        if(!loop && !sound && !filter && !lfo)
             return;
         for(auto &voice : voices_) {
             if(!voice.dsp || !voice.sample || voice.slot != slot ||
@@ -1248,6 +1369,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 applyLoop(voice.dsp, slot, voice.sample);
             if(filter)
                 applyFilter(voice.dsp, slot, voice.pitch);
+            if(lfo)
+                applyLfo(voice.dsp, slot);
             if(sound) {
                 mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(voice.dsp, voiceStep(slot, voice.sample, voice.keySemitones));
                 mlasampler_voice_set_gain__ptr_struct_SamplerVoice_f32_f32(

@@ -25,6 +25,10 @@
 /// stage's fields and `SamplerFilter` gain what they need, and older types
 /// keep their numbers. Coefficients follow the filter envelope every 16
 /// frames.
+///
+/// An LFO modulates pitch and filter cutoff (every 16 frames, with the
+/// filter) and level (every frame). Its shapes are stable numbers like the
+/// filter types; a delay fades its depth in after the note starts.
 
 mod dsp::envelope;
 mod dsp::filter;
@@ -112,6 +116,13 @@ struct SamplerFilter {
     var env_octaves: f32;
     /// Peak and shelf gain in dB.
     var gain_db: f32;
+    /// Envelope and LFO movement of the cutoff in octaves, smoothed: during a
+    /// note a jump (a square LFO) glides over about 1.5 ms, since a biquad
+    /// holding signal rings out of range when its cutoff leaps several
+    /// octaves. A cleared filter starts at its target (`fresh`), so an
+    /// instant attack still opens it at once.
+    var mod_octaves: f32;
+    var fresh: bool;
     var left: MultimodeFilter;
     var right: MultimodeFilter;
     /// Notch, peak and shelves.
@@ -130,7 +141,7 @@ struct SamplerFilter {
 
 impl SamplerFilter {
     fn new() -> SamplerFilter {
-        return SamplerFilter { kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f, gain_db: 0.0f,
+        return SamplerFilter { kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f, gain_db: 0.0f, mod_octaves: 0.0f, fresh: true,
             left: MultimodeFilter::new(), right: MultimodeFilter::new(), biquad_left: Biquad::new(), biquad_right: Biquad::new(),
             svf_left: SamplerSvf::new(), svf_right: SamplerSvf::new(),
             formant1_left: Biquad::new(), formant1_right: Biquad::new(), formant2_left: Biquad::new(),
@@ -149,15 +160,22 @@ impl SamplerFilter {
         self.cutoff_hz = cutoff_hz; self.resonance_db = resonance_db; self.env_octaves = env_octaves; self.gain_db = gain_db;
     }
     fn reset(self: &mut Self) -> void {
+        self.mod_octaves = 0.0f;
+        self.fresh = true;
         self.left.reset(); self.right.reset(); self.biquad_left.reset(); self.biquad_right.reset();
         self.svf_left.reset(); self.svf_right.reset();
         self.formant1_left.reset(); self.formant1_right.reset(); self.formant2_left.reset();
         self.formant2_right.reset(); self.formant3_left.reset(); self.formant3_right.reset();
     }
     /// Coefficients for the cutoff moved by `envelope` (0..1) times the depth.
-    fn configure(self: &mut Self, envelope: f32, sample_rate: f32) -> void {
+    /// `extra_octaves` moves the cutoff further (the LFO).
+    fn configure(self: &mut Self, envelope: f32, extra_octaves: f32, sample_rate: f32) -> void {
         if !sampler_filter_known(self.kind) { return; }
-        let hz: f32 = clamp_sampler_f32(self.cutoff_hz * exp2f(self.env_octaves * envelope), 20.0f, sample_rate * 0.45f);
+        // Called every 16 frames: a quarter of the way per call is ~1.5 ms.
+        let target: f32 = self.env_octaves * envelope + extra_octaves;
+        self.mod_octaves = self.fresh ? target : self.mod_octaves + (target - self.mod_octaves) * 0.25f;
+        self.fresh = false;
+        let hz: f32 = clamp_sampler_f32(self.cutoff_hz * exp2f(self.mod_octaves), 20.0f, sample_rate * 0.45f);
         // Resonance as Q: 0 dB is Butterworth (0.707), 36 dB about 45.
         let q: f32 = 0.70710678f * powf(10.0f, self.resonance_db / 20.0f);
         if self.kind == 9 {
@@ -234,6 +252,22 @@ struct SamplerVoice {
     var filter1: SamplerFilter;
     var filter2: SamplerFilter;
     var filter_countdown: i32;
+    /// LFO: shape (0 sine, 1 triangle, 2 saw up, 3 saw down, 4 square, 5
+    /// sample & hold; others off), rate, phase 0..1, the held random value,
+    /// the delay before full depth and frames since the note started, and
+    /// depths in semitones, octaves of cutoff and share of level.
+    var lfo_shape: i32;
+    var lfo_rate_hz: f32;
+    var lfo_phase: f32;
+    var lfo_held: f32;
+    var lfo_seed: i64;
+    var lfo_delay_frames: f32;
+    var lfo_elapsed: f32;
+    var lfo_pitch_semitones: f32;
+    var lfo_cutoff_octaves: f32;
+    var lfo_level_depth: f32;
+    /// Playback rate before the LFO's pitch modulation.
+    var base_step: f64;
     var sample_rate: f32;
     /// Read position in source frames, advance per output frame, and the
     /// direction the playhead moves (1 or -1, only -1 in a bidirectional loop).
@@ -280,6 +314,8 @@ fn mlasampler_voice_create(sample_rate: f32) -> ptr<SamplerVoice> {
         (*voice).filter_envelope = Adsr::new(rate);
         (*voice).filter1 = SamplerFilter::new();
         (*voice).filter2 = SamplerFilter::new();
+        (*voice).lfo_shape = -1;
+        (*voice).lfo_seed = 22695477;
         (*voice).sample_rate = rate;
         (*voice).direction = 1.0;
     }
@@ -350,6 +386,8 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).filter_countdown = 0;
         (*voice).fade = 1.0f;
         (*voice).fade_step = 0.0f;
+        (*voice).lfo_phase = 0.0f;
+        (*voice).lfo_elapsed = 0.0f;
         (*voice).active = frames > 0.0 ? 1 : 0;
     }
     mlasampler_voice_set_step(voice, step);
@@ -360,7 +398,67 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
 /// @brief Playback rate (source frames per output frame); sounding voices
 /// change pitch at once.
 fn mlasampler_voice_set_step(voice: ptr<SamplerVoice>, step: f64) {
-    unsafe { (*voice).step = step > 0.0 ? step : 1.0; }
+    unsafe {
+        (*voice).base_step = step > 0.0 ? step : 1.0;
+        (*voice).step = (*voice).base_step;
+    }
+}
+
+/// @brief LFO shape (see `SamplerVoice`), rate in Hz, delay before full
+/// depth in seconds, and depths: pitch in semitones, cutoff in octaves, level
+/// as a share 0..1. Sounding voices follow at once; the phase keeps running.
+fn mlasampler_voice_set_lfo(voice: ptr<SamplerVoice>, shape: i32, rate_hz: f32, delay_seconds: f32,
+    pitch_semitones: f32, cutoff_octaves: f32, level_depth: f32) {
+    unsafe {
+        (*voice).lfo_shape = shape;
+        (*voice).lfo_rate_hz = rate_hz > 0.0f ? rate_hz : 0.0f;
+        (*voice).lfo_delay_frames = delay_seconds > 0.0f ? delay_seconds * (*voice).sample_rate : 0.0f;
+        (*voice).lfo_pitch_semitones = pitch_semitones;
+        (*voice).lfo_cutoff_octaves = cutoff_octaves;
+        (*voice).lfo_level_depth = clamp_sampler_f32(level_depth, 0.0f, 1.0f);
+    }
+}
+
+/// @brief Start the LFO at `phase` (0..1): 0 retriggers it with the note, a
+/// running phase keeps it free. Call after `mlasampler_voice_start`.
+fn mlasampler_voice_set_lfo_phase(voice: ptr<SamplerVoice>, phase: f32) {
+    unsafe {
+        (*voice).lfo_phase = phase - f32(floor(f64(phase)));
+        (*voice).lfo_elapsed = 0.0f;
+        (*voice).lfo_seed = (*voice).lfo_seed * 1103515245 + 12345;
+        (*voice).lfo_held = sampler_lfo_random(voice);
+    }
+}
+
+/// The next sample & hold value, -1..1.
+fn sampler_lfo_random(voice: ptr<SamplerVoice>) -> f32 {
+    unsafe {
+        (*voice).lfo_seed = ((*voice).lfo_seed * 1103515245 + 12345) % 2147483648;
+        if (*voice).lfo_seed < 0 { (*voice).lfo_seed = (*voice).lfo_seed + 2147483648; }
+        return f32((*voice).lfo_seed) / 1073741824.0f - 1.0f;
+    }
+}
+
+/// The LFO's value (-1..1) at its phase, then advance it one frame.
+fn sampler_lfo_step(voice: ptr<SamplerVoice>) -> f32 {
+    unsafe {
+        let shape: i32 = (*voice).lfo_shape;
+        let phase: f32 = (*voice).lfo_phase;
+        var value: f32 = 0.0f;
+        if shape == 0 { value = sinf(phase * 6.28318530717958647692f); }
+        if shape == 1 { value = phase < 0.5f ? 4.0f * phase - 1.0f : 3.0f - 4.0f * phase; }
+        if shape == 2 { value = 2.0f * phase - 1.0f; }
+        if shape == 3 { value = 1.0f - 2.0f * phase; }
+        if shape == 4 { value = phase < 0.5f ? 1.0f : -1.0f; }
+        if shape == 5 { value = (*voice).lfo_held; }
+        var next: f32 = phase + (*voice).lfo_rate_hz / (*voice).sample_rate;
+        if next >= 1.0f {
+            next = next - f32(floor(f64(next)));
+            if shape == 5 { (*voice).lfo_held = sampler_lfo_random(voice); }
+        }
+        (*voice).lfo_phase = next;
+        return value;
+    }
 }
 
 /// @brief Linear gain and pan (-1 left .. +1 right, constant-power); sounding
@@ -541,11 +639,22 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             right = right * tail + (shadow_right0 + (shadow_right1 - shadow_right0) * frac) * head;
         }
 
-        // The filter chain, its coefficients following the filter envelope.
+        // The LFO, its depth fading in over the delay.
+        let lfo: f32 = sampler_lfo_step(voice);
+        var lfo_depth: f32 = 1.0f;
+        if (*voice).lfo_elapsed < (*voice).lfo_delay_frames {
+            lfo_depth = (*voice).lfo_elapsed / (*voice).lfo_delay_frames;
+            (*voice).lfo_elapsed = (*voice).lfo_elapsed + 1.0f;
+        }
+
+        // The filter chain, its coefficients following the filter envelope
+        // and the LFO; pitch follows the LFO at the same rate.
         let filter_level: f32 = (*voice).filter_envelope.process();
         if (*voice).filter_countdown <= 0 {
-            (*voice).filter1.configure(filter_level, (*voice).sample_rate);
-            (*voice).filter2.configure(filter_level, (*voice).sample_rate);
+            let cutoff_octaves: f32 = (*voice).lfo_cutoff_octaves * lfo * lfo_depth;
+            (*voice).filter1.configure(filter_level, cutoff_octaves, (*voice).sample_rate);
+            (*voice).filter2.configure(filter_level, cutoff_octaves, (*voice).sample_rate);
+            (*voice).step = (*voice).base_step * f64(exp2f((*voice).lfo_pitch_semitones * lfo * lfo_depth / 12.0f));
             (*voice).filter_countdown = 16;
         }
         (*voice).filter_countdown = (*voice).filter_countdown - 1;
@@ -553,7 +662,9 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
         let second: StereoSample = (*voice).filter2.process(first.left, first.right);
         left = second.left; right = second.right;
 
-        let amp: f32 = (*voice).envelope.process() * (*voice).fade;
+        // Tremolo: full level at the LFO's top, down by the depth at its bottom.
+        let tremolo: f32 = 1.0f - (*voice).lfo_level_depth * lfo_depth * (0.5f - 0.5f * lfo);
+        let amp: f32 = (*voice).envelope.process() * (*voice).fade * tremolo;
         if (*voice).fade_step > 0.0f {
             (*voice).fade = (*voice).fade - (*voice).fade_step;
             if (*voice).fade <= 0.0f { (*voice).fade = 0.0f; (*voice).active = 0; }

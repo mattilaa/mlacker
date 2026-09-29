@@ -1,7 +1,7 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
 clearing slots, key zones, velocity ranges, the Sound page (level, pan, tune,
 per-slot envelopes, sample start, groups and group mode), the Filter page (a
-two-stage filter chain and filter envelope), loop mode / loop point / output edits, the wave view's
+two-stage filter chain and filter envelope), the LFO page, loop mode / loop point / output edits, the wave view's
 frame-accurate loop and sample start markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
@@ -205,6 +205,16 @@ def main():
             expect(tui.send(b"K"), b"Slot 1 uses the instance filter envelope")
             tui.send(b"h")
             expect(tui.send(b"K"), b"Own")
+            # e again: the LFO page. A synced square at 1/8 with 50% tremolo;
+            # Rate dims once Sync is on.
+            expect(tui.send(b"e"), b"Shape", b"Rate", b"Trig", b"Sine", b"5.0Hz", b"1/4", b"Retrg")
+            expect(tui.send(b"KKKK"), b"Sqr")
+            tui.send(b"ll")
+            expect(tui.send(b"K"), b"On")
+            tui.send(b"l")
+            expect(tui.send(b"K"), b"1/8")
+            tui.send(b"llll")
+            expect(tui.send(b"]]]]]"), b"50")
             expect(tui.send(b"e"), b"Mode", b"Loop")
 
             # The virtual keyboard takes the pane over, and Shift+S takes it back.
@@ -227,6 +237,7 @@ def main():
             # The Sound page's edits survive it too.
             expect(tui.send(b"e"), b"Own", b"-1.0", b"R2", b"+12.0", b"2ms", b"90", b"Groups: Random")
             expect(tui.send(b"e"), b"LP24", b"10.0k", b"+1.0", b"+6.0", b"Own")
+            expect(tui.send(b"e"), b"Sqr", b"On", b"1/8", b"50")
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")

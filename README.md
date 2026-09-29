@@ -711,7 +711,7 @@ Overlapping zones layer.
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
-| `e` | Next page: keys & loops, Sound, Filter |
+| `e` | Next page: keys & loops, Sound, Filter, LFO |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
 
@@ -728,6 +728,16 @@ gain by 1 dB and Env by a tenth of an octave; `[`/`]` by an octave, 6 dB and an
 octave. The instance filter envelope is edited like its amp envelope, in the
 instrument's parameter editor. See the Mla Sampler README for the filter types
 and how the list grows.
+
+The **LFO page** (`e` from the Filter page) sets each slot's LFO: **Shape**
+(`Sine`, `Tri`, `SawUp`, `SawDn`, `Sqr`, `S&H`), **Rate** (0.05-20 Hz, dim
+while synced), **Sync** and **Div** (a division of the tempo: `1/1`..`1/32`,
+dotted `1/4.`, triplet `1/8T`), **Delay** (depth fade-in), **Pitch**
+(semitones, vibrato), **Cut** (octaves of filter cutoff) and **Lvl%**
+(tremolo), and **Trig** (`Retrg` restarts it with each note, `Free` keeps it
+running). `J`/`K` step Pitch by a tenth of a semitone and Cut by a tenth of an
+octave; `[`/`]` by a semitone and an octave. Depths start at 0, so an LFO does
+nothing until one is set.
 
 The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
 bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`

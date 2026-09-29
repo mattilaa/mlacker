@@ -131,6 +131,30 @@ each slot uses it or its own (**Slot N Filter Envelope**: Instance or Own). It
 starts and releases with the note. Coefficients follow it every 16 frames.
 Filter and filter envelope edits reach notes already sounding.
 
+## LFO
+
+Each slot has an **LFO** that modulates its **Pitch** (-12 .. +12 semitones,
+vibrato), its filter **Cutoff** (-4 .. +4 octaves on every stage, wobble) and
+its **Level** (0 .. 100 %, tremolo: full level at the top of the cycle, down by
+the depth at the bottom). Its **Shape** is Sine, Triangle, Saw Up, Saw Down,
+Square or S&H (a random value held for each cycle). **Rate** runs 0.05 .. 20
+Hz, or with **Sync** on, a **Division** of the host tempo: 1/1 .. 1/32, dotted
+and triplet. **Delay** (0 .. 2 s) fades its depth in after the note starts.
+**Trigger** Retrigger (the default) starts each note's LFO from the top of its
+cycle; Free keeps it running in time, so notes join it wherever it is. Depths
+default to 0, so the LFO does nothing until one is set. Pitch and cutoff
+follow it every 16 frames and level every frame, and edits reach sounding
+notes.
+
+As with the filter types, the shape and division lists keep a fixed length
+(16 entries, the unused ones reserved), and the IDs leave room for a second
+LFO per slot with up to 16 settings each.
+
+While a note plays, a jump in the cutoff's envelope or LFO movement (a square
+LFO) glides over about 1.5 ms: a biquad holding signal rings far out of range
+when its cutoff leaps several octaves at once. A note's first cutoff is not
+smoothed, so an instant filter attack still opens at once.
+
 ## Outputs
 
 Bus 0 is **Main**. Buses 1-7 are the auxiliary stereo outputs **Out 2**..**Out 8**,
@@ -185,6 +209,15 @@ mlacker's README, "Plugin outputs").
 | Slot N Filter T Key Track | 0 .. 100 %             | Default 0. |
 | Slot N Choke       | Off, 1 .. 8                   | Choke group. Default Off. |
 | Slot N Filter T Gain | -24 .. +24 dB               | Peak and shelves. Default 0. |
+| Slot N LFO 1 Shape | Sine, Triangle, Saw Up, Saw Down, Square, S&H | 16-entry list. Default Sine. |
+| Slot N LFO 1 Rate  | 0.05 .. 20 Hz                 | Without sync. Default 5 Hz. |
+| Slot N LFO 1 Sync  | Off, On                       | Default Off. |
+| Slot N LFO 1 Division | 1/1 .. 1/32, dotted, triplet | With sync. Default 1/4. |
+| Slot N LFO 1 Delay | 0 .. 2 s                      | Depth fade-in. Default 0. |
+| Slot N LFO 1 Pitch | -12 .. +12 semitones          | Default 0. |
+| Slot N LFO 1 Cutoff | -4 .. +4 octaves             | Default 0. |
+| Slot N LFO 1 Level | 0 .. 100 %                    | Tremolo. Default 0. |
+| Slot N LFO 1 Trigger | Free, Retrigger             | Default Retrigger. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -200,13 +233,16 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
   gain, for filter stage `t` (0-based; room for 4 stages of 8 fields). The
   gains were added later and are registered after the choke groups.
 - `1200 + s`: choke group
+- `3000 + 32s + 16l` + 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch,
+  6 cutoff, 7 level, 8 trigger, for LFO `l` (0-based; room for 2 LFOs of 16
+  fields)
 
 `950` is the Group Mode and `960`-`963` the instance filter envelope.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
-off, no choke group.
+off, no choke group, LFO depths at 0.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -228,7 +264,8 @@ tracking up and down, keys outside a zone, Key Track off, layering beside
 pads), filters (low-, high-pass and notch, two stages in series, a reserved type
 passing through, the filter envelope and a slot's own, key tracking; the
 state-variable types, a full-resonance sweep staying bounded, peak and shelf
-gains, vowel morphing), choke
+gains, vowel morphing), the LFO (tremolo, vibrato, a filter wobble that stays in
+range, tempo sync, delay, retrigger and free, sample & hold), choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a
