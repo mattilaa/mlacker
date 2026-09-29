@@ -689,6 +689,9 @@ Each of the 16 slots is one row with these columns:
 - **Root**: the key that plays the sample at its recorded pitch.
 - **Trk**: key tracking, `On` or `Off`. On pitches each key from Root; off
   plays every key at the recorded pitch.
+- **VLo** / **VHi**: the velocity range (1-127) the slot plays, for pads and
+  zones alike. Two slots on the same keys with ranges 1-63 and 64-127 switch
+  samples by how hard a key is hit.
 - The sample.
 - **Loop**: `Off`, `Fwd` forward, `Bidir` bidirectional.
 - **Start%** / **End%**: the loop points, in percent of the sample.
@@ -702,8 +705,8 @@ Overlapping zones layer.
 |------|--------|
 | `j` / `k` (Down / Up) | Next / previous slot |
 | `h` / `l` (Left / Right) | Previous / next column |
-| `J` / `K` | Decrease / increase the column: choices by one, keys by a semitone, loop points by 1% |
-| `[` / `]` | Keys by an octave, loop points by 10% |
+| `J` / `K` | Decrease / increase the column: choices and velocities by one, keys by a semitone, loop points by 1% |
+| `[` / `]` | Keys by an octave, velocities by 10, loop points by 10% |
 | Enter | Load a WAV/AIFF into the slot (added to the Audio list) |
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
@@ -728,7 +731,8 @@ a loop point set here plays from that frame.
 | `j` / `k` | Next / previous slot |
 | `p` | Play the slot |
 
-`p` plays through the Instrument track like a key of the virtual keyboard, so
+`p` plays through the Instrument track like a key of the virtual keyboard, at
+velocity 100 or the nearest velocity in the slot's range, so
 you hear loop and zone edits without leaving the pane. A zone plays at its root,
 or at the nearest key of the zone when the root lies outside it. Other slots
 whose key or zone holds that key sound too. On terminals that report key

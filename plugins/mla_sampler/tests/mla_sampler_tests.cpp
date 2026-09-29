@@ -65,6 +65,8 @@ enum ZoneParam { kZoneMode, kZoneLow, kZoneHigh, kZoneRoot, kZoneTrack };
 constexpr ParamID zoneParam(int slot, ZoneParam k) { return 400 + slot * 5 + k; }
 constexpr double key(int midi) { return midi / 127.0; }
 constexpr ParamID crossfadeParam(int slot) { return 500 + slot; }
+constexpr ParamID velocityParam(int slot, bool high) { return 600 + slot * 2 + (high ? 1 : 0); }
+constexpr ParamID kVelocitySensitivity = 102;
 
 class Application final : public HostApplication {
   public:
@@ -428,6 +430,39 @@ void testKeyZones(const std::string &path)
     }
 }
 
+void testVelocityLayers(const std::string &path)
+{
+    // Two layers on one zone: soft (1-63) and hard (64-127). Velocity
+    // sensitivity 0 plays every note at full level, so the level names the layer.
+    const auto layered = [&](float velocity) -> float {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, std::vector<float>(4000, 0.25f)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(4000, 0.5f)) == kResultOk);
+        CHECK(loadPcm(plugin, 2, std::vector<float>(4000, 0.125f)) == kResultOk);
+        plugin.param(kVelocitySensitivity, 0.0);
+        zone(plugin, 0, 48, 72, 60);
+        zone(plugin, 1, 48, 72, 60);
+        plugin.param(velocityParam(0, false), key(1));
+        plugin.param(velocityParam(0, true), key(63));
+        plugin.param(velocityParam(1, false), key(64));
+        plugin.param(velocityParam(1, true), key(127));
+        // Pad slot 3 (key 38) only answers the softest notes.
+        plugin.param(velocityParam(2, true), key(20));
+        plugin.noteOn(60, velocity);
+        plugin.noteOn(kRootKey + 2, velocity);
+        const auto out = plugin.render(1024);
+        return left(out, 100);
+    };
+    CHECK(std::fabs(layered(0.3f) - 0.25f) < 1e-3f);   // 38: soft layer only
+    CHECK(std::fabs(layered(0.9f) - 0.5f) < 1e-3f);    // 114: hard layer only
+    CHECK(std::fabs(layered(64.0f / 127.0f) - 0.5f) < 1e-3f); // the boundary belongs to the hard layer
+    CHECK(std::fabs(layered(0.1f) - (0.25f + 0.125f)) < 1e-3f); // 13: soft layer and the pad
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -497,12 +532,13 @@ int main(int argc, char **argv)
     testBidirectionalLoop(path);
     testLoopCrossfade(path);
     testKeyZones(path);
+    testVelocityLayers(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

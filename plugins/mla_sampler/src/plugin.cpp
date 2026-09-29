@@ -2,7 +2,8 @@
 //
 // Sixteen sample slots. A slot in Pad mode plays on one key (Root Key + slot);
 // in Zone mode it plays across a key range, pitched from its zone root when
-// Key Track is on. Overlapping zones layer. Each slot holds one sample with
+// Key Track is on. A velocity range limits either to notes that hard.
+// Overlapping zones layer. Each slot holds one sample with
 // its own level, pan, tune, loop (off, forward or bidirectional, between a
 // start and an end point) and output bus. The instance has one amp ADSR;
 // note-off releases it, and looping slots keep looping through the release.
@@ -111,6 +112,7 @@ enum ParamId : ParamID {
     kSlotParamBase = 200, // slot s: 200 + 7s, see SlotParam
     kZoneParamBase = 400, // slot s: 400 + 5s, see ZoneParam
     kCrossfadeParamBase = 500, // slot s: 500 + s, loop crossfade (fraction of the sample)
+    kVelocityParamBase = 600,  // slot s: 600 + 2s low, + 1 high velocity (MIDI 1..127)
 };
 
 // Per-slot parameter offsets from kSlotParamBase + s * kParamsPerSlot.
@@ -139,10 +141,11 @@ enum ZoneParam : int {
 constexpr int kNumGlobalParams = 8;
 constexpr int kNumSlotParams = kNumSlots * kParamsPerSlot;
 constexpr int kNumZoneParams = kNumSlots * kParamsPerZone;
-constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots;
+constexpr int kNumVelocityParams = kNumSlots * 2;
+constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams;
 
 // Flat index <-> ParamID. Globals occupy 0..7, slot parameters follow, then
-// the key zones, then the loop crossfades.
+// the key zones, the loop crossfades and the velocity ranges.
 static ParamID paramIdAt(int index)
 {
     if(index < kNumGlobalParams)
@@ -151,7 +154,10 @@ static ParamID paramIdAt(int index)
         return static_cast<ParamID>(kSlotParamBase + (index - kNumGlobalParams));
     if(index < kNumGlobalParams + kNumSlotParams + kNumZoneParams)
         return static_cast<ParamID>(kZoneParamBase + (index - kNumGlobalParams - kNumSlotParams));
-    return static_cast<ParamID>(kCrossfadeParamBase + (index - kNumGlobalParams - kNumSlotParams - kNumZoneParams));
+    const int crossfades = kNumGlobalParams + kNumSlotParams + kNumZoneParams;
+    if(index < crossfades + kNumSlots)
+        return static_cast<ParamID>(kCrossfadeParamBase + (index - crossfades));
+    return static_cast<ParamID>(kVelocityParamBase + (index - crossfades - kNumSlots));
 }
 
 static int indexOf(ParamID id)
@@ -164,6 +170,8 @@ static int indexOf(ParamID id)
         return kNumGlobalParams + kNumSlotParams + static_cast<int>(id - kZoneParamBase);
     if(id >= kCrossfadeParamBase && id < kCrossfadeParamBase + kNumSlots)
         return kNumGlobalParams + kNumSlotParams + kNumZoneParams + static_cast<int>(id - kCrossfadeParamBase);
+    if(id >= kVelocityParamBase && id < kVelocityParamBase + kNumVelocityParams)
+        return kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + static_cast<int>(id - kVelocityParamBase);
     return -1;
 }
 
@@ -375,6 +383,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         // Loop crossfades come after the zones, again keeping indexes.
         for(int slot = 0; slot < kNumSlots; ++slot)
             addParam(static_cast<ParamID>(kCrossfadeParamBase + slot), slotTitle(slot, "Crossfade").c_str(), nullptr, 0.0);
+        // Velocity ranges last: a slot plays only notes this hard.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            addKey(static_cast<ParamID>(kVelocityParamBase + slot * 2), slotTitle(slot, "Vel Low"), 1);
+            addKey(static_cast<ParamID>(kVelocityParamBase + slot * 2 + 1), slotTitle(slot, "Vel High"), 127);
+        }
         return kResultOk;
     }
 
@@ -837,14 +850,20 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             pushEnvelope();
     }
 
-    // Every slot whose key (Pad) or key range (Zone) holds the note plays it,
-    // so overlapping zones layer. Zone and loop settings are read when a note
+    // Every slot whose key (Pad) or key range (Zone) and velocity range hold
+    // the note plays it, so overlapping zones layer and velocity ranges
+    // switch between them. Zone and loop settings are read when a note
     // starts; sounding notes keep theirs.
     void noteOn(int16 channel, int16 pitch, float velocity)
     {
         const int padSlot = pitch - rootKeyFromNorm(norm(kRootKeyParam));
+        const int hardness = std::clamp(static_cast<int>(std::lround(velocity * 127.0f)), 1, 127);
         for(int slot = 0; slot < kNumSlots; ++slot) {
             if(active_[slot] == nullptr)
+                continue;
+            const int velocityLow = rootKeyFromNorm(norm(static_cast<ParamID>(kVelocityParamBase + slot * 2)));
+            const int velocityHigh = rootKeyFromNorm(norm(static_cast<ParamID>(kVelocityParamBase + slot * 2 + 1)));
+            if(hardness < std::min(velocityLow, velocityHigh) || hardness > std::max(velocityLow, velocityHigh))
                 continue;
             if(zoneNorm(slot, kZoneMode) < 0.5) {
                 if(slot == padSlot)

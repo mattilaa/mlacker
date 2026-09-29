@@ -26,8 +26,13 @@ Each slot has a **Key Mode**:
   sample covers the keyboard. With Key Track off, every key in the zone plays
   the recorded pitch.
 
-Zones may overlap: every slot whose key or zone holds a note plays it, so
-slots layer. Keys no slot covers, and slots without a sample, are silent.
+Each slot also has a velocity range, **Vel Low** to **Vel High** (MIDI 1-127,
+the whole range by default), in either mode: it plays only notes that hard.
+Two slots on the same keys with ranges 1-63 and 64-127 switch samples by how
+hard a key is hit.
+
+Zones may overlap: every slot whose key or zone and velocity range hold a note
+plays it, so slots layer. Keys no slot covers, and slots without a sample, are silent.
 Global and slot Tune add to the key tracking. Note-off releases the envelope. A looping slot keeps looping through the release until
 the envelope ends. A slot with loop off ends with its sample, even while the key
 is held.
@@ -99,13 +104,16 @@ mlacker's README, "Plugin outputs").
 | Slot N Zone Root   | MIDI 0..127                   | Key at the recorded pitch. Default 60 (C-4). |
 | Slot N Key Track   | Off, On                       | Default On. |
 | Slot N Crossfade   | 0..1 of the sample            | Forward-loop crossfade length. Default 0 (none). |
+| Slot N Vel Low     | MIDI velocity 1..127          | Softest note the slot plays. Default 1. |
+| Slot N Vel High    | MIDI velocity 1..127          | Hardest note the slot plays. Default 127. |
 
 Parameter IDs are stable: globals are 100-107 and slot `s` (0-based) uses
 `200 + 7s` + (0 level, 1 pan, 2 tune, 3 output, 4 loop, 5 loop start, 6 loop
 end), `400 + 5s` + (0 key mode, 1 low key, 2 high key, 3 zone root, 4 key
-track) and `500 + s` for the crossfade. Each later block comes after all
-earlier parameters, so presets and states saved before it load with its
-defaults: every slot in Pad mode, no crossfade. With all 32 voices busy, the oldest is stolen.
+track), `500 + s` for the crossfade and `600 + 2s` + (0 velocity low, 1
+velocity high). Each later block comes after all earlier parameters, so
+presets and states saved before it load with its defaults: every slot in Pad
+mode, no crossfade, every velocity. With all 32 voices busy, the oldest is stolen.
 
 ## Build
 
@@ -120,7 +128,8 @@ from this directory:
 `test` builds and runs `tests/mla_sampler_tests.cpp`, an offline host that
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
-pads), a forward loop's seam with and without a crossfade, loop off / forward /
+pads), velocity layers (soft and hard layers, their boundary, a pad limited
+to soft notes), a forward loop's seam with and without a crossfade, loop off / forward /
 bidirectional, per-slot output routing with the fallback to Main, and state
 round trips. In mlacker's plugin tree it is also the CTest test
 `sampler_processor` (`./build.sh --test`). The SDK's `validator` passes (47/47).

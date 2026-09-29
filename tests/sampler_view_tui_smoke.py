@@ -1,5 +1,5 @@
 """Mla Sampler pane (Shift+S) in Pattern view: toggling, key capture, loading and
-clearing slots, key zones, loop mode / loop point / output edits, the wave view's
+clearing slots, key zones, velocity ranges, loop mode / loop point / output edits, the wave view's
 frame-accurate loop markers, zero-crossing snap and crossfade, auditioning slots, routing an aux output to
 an AUDIO track, sharing the pane with the virtual keyboard, and all of it
 surviving a session round trip.
@@ -68,7 +68,7 @@ def main():
 
             # Shift+S opens the pane on the selected track's instance: 16 empty
             # pad slots from the root key C-2, loop off over the whole sample, Main.
-            frame = expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"Mode", b"Pad", b"C-2", b"(empty)", b"Off", b"Start%", b"0.0 ", b"100.0", b"Main")
+            frame = expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"Mode", b"VLo", b"VHi", b"Pad", b"C-2", b"(empty)", b"Off", b"Start%", b"0.0 ", b"100.0", b"Main")
             assert frame.count(b"(empty)") >= 4, frame[-4000:]
 
             # The focused pane keeps its keys: "m" does not toggle the mixer,
@@ -95,6 +95,11 @@ def main():
             expect(tui.send(b"]"), b"C-5")
             tui.send(b"l")
             expect(tui.send(b"J"), b"Zone")
+            # Velocity range: ] steps by 10 (1 -> 21), J lowers VHi to 126.
+            tui.send(b"l")
+            expect(tui.send(b"]]"), b"21")
+            tui.send(b"l")
+            expect(tui.send(b"J"), b"126")
             # Shift+J/K adjust the selected column: loop mode, start, end, output.
             tui.send(b"l")
             expect(tui.send(b"K"), b"Fwd")
@@ -168,7 +173,7 @@ def main():
         tui = Terminal(str(path), cwd=directory)
         try:
             expect(tui.read(1.2), b"Opened:")
-            expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
+            expect(tui.send(b"S"), b"Sampler | Mla Sampler #1", b"pad.wav", b"Zone", b"C-3", b"C-5", b"21", b"126", b"Bidir", b"3.0 ", b"99.0 ", b"Out 2>A1")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
             expect(tui.send(b"w"), b"Slot 3 square.wav", b"[Start 50]", b"End 4750", b"Xfade 50")
