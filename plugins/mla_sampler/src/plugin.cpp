@@ -199,7 +199,8 @@ constexpr int kFilterTypeCount = 64;
 static const char *const kFilterTypeNames[] = {"Off",       "LP 12",     "LP 24",     "HP 12",     "HP 24",
                                                "BP 12",     "BP 24",     "Ladder 12", "Ladder 24", "Notch",
                                                "SVF LP",    "SVF HP",    "SVF BP",    "SVF Notch", "Peak",
-                                               "Low Shelf", "High Shelf", "Vowel"};
+                                               "Low Shelf", "High Shelf", "Vowel",      "Comb +",   "Comb -",
+                                               "Flanger",   "Phaser"};
 constexpr int kFilterTypesKnown = sizeof(kFilterTypeNames) / sizeof(kFilterTypeNames[0]);
 
 constexpr int kNumGroups = 8;

@@ -718,8 +718,8 @@ Overlapping zones layer.
 The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
 two stages in series: per stage its type (**F1**/**F2**: `Off`, `LP12`,
 `LP24`, `HP12`, `HP24`, `BP12`, `BP24`, `Ldr12`, `Ldr24`, `Notch`, the
-state-variable `SvLP`, `SvHP`, `SvBP`, `SvNt`, `Peak`, `LoShf`, `HiShf` and
-`Vowel`), **Cut** (20 Hz .. 20k), **Res** (dB), **Env** (octaves of filter
+state-variable `SvLP`, `SvHP`, `SvBP`, `SvNt`, `Peak`, `LoShf`, `HiShf`,
+`Vowel`, `Comb+`, `Comb-`, `Flang` and `Phasr`), **Cut** (20 Hz .. 20k), **Res** (dB), **Env** (octaves of filter
 envelope), **Key** (key tracking, %) and **Gain** (dB, for Peak and the
 shelves; dim otherwise). Then **FEnv** (`Inst` uses the instance's filter envelope,
 `Own` the slot's) and its **Atk**, **Dec**, **Sus%** and **Rel**, editable

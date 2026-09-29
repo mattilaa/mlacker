@@ -111,10 +111,14 @@ signal through.
 | 14     | Peak      | Bell EQ: Gain at the cutoff, Resonance narrows it |
 | 15, 16 | Low Shelf, High Shelf | Gain below / above the cutoff |
 | 17     | Vowel     | Three formant band-passes; the cutoff's place in its range morphs A, E, I, O, U, so the filter envelope sweeps vowels. Resonance narrows the formants |
+| 18, 19 | Comb +, Comb - | Feedback comb tuned to the cutoff (one cycle of delay): peaks at its harmonics (+) or odd harmonics (-). Resonance is the feedback; peaks are kept near unity. Key tracking at 100 % makes it play in tune |
+| 20     | Flanger   | The input plus itself one cutoff cycle later: notches. Resonance feeds the delay back. Sweep it with the LFO or filter envelope |
+| 21     | Phaser    | Four first-order all-passes around the cutoff, mixed with the input: notches. Resonance is feedback |
 
 Resonance is a Q for the state-variable, peak and shelf types: 0 dB is 0.707
-(Butterworth), 36 dB about 45. Filters that need a delay line (comb, phaser,
-flanger) wait for voices that can hold sample buffers in MLang.
+(Butterworth), 36 dB about 45. The combs and flanger keep a delay line of
+about 50 ms (a 20 Hz cycle) per channel, a `std::ringbuffer` allocated when
+the voices are, off the audio thread.
 
 The type list is built to grow. Its parameter always has 64 entries, so a
 saved type never changes meaning. New filter models take the next number, and
@@ -264,7 +268,8 @@ tracking up and down, keys outside a zone, Key Track off, layering beside
 pads), filters (low-, high-pass and notch, two stages in series, a reserved type
 passing through, the filter envelope and a slot's own, key tracking; the
 state-variable types, a full-resonance sweep staying bounded, peak and shelf
-gains, vowel morphing), the LFO (tremolo, vibrato, a filter wobble that stays in
+gains, vowel morphing; combs, flanger and phaser, a comb at full feedback swept fast
+staying bounded), the LFO (tremolo, vibrato, a filter wobble that stays in
 range, tempo sync, delay, retrigger and free, sample & hold), choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot

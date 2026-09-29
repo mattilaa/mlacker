@@ -37,6 +37,8 @@ use dsp::envelope::Adsr;
 use dsp::filter::Biquad;
 use dsp::multimode::MultimodeFilter;
 use dsp::multimode::FilterModel;
+mod std::ringbuffer;
+use std::ringbuffer::RingBufferF32;
 
 extern fn calloc(count: i64, size: i64) -> ptr<SamplerVoice>;
 extern fn free(block: ptr<SamplerVoice>) -> void;
@@ -54,7 +56,8 @@ struct StereoSample { var left: f32; var right: f32; };
 
 /// Filter type numbers of a stage. 0 = off; 1-8 are `dsp::multimode`'s
 /// models; 9 notch; 10-13 state-variable low-, high-, band-pass and notch;
-/// 14 peak, 15 low shelf, 16 high shelf; 17 vowel (formant). Unknown numbers
+/// 14 peak, 15 low shelf, 16 high shelf; 17 vowel (formant); 18 comb +, 19
+/// comb -, 20 flanger, 21 phaser. Unknown numbers
 /// pass the signal through, so a state saved by a newer version plays
 /// unfiltered rather than wrong.
 fn sampler_filter_model(kind: i32) -> FilterModel {
@@ -67,7 +70,39 @@ fn sampler_filter_model(kind: i32) -> FilterModel {
     if kind == 7 { return FilterModel::Moog12; }
     return FilterModel::Moog24;
 }
-fn sampler_filter_known(kind: i32) -> bool { return kind >= 1 && kind <= 17; }
+fn sampler_filter_known(kind: i32) -> bool { return kind >= 1 && kind <= 21; }
+
+/// Four first-order all-pass stages with feedback, one channel: notches that
+/// sweep with the cutoff.
+struct SamplerPhaser { var z1: f32; var z2: f32; var z3: f32; var z4: f32; var last: f32; var a: f32; };
+
+impl SamplerPhaser {
+    fn new() -> SamplerPhaser { return SamplerPhaser { z1: 0.0f, z2: 0.0f, z3: 0.0f, z4: 0.0f, last: 0.0f, a: 0.0f }; }
+    fn reset(self: &mut Self) -> void { self.z1 = 0.0f; self.z2 = 0.0f; self.z3 = 0.0f; self.z4 = 0.0f; self.last = 0.0f; }
+    fn configure(self: &mut Self, cutoff_hz: f32, sample_rate: f32) -> void {
+        let t: f32 = tanf(3.14159265358979323846f * cutoff_hz / sample_rate);
+        self.a = (t - 1.0f) / (t + 1.0f);
+    }
+    /// `feedback` 0..1 deepens the notches.
+    fn process(self: &mut Self, input: f32, feedback: f32) -> f32 {
+        var x: f32 = input + feedback * self.last;
+        var y: f32 = self.a * x + self.z1; self.z1 = x - self.a * y; x = y;
+        y = self.a * x + self.z2; self.z2 = x - self.a * y; x = y;
+        y = self.a * x + self.z3; self.z3 = x - self.a * y; x = y;
+        y = self.a * x + self.z4; self.z4 = x - self.a * y;
+        self.last = y;
+        return 0.5f * (input + y);
+    }
+}
+
+/// A past value `delay` frames back (fractional, at least 1) of a ring buffer.
+fn ring_read(buffer: &RingBufferF32, delay: f32) -> f32 {
+    var ring: RingBufferF32 = RingBufferF32 {}; ring = buffer;
+    let frames: i32 = i32(delay);
+    let whole: i64 = frames;
+    let frac: f32 = delay - f32(whole);
+    return ring.read(whole) * (1.0f - frac) + ring.read(whole + 1) * frac;
+}
 
 /// Topology-preserving state-variable filter (Cytomic, A. Simper), one
 /// channel. It stays stable and smooth while its cutoff sweeps fast.
@@ -130,6 +165,14 @@ struct SamplerFilter {
     var biquad_right: Biquad;
     var svf_left: SamplerSvf;
     var svf_right: SamplerSvf;
+    /// Combs and flanger: delay lines (about 50 ms, a 20 Hz cycle), the delay
+    /// in frames and the feedback. Phaser: its all-pass chains.
+    var delay_left: RingBufferF32;
+    var delay_right: RingBufferF32;
+    var delay_frames: f32;
+    var feedback: f32;
+    var phaser_left: SamplerPhaser;
+    var phaser_right: SamplerPhaser;
     /// Vowel: three formant band-passes per channel.
     var formant1_left: Biquad;
     var formant1_right: Biquad;
@@ -140,8 +183,12 @@ struct SamplerFilter {
 };
 
 impl SamplerFilter {
-    fn new() -> SamplerFilter {
-        return SamplerFilter { kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f, gain_db: 0.0f, mod_octaves: 0.0f, fresh: true,
+    /// Delay lines are allocated here, off the audio thread.
+    fn new(sample_rate: f32) -> SamplerFilter {
+        let frames: i32 = i32(sample_rate / 20.0f) + 4;
+        let capacity: i64 = frames;
+        return SamplerFilter { delay_left: RingBufferF32::new(capacity), delay_right: RingBufferF32::new(capacity),
+            delay_frames: 1.0f, feedback: 0.0f, phaser_left: SamplerPhaser::new(), phaser_right: SamplerPhaser::new(), kind: 0, cutoff_hz: 20000.0f, resonance_db: 0.0f, env_octaves: 0.0f, gain_db: 0.0f, mod_octaves: 0.0f, fresh: true,
             left: MultimodeFilter::new(), right: MultimodeFilter::new(), biquad_left: Biquad::new(), biquad_right: Biquad::new(),
             svf_left: SamplerSvf::new(), svf_right: SamplerSvf::new(),
             formant1_left: Biquad::new(), formant1_right: Biquad::new(), formant2_left: Biquad::new(),
@@ -164,6 +211,8 @@ impl SamplerFilter {
         self.fresh = true;
         self.left.reset(); self.right.reset(); self.biquad_left.reset(); self.biquad_right.reset();
         self.svf_left.reset(); self.svf_right.reset();
+        self.delay_left.clear(); self.delay_right.clear();
+        self.phaser_left.reset(); self.phaser_right.reset();
         self.formant1_left.reset(); self.formant1_right.reset(); self.formant2_left.reset();
         self.formant2_right.reset(); self.formant3_left.reset(); self.formant3_right.reset();
     }
@@ -204,6 +253,21 @@ impl SamplerFilter {
             }
             return;
         }
+        if self.kind >= 18 && self.kind <= 20 {
+            // Tuned to the cutoff: one cycle of delay. Resonance is feedback.
+            let most: f32 = f32(self.delay_left.capacity() - 3);
+            self.delay_frames = clamp_sampler_f32(sample_rate / hz, 1.0f, most);
+            let amount: f32 = clamp_sampler_f32(self.resonance_db / 36.0f, 0.0f, 1.0f);
+            self.feedback = self.kind == 20 ? 0.9f * amount : 0.98f * amount;
+            if self.kind == 19 { self.feedback = 0.0f - self.feedback; }
+            return;
+        }
+        if self.kind == 21 {
+            self.phaser_left.configure(hz, sample_rate);
+            self.phaser_right.configure(hz, sample_rate);
+            self.feedback = 0.9f * clamp_sampler_f32(self.resonance_db / 36.0f, 0.0f, 1.0f);
+            return;
+        }
         if self.kind == 17 {
             // The cutoff's place in its 20 Hz .. 20 kHz range morphs A-E-I-O-U;
             // resonance narrows the formants.
@@ -233,6 +297,26 @@ impl SamplerFilter {
         }
         if self.kind >= 10 && self.kind <= 13 {
             return StereoSample { left: self.svf_left.process(left, self.kind - 10), right: self.svf_right.process(right, self.kind - 10) };
+        }
+        if self.kind == 18 || self.kind == 19 {
+            // Feedback comb, scaled so its peaks stay near unity.
+            let scale: f32 = 1.0f - (self.feedback < 0.0f ? 0.0f - self.feedback : self.feedback);
+            let comb_left: f32 = left + self.feedback * ring_read(self.delay_left, self.delay_frames);
+            let comb_right: f32 = right + self.feedback * ring_read(self.delay_right, self.delay_frames);
+            self.delay_left.write(comb_left); self.delay_right.write(comb_right);
+            return StereoSample { left: comb_left * scale, right: comb_right * scale };
+        }
+        if self.kind == 20 {
+            // Flanger: the input plus its delayed self (notches); resonance
+            // feeds the delay back.
+            let late_left: f32 = ring_read(self.delay_left, self.delay_frames);
+            let late_right: f32 = ring_read(self.delay_right, self.delay_frames);
+            self.delay_left.write(left + self.feedback * late_left);
+            self.delay_right.write(right + self.feedback * late_right);
+            return StereoSample { left: 0.5f * (left + late_left), right: 0.5f * (right + late_right) };
+        }
+        if self.kind == 21 {
+            return StereoSample { left: self.phaser_left.process(left, self.feedback), right: self.phaser_right.process(right, self.feedback) };
         }
         if self.kind == 17 {
             // Formants weighted 1, 1/2, 1/4, as a voice's are.
@@ -312,8 +396,8 @@ fn mlasampler_voice_create(sample_rate: f32) -> ptr<SamplerVoice> {
     unsafe {
         (*voice).envelope = Adsr::new(rate);
         (*voice).filter_envelope = Adsr::new(rate);
-        (*voice).filter1 = SamplerFilter::new();
-        (*voice).filter2 = SamplerFilter::new();
+        (*voice).filter1 = SamplerFilter::new(rate);
+        (*voice).filter2 = SamplerFilter::new(rate);
         (*voice).lfo_shape = -1;
         (*voice).lfo_seed = 22695477;
         (*voice).sample_rate = rate;

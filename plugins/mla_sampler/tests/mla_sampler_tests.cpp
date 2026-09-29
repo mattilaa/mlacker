@@ -87,6 +87,7 @@ constexpr ParamID filterParam(int slot, int stage, FilterField k) { return 2000 
 constexpr double filterType(int type) { return type / 63.0; }
 constexpr int kLowpass24 = 2, kHighpass24 = 4, kNotch = 9;
 constexpr int kSvfLowpass = 10, kSvfHighpass = 11, kSvfBandpass = 12, kPeak = 14, kLowShelf = 15, kVowel = 17;
+constexpr int kCombPlus = 18, kCombMinus = 19, kFlanger = 20, kPhaser = 21;
 double gainNorm(double db) { return (db / 24.0 + 1.0) / 2.0; }
 // Cutoff normalized value for a frequency: 20 Hz * 1000^norm.
 double cutoff(double hz) { return std::log(hz / 20.0) / std::log(1000.0); }
@@ -872,6 +873,38 @@ void testLfo(const std::string &path)
     CHECK(std::fabs(left(held, 100) - left(held, 2500)) > 1e-3f);
 }
 
+void testDelayLineFilters(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto stage = [](int type, double hz, double resonance = 0.0) {
+        return Params{{filterParam(0, 0, kFilterType), filterType(type)}, {filterParam(0, 0, kFilterCutoff), cutoff(hz)},
+                      {filterParam(0, 0, kFilterResonance), resonance}};
+    };
+    // Combs at half resonance (feedback 0.49), tuned to 1 kHz: + keeps DC
+    // (its peaks are normalized to unity), - cuts it to 0.51 / 1.49 of that
+    // (it favours odd harmonics).
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kCombPlus, 1000, 0.5)), 4000) - 0.5f) < 0.01f);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kCombMinus, 1000, 0.5)), 4000) - 0.5f * 0.51f / 1.49f) < 0.01f);
+    // Flanger: a delay of half the 6 kHz square's period (12 kHz) cancels it;
+    // a whole period (6 kHz) adds it to itself.
+    CHECK(rms(filtered(path, tone(), stage(kFlanger, 12000)), 2048, 4096) < 0.01);
+    CHECK(rms(filtered(path, tone(), stage(kFlanger, 6000)), 2048, 4096) > 0.45);
+    // Phaser: at 12 kHz its four all-passes turn 6 kHz by 180 degrees, so it
+    // notches the square's fundamental; DC passes.
+    const double plain = rms(filtered(path, tone(), {}), 2048, 4096);
+    CHECK(rms(filtered(path, tone(), stage(kPhaser, 12000)), 2048, 4096) < 0.5 * plain);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kPhaser, 1000)), 3000) - 0.5f) < 0.01f);
+    // A comb swept fast at full feedback stays bounded.
+    auto swept = stage(kCombPlus, 100, 1.0);
+    swept.push_back({filterParam(0, 0, kFilterEnvAmount), 1.0});
+    swept.push_back({kFilterEnvelope + 1, 0.2});
+    const auto sweep = filtered(path, saw(), swept);
+    bool bounded = true;
+    for(float v : sweep)
+        bounded = bounded && std::isfinite(v) && std::fabs(v) < 4.0f;
+    CHECK(bounded);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -991,12 +1024,13 @@ int main(int argc, char **argv)
     testChokeGroups(path);
     testMoreFilterTypes(path);
     testLfo(path);
+    testDelayLineFilters(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, LFO, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

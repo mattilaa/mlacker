@@ -176,7 +176,7 @@ impl SamplerView {
             let velocity_column: bool = col == 5 || col == 6;
             value = current + f64(delta) * (big && key_column ? 12.0 : (big && velocity_column ? 10.0 : 1.0));
             // Filter types stop at the last one the plugin knows.
-            if (col == 200 || col == 206) && value > 17.0 { value = 17.0; }
+            if (col == 200 || col == 206) && value > 21.0 { value = 21.0; }
             // LFO shapes and divisions likewise.
             if col == 300 && value > 5.0 { value = 5.0; }
             if col == 303 && value > 13.0 { value = 13.0; }
@@ -732,10 +732,10 @@ impl SamplerView {
         if col == 308 { return clone(value >= 0.5 ? "Retrg" : "Free"); }
         // Filter page, as the plugin maps them.
         if col == 200 || col == 206 {
-            let names: array<str8, 18> = {"Off", "LP12", "LP24", "HP12", "HP24", "BP12", "BP24", "Ldr12", "Ldr24", "Notch",
-                "SvLP", "SvHP", "SvBP", "SvNt", "Peak", "LoShf", "HiShf", "Vowel"};
+            let names: array<str8, 22> = {"Off", "LP12", "LP24", "HP12", "HP24", "BP12", "BP24", "Ldr12", "Ldr24", "Notch",
+                "SvLP", "SvHP", "SvBP", "SvNt", "Peak", "LoShf", "HiShf", "Vowel", "Comb+", "Comb-", "Flang", "Phasr"};
             let kind: i32 = i32(std::math::floor(value * 63.0 + 0.5));
-            return kind < 18 ? clone(names[kind]) : format!("#{}", kind);
+            return kind < 22 ? clone(names[kind]) : format!("#{}", kind);
         }
         if col == 201 || col == 207 {
             let hz: f64 = 20.0 * std::math::pow(1000.0, value);
