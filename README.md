@@ -744,7 +744,8 @@ a loop point set here plays from that frame.
 
 `p` plays through the Instrument track like a key of the virtual keyboard, at
 velocity 100 or the nearest velocity in the slot's range, so
-you hear loop and zone edits without leaving the pane. A zone plays at its root,
+you hear loop and zone edits without leaving the pane. Loop, level, pan, tune
+and envelope edits change a held note as it plays. A zone plays at its root,
 or at the nearest key of the zone when the root lies outside it. Other slots
 whose key or zone holds that key sound too. On terminals that report key
 releases (the kitty keyboard protocol, see Virtual keyboard) the note lasts

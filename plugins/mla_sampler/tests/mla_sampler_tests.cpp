@@ -530,6 +530,61 @@ void testSampleStart(const std::string &path)
     }
 }
 
+void testLiveEdits(const std::string &path)
+{
+    const int frames = 1000;
+    // Turning a loop on keeps a sounding note going past the sample's end.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(slotParam(0, kSlotLoop), kLoopForward);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.5);
+        const auto out = plugin.render(4096);
+        CHECK(energy(out, 3000, 4096) > 100.0);
+        CHECK(left(out, 2000) > 0.5f && left(out, 2000) <= 1.0f + 1e-3f);
+    }
+    // Turning it off lets the note finish, even a bidirectional loop on its
+    // way back (which must not run backwards for ever).
+    for(double mode : {kLoopForward, kLoopBidirectional}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.param(slotParam(0, kSlotLoop), mode);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.2);
+        plugin.noteOn(kRootKey);
+        plugin.render(1280); // a bidirectional loop is heading back by now
+        plugin.param(slotParam(0, kSlotLoop), 0.0);
+        const auto out = plugin.render(2048);
+        CHECK(energy(out, 1024, 2048) == 0.0);
+    }
+    // Tune and level follow at once: an octave up doubles the ramp's slope;
+    // -6 dB roughly halves a constant.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(4000)) == kResultOk);
+        plugin.noteOn(kRootKey);
+        const auto before = plugin.render(kBlock);
+        CHECK(std::fabs((left(before, 101) - left(before, 100)) - 1.0f / 4000) < 1e-5f);
+        plugin.param(slotParam(0, kSlotTune), 0.75); // +12 semitones
+        const auto after = plugin.render(kBlock);
+        CHECK(std::fabs((left(after, 101) - left(after, 100)) - 2.0f / 4000) < 1e-5f);
+    }
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, std::vector<float>(4000, 0.5f)) == kResultOk);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(slotParam(0, kSlotLevel), 54.0 / 66.0); // -6 dB
+        const auto out = plugin.render(kBlock);
+        CHECK(std::fabs(left(out, 100) - 0.5f * std::pow(10.0f, -6.0f / 20.0f)) < 1e-3f);
+    }
+}
+
 void testOutputRouting(const std::string &path)
 {
     // Out 2 is inactive: the slot falls back to Main.
@@ -602,12 +657,13 @@ int main(int argc, char **argv)
     testVelocityLayers(path);
     testSlotEnvelopes(path);
     testSampleStart(path);
+    testLiveEdits(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

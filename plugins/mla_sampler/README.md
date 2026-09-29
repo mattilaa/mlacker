@@ -61,8 +61,14 @@ valid when a slot gets a different sample. A loop shorter than two frames plays
 as Off. A slot's **Start** skips the beginning of its sample (silence or an
 attack): playback begins there. A start past a forward or bidirectional loop's
 end plays on into the loop. Interpolation across the loop end of a forward loop reads the loop
-start, so the seam has no jump to the frame after the loop. Loop settings are
-read when a note starts. Notes already sounding keep theirs.
+start, so the seam has no jump to the frame after the loop.
+
+Edits reach notes already sounding: loop mode, loop points and crossfade
+(without restarting the playhead), level, pan and tune, the envelope and the
+output. A sounding note past a new forward loop's end wraps into the loop, and
+a loop turned off plays on to the end of the sample. Key zones, velocity ranges
+and the start point decide how a note begins, so they apply from the next
+note.
 
 A forward loop whose end and start do not match (a click at the seam) can
 **crossfade**: over the loop's last *n* frames, the tail fades out while the
@@ -145,7 +151,8 @@ from this directory:
 `test` builds and runs `tests/mla_sampler_tests.cpp`, an offline host that
 checks rendered audio: the bus layout, slot/key mapping, key zones (pitch
 tracking up and down, keys outside a zone, Key Track off, layering beside
-pads), velocity layers (soft and hard layers, their boundary, a pad limited
+pads), live edits on a sounding note (a loop turned on or off, including a
+bidirectional loop on its way back, tune and level), velocity layers (soft and hard layers, their boundary, a pad limited
 to soft notes), per-slot envelopes beside the instance one, the sample start
 (to the exact frame, and past a loop's end), a forward loop's seam with and without a crossfade, loop off / forward /
 bidirectional, per-slot output routing with the fallback to Main, and state

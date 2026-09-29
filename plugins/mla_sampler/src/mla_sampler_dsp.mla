@@ -103,26 +103,54 @@ fn mlasampler_voice_set_envelope(voice: ptr<SamplerVoice>, attack: f32, decay: f
 /// @param loop_end One past the last loop frame. A loop shorter than two
 /// frames plays as loop off.
 fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain: f32, pan: f32, loop_mode: i32, loop_start: f64, loop_end: f64) {
+    unsafe {
+        (*voice).position = 0.0;
+        (*voice).direction = 1.0;
+        (*voice).frames = frames;
+        (*voice).xfade = 0.0;
+        (*voice).envelope.reset();
+        (*voice).envelope.gate_on();
+        (*voice).active = frames > 0.0 ? 1 : 0;
+    }
+    mlasampler_voice_set_step(voice, step);
+    mlasampler_voice_set_loop(voice, loop_mode, loop_start, loop_end);
+    mlasampler_voice_set_gain(voice, gain, pan);
+}
+
+/// @brief Playback rate (source frames per output frame); sounding voices
+/// change pitch at once.
+fn mlasampler_voice_set_step(voice: ptr<SamplerVoice>, step: f64) {
+    unsafe { (*voice).step = step > 0.0 ? step : 1.0; }
+}
+
+/// @brief Linear gain and pan (-1 left .. +1 right, constant-power); sounding
+/// voices follow at once.
+fn mlasampler_voice_set_gain(voice: ptr<SamplerVoice>, gain: f32, pan: f32) {
     let p: f32 = clamp_sampler_f32(pan, -1.0f, 1.0f);
     // Constant-power law: angle 0..pi/2 across the stereo field.
     let angle: f32 = (p + 1.0f) * 0.78539816339744830962f;
-    let start: f64 = clamp_sampler_f64(floor(loop_start), 0.0, frames);
-    let end: f64 = clamp_sampler_f64(floor(loop_end), 0.0, frames);
     unsafe {
-        (*voice).position = 0.0;
-        (*voice).step = step > 0.0 ? step : 1.0;
-        (*voice).direction = 1.0;
-        (*voice).frames = frames;
+        // sqrt(2) keeps a centred voice at unity in both channels.
+        (*voice).gain_left = gain * cosf(angle) * 1.41421356237309504880f;
+        (*voice).gain_right = gain * sinf(angle) * 1.41421356237309504880f;
+    }
+}
+
+/// @brief Loop mode and points (see `mlasampler_voice_start`). A sounding
+/// voice keeps its playhead: past a new forward loop's end it wraps into the
+/// loop, and a loop turned off plays forward to the end of the sample. It
+/// clears the crossfade; set it again after.
+fn mlasampler_voice_set_loop(voice: ptr<SamplerVoice>, loop_mode: i32, loop_start: f64, loop_end: f64) {
+    unsafe {
+        let frames: f64 = (*voice).frames;
+        let start: f64 = clamp_sampler_f64(floor(loop_start), 0.0, frames);
+        let end: f64 = clamp_sampler_f64(floor(loop_end), 0.0, frames);
         (*voice).loop_mode = (loop_mode == 1 || loop_mode == 2) && end - start >= 2.0 ? loop_mode : 0;
         (*voice).loop_start = start;
         (*voice).loop_end = end;
         (*voice).xfade = 0.0;
-        // sqrt(2) keeps a centred voice at unity in both channels.
-        (*voice).gain_left = gain * cosf(angle) * 1.41421356237309504880f;
-        (*voice).gain_right = gain * sinf(angle) * 1.41421356237309504880f;
-        (*voice).envelope.reset();
-        (*voice).envelope.gate_on();
-        (*voice).active = frames > 0.0 ? 1 : 0;
+        // Only a bidirectional loop plays backwards.
+        if (*voice).loop_mode != 2 { (*voice).direction = 1.0; }
     }
 }
 

@@ -66,6 +66,10 @@ extern "C" void mlasampler_voice_stop__ptr_struct_SamplerVoice(SamplerVoice *voi
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_next_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
+extern "C" void mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double step);
+extern "C" void mlasampler_voice_set_gain__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float gain, float pan);
+extern "C" void mlasampler_voice_set_loop__ptr_struct_SamplerVoice_i32_f64_f64(SamplerVoice *voice, int32_t loopMode,
+                                                                           double loopStart, double loopEnd);
 extern "C" void mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frames);
 extern "C" void mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double frame);
 extern "C" double mlasampler_voice_shadow_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -515,8 +519,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     tresult PLUGIN_API process(ProcessData &data) SMTG_OVERRIDE
     {
         syncSlots();
-        if(paramsDirty_.exchange(false, std::memory_order_acquire))
+        if(paramsDirty_.exchange(false, std::memory_order_acquire)) {
             pushEnvelope();
+            for(int slot = 0; slot < kNumSlots; ++slot)
+                applyLive(slot, true, true);
+        }
         handleParameterChanges(data.inputParameterChanges);
 
         if(data.symbolicSampleSize != kSample32) {
@@ -721,6 +728,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         int16 channel = -1;
         int16 pitch = -1;
         uint64_t serial = 0;
+        // What the note contributed, so live edits recompute pitch and level.
+        int keySemitones = 0;
+        float velocityGain = 1.0f;
     };
 
     struct Retired {
@@ -884,6 +894,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(changes == nullptr)
             return;
         bool envelopeChanged = false;
+        // Slots whose sounding voices take a changed loop or level/pan/tune.
+        bool loopChanged[kNumSlots] = {};
+        bool soundChanged[kNumSlots] = {};
         const int32 count = changes->getParameterCount();
         for(int32 q = 0; q < count; ++q) {
             IParamValueQueue *queue = changes->getParameterData(q);
@@ -902,15 +915,30 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             if((id >= kAttackParam && id <= kReleaseParam) ||
                (id >= kEnvelopeParamBase && id < kEnvelopeParamBase + kNumEnvelopeParams))
                 envelopeChanged = true;
+            if(id == kLevelParam || id == kTuneParam)
+                std::fill(std::begin(soundChanged), std::end(soundChanged), true);
+            if(id >= kSlotParamBase && id < kSlotParamBase + kNumSlotParams) {
+                const int slot = static_cast<int>(id - kSlotParamBase) / kParamsPerSlot;
+                const int field = static_cast<int>(id - kSlotParamBase) % kParamsPerSlot;
+                if(field == kSlotLevel || field == kSlotPan || field == kSlotTune)
+                    soundChanged[slot] = true;
+                if(field == kSlotLoop || field == kSlotLoopStart || field == kSlotLoopEnd)
+                    loopChanged[slot] = true;
+            }
+            if(id >= kCrossfadeParamBase && id < kCrossfadeParamBase + kNumSlots)
+                loopChanged[id - kCrossfadeParamBase] = true;
         }
         if(envelopeChanged)
             pushEnvelope();
+        for(int slot = 0; slot < kNumSlots; ++slot)
+            applyLive(slot, loopChanged[slot], soundChanged[slot]);
     }
 
     // Every slot whose key (Pad) or key range (Zone) and velocity range hold
     // the note plays it, so overlapping zones layer and velocity ranges
-    // switch between them. Zone and loop settings are read when a note
-    // starts; sounding notes keep theirs.
+    // switch between them. Zone, velocity and start settings are read when a
+    // note starts; loop, level, pan, tune and envelope edits reach sounding
+    // notes too (applyLive, pushEnvelope).
     void noteOn(int16 channel, int16 pitch, float velocity)
     {
         const int padSlot = pitch - rootKeyFromNorm(norm(kRootKeyParam));
@@ -954,29 +982,69 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(target == nullptr)
             return;
 
-        const double semitones =
-            semitonesFromNorm(norm(kTuneParam)) + semitonesFromNorm(slotNorm(slot, kSlotTune)) + keySemitones;
-        const double step = sample->rate / sampleRate_ * std::pow(2.0, semitones / 12.0);
         const float sensitivity = static_cast<float>(norm(kVelocityParam));
         const float velocityGain = 1.0f - sensitivity + sensitivity * std::clamp(velocity, 0.0f, 1.0f);
-        const float gain = gainFromNorm(norm(kLevelParam)) * gainFromNorm(slotNorm(slot, kSlotLevel)) * velocityGain;
-        const float pan = panFromNorm(slotNorm(slot, kSlotPan));
         const double frames = static_cast<double>(sample->frames);
-        const double loopStart = std::floor(slotNorm(slot, kSlotLoopStart) * frames);
-        const double loopEnd = std::floor(slotNorm(slot, kSlotLoopEnd) * frames);
 
         applyEnvelope(target->dsp, slot);
         mlasampler_voice_start__ptr_struct_SamplerVoice_f64_f64_f32_f32_i32_f64_f64(
-            target->dsp, frames, step, gain, pan, loopFromNorm(slotNorm(slot, kSlotLoop)), loopStart, loopEnd);
-        mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(
-            target->dsp, std::floor(norm(static_cast<ParamID>(kCrossfadeParamBase + slot)) * frames));
+            target->dsp, frames, voiceStep(slot, sample, keySemitones), voiceGain(slot, velocityGain),
+            panFromNorm(slotNorm(slot, kSlotPan)), 0, 0.0, 0.0);
+        applyLoop(target->dsp, slot, sample);
         mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(
             target->dsp, std::floor(norm(static_cast<ParamID>(kStartParamBase + slot)) * frames));
+        target->keySemitones = keySemitones;
+        target->velocityGain = velocityGain;
         target->sample = sample;
         target->slot = slot;
         target->channel = channel;
         target->pitch = pitch;
         target->serial = nextSerial_++;
+    }
+
+    // Playback rate for a slot's note: sample rate ratio, instance and slot
+    // tune, and key tracking.
+    double voiceStep(int slot, const Sample *sample, int keySemitones) const
+    {
+        const double semitones =
+            semitonesFromNorm(norm(kTuneParam)) + semitonesFromNorm(slotNorm(slot, kSlotTune)) + keySemitones;
+        return sample->rate / sampleRate_ * std::pow(2.0, semitones / 12.0);
+    }
+
+    float voiceGain(int slot, float velocityGain) const
+    {
+        return gainFromNorm(norm(kLevelParam)) * gainFromNorm(slotNorm(slot, kSlotLevel)) * velocityGain;
+    }
+
+    // The slot's loop mode, points and crossfade, on a new or sounding voice.
+    void applyLoop(SamplerVoice *dsp, int slot, const Sample *sample)
+    {
+        const double frames = static_cast<double>(sample->frames);
+        mlasampler_voice_set_loop__ptr_struct_SamplerVoice_i32_f64_f64(
+            dsp, loopFromNorm(slotNorm(slot, kSlotLoop)), std::floor(slotNorm(slot, kSlotLoopStart) * frames),
+            std::floor(slotNorm(slot, kSlotLoopEnd) * frames));
+        mlasampler_voice_set_crossfade__ptr_struct_SamplerVoice_f64(
+            dsp, std::floor(norm(static_cast<ParamID>(kCrossfadeParamBase + slot)) * frames));
+    }
+
+    // Live edits: sounding voices of `slot` take its current loop and/or its
+    // level, pan and tune (with the instance's), keeping their playhead.
+    void applyLive(int slot, bool loop, bool sound)
+    {
+        if(!loop && !sound)
+            return;
+        for(auto &voice : voices_) {
+            if(!voice.dsp || !voice.sample || voice.slot != slot ||
+               !mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
+                continue;
+            if(loop)
+                applyLoop(voice.dsp, slot, voice.sample);
+            if(sound) {
+                mlasampler_voice_set_step__ptr_struct_SamplerVoice_f64(voice.dsp, voiceStep(slot, voice.sample, voice.keySemitones));
+                mlasampler_voice_set_gain__ptr_struct_SamplerVoice_f32_f32(
+                    voice.dsp, voiceGain(slot, voice.velocityGain), panFromNorm(slotNorm(slot, kSlotPan)));
+            }
+        }
     }
 
     void noteOff(int16 channel, int16 pitch)
