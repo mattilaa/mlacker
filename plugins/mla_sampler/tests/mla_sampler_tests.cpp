@@ -74,6 +74,7 @@ constexpr ParamID startParam(int slot) { return 800 + slot; }
 constexpr ParamID groupParam(int slot) { return 900 + slot; }
 constexpr ParamID kGroupMode = 950;
 constexpr ParamID chokeParam(int slot) { return 1200 + slot; }
+constexpr ParamID reverseParam(int slot) { return 1300 + slot; }
 enum LfoField { kLfoShape, kLfoRate, kLfoSync, kLfoDivision, kLfoDelay, kLfoPitch, kLfoCutoff, kLfoLevel, kLfoTrigger };
 constexpr ParamID lfoParam(int slot, LfoField k) { return 3000 + slot * 32 + k; }
 constexpr ParamID lfo2Param(int slot, LfoField k) { return 3016 + slot * 32 + k; }
@@ -980,6 +981,26 @@ void testModMatrix(const std::string &path)
     CHECK(bounded);
 }
 
+void testReverse(const std::string &path)
+{
+    const int frames = 1000;
+    // Backwards from the last frame to the first, then silent.
+    const auto back = filtered(path, ramp(frames), {{reverseParam(0), 1.0}});
+    CHECK(std::fabs(left(back, 0) - 1000.0f / frames) < 1e-4f);
+    CHECK(std::fabs(left(back, 999) - 1.0f / frames) < 1e-4f);
+    CHECK(energy(back, 1001, 4096) == 0.0);
+    // Start and loop points are in the reversed timeline: starting a quarter
+    // in begins at frame 749; a forward loop over its second half cycles
+    // through frames 499 .. 0.
+    const auto started = filtered(path, ramp(frames), {{reverseParam(0), 1.0}, {startParam(0), 250.5 / frames}});
+    CHECK(std::fabs(left(started, 0) - 750.0f / frames) < 1e-4f);
+    const auto looped = filtered(path, ramp(frames), {{reverseParam(0), 1.0}, {slotParam(0, kSlotLoop), kLoopForward},
+                                                       {slotParam(0, kSlotLoopStart), 0.5}});
+    for(int f = 1100; f < 4096; f += 173)
+        CHECK(left(looped, f) > 0.0f && left(looped, f) <= 500.0f / frames + 1e-4f);
+    CHECK(energy(looped, 3000, 4096) > 10.0);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -1101,12 +1122,13 @@ int main(int argc, char **argv)
     testLfo(path);
     testDelayLineFilters(path);
     testModMatrix(path);
+    testReverse(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

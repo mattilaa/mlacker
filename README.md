@@ -753,7 +753,9 @@ uses the instance's envelope, `Own` the slot's) and the slot's own **Atk**,
 **Dec**, **Sus%** and **Rel**, **Ofs%**, where playback starts in the
 sample, **Grp**, the slot's group (`-` or 1-8), and **Chk**, its choke group
 (`-` or 1-8): a slot in a choke group cuts off that group's sounding notes,
-its own included, like a closed hi-hat stopping the open one. Slots in one group take
+its own included, like a closed hi-hat stopping the open one. **Rev** plays the
+slot's sample backwards; its loop points and start then count from the end,
+and the wave view shows the waveform reversed, as it plays. Slots in one group take
 turns on a note instead of layering: round-robin or random, as the pane title
 shows (`Groups: Round-robin`). `G` switches between the two. The four envelope columns are dimmed, and cannot be edited,
 until Env is `Own`. `J`/`K` step level by 1 dB, tune by a semitone and the

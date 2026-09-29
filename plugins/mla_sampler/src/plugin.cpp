@@ -7,7 +7,8 @@
 // its own level, pan, tune, loop (off, forward or bidirectional, between a
 // start and an end point) and output bus. A slot uses the instance's amp
 // ADSR or its own; note-off releases it, and looping slots keep looping
-// through the release. Playback begins at the slot's start point. Each voice
+// through the release. Playback begins at the slot's start point; a reversed
+// slot plays its sample backwards. Each voice
 // then runs a chain of filter stages (types from an extensible list) moved by
 // the instance's or the slot's own filter envelope. Two LFOs modulate its
 // pitch, filter cutoff and level, and four mod routes send LFOs, envelopes,
@@ -145,6 +146,7 @@ enum ParamId : ParamID {
     kFilterEnvelopeParamBase = 960,     // instance filter ADSR: 960 attack .. 963 release
     kSlotFilterEnvelopeParamBase = 1100, // slot s: 1100 + 5s, see EnvelopeParam
     kChokeParamBase = 1200,              // slot s: 1200 + s, choke group (Off, 1..8)
+    kReverseParamBase = 1300,            // slot s: 1300 + s, Off or On
     kFilterParamBase = 2000,             // slot s, stage t: 2000 + 32s + 8t, see FilterField
     kLfoParamBase = 3000,                // slot s, LFO l: 3000 + 32s + 16l, see LfoField
     kRouteParamBase = 4000,              // slot s, route r: 4000 + 32s + 4r, see RouteField
@@ -274,15 +276,15 @@ constexpr int kNumEnvelopeParams = kNumSlots * kParamsPerEnvelope;
 constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + kNumSlots + kNumVelocityParams +
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
                             kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages +
-                            kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields;
+                            kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields + kNumSlots;
 constexpr ParamID kMaxParamId = kRouteParamBase + kNumSlots * kRouteSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
 // slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
 // starts, groups, group mode, the instance filter envelope, slot filter
-// envelopes, filter stages, choke groups, filter gains, LFO 1, LFO 2 and mod
-// routes. Each block was appended after the ones before it, so saved states
-// keep their meaning.
+// envelopes, filter stages, choke groups, filter gains, LFO 1, LFO 2, mod
+// routes and reverse. Each block was appended after the ones before it, so
+// saved states keep their meaning.
 struct ParamLayout {
     ParamID ids[kNumParams];
     int16_t index[kMaxParamId];
@@ -322,6 +324,7 @@ struct ParamLayout {
         for(int slot = 0; slot < kNumSlots; ++slot)
             for(int route = 0; route < kRoutes; ++route)
                 run(kRouteParamBase + slot * kRouteSlotStride + route * kRouteStride, kRouteFields);
+        run(kReverseParamBase, kNumSlots);
     }
 };
 static const ParamLayout kLayout;
@@ -667,6 +670,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                     target->appendString(utf16(k < kRouteTargetsKnown ? kRouteTargetNames[k] : "(reserved)").c_str());
                 addParam(routeParamId(slot, route, kRouteAmount), slotTitle(slot, (name + "Amount").c_str()).c_str(), nullptr, 0.5);
             }
+        // Reverse last.
+        for(int slot = 0; slot < kNumSlots; ++slot) {
+            auto *reverse = addList(static_cast<ParamID>(kReverseParamBase + slot), slotTitle(slot, "Reverse"));
+            reverse->appendString(STR16("Off"));
+            reverse->appendString(STR16("On"));
+        }
         return kResultOk;
     }
 
@@ -967,6 +976,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         // What the note contributed, so live edits recompute pitch and level.
         int keySemitones = 0;
         float velocityGain = 1.0f;
+        // Plays its sample backwards (read when the note started).
+        bool reversed = false;
     };
 
     struct Retired {
@@ -1394,6 +1405,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(target->dsp,
                                                                 std::floor(std::clamp(startShare, 0.0, 1.0) * frames));
         target->keySemitones = keySemitones;
+        target->reversed = norm(static_cast<ParamID>(kReverseParamBase + slot)) >= 0.5;
         target->velocityGain = velocityGain;
         target->sample = sample;
         target->slot = slot;
@@ -1500,18 +1512,25 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             float *outR = routed ? buses[bus][1] : buses[0][1];
             const float *pcm = voice.sample->stereo.data();
             const int64_t guard = voice.sample->frames; // Index of the silent guard frame.
+            // A reversed voice reads the sample mirrored: its frame f is the
+            // sample's last frame minus f. Loops, the start and the crossfade
+            // then work unchanged, in the reversed sample's timeline.
+            const bool reversed = voice.reversed;
+            const auto at = [pcm, guard, reversed](int64_t f) {
+                return pcm + (reversed && f < guard ? guard - 1 - f : f) * 2;
+            };
             for(int32 i = from; i < to; ++i) {
                 int64_t frame = static_cast<int64_t>(mlasampler_voice_frame__ptr_struct_SamplerVoice(voice.dsp));
                 int64_t next = static_cast<int64_t>(mlasampler_voice_next_frame__ptr_struct_SamplerVoice(voice.dsp));
                 frame = std::clamp<int64_t>(frame, 0, guard - 1);
                 next = std::clamp<int64_t>(next, 0, guard);
-                const float *a = pcm + frame * 2;
-                const float *b = pcm + next * 2;
+                const float *a = at(frame);
+                const float *b = at(next);
                 // During a crossfade, the frames a loop length back fade in.
                 const double shadowFrame = mlasampler_voice_shadow_frame__ptr_struct_SamplerVoice(voice.dsp);
                 const int64_t shadow = shadowFrame < 0 ? 0 : std::clamp<int64_t>(static_cast<int64_t>(shadowFrame), 0, guard - 1);
-                const float *c = pcm + shadow * 2;
-                const float *d = pcm + (shadow + 1) * 2;
+                const float *c = at(shadow);
+                const float *d = at(shadow + 1);
                 float right = 0.0f;
                 const float left = mlasampler_voice_render__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32_f32_f32_f32_ptr_f32(
                     voice.dsp, a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1], &right);

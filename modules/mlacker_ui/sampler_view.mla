@@ -21,7 +21,8 @@ use std::strbuf::free;
 // the instance's group mode (Round-robin, Random). The filter chain: 2000 +
 // 32s + 8t + field for stage t (type, cutoff, resonance, env amount, key
 // track, gain) and 1100 + 5s + field for the slot's filter envelope (own, attack,
-// decay, sustain, release); 1200 + s is its choke group (Off, 1-8), and
+// decay, sustain, release); 1200 + s is its choke group (Off, 1-8), 1300 + s
+// reverse (Off, On), and
 // 3000 + 32s + 16l + field its LFO l (shape, rate, sync, division, delay,
 // pitch, cutoff, level, trigger), and 4000 + 32s + 4r + field its mod route r
 // (source, target, amount).
@@ -38,7 +39,7 @@ pub struct SamplerView {
     /// 6 high velocity, 7 loop mode, 8 loop start, 9 loop end, 10 loop
     /// crossfade, 11 output. On the Sound page (`page` 1, key `e`): 0 level,
     /// 1 pan, 2 tune, 3 envelope (instance or own), 4-7 attack, decay,
-    /// sustain, release, 8 sample start, 9 group, 10 choke group. On the
+    /// sustain, release, 8 sample start, 9 group, 10 choke group, 11 reverse. On the
     /// Filter page (`page`
     /// 2): 0-5 filter 1 type, cutoff, resonance, envelope amount, key track,
     /// gain, 6-11 the same for filter 2, 12 filter envelope (instance or
@@ -95,7 +96,7 @@ impl SamplerView {
     fn col(self: SamplerView) -> i32 { return self.page * 100 + self.column; }
     /// Columns on a page: keys & loops, Sound, Filter.
     fn page_columns(page: i32) -> i32 {
-        if page == 1 { return 11; }
+        if page == 1 { return 12; }
         if page == 2 { return 17; }
         if page == 3 || page == 4 { return 9; }
         return 12;
@@ -111,6 +112,7 @@ impl SamplerView {
         if col == 108 { return 800 + s; }
         if col == 109 { return 900 + s; }
         if col == 110 { return 1200 + s; }
+        if col == 111 { return 1300 + s; }
         if col >= 103 { return 700 + s * 5 + col - 103; }
         if col >= 100 { return 200 + s * 7 + col - 100; }
         if col < 5 { return 400 + s * 5 + col; }
@@ -299,7 +301,8 @@ impl SamplerView {
     /// The zero crossing nearest `frame` (a frame whose sign differs from the
     /// one before it), searched up to 1 s of 48 kHz either way; `frame` when
     /// there is none.
-    fn zero_crossing(clip: &AudioClip, frame: i64) -> i64 {
+    /// `reversed`: search the sample as a reversed slot plays it.
+    fn zero_crossing(clip: &AudioClip, frame: i64, reversed: bool) -> i64 {
         var source: AudioClip = AudioClip {}; source = clip;
         let samples: list<f32> = source.samples; let channels: i64 = source.channels;
         for distance in 0..48000 {
@@ -307,8 +310,10 @@ impl SamplerView {
                 let f: i64 = side == 0 ? frame - distance : frame + distance;
                 if f < 1 || f >= source.frames { continue; }
                 // Mono: the channel average.
-                let a: f32 = channels < 2 ? samples[f - 1] : (samples[(f - 1) * channels] + samples[(f - 1) * channels + 1]) * 0.5f;
-                let b: f32 = channels < 2 ? samples[f] : (samples[f * channels] + samples[f * channels + 1]) * 0.5f;
+                let fa: i64 = reversed ? source.frames - f : f - 1;
+                let fb: i64 = reversed ? source.frames - 1 - f : f;
+                let a: f32 = channels < 2 ? samples[fa] : (samples[fa * channels] + samples[fa * channels + 1]) * 0.5f;
+                let b: f32 = channels < 2 ? samples[fb] : (samples[fb * channels] + samples[fb * channels + 1]) * 0.5f;
                 if (a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f) { return f; }
             }
         }
@@ -378,7 +383,7 @@ impl SamplerView {
         let marker_col: i32 = SamplerView::marker_column(self.marker);
         let current: i64 = SamplerView::frame_at(output, slot, self.slot, marker_col, frames);
         var target: i64 = current;
-        if snap { target = SamplerView::zero_crossing(probe, current); }
+        if snap { target = SamplerView::zero_crossing(probe, current, SamplerView::value(output, slot, self.slot, 111) >= 0.5); }
         else {
             // One dot of the waveform, or one frame with Shift.
             let dots: i64 = self.dots > 0 ? wide(self.dots) : 160;
@@ -489,9 +494,9 @@ impl SamplerView {
         if self.wave { self.paint_wave(surface, area, theme, output, slot, labels, clip, has_clip); return; }
         // Typed lists: a bare integer list literal would be i64.
         if self.page == 1 {
-            let widths: list<i32> = [7, 5, 6, 5, 7, 7, 5, 7, 7, 4, 4];
+            let widths: list<i32> = [7, 5, 6, 5, 7, 7, 5, 7, 7, 4, 4, 4];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
-                ["Level", "Pan", "Tune", "Env", "Atk", "Dec", "Sus%", "Rel", "Ofs%", "Grp", "Chk"],
+                ["Level", "Pan", "Tune", "Env", "Atk", "Dec", "Sus%", "Rel", "Ofs%", "Grp", "Chk", "Rev"],
                 "j/k slot  h/l col  J/K [ ] adjust  G group mode  e filter  w wave  p play  Enter load");
             return;
         }
@@ -585,6 +590,7 @@ impl SamplerView {
         }
         let frames: i64 = source.frames;
         let samples: list<f32> = source.samples; let channels: i64 = source.channels;
+        let reversed: bool = SamplerView::value(output, slot, self.slot, 111) >= 0.5;
         let start_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, false, frames);
         let end_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, true, frames);
         let mode: str8 = SamplerView::field_text(7, SamplerView::value(output, slot, self.slot, 7));
@@ -613,7 +619,9 @@ impl SamplerView {
             var low: f32 = 1.0f; var high: f32 = -1.0f;
             var f: i64 = f0;
             while f < f1 && f < frames {
-                let v: f32 = channels < 2 ? samples[f] : (samples[f * channels] + samples[f * channels + 1]) * 0.5f;
+                // A reversed slot's waveform is shown as it plays: mirrored.
+                let fr: i64 = reversed ? frames - 1 - f : f;
+                let v: f32 = channels < 2 ? samples[fr] : (samples[fr * channels] + samples[fr * channels + 1]) * 0.5f;
                 if v < low { low = v; } if v > high { high = v; }
                 f = f + stride;
             }
@@ -752,6 +760,7 @@ impl SamplerView {
         }
         if col == 102 { return SamplerView::tenths_text(i32(std::math::floor((value * 48.0 - 24.0) * 10.0 + 0.5)), true); }
         if col == 103 || col == 212 { return clone(value >= 0.5 ? "Own" : "Inst"); }
+        if col == 111 { return clone(value >= 0.5 ? "On" : "Off"); }
         // LFO page, as the plugin maps them.
         if col == 300 {
             let shapes: array<str8, 6> = {"Sine", "Tri", "SawUp", "SawDn", "Sqr", "S&H"};

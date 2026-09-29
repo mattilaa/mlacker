@@ -69,7 +69,10 @@ rate. Slots are filled the same ways as Mla Drum's pads:
 Loop start and end are fractions of the sample length (0..1), so they stay
 valid when a slot gets a different sample. A loop shorter than two frames plays
 as Off. A slot's **Start** skips the beginning of its sample (silence or an
-attack): playback begins there. A start past a forward or bidirectional loop's
+attack): playback begins there. **Reverse** plays a slot's sample backwards:
+its loop points, start and crossfade then count from the sample's end, as if
+the sample were stored reversed. It is read when a note starts, so notes
+already sounding keep their direction. A start past a forward or bidirectional loop's
 end plays on into the loop. Interpolation across the loop end of a forward loop reads the loop
 start, so the seam has no jump to the frame after the loop.
 
@@ -233,6 +236,7 @@ mlacker's README, "Plugin outputs").
 | Slot N Filter T Env | -8 .. +8 octaves             | Filter envelope depth. Default 0. |
 | Slot N Filter T Key Track | 0 .. 100 %             | Default 0. |
 | Slot N Choke       | Off, 1 .. 8                   | Choke group. Default Off. |
+| Slot N Reverse     | Off, On                       | Plays the sample backwards. Default Off. |
 | Slot N Filter T Gain | -24 .. +24 dB               | Peak and shelves. Default 0. |
 | Slot N LFO 1 Shape | Sine, Triangle, Saw Up, Saw Down, Square, S&H | 16-entry list. Default Sine. |
 | Slot N LFO 1 Rate  | 0.05 .. 20 Hz                 | Without sync. Default 5 Hz. |
@@ -262,6 +266,7 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
   gain, for filter stage `t` (0-based; room for 4 stages of 8 fields). The
   gains were added later and are registered after the choke groups.
 - `1200 + s`: choke group
+- `1300 + s`: reverse
 - `3000 + 32s + 16l` + 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch,
   6 cutoff, 7 level, 8 trigger, for LFO `l` (0-based: LFO 1 and LFO 2, 16
   fields each; LFO 2 was added later and is registered after LFO 1's block)
@@ -273,7 +278,7 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
-off, no choke group, LFO depths at 0, no mod routes.
+off, no choke group, LFO depths at 0, no mod routes, forwards.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -299,7 +304,8 @@ gains, vowel morphing; combs, flanger and phaser, a comb at full feedback swept 
 staying bounded), the LFO (tremolo, vibrato, a filter wobble that stays in
 range, tempo sync, delay, retrigger and free, sample & hold), LFO 2 and the mod
 matrix (LFO 2 to pan, velocity to level and start, filter envelope to pitch,
-LFO 1 to resonance staying bounded, a route edited mid-note), choke
+LFO 1 to resonance staying bounded, a route edited mid-note), reverse (backwards, with a start and a forward loop
+in the reversed timeline), choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a
