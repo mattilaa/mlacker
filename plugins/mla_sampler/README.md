@@ -167,11 +167,18 @@ default 4) at the host tempo (120 BPM without one):
 |---------|-----|
 | Off     | at its own speed (the default) |
 | Repitch | faster or slower, so the pitch moves with the speed, as on a turntable |
-| Stretch | at its own pitch: the playhead keeps the tempo while two 40 ms grains, half a grain apart and crossfaded with triangle windows, read from it at the note's pitch |
+| Stretch | at its own pitch: the playhead keeps the tempo while two 40 ms grains, half a grain apart and crossfaded with triangle windows, read from it at the note's pitch. Smooth for pads and loops of sustained sound; hits can smear |
+| Beats   | at its own pitch, for drums and other hits: each hit plays whole, from its onset, at the moment the stretched timeline reaches it. Slower, a hit that runs out before the next one fades out over its last 4 ms (silence follows); faster, the next hit cuts it off, the old one fading under the new over 3 ms while the new one starts at full level, attack intact |
+
+The hits (onsets) are found when a sample loads: the strongest rises in level
+over 256-frame steps (at least 15 % of the strongest), at least 50 ms apart,
+each moved to where the hit starts. Frame 0 always starts the first segment.
+A reversed slot or a bidirectional loop would cross hits backwards, so Beats
+stretches it by grains, as Stretch.
 
 Tempo changes reach sounding notes. Loops, the start and reverse work in
 the stretched timeline; a stretched voice skips the loop crossfade, since its
-grains cross the seam.
+grains (or segments) cross the seam.
 
 ## LFOs
 
@@ -355,7 +362,7 @@ runs every 16 frames, and restarts with each note but not on a legato note.
 | Slot N Pitch Decay | 1 ms .. 10 s                  | Default 100 ms. |
 | Slot N Send A, Send B | 0 .. 100 %                 | Level on the Send A / Send B bus. Default 0. |
 | Slot N Filter Chain | Serial, Parallel, 2 x 2      | 8-entry list. Default Serial. |
-| Slot N Tempo Sync  | Off, Repitch, Stretch         | 8-entry list. Default Off. |
+| Slot N Tempo Sync  | Off, Repitch, Stretch, Beats  | 8-entry list. Default Off. |
 | Slot N Beats       | 1/4, 1/2, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64 | 16-entry list. Default 4. |
 | Slot N Velocity Curve | Linear, Soft, Hard, Fixed  | 8-entry list. Default Linear. |
 | Slot N Velocity Depth | 0 .. 100 %                 | Default 100 %. |
@@ -438,7 +445,8 @@ its range on new and sounding notes, the mod wheel, aftertouch and chosen CC as
 sources, pitch bend as a source), the pitch envelope (a decaying drop, an attack, off at
 depth 0), the send buses (each slot's levels, Main unchanged), filter stages 3
 and 4 and the parallel and 2 x 2 chains, velocity curves, depth and key level,
-Repitch speeds and Stretch keeping pitch, length and level, choke
+Repitch speeds, Stretch keeping pitch, length and level, Beats playing each
+hit whole and on its stretched time slower and faster, choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

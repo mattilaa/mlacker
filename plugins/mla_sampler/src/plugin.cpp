@@ -81,6 +81,10 @@ extern "C" void mlasampler_voice_set_note__ptr_struct_SamplerVoice_f32_f32(Sampl
 extern "C" void mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float semitones,
                                                                         float seconds);
 extern "C" void mlasampler_voice_set_chain__ptr_struct_SamplerVoice_i32(SamplerVoice *voice, int32_t chain);
+extern "C" void mlasampler_voice_set_beats__ptr_struct_SamplerVoice_f64(SamplerVoice *voice, double timeStep);
+extern "C" void mlasampler_voice_segment__ptr_struct_SamplerVoice_f64_f64_bool(SamplerVoice *voice, double from,
+                                                                            double until, bool cross);
+extern "C" double mlasampler_voice_position__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" void mlasampler_voice_set_stretch__ptr_struct_SamplerVoice_f64_f32(SamplerVoice *voice, double timeStep,
                                                                           float grainSeconds);
 extern "C" void mlasampler_voice_set_pitch_envelope__ptr_struct_SamplerVoice_f32_f32_f32(SamplerVoice *voice, float depth,
@@ -260,11 +264,12 @@ constexpr int kChainCount = 8;
 static const char *const kChainNames[] = {"Serial", "Parallel", "2 x 2"};
 constexpr int kChainsKnown = sizeof(kChainNames) / sizeof(kChainNames[0]);
 // Tempo sync (8-entry list): Repitch plays the sample in its length of beats
-// by changing its speed and pitch, Stretch by grains at its own pitch.
+// by changing its speed and pitch, Stretch by grains at its own pitch, Beats
+// by playing each hit (see detectOnsets) whole at its stretched time.
 constexpr int kSyncCount = 8;
-static const char *const kSyncNames[] = {"Off", "Repitch", "Stretch"};
+static const char *const kSyncNames[] = {"Off", "Repitch", "Stretch", "Beats"};
 constexpr int kSyncsKnown = sizeof(kSyncNames) / sizeof(kSyncNames[0]);
-enum TempoSync : int { kSyncOff = 0, kSyncRepitch = 1, kSyncStretch = 2 };
+enum TempoSync : int { kSyncOff = 0, kSyncRepitch = 1, kSyncStretch = 2, kSyncBeats = 3 };
 constexpr int kBeatsCount = 16;
 static const double kBeats[] = {0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64};
 static const char *const kBeatNames[] = {"1/4", "1/2", "1", "2", "3", "4", "6", "8", "12", "16", "24", "32", "48", "64"};
@@ -498,7 +503,79 @@ struct Sample {
     int64_t frames = 0;
     double rate = 44100.0;
     std::string name;
+    // Where its hits start, in frames, frame 0 first: the segments Beats
+    // tempo sync plays (see detectOnsets).
+    std::vector<double> onsets;
 };
+
+// A sample's hits: RMS per 256-frame hop, and the strongest rises in it (at
+// least 15 % of the strongest, local peaks), taken strongest first at least
+// 50 ms apart. Each moves to its onset, the first frame around the rise at
+// 30 % of the peak there, then back to the quietest of the 64 frames before.
+// Frame 0 always starts the first segment. Runs when a sample loads.
+static std::vector<double> detectOnsets(const std::vector<float> &stereo, int64_t frames, double rate)
+{
+    std::vector<double> onsets{0.0};
+    constexpr int64_t hop = 256;
+    const int64_t hops = frames / hop;
+    if(hops < 3)
+        return onsets;
+    const auto level = [&](int64_t f) {
+        const float v = (stereo[static_cast<size_t>(f) * 2u] + stereo[static_cast<size_t>(f) * 2u + 1u]) * 0.5f;
+        return std::fabs(v);
+    };
+    std::vector<float> rms(static_cast<size_t>(hops)), rise(static_cast<size_t>(hops), 0.0f);
+    for(int64_t h = 0; h < hops; ++h) {
+        double sum = 0.0;
+        for(int64_t f = h * hop; f < (h + 1) * hop; ++f)
+            sum += static_cast<double>(level(f)) * level(f);
+        rms[h] = static_cast<float>(std::sqrt(sum / hop));
+    }
+    float strongest = 0.0f;
+    for(int64_t h = 1; h < hops; ++h) {
+        rise[h] = std::max(0.0f, rms[h] - rms[h - 1]);
+        strongest = std::max(strongest, rise[h]);
+    }
+    if(strongest <= 1e-4f)
+        return onsets;
+    std::vector<int64_t> candidates;
+    for(int64_t h = 1; h < hops; ++h)
+        if(rise[h] >= strongest * 0.15f && rise[h] >= rise[h - 1] && (h + 1 >= hops || rise[h] > rise[h + 1]))
+            candidates.push_back(h);
+    std::sort(candidates.begin(), candidates.end(), [&](int64_t a, int64_t b) { return rise[a] > rise[b]; });
+    const int64_t spacing = std::max<int64_t>(1, static_cast<int64_t>(rate * 0.05) / hop);
+    std::vector<int64_t> taken;
+    for(const int64_t h : candidates) {
+        bool near = false;
+        for(const int64_t t : taken)
+            near = near || std::llabs(t - h) < spacing;
+        if(!near)
+            taken.push_back(h);
+    }
+    for(const int64_t h : taken) {
+        const int64_t lo = (h - 1) * hop, hi = std::min(frames, (h + 2) * hop);
+        float peak = 0.0f;
+        for(int64_t f = lo; f < hi; ++f)
+            peak = std::max(peak, level(f));
+        int64_t onset = h * hop;
+        for(int64_t f = lo; f < hi; ++f)
+            if(level(f) >= peak * 0.3f) {
+                onset = f;
+                break;
+            }
+        int64_t quiet = onset;
+        float lowest = 2.0f;
+        for(int64_t f = std::max(lo, onset - 64); f <= onset; ++f)
+            if(level(f) <= lowest) {
+                lowest = level(f);
+                quiet = f;
+            }
+        if(quiet >= 64)
+            onsets.push_back(static_cast<double>(quiet));
+    }
+    std::sort(onsets.begin(), onsets.end());
+    return onsets;
+}
 
 static std::unique_ptr<Sample> makeSample(const float *data, int64_t frames, int channels, double rate,
                                           std::string name)
@@ -514,6 +591,7 @@ static std::unique_ptr<Sample> makeSample(const float *data, int64_t frames, int
         sample->stereo[static_cast<size_t>(f) * 2u] = std::isfinite(left) ? left : 0.0f;
         sample->stereo[static_cast<size_t>(f) * 2u + 1u] = std::isfinite(right) ? right : 0.0f;
     }
+    sample->onsets = detectOnsets(sample->stereo, frames, rate);
     return sample;
 }
 
@@ -1165,6 +1243,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         double detune = 0.0;
         float panOffset = 0.0f;
         float unisonGain = 1.0f;
+        // Beats tempo sync: on, the next onset to start a segment at, and the
+        // playhead last frame (a drop means a loop wrapped).
+        bool beats = false;
+        size_t nextOnset = 0;
+        double lastPosition = 0.0;
     };
 
     struct Retired {
@@ -1731,7 +1814,6 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(glide != 0.0)
             mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(target->dsp, static_cast<float>(glide), glideSeconds(slot));
         applyLoop(target->dsp, slot, sample);
-        applyStretch(target->dsp, slot, sample);
         applyFilter(target->dsp, slot, pitch);
         applyLfo(target->dsp, slot);
         applyRoutes(target->dsp, slot);
@@ -1775,6 +1857,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         target->channel = channel;
         target->pitch = pitch;
         target->serial = nextSerial_++;
+        // After the start frame: Beats begins its first segment there.
+        target->beats = false;
+        applyStretch(*target);
     }
 
     // Playback rate for a slot's note: sample rate ratio, instance and slot
@@ -1803,11 +1888,69 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         return seconds / (beats * 60.0 / (tempo_ > 0.0 ? tempo_ : 120.0));
     }
 
-    // A Stretch slot's playhead keeps the tempo while grains keep the pitch.
-    void applyStretch(SamplerVoice *dsp, int slot, const Sample *sample)
+    // A Stretch or Beats slot's playhead keeps the tempo: grains keep the
+    // pitch (Stretch), or each hit plays whole from its stretched time
+    // (Beats). A reversed slot or a bidirectional loop crosses hits
+    // backwards, so it stretches by grains instead.
+    void applyStretch(Voice &voice)
     {
-        const double timeStep = tempoSync(slot) == kSyncStretch ? sample->rate / sampleRate_ * tempoFactor(slot, sample) : 0.0;
-        mlasampler_voice_set_stretch__ptr_struct_SamplerVoice_f64_f32(dsp, timeStep, kGrainSeconds);
+        const int slot = voice.slot;
+        const Sample *sample = voice.sample;
+        const int sync = tempoSync(slot);
+        const double timeStep = sync == kSyncStretch || sync == kSyncBeats ? sample->rate / sampleRate_ * tempoFactor(slot, sample) : 0.0;
+        const bool beats = sync == kSyncBeats && !voice.reversed && loopFromNorm(slotNorm(slot, kSlotLoop)) != kLoopBidirectional;
+        if(!beats) {
+            voice.beats = false;
+            mlasampler_voice_set_stretch__ptr_struct_SamplerVoice_f64_f32(voice.dsp, timeStep, kGrainSeconds);
+            return;
+        }
+        mlasampler_voice_set_beats__ptr_struct_SamplerVoice_f64(voice.dsp, timeStep);
+        if(!voice.beats) {
+            voice.beats = true;
+            beginSegment(voice, false);
+        }
+    }
+
+    // Beats: where a segment starting at `from` stops: the next onset, or
+    // the forward loop's or the sample's end.
+    double segmentEnd(const Voice &voice, size_t next) const
+    {
+        const Sample *sample = voice.sample;
+        double limit = static_cast<double>(sample->frames);
+        if(loopFromNorm(slotNorm(voice.slot, kSlotLoop)) == kLoopForward)
+            limit = std::min(limit, std::floor(slotNorm(voice.slot, kSlotLoopEnd) * sample->frames));
+        return next < sample->onsets.size() ? std::min(limit, sample->onsets[next]) : limit;
+    }
+
+    // Beats: a segment from the playhead to the next onset (a note's start,
+    // a loop wrapping back).
+    void beginSegment(Voice &voice, bool cross)
+    {
+        const double at = mlasampler_voice_position__ptr_struct_SamplerVoice(voice.dsp);
+        const auto &onsets = voice.sample->onsets;
+        size_t next = 0;
+        while(next < onsets.size() && onsets[next] <= at)
+            ++next;
+        voice.nextOnset = next;
+        voice.lastPosition = at;
+        mlasampler_voice_segment__ptr_struct_SamplerVoice_f64_f64_bool(voice.dsp, at, segmentEnd(voice, next), cross);
+    }
+
+    // Beats: once the playhead reaches the next onset, that hit starts.
+    void followBeats(Voice &voice)
+    {
+        const double at = mlasampler_voice_position__ptr_struct_SamplerVoice(voice.dsp);
+        const auto &onsets = voice.sample->onsets;
+        if(at < voice.lastPosition - 0.5) {
+            beginSegment(voice, true);
+            return;
+        }
+        voice.lastPosition = at;
+        if(voice.nextOnset < onsets.size() && at >= onsets[voice.nextOnset]) {
+            const double from = onsets[voice.nextOnset];
+            ++voice.nextOnset;
+            mlasampler_voice_segment__ptr_struct_SamplerVoice_f64_f64_bool(voice.dsp, from, segmentEnd(voice, voice.nextOnset), true);
+        }
     }
 
     // A note's gain from its velocity: the slot's curve, then the instance
@@ -1885,7 +2028,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             if(loop)
                 applyLoop(voice.dsp, slot, voice.sample);
             if(loop || sound)
-                applyStretch(voice.dsp, slot, voice.sample);
+                applyStretch(voice);
             if(filter)
                 applyFilter(voice.dsp, slot, voice.pitch);
             if(lfo) {
@@ -1953,6 +2096,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 return pcm + (reversed && f < guard ? guard - 1 - f : f) * 2;
             };
             for(int32 i = from; i < to; ++i) {
+                if(voice.beats)
+                    followBeats(voice);
                 int64_t frame = static_cast<int64_t>(mlasampler_voice_frame__ptr_struct_SamplerVoice(voice.dsp));
                 int64_t next = static_cast<int64_t>(mlasampler_voice_next_frame__ptr_struct_SamplerVoice(voice.dsp));
                 frame = std::clamp<int64_t>(frame, 0, guard - 1);

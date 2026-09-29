@@ -773,7 +773,8 @@ outputs), so one instance can send its snare to a reverb and not its kick.
 The **Vel/Tempo page** (`e` from Play) sets how velocity and key shape a
 note's level, **VCurve** (`Linear`, `Soft`, `Hard`, `Fixed`), **Vel%** (its
 depth; dim for Fixed) and **KeyL** (dB per octave from C-4), and tempo sync:
-**Sync** (`Off`, `Repitch` changes speed and pitch, `Stretch` keeps the pitch)
+**Sync** (`Off`, `Repitch` changes speed and pitch, `Stretch` keeps the pitch,
+`Beats` keeps the pitch and every hit's attack: for drums)
 plays the whole sample in **Beats** (dim while Sync is Off) at the tempo.
 
 The **key map** (`v`) draws every slot over the 128 MIDI keys, instead of the

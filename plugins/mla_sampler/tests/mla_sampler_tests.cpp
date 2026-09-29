@@ -92,7 +92,7 @@ constexpr ParamID pitchEnvParam(int slot, int k) { return 1600 + slot * 4 + k; }
 constexpr ParamID sendParam(int slot, int send) { return 1700 + slot * 4 + send; }
 constexpr ParamID chainParam(int slot, int k) { return 1800 + slot * 4 + k; } // 0 chain, 1 tempo sync, 2 beats
 constexpr ParamID curveParam(int slot, int k) { return 1900 + slot * 4 + k; } // 0 curve, 1 depth, 2 key level
-constexpr double kParallel = 1.0 / 7.0, kPairs = 2.0 / 7.0, kRepitch = 1.0 / 7.0, kStretch = 2.0 / 7.0;
+constexpr double kParallel = 1.0 / 7.0, kPairs = 2.0 / 7.0, kRepitch = 1.0 / 7.0, kStretch = 2.0 / 7.0, kBeatsSync = 3.0 / 7.0;
 double beatsValue(int index) { return index / 15.0; } // 1/4, 1/2, 1, 2, 3, 4, ...
 constexpr ParamID ccValueParam(int choice) { return 120 + choice; } // CC 2, 4, 11, 16, 17, 18, 19, 74
 enum { kTgtPitch = 1, kTgtCutoff, kTgtResonance, kTgtLevel, kTgtPan, kTgtStart };
@@ -1282,6 +1282,39 @@ void testChainCurvesAndTempo(const std::string &path)
     CHECK(energy(stretched, 60000, 64800) > 100.0); // still playing at 1.25 s
     const auto level = filtered(path, dc(), {{chainParam(0, 1), kStretch}});
     CHECK(std::fabs(left(level, 3000) - 0.5f) < 2e-3f);
+
+    // Beats: four 200-frame hits a quarter second apart in a 1 s sample.
+    // Over 4 beats (2 s) each hit starts at its stretched time, whole (its
+    // attack at full level), with silence after.
+    std::vector<float> hits(48000, 0.0f);
+    for(int h = 0; h < 4; ++h)
+        for(int f = 0; f < 200; ++f)
+            hits[h * 12000 + f] = (f % 8 < 4 ? 0.8f : -0.8f);
+    const auto play = [&](double sync, double beats, int frames) {
+        Instance plugin;
+        std::vector<float> out;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return out;
+        }
+        CHECK(loadPcm(plugin, 0, hits) == kResultOk);
+        plugin.param(chainParam(0, 1), sync);
+        plugin.param(chainParam(0, 2), beats);
+        plugin.noteOn(kRootKey);
+        return plugin.render(frames);
+    };
+    const auto slow = play(kBeatsSync, beatsValue(5), 96000);
+    for(int h = 0; h < 4; ++h) {
+        CHECK(energy(slow, h * 24000, h * 24000 + 200) > 50.0);         // the hit, on time
+        CHECK(energy(slow, h * 24000 + 400, h * 24000 + 23000) < 1e-3); // then nothing
+    }
+    CHECK(std::fabs(left(slow, 24000 + 50) - hits[50]) < 0.05f); // its shape kept
+    // Faster, over 1 beat (0.5 s): the hits come every 6000 frames.
+    const auto fast = play(kBeatsSync, beatsValue(2), 24064);
+    for(int h = 0; h < 4; ++h) {
+        CHECK(energy(fast, h * 6000, h * 6000 + 200) > 50.0);
+        CHECK(energy(fast, h * 6000 + 400, h * 6000 + 5500) < 1e-3);
+    }
 }
 
 void testChokeGroups(const std::string &path)
@@ -1416,6 +1449,6 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, pitch envelope and sends, filter chain, velocity/key curves and tempo sync, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, pitch envelope and sends, filter chain, velocity/key curves and tempo sync (repitch, stretch, beats), choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

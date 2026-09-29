@@ -283,6 +283,8 @@ def main():
             expect(tui.send(b"KK"), b"+1.0")
             tui.send(b"l")
             expect(tui.send(b"KK"), b"Stretch")
+            expect(tui.send(b"K"), b"Beats")
+            expect(tui.send(b"J"), b"Stretch")
             tui.send(b"l")
             expect(tui.send(b"K"), b"6")
             expect(tui.send(b"e"), b"Mode", b"Loop")

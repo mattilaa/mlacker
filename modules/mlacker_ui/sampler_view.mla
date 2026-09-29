@@ -315,7 +315,8 @@ impl SamplerView {
             // Filter types stop at the last one the plugin knows.
             if (col == 200 || col == 206 || col == 701 || col == 707) && value > 21.0 { value = 21.0; }
             // Chains, tempo syncs, beats and velocity curves likewise.
-            if (col == 700 || col == 803) && value > 2.0 { value = 2.0; }
+            if col == 700 && value > 2.0 { value = 2.0; }
+            if col == 803 && value > 3.0 { value = 3.0; }
             if col == 804 && value > 13.0 { value = 13.0; }
             if col == 800 && value > 3.0 { value = 3.0; }
             // LFO shapes and divisions likewise.
@@ -1134,10 +1135,10 @@ impl SamplerView {
             let index: i32 = i32(std::math::floor(value * 7.0 + 0.5));
             let chains: array<str8, 3> = {"Serial", "Parall", "2 x 2"};
             let curves: array<str8, 4> = {"Linear", "Soft", "Hard", "Fixed"};
-            let syncs: array<str8, 3> = {"Off", "Repitch", "Stretch"};
+            let syncs: array<str8, 4> = {"Off", "Repitch", "Stretch", "Beats"};
             if col == 700 { return index < 3 ? clone(chains[index]) : format!("#{}", index); }
             if col == 800 { return index < 4 ? clone(curves[index]) : format!("#{}", index); }
-            return index < 3 ? clone(syncs[index]) : format!("#{}", index);
+            return index < 4 ? clone(syncs[index]) : format!("#{}", index);
         }
         if col == 801 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
         if col == 802 { return SamplerView::tenths_text(i32(std::math::floor((value * 24.0 - 12.0) * 10.0 + 0.5)), true); }

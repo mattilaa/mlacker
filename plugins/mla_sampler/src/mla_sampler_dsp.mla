@@ -484,6 +484,19 @@ struct SamplerVoice {
     var grain_age: f64;
     var offset_a: f64;
     var offset_b: f64;
+    /// Beats (transient) stretch: while `beats` is 1 the playhead keeps the
+    /// tempo as above, and the caller starts a segment at each onset it
+    /// reaches (`mlasampler_voice_segment`). A segment reads at the pitch
+    /// from `read` up to `read_end` (the next onset), fading out just before
+    /// it; the previous segment (`old_read` .. `old_end`) fades out under the
+    /// new one over `seam_left` of `seam` frames.
+    var beats: i32;
+    var read: f64;
+    var read_end: f64;
+    var old_read: f64;
+    var old_end: f64;
+    var seam: f64;
+    var seam_left: f64;
 };
 
 fn clamp_sampler_f32(value: f32, low: f32, high: f32) -> f32 {
@@ -576,9 +589,54 @@ fn mlasampler_voice_set_stretch(voice: ptr<SamplerVoice>, time_step: f64, grain_
     unsafe {
         let grain: f64 = f64(grain_seconds * (*voice).sample_rate);
         (*voice).time_step = time_step > 0.0 && grain >= 16.0 ? time_step : 0.0;
+        (*voice).beats = 0;
         (*voice).grain = grain >= 16.0 ? grain : 16.0;
         // Grains read the loop seam themselves; no crossfade while stretching.
         if (*voice).time_step > 0.0 { (*voice).xfade = 0.0; }
+    }
+}
+
+/// @brief Beats stretch: move the playhead `time_step` source frames per
+/// output frame (0 turns it off) and play segments started by
+/// `mlasampler_voice_segment` at the voice's pitch. Replaces grain stretch.
+fn mlasampler_voice_set_beats(voice: ptr<SamplerVoice>, time_step: f64) {
+    unsafe {
+        let on: bool = time_step > 0.0;
+        if on && (*voice).beats == 0 { (*voice).read = (*voice).position; (*voice).read_end = (*voice).frames; (*voice).seam_left = 0.0; }
+        (*voice).beats = on ? 1 : 0;
+        if on {
+            (*voice).time_step = time_step;
+            (*voice).seam = f64(0.003f * (*voice).sample_rate);
+            (*voice).xfade = 0.0;
+        }
+    }
+}
+
+/// @brief Beats stretch: start a segment at source frame `from`, playing up
+/// to `until` (the next onset, or the loop's or sample's end), at full level
+/// at once. With `cross` the sounding segment fades out under it over 3 ms.
+fn mlasampler_voice_segment(voice: ptr<SamplerVoice>, from: f64, until: f64, cross: bool) {
+    unsafe {
+        if cross { (*voice).old_read = (*voice).read; (*voice).old_end = (*voice).read_end; (*voice).seam_left = (*voice).seam; }
+        else { (*voice).seam_left = 0.0; }
+        (*voice).read = from;
+        (*voice).read_end = until;
+    }
+}
+
+/// @brief The playhead in source frames: where a Beats-stretched voice's
+/// timeline is, for starting segments at onsets.
+fn mlasampler_voice_position(voice: ptr<SamplerVoice>) -> f64 {
+    unsafe { return (*voice).position; }
+}
+
+/// A segment's level at `at`: full, then down to 0 over the 4 ms before
+/// `end` (the next hit), so a slowed-down segment never plays into it.
+fn sampler_segment_tail(voice: ptr<SamplerVoice>, at: f64, end: f64) -> f32 {
+    unsafe {
+        let fade: f64 = f64(0.004f * (*voice).sample_rate) * (*voice).step;
+        if fade <= 0.0 { return 1.0f; }
+        return clamp_sampler_f32(f32((end - at) / fade), 0.0f, 1.0f);
     }
 }
 
@@ -659,6 +717,9 @@ fn mlasampler_voice_start(voice: ptr<SamplerVoice>, frames: f64, step: f64, gain
         (*voice).grain_age = 0.0;
         (*voice).offset_a = 0.0;
         (*voice).offset_b = 0.0;
+        (*voice).beats = 0;
+        (*voice).time_step = 0.0;
+        (*voice).seam_left = 0.0;
         (*voice).fade = 1.0f;
         (*voice).fade_step = 0.0f;
         (*voice).lfo1.restart(0.0f);
@@ -876,7 +937,8 @@ fn mlasampler_voice_set_crossfade(voice: ptr<SamplerVoice>, frames: f64) {
 /// caller passes it and the next frame to `mlasampler_voice_render`.
 fn mlasampler_voice_shadow_frame(voice: ptr<SamplerVoice>) -> f64 {
     unsafe {
-        // Stretching: the second grain's frame.
+        // Beats: the fading segment's frame; stretching: the second grain's.
+        if (*voice).beats == 1 { return (*voice).seam_left > 0.0 ? floor((*voice).old_read) : -1.0; }
         if (*voice).time_step > 0.0 { return floor(sampler_grain_position(voice, (*voice).offset_b)); }
         if (*voice).xfade <= 0.0 || (*voice).position < (*voice).loop_end - (*voice).xfade { return -1.0; }
         return floor((*voice).position - ((*voice).loop_end - (*voice).loop_start));
@@ -921,7 +983,8 @@ fn mlasampler_voice_is_active(voice: ptr<SamplerVoice>) -> i32 {
 /// passed to `mlasampler_voice_render`.
 fn mlasampler_voice_frame(voice: ptr<SamplerVoice>) -> f64 {
     unsafe {
-        // Stretching: the first grain's frame.
+        // Beats: the segment's frame; stretching: the first grain's.
+        if (*voice).beats == 1 { return floor((*voice).read); }
         if (*voice).time_step > 0.0 { return floor(sampler_grain_position(voice, (*voice).offset_a)); }
         return floor((*voice).position);
     }
@@ -932,6 +995,7 @@ fn mlasampler_voice_frame(voice: ptr<SamplerVoice>) -> f64 {
 /// silent guard frame at `frames` ends a sample without a loop.
 fn mlasampler_voice_next_frame(voice: ptr<SamplerVoice>) -> f64 {
     unsafe {
+        if (*voice).beats == 1 { return floor((*voice).read) + 1.0; }
         if (*voice).time_step > 0.0 { return floor(sampler_grain_position(voice, (*voice).offset_a)) + 1.0; }
         let next: f64 = floor((*voice).position) + 1.0;
         if (*voice).loop_mode == 1 && next >= (*voice).loop_end { return (*voice).loop_start; }
@@ -947,7 +1011,12 @@ fn advance_sampler_voice(voice: ptr<SamplerVoice>) {
         // Stretching, the playhead keeps time; the grains drift from it at
         // the pitch and restart on it, one every half grain.
         var advance: f64 = (*voice).step;
-        if (*voice).time_step > 0.0 {
+        if (*voice).beats == 1 {
+            advance = (*voice).time_step;
+            (*voice).read = (*voice).read + (*voice).step;
+            (*voice).old_read = (*voice).old_read + (*voice).step;
+            if (*voice).seam_left > 0.0 { (*voice).seam_left = (*voice).seam_left - 1.0; }
+        } else if (*voice).time_step > 0.0 {
             advance = (*voice).time_step;
             let drift: f64 = (*voice).step - (*voice).time_step;
             (*voice).offset_a = (*voice).offset_a + drift;
@@ -1007,7 +1076,22 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
         let frac: f32 = clamp_sampler_f32(f32(position - floor(position)), 0.0f, 1.0f);
         var left: f32 = left0 + (left1 - left0) * frac;
         var right: f32 = right0 + (right1 - right0) * frac;
-        if (*voice).time_step > 0.0 {
+        if (*voice).beats == 1 {
+            // The segment, and the one before it fading out under it.
+            let r: f64 = (*voice).read;
+            let f: f32 = clamp_sampler_f32(f32(r - floor(r)), 0.0f, 1.0f);
+            let tail: f32 = sampler_segment_tail(voice, r, (*voice).read_end);
+            left = (left0 + (left1 - left0) * f) * tail;
+            right = (right0 + (right1 - right0) * f) * tail;
+            if (*voice).seam_left > 0.0 && (*voice).seam > 0.0 {
+                let o: f64 = (*voice).old_read;
+                let g: f32 = clamp_sampler_f32(f32(o - floor(o)), 0.0f, 1.0f);
+                let fading: f32 = f32((*voice).seam_left / (*voice).seam) * sampler_segment_tail(voice, o, (*voice).old_end);
+                // The new hit starts at full level, its attack intact.
+                left = left + (shadow_left0 + (shadow_left1 - shadow_left0) * g) * fading;
+                right = right + (shadow_right0 + (shadow_right1 - shadow_right0) * g) * fading;
+            }
+        } else if (*voice).time_step > 0.0 {
             // Two grains under triangle windows half a grain apart.
             let at_a: f64 = sampler_grain_position(voice, (*voice).offset_a);
             let at_b: f64 = sampler_grain_position(voice, (*voice).offset_b);
@@ -1023,7 +1107,7 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
         // Crossfade: the tail fades out as the audio before the loop start
         // (same fraction, a loop length back) fades in, equal-power.
         let fade_from: f64 = (*voice).loop_end - (*voice).xfade;
-        if (*voice).xfade > 0.0 && (*voice).time_step <= 0.0 && position >= fade_from {
+        if (*voice).xfade > 0.0 && (*voice).time_step <= 0.0 && (*voice).beats == 0 && position >= fade_from {
             let t: f32 = clamp_sampler_f32(f32((position - fade_from) / (*voice).xfade), 0.0f, 1.0f);
             let angle: f32 = t * 1.57079632679489661923f;
             let tail: f32 = cosf(angle); let head: f32 = sinf(angle);
