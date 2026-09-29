@@ -135,9 +135,9 @@ each slot uses it or its own (**Slot N Filter Envelope**: Instance or Own). It
 starts and releases with the note. Coefficients follow it every 16 frames.
 Filter and filter envelope edits reach notes already sounding.
 
-## LFO
+## LFOs
 
-Each slot has an **LFO** that modulates its **Pitch** (-12 .. +12 semitones,
+Each slot has two LFOs, **LFO 1** and **LFO 2**, alike. Each modulates its **Pitch** (-12 .. +12 semitones,
 vibrato), its filter **Cutoff** (-4 .. +4 octaves on every stage, wobble) and
 its **Level** (0 .. 100 %, tremolo: full level at the top of the cycle, down by
 the depth at the bottom). Its **Shape** is Sine, Triangle, Saw Up, Saw Down,
@@ -151,8 +151,29 @@ follow it every 16 frames and level every frame, and edits reach sounding
 notes.
 
 As with the filter types, the shape and division lists keep a fixed length
-(16 entries, the unused ones reserved), and the IDs leave room for a second
-LFO per slot with up to 16 settings each.
+(16 entries, the unused ones reserved), and each LFO has room for 16 settings.
+
+## Mod matrix
+
+Each slot has four **mod routes**. A route sends a **Source** (LFO 1, LFO 2,
+Amp Env, Filter Env, Velocity, or Key: -1 .. +1 over five octaves either side
+of C-4) to a **Target**, scaled by its **Amount** (-100 .. +100 %). At 100 % a
+source at full swing moves:
+
+| Target    | By |
+|-----------|----|
+| Pitch     | 24 semitones |
+| Cutoff    | 8 octaves, every filter stage |
+| Resonance | 36 dB |
+| Level     | the whole level (1 + amount x source, 0 .. 2) |
+| Pan       | across the stereo field |
+| Start     | the whole sample, when the note starts (Velocity and Key only) |
+
+Routes add to each other and to the LFOs' direct depths. The voice evaluates
+them every 16 frames, with the filter; level from routes glides across those
+frames, so it does not step. Routes reach sounding notes. Both lists keep 16
+entries (the unused ones reserved), and the IDs leave room for 8 routes per
+slot, so new sources, targets and routes only add to the end.
 
 While a note plays, a jump in the cutoff's envelope or LFO movement (a square
 LFO) glides over about 1.5 ms: a biquad holding signal rings far out of range
@@ -222,6 +243,10 @@ mlacker's README, "Plugin outputs").
 | Slot N LFO 1 Cutoff | -4 .. +4 octaves             | Default 0. |
 | Slot N LFO 1 Level | 0 .. 100 %                    | Tremolo. Default 0. |
 | Slot N LFO 1 Trigger | Free, Retrigger             | Default Retrigger. |
+| Slot N LFO 2 ...   | as LFO 1                      | |
+| Slot N Mod R Source | Off, LFO 1, LFO 2, Amp Env, Filter Env, Velocity, Key | Route R = 1 .. 4. 16-entry list. Default Off. |
+| Slot N Mod R Target | Off, Pitch, Cutoff, Resonance, Level, Pan, Start | 16-entry list. Default Off. |
+| Slot N Mod R Amount | -100 .. +100 %               | Default 0. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -238,15 +263,17 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
   gains were added later and are registered after the choke groups.
 - `1200 + s`: choke group
 - `3000 + 32s + 16l` + 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch,
-  6 cutoff, 7 level, 8 trigger, for LFO `l` (0-based; room for 2 LFOs of 16
-  fields)
+  6 cutoff, 7 level, 8 trigger, for LFO `l` (0-based: LFO 1 and LFO 2, 16
+  fields each; LFO 2 was added later and is registered after LFO 1's block)
+- `4000 + 32s + 4r` + 0 source, 1 target, 2 amount, for mod route `r`
+  (0-based; room for 8 routes of 4 fields)
 
 `950` is the Group Mode and `960`-`963` the instance filter envelope.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
-off, no choke group, LFO depths at 0.
+off, no choke group, LFO depths at 0, no mod routes.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -270,7 +297,9 @@ passing through, the filter envelope and a slot's own, key tracking; the
 state-variable types, a full-resonance sweep staying bounded, peak and shelf
 gains, vowel morphing; combs, flanger and phaser, a comb at full feedback swept fast
 staying bounded), the LFO (tremolo, vibrato, a filter wobble that stays in
-range, tempo sync, delay, retrigger and free, sample & hold), choke
+range, tempo sync, delay, retrigger and free, sample & hold), LFO 2 and the mod
+matrix (LFO 2 to pan, velocity to level and start, filter envelope to pitch,
+LFO 1 to resonance staying bounded, a route edited mid-note), choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

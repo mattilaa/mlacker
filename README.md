@@ -711,7 +711,7 @@ Overlapping zones layer.
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
-| `e` | Next page: keys & loops, Sound, Filter, LFO |
+| `e` | Next page: keys & loops, Sound, Filter, LFO 1, LFO 2, Mod |
 | `G` | Group mode: round-robin or random |
 | `p` | Play the slot: a pad at its key, a zone at its root |
 
@@ -729,7 +729,8 @@ octave. The instance filter envelope is edited like its amp envelope, in the
 instrument's parameter editor. See the Mla Sampler README for the filter types
 and how the list grows.
 
-The **LFO page** (`e` from the Filter page) sets each slot's LFO: **Shape**
+The **LFO 1** and **LFO 2** pages (`e` from the Filter page, then again) set
+each slot's two LFOs alike: **Shape**
 (`Sine`, `Tri`, `SawUp`, `SawDn`, `Sqr`, `S&H`), **Rate** (0.05-20 Hz, dim
 while synced), **Sync** and **Div** (a division of the tempo: `1/1`..`1/32`,
 dotted `1/4.`, triplet `1/8T`), **Delay** (depth fade-in), **Pitch**
@@ -738,6 +739,13 @@ dotted `1/4.`, triplet `1/8T`), **Delay** (depth fade-in), **Pitch**
 running). `J`/`K` step Pitch by a tenth of a semitone and Cut by a tenth of an
 octave; `[`/`]` by a semitone and an octave. Depths start at 0, so an LFO does
 nothing until one is set.
+
+The **Mod page** (`e` from LFO 2) shows each slot's four mod routes: per
+route its source (**Src**: `LFO1`, `LFO2`, `AmpEn`, `FltEn`, `Veloc`, `Key`),
+target (**Tgt**: `Pitch`, `Cut`, `Reso`, `Level`, `Pan`, `Start`) and amount
+(**Amt**, -100 .. +100 %). A route's target and amount are dim until it has
+both a source and a target. `J`/`K` step the amount by 1 %, `[`/`]` by 10 %.
+See the Mla Sampler README for what each target moves at 100 %.
 
 The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
 bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`

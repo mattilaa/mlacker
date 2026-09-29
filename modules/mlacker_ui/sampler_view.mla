@@ -22,8 +22,9 @@ use std::strbuf::free;
 // 32s + 8t + field for stage t (type, cutoff, resonance, env amount, key
 // track, gain) and 1100 + 5s + field for the slot's filter envelope (own, attack,
 // decay, sustain, release); 1200 + s is its choke group (Off, 1-8), and
-// 3000 + 32s + field its LFO (shape, rate, sync, division, delay, pitch,
-// cutoff, level, trigger).
+// 3000 + 32s + 16l + field its LFO l (shape, rate, sync, division, delay,
+// pitch, cutoff, level, trigger), and 4000 + 32s + 4r + field its mod route r
+// (source, target, amount).
 
 /// Mla Sampler editor in the Pattern view's bottom pane (View menu / Shift+S),
 /// sharing it with the virtual keyboard. It edits the instance on the selected
@@ -43,7 +44,9 @@ pub struct SamplerView {
     /// gain, 6-11 the same for filter 2, 12 filter envelope (instance or
     /// own), 13-16 its attack, decay, sustain, release. On the LFO page
     /// (`page` 3): 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch
-    /// depth, 6 cutoff depth, 7 level depth, 8 trigger.
+    /// depth, 6 cutoff depth, 7 level depth, 8 trigger; the LFO 2 page
+    /// (`page` 4) the same for LFO 2. On the Mod page (`page` 5): per route
+    /// r (0-3) 3r source, 3r + 1 target, 3r + 2 amount.
     var slot: i32; var column: i32; var scroll: i32; var page: i32;
     /// Wave view (`w`): the selected slot's waveform with its loop markers.
     /// `marker` 0 edits the loop start, 1 the loop end, 2 the sample start
@@ -91,10 +94,17 @@ impl SamplerView {
     /// 100 + column.
     fn col(self: SamplerView) -> i32 { return self.page * 100 + self.column; }
     /// Columns on a page: keys & loops, Sound, Filter.
-    fn page_columns(page: i32) -> i32 { return page == 1 ? 11 : (page == 2 ? 17 : (page == 3 ? 9 : 12)); }
+    fn page_columns(page: i32) -> i32 {
+        if page == 1 { return 11; }
+        if page == 2 { return 17; }
+        if page == 3 || page == 4 { return 9; }
+        return 12;
+    }
     /// Parameter ID of a column (see `column`; 100 + column on the Sound
     /// page) of sample slot `s`.
     fn column_id(s: i32, col: i32) -> i32 {
+        if col >= 500 { return 4000 + s * 32 + (col - 500) / 3 * 4 + (col - 500) % 3; }
+        if col >= 400 { return 3016 + s * 32 + col - 400; }
         if col >= 300 { return 3000 + s * 32 + col - 300; }
         if col >= 212 { return 1100 + s * 5 + col - 212; }
         if col >= 200 { return 2000 + s * 32 + (col - 200) / 6 * 8 + (col - 200) % 6; }
@@ -127,8 +137,13 @@ impl SamplerView {
     /// filter stage that is off, and gain except on peak and shelves (14-16).
     fn column_dim(output: AudioController, slot: i32, s: i32, col: i32) -> bool {
         // LFO: Rate without sync, Division with it.
-        if col == 301 { return SamplerView::value(output, slot, s, 302) >= 0.5; }
-        if col == 303 { return SamplerView::value(output, slot, s, 302) < 0.5; }
+        if col == 301 || col == 401 { return SamplerView::value(output, slot, s, col + 1) >= 0.5; }
+        if col == 303 || col == 403 { return SamplerView::value(output, slot, s, col - 1) < 0.5; }
+        // Mod: a route's target and amount while it has no source or target.
+        if col >= 500 && (col - 500) % 3 > 0 {
+            let first: i32 = col - (col - 500) % 3;
+            return SamplerView::value(output, slot, s, first) < 0.03 || SamplerView::value(output, slot, s, first + 1) < 0.03;
+        }
         if col >= 104 && col <= 107 { return !SamplerView::own_envelope(output, slot, s); }
         if col >= 213 { return !SamplerView::own_filter_envelope(output, slot, s); }
         if col >= 201 && col <= 211 && col != 206 {
@@ -141,6 +156,10 @@ impl SamplerView {
     /// Normalized step of a continuous column: level 1 dB (6 with `big`),
     /// tune a semitone (an octave), everything else 1% (10%).
     fn continuous_step(col: i32, big: bool) -> f64 {
+        // LFO 2's columns step as LFO 1's.
+        if col >= 400 && col < 500 { return SamplerView::continuous_step(col - 100, big); }
+        // Mod amounts span -100 .. +100 %: 1 % (10 %).
+        if col >= 500 { return big ? 0.05 : 0.005; }
         if col == 100 { return (big ? 6.0 : 1.0) / 66.0; }
         if col == 102 { return (big ? 12.0 : 1.0) / 48.0; }
         // Cutoff: about a semitone (an octave) of its 20 Hz .. 20 kHz sweep.
@@ -178,8 +197,10 @@ impl SamplerView {
             // Filter types stop at the last one the plugin knows.
             if (col == 200 || col == 206) && value > 21.0 { value = 21.0; }
             // LFO shapes and divisions likewise.
-            if col == 300 && value > 5.0 { value = 5.0; }
-            if col == 303 && value > 13.0 { value = 13.0; }
+            if (col == 300 || col == 400) && value > 5.0 { value = 5.0; }
+            if (col == 303 || col == 403) && value > 13.0 { value = 13.0; }
+            // Mod sources and targets likewise.
+            if col >= 500 && (col - 500) % 3 < 2 && value > 6.0 { value = 6.0; }
             if col == 1 || col == 5 { let high: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col + 1))); if value > high { value = high; } }
             if col == 2 || col == 6 { let low: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col - 1))); if value < low { value = low; } }
             if velocity_column && value < 1.0 { value = 1.0; }
@@ -226,7 +247,7 @@ impl SamplerView {
         if left && self.column > 0 { self.column = self.column - 1; return 1; }
         if right && self.column < SamplerView::page_columns(self.page) - 1 { self.column = self.column + 1; return 1; }
         // e switches between the keys & loops page and the Sound page.
-        if event.code == 101 && event.modifiers == 1 { self.page = (self.page + 1) % 4; self.column = 0; return 1; }
+        if event.code == 101 && event.modifiers == 1 { self.page = (self.page + 1) % 6; self.column = 0; return 1; }
         if slot < 1 { return 0; }
         // Shift+J/K adjust, as everywhere else in the tracker; [ and ] take
         // octave / 10% steps.
@@ -474,18 +495,26 @@ impl SamplerView {
                 "j/k slot  h/l col  J/K [ ] adjust  G group mode  e filter  w wave  p play  Enter load");
             return;
         }
-        if self.page == 3 {
+        if self.page == 3 || self.page == 4 {
             let widths: list<i32> = [6, 7, 5, 6, 6, 6, 5, 5, 6];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
                 ["Shape", "Rate", "Sync", "Div", "Delay", "Pitch", "Cut", "Lvl%", "Trig"],
-                "j/k slot  h/l col  J/K [ ] adjust  e keys & loops  w wave  p play  Enter load  Bksp clear");
+                self.page == 3 ? "LFO 1 | j/k slot  h/l col  J/K [ ] adjust  e lfo 2  w wave  p play  Enter load"
+                    : "LFO 2 | j/k slot  h/l col  J/K [ ] adjust  e mod  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 5 {
+            let widths: list<i32> = [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Src1", "Tgt1", "Amt1", "Src2", "Tgt2", "Amt2", "Src3", "Tgt3", "Amt3", "Src4", "Tgt4", "Amt4"],
+                "Mod | j/k slot  h/l col  J/K [ ] adjust  e keys & loops  w wave  p play  Enter load");
             return;
         }
         if self.page == 2 {
             let widths: list<i32> = [6, 6, 4, 5, 4, 5, 6, 6, 4, 5, 4, 5, 5, 6, 6, 5, 6];
             self.paint_columns(surface, area, theme, output, slot, labels, widths,
                 ["F1", "Cut", "Res", "Env", "Key", "Gain", "F2", "Cut", "Res", "Env", "Key", "Gain", "FEnv", "Atk", "Dec", "Sus%", "Rel"],
-                "j/k slot  h/l col  J/K [ ] adjust  e lfo  w wave  p play  Enter load  Bksp clear");
+                "j/k slot  h/l col  J/K [ ] adjust  e lfo 1  w wave  p play  Enter load  Bksp clear");
             return;
         }
         let root: i64 = output.instrument_sampler(slot, 0);
@@ -694,6 +723,23 @@ impl SamplerView {
     /// Owned display text of a column's normalized value.
     fn field_text(col: i32, value: f64) -> str8 {
         if value < 0.0 { return clone("-"); }
+        // LFO 2's columns read as LFO 1's.
+        if col >= 400 && col < 500 { return SamplerView::field_text(col - 100, value); }
+        // Mod page: source and target names, and the amount in percent.
+        if col >= 500 {
+            let part: i32 = (col - 500) % 3;
+            let index: i32 = i32(std::math::floor(value * 15.0 + 0.5));
+            if part == 0 {
+                let sources: array<str8, 7> = {"-", "LFO1", "LFO2", "AmpEn", "FltEn", "Veloc", "Key"};
+                return index < 7 ? clone(sources[index]) : format!("#{}", index);
+            }
+            if part == 1 {
+                let targets: array<str8, 7> = {"-", "Pitch", "Cut", "Reso", "Level", "Pan", "Start"};
+                return index < 7 ? clone(targets[index]) : format!("#{}", index);
+            }
+            let percent: i32 = i32(std::math::floor((value * 2.0 - 1.0) * 100.0 + 0.5));
+            return percent > 0 ? format!("+{}", percent) : format!("{}", percent);
+        }
         // Sound page, as the plugin maps them (plugins/mla_sampler/src/plugin.cpp).
         if col == 100 {
             if value <= 0.0 { return clone("off"); }

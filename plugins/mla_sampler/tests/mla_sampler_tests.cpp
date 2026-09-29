@@ -76,6 +76,13 @@ constexpr ParamID kGroupMode = 950;
 constexpr ParamID chokeParam(int slot) { return 1200 + slot; }
 enum LfoField { kLfoShape, kLfoRate, kLfoSync, kLfoDivision, kLfoDelay, kLfoPitch, kLfoCutoff, kLfoLevel, kLfoTrigger };
 constexpr ParamID lfoParam(int slot, LfoField k) { return 3000 + slot * 32 + k; }
+constexpr ParamID lfo2Param(int slot, LfoField k) { return 3016 + slot * 32 + k; }
+enum RouteField { kRouteSource, kRouteTarget, kRouteAmount };
+constexpr ParamID routeParam(int slot, int route, RouteField k) { return 4000 + slot * 32 + route * 4 + k; }
+enum { kSrcLfo1 = 1, kSrcLfo2, kSrcAmpEnv, kSrcFilterEnv, kSrcVelocity, kSrcKey };
+enum { kTgtPitch = 1, kTgtCutoff, kTgtResonance, kTgtLevel, kTgtPan, kTgtStart };
+double listValue(int index) { return index / 15.0; }
+double amount(double share) { return (share + 1.0) / 2.0; }
 constexpr int kSquare = 4, kSampleHold = 5;
 double lfoShape(int shape) { return shape / 15.0; }
 double lfoRate(double hz) { return std::log(hz / 0.05) / std::log(400.0); }
@@ -905,6 +912,74 @@ void testDelayLineFilters(const std::string &path)
     CHECK(bounded);
 }
 
+void testModMatrix(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto route = [](int r, int source, int target, double share) {
+        return Params{{routeParam(0, r, kRouteSource), listValue(source)}, {routeParam(0, r, kRouteTarget), listValue(target)},
+                      {routeParam(0, r, kRouteAmount), amount(share)}};
+    };
+    const auto join = [](Params a, const Params &b) { for(const auto &p : b) a.push_back(p); return a; };
+    const Params lfo2Square = {{lfo2Param(0, kLfoShape), lfoShape(kSquare)}, {lfo2Param(0, kLfoRate), lfoRate(10)}};
+    // LFO 2 has its own direct depths: tremolo as LFO 1's.
+    const auto tremolo = filtered(path, dc(), join(lfo2Square, {{lfo2Param(0, kLfoLevel), 1.0}}));
+    CHECK(std::fabs(left(tremolo, 1000) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(left(tremolo, 3500)) < 1e-3f);
+    // LFO 2 -> Pan +100 %: hard right at the square's top, hard left at its
+    // bottom (constant power: sqrt(2) * 0.5 in the one channel).
+    const auto panned = filtered(path, dc(), join(lfo2Square, route(0, kSrcLfo2, kTgtPan, 1.0)));
+    CHECK(std::fabs(left(panned, 1000)) < 1e-3f);
+    CHECK(std::fabs(left(panned, 3500) - 0.5f * std::sqrt(2.0f)) < 1e-3f);
+    // Velocity -> Level -100 %: the harder the note, the quieter.
+    const auto byVelocity = [&](float velocity) {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : join(route(0, kSrcVelocity, kTgtLevel, -1.0), {{kVelocitySensitivity, 0.0}}))
+            plugin.param(id, value);
+        plugin.noteOn(kRootKey, velocity);
+        return left(plugin.render(kBlock), 100);
+    };
+    CHECK(std::fabs(byVelocity(1.0f)) < 1e-3f);
+    CHECK(std::fabs(byVelocity(0.5f) - 0.25f) < 2e-3f);
+    // Filter Env -> Pitch +100 % (24 semitones): a fast decay drops the pitch
+    // from two octaves up to the key's.
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto drop = filtered(path, slope, join(route(0, kSrcFilterEnv, kTgtPitch, 1.0), {{kFilterEnvelope + 1, 0.0}}));
+    CHECK(std::fabs((left(drop, 6) - left(drop, 5)) - 4.0f / 48000) < 2e-6f);
+    CHECK(std::fabs((left(drop, 3001) - left(drop, 3000)) - 1.0f / 48000) < 2e-6f);
+    // Velocity -> Start +50 %: a full-velocity note starts halfway in.
+    const auto late = filtered(path, ramp(1000), route(0, kSrcVelocity, kTgtStart, 0.5));
+    CHECK(std::fabs(left(late, 0) - 501.0f / 1000) < 1e-3f);
+    // Routes reach sounding notes: silencing Velocity -> Level mid-note
+    // brings the level back.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : join(route(0, kSrcVelocity, kTgtLevel, -1.0), {{kVelocitySensitivity, 0.0}}))
+            plugin.param(id, value);
+        plugin.noteOn(kRootKey);
+        CHECK(std::fabs(left(plugin.render(kBlock), 100)) < 1e-3f);
+        plugin.param(routeParam(0, 0, kRouteAmount), amount(0.0));
+        CHECK(std::fabs(left(plugin.render(kBlock), 100) - 0.5f) < 1e-3f);
+    }
+    // LFO 1 -> Resonance swings a state-variable filter to full resonance and
+    // back without leaving range.
+    const auto swinging = filtered(path, saw(), join(route(0, kSrcLfo1, kTgtResonance, 1.0),
+        {{lfoParam(0, kLfoShape), lfoShape(kSquare)}, {lfoParam(0, kLfoRate), lfoRate(20)},
+         {filterParam(0, 0, kFilterType), filterType(kSvfLowpass)}, {filterParam(0, 0, kFilterCutoff), cutoff(800)}}));
+    bool bounded = true;
+    for(float v : swinging)
+        bounded = bounded && std::isfinite(v) && std::fabs(v) < 20.0f;
+    CHECK(bounded);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -1025,12 +1100,13 @@ int main(int argc, char **argv)
     testMoreFilterTypes(path);
     testLfo(path);
     testDelayLineFilters(path);
+    testModMatrix(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }
