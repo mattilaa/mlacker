@@ -396,7 +396,8 @@ impl SamplerLfo {
 /// Mod route targets and sources (the plugin's lists, see plugin.cpp).
 /// Targets: 1 pitch (semitones), 2 cutoff (octaves), 3 resonance (dB), 4
 /// level (share), 5 pan. Sources: 1 LFO 1, 2 LFO 2, 3 amp envelope, 4 filter
-/// envelope, 5 velocity, 6 key (-1 .. 1 around C-4). A route's amount is in
+/// envelope, 5 velocity, 6 key (-1 .. 1 around C-4), 7 mod wheel, 8
+/// aftertouch, 9 pitch bend (-1 .. 1), 10 the chosen CC. A route's amount is in
 /// its target's units, per unit of source.
 
 /// @brief One playing (or idle) sample voice.
@@ -430,6 +431,12 @@ struct SamplerVoice {
     /// Glide: semitones still to slide (toward 0) and the slide per frame.
     var glide_semitones: f32;
     var glide_per_frame: f32;
+    /// MIDI controllers as sources (0..1, bend -1..1), and the bend range.
+    var wheel: f32;
+    var aftertouch: f32;
+    var bend: f32;
+    var cc: f32;
+    var bend_semitones: f32;
     var sample_rate: f32;
     /// Read position in source frames, advance per output frame, and the
     /// direction the playhead moves (1 or -1, only -1 in a bidirectional loop).
@@ -632,6 +639,16 @@ fn mlasampler_voice_set_note(voice: ptr<SamplerVoice>, velocity: f32, key: f32) 
     unsafe { (*voice).velocity = velocity; (*voice).key = key; }
 }
 
+/// @brief The MIDI controllers' values as route sources: mod wheel,
+/// aftertouch and the chosen CC 0..1, pitch bend -1..1, which also bends the
+/// pitch by `bend_semitones`. Sounding voices follow.
+fn mlasampler_voice_set_controllers(voice: ptr<SamplerVoice>, wheel: f32, aftertouch: f32, bend: f32, cc: f32, bend_semitones: f32) {
+    unsafe {
+        (*voice).wheel = wheel; (*voice).aftertouch = aftertouch; (*voice).bend = bend;
+        (*voice).cc = cc; (*voice).bend_semitones = bend_semitones;
+    }
+}
+
 /// A route source's value now: `lfo1`/`lfo2` already scaled by their delay.
 fn sampler_route_source(voice: ptr<SamplerVoice>, source: i32, lfo1: f32, lfo2: f32, filter_level: f32) -> f32 {
     unsafe {
@@ -641,6 +658,10 @@ fn sampler_route_source(voice: ptr<SamplerVoice>, source: i32, lfo1: f32, lfo2: 
         if source == 4 { return filter_level; }
         if source == 5 { return (*voice).velocity; }
         if source == 6 { return (*voice).key; }
+        if source == 7 { return (*voice).wheel; }
+        if source == 8 { return (*voice).aftertouch; }
+        if source == 9 { return (*voice).bend; }
+        if source == 10 { return (*voice).cc; }
         return 0.0f;
     }
 }
@@ -865,7 +886,8 @@ fn mlasampler_voice_render(voice: ptr<SamplerVoice>, left0: f32, right0: f32, le
             (*voice).filter1.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
             (*voice).filter2.configure(filter_level, cutoff_octaves, resonance_db, (*voice).sample_rate);
             let semitones: f32 = (*voice).lfo1.pitch_semitones * lfo1_now + (*voice).lfo2.pitch_semitones * lfo2_now
-                + sampler_routes(voice, 1, lfo1_now, lfo2_now, filter_level) + (*voice).glide_semitones;
+                + sampler_routes(voice, 1, lfo1_now, lfo2_now, filter_level) + (*voice).glide_semitones
+                + (*voice).bend * (*voice).bend_semitones;
             (*voice).step = (*voice).base_step * f64(exp2f(semitones / 12.0f));
             let pan_shift: f32 = sampler_routes(voice, 5, lfo1_now, lfo2_now, filter_level);
             if pan_shift != 0.0f || (*voice).route1_target == 5 || (*voice).route2_target == 5

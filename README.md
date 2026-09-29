@@ -716,6 +716,8 @@ Overlapping zones layer.
 | `p` | Play the slot: a pad at its key, a zone at its root |
 | `E` | Edit the slot's sample (see below) |
 | `W` / `R` | Save the slot as a slot preset / load one into it (see below) |
+| `C` | Slice the slot's sample into the slots after it (see below) |
+| `A` | Auto-map note-named samples as key zones from the slot (see below) |
 
 The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
 two stages in series: per stage its type (**F1**/**F2**: `Off`, `LP12`,
@@ -743,7 +745,9 @@ octave; `[`/`]` by a semitone and an octave. Depths start at 0, so an LFO does
 nothing until one is set.
 
 The **Mod page** (`e` from LFO 2) shows each slot's four mod routes: per
-route its source (**Src**: `LFO1`, `LFO2`, `AmpEn`, `FltEn`, `Veloc`, `Key`),
+route its source (**Src**: `LFO1`, `LFO2`, `AmpEn`, `FltEn`, `Veloc`, `Key`,
+and the MIDI controllers `ModWh`, `AftT`, `Bend` and `ModCC`; the instance's
+Bend Range and which CC `ModCC` reads are in its parameter editor),
 target (**Tgt**: `Pitch`, `Cut`, `Reso`, `Level`, `Pan`, `Start`) and amount
 (**Amt**, -100 .. +100 %). A route's target and amount are dim until it has
 both a source and a target. `J`/`K` step the amount by 1 %, `[`/`]` by 10 %.
@@ -755,6 +759,25 @@ note is played over a held one), **Glide** (the slide from the previous note in
 Mono and Legato; dim in Poly), **Uni** (1-8 unison voices per note), **Det**
 (their detune, cents) and **Spr%** (their stereo spread). Det and Spr% are dim
 with one voice.
+
+**Slicing** (`C`) cuts the selected slot's sample into slices and puts
+slice 1 on that slot, slice 2 on the next, and so on, each a one-shot pad
+(Pad mode, loop off, whole slice, forwards), so the slices play on consecutive
+keys, Akai-style. `C` shows the wave view with the cuts marked; `J`/`K` (`[`/`]`
+by 4) set how many slices (2 up to the slots left), `t` switches between equal
+slices and slicing at transients, Enter slices, and `C` or Backspace cancels.
+At transients the strongest rises in level are cut (at least 30 ms apart), just
+before each onset; a sample with fewer transients gets fewer slices. The slices
+join the Audio list as `name slice N.wav`; other settings of the slots they
+land on stay.
+
+**Auto-map** (`A`) opens the file dialog (Space marks several files) and turns
+the samples whose names end in a note into key zones on the slots from the
+selected one, lowest note first: `Piano_C4.wav`, `Strings F#2.aif`,
+`PianoEb3.wav` (C4 = MIDI 60). Each zone has its sample's note as root and
+reaches up to the next sample's note; the lowest reaches down to key 0 and the
+highest up to 127. Files without a note name, a second file on the same note,
+and files past slot 16 are skipped, and the status line counts them.
 
 **Slot presets** keep one slot, its sample and every setting on all pages, in a
 `.mlaslot` file. `W` saves the selected slot (the file name suggested is the
@@ -1152,10 +1175,11 @@ parameter notifications are not handled yet; reopen to refresh cached values.
 ### Pattern CC columns
 
 Each MIDI track has its own list of automation columns after its note lines, one
-per controller, headed by what it plays: `CC1`, `CC74`, `PB` for pitch bend.
+per controller, headed by what it plays: `CC1`, `CC74`, `PB` for pitch bend,
+`AT` for aftertouch (channel pressure).
 A new track has only `CC1` (modulation wheel). **Track → Automation → Add CC
 column** adds one for `cc:N` (0–127; values 0–127), `pitchbend` (values
--8192–8191) or a custom `name:min:max`, up to 16 per track and one per
+-8192–8191), `aftertouch` (values 0–127) or a custom `name:min:max`, up to 16 per track and one per
 controller; **Configure CC column** changes the selected one (the first one
 when the cursor is elsewhere) and **Remove CC column** deletes the selected
 one with its values after confirmation. AUDIO tracks have no CC columns.
@@ -1314,8 +1338,9 @@ analyzer, edits the master bus and checks it survives a session round trip. The
 virtual keyboard PTY test toggles the keyboard, changes octave, step-enters a note
 and checks that Space and `q` behave. The Sampler pane PTY test (run when
 `MlaSampler.vst3` is built) loads and clears slots, edits loops, outputs and
-every page, saves a slot preset and loads it into another slot, and checks that
-the edits survive a session round trip. Legacy widget tests opt in
+every page, saves a slot preset and loads it into another slot, checks that
+the edits survive a session round trip, then slices a slot and auto-maps a
+note-named sample. Legacy widget tests opt in
 to seeded demo data with `MLACKER_DEMO=1`; normal mlacker startup does not.
 
 For a hardware-free manual run:

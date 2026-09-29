@@ -159,8 +159,9 @@ As with the filter types, the shape and division lists keep a fixed length
 ## Mod matrix
 
 Each slot has four **mod routes**. A route sends a **Source** (LFO 1, LFO 2,
-Amp Env, Filter Env, Velocity, or Key: -1 .. +1 over five octaves either side
-of C-4) to a **Target**, scaled by its **Amount** (-100 .. +100 %). At 100 % a
+Amp Env, Filter Env, Velocity, Key: -1 .. +1 over five octaves either side
+of C-4, or a MIDI controller: Mod Wheel, Aftertouch, Pitch Bend -1 .. +1, or
+Mod CC) to a **Target**, scaled by its **Amount** (-100 .. +100 %). At 100 % a
 source at full swing moves:
 
 | Target    | By |
@@ -170,7 +171,7 @@ source at full swing moves:
 | Resonance | 36 dB |
 | Level     | the whole level (1 + amount x source, 0 .. 2) |
 | Pan       | across the stereo field |
-| Start     | the whole sample, when the note starts (Velocity and Key only) |
+| Start     | the whole sample, when the note starts (Velocity, Key and the controllers' values then) |
 
 Routes add to each other and to the LFOs' direct depths. The voice evaluates
 them every 16 frames, with the filter; level from routes glides across those
@@ -182,6 +183,27 @@ While a note plays, a jump in the cutoff's envelope or LFO movement (a square
 LFO) glides over about 1.5 ms: a biquad holding signal rings far out of range
 when its cutoff leaps several octaves at once. A note's first cutoff is not
 smoothed, so an instant filter attack still opens at once.
+
+## MIDI controllers
+
+Mla Sampler tells the host (through VST3 `IMidiMapping`) which parameter each
+controller drives, so the controllers arrive as parameter changes:
+
+| Controller | Parameter |
+|------------|-----------|
+| CC 1 (mod wheel) | Mod Wheel |
+| Channel pressure | Aftertouch |
+| Pitch bend | Pitch Bend |
+| CC 2, 4, 11, 16-19, 74 | CC 2 Breath .. CC 74 Brightness |
+| CC 7, 72, 73, 75 | Level, Release, Attack, Decay |
+
+**Pitch Bend** always bends every sounding voice by up to **Bend Range**
+semitones (0 .. 24, default 2) either way, and is also a mod source. **Mod CC**
+chooses which of the eight CC parameters the Mod CC source reads. A host asks
+for the mapping once, so each choosable CC has a parameter of its own rather
+than one "any CC" parameter. The controller values reach sounding notes at the
+next 16-frame step and new notes from their start. Controllers apply to the
+whole instance: every channel, every slot.
 
 ## Unison and play modes
 
@@ -269,7 +291,7 @@ mlacker's README, "Plugin outputs").
 | Slot N LFO 1 Level | 0 .. 100 %                    | Tremolo. Default 0. |
 | Slot N LFO 1 Trigger | Free, Retrigger             | Default Retrigger. |
 | Slot N LFO 2 ...   | as LFO 1                      | |
-| Slot N Mod R Source | Off, LFO 1, LFO 2, Amp Env, Filter Env, Velocity, Key | Route R = 1 .. 4. 16-entry list. Default Off. |
+| Slot N Mod R Source | Off, LFO 1, LFO 2, Amp Env, Filter Env, Velocity, Key, Mod Wheel, Aftertouch, Pitch Bend, Mod CC | Route R = 1 .. 4. 16-entry list. Default Off. |
 | Slot N Mod R Target | Off, Pitch, Cutoff, Resonance, Level, Pan, Start | 16-entry list. Default Off. |
 | Slot N Mod R Amount | -100 .. +100 %               | Default 0. |
 | Slot N Unison      | 1 .. 8 voices                 | 16-entry list. Default 1. |
@@ -277,6 +299,11 @@ mlacker's README, "Plugin outputs").
 | Slot N Spread      | 0 .. 100 %                    | Unison stereo spread. Default 0. |
 | Slot N Play Mode   | Poly, Mono, Legato            | 8-entry list. Default Poly. |
 | Slot N Glide       | 0 .. 2 s                      | Mono and Legato. Default 0. |
+| Bend Range         | 0 .. 24 semitones             | Pitch bend either way. Default 2. |
+| Mod CC             | CC 2, 4, 11, 16, 17, 18, 19, 74 | Which CC the Mod CC source reads. 16-entry list. Default CC 2. |
+| Mod Wheel, Aftertouch | 0 .. 1                     | Set by CC 1 and channel pressure. Default 0. |
+| Pitch Bend         | 0 .. 1 (centre 8192/16383)    | Set by pitch bend. Default centre. |
+| CC 2 Breath .. CC 74 Brightness | 0 .. 1           | Set by their CCs. Default 0. |
 
 Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 
@@ -301,12 +328,15 @@ Parameter IDs are stable. Globals are 100-107; slot `s` (0-based) uses:
 - `1400 + 4s` + 0 unison voices, 1 detune, 2 spread
 - `1500 + 4s` + 0 play mode, 1 glide
 
-`950` is the Group Mode and `960`-`963` the instance filter envelope.
+`950` is the Group Mode and `960`-`963` the instance filter envelope. The MIDI
+controllers are `110` Bend Range, `111` Mod CC, `112` Mod Wheel, `113`
+Aftertouch, `114` Pitch Bend and `120`-`127` the CC values, registered last.
 
 Each later block comes after all earlier parameters, so presets and states
 saved before it load with its defaults: every slot in Pad mode, no crossfade,
 every velocity, the instance envelope, starting at frame 0, no group, filters
-off, no choke group, LFO depths at 0, no mod routes, forwards, one voice, Poly.
+off, no choke group, LFO depths at 0, no mod routes, forwards, one voice, Poly,
+a 2-semitone bend range.
 
 A slot set to its own envelope keeps it for every note, so a short one-shot pad
 and a sustained, looping zone can share one instance. Envelope edits reach
@@ -335,7 +365,9 @@ matrix (LFO 2 to pan, velocity to level and start, filter envelope to pitch,
 LFO 1 to resonance staying bounded, a route edited mid-note), reverse (backwards, with a start and a forward loop
 in the reversed timeline), unison (the stack's level, stereo spread and
 detune), Mono replacing a note, Legato keeping the envelope, glide and
-returning to a held key, choke
+returning to a held key), MIDI controllers (the host mapping, pitch bend and
+its range on new and sounding notes, the mod wheel, aftertouch and chosen CC as
+sources, pitch bend as a source), choke
 groups (cutting another slot and a retrigger, layers left alone), groups
 (round-robin turns, random picks without repeats, an ungrouped slot
 layering on top), live edits on a sounding note (a loop turned on or off, including a

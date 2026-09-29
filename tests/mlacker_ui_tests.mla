@@ -483,6 +483,42 @@ fn tui_sampler_slot_preset_keys_and_file() {
 }
 
 #[test]
+fn tui_sampler_note_names_and_auto_map_order() {
+    verify(SamplerView::note_in_name("Piano_C4.wav") == 60 && SamplerView::note_in_name("Strings F#2.aif") == 42);
+    verify(SamplerView::note_in_name("PianoEb3.wav") == 51 && SamplerView::note_in_name("Bass C-1.wav") == 0);
+    verify(SamplerView::note_in_name("vox_a3_soft.wav") == 57 && SamplerView::note_in_name("Pad_G9.wav") == 127);
+    verify(SamplerView::note_in_name("C4 then D5.wav") == 74 && SamplerView::note_in_name("Tone-C4v1.wav") == 60);
+    // No note: a word, a number, a letter inside a word, past G9.
+    verify(SamplerView::note_in_name("Cello.wav") < 0 && SamplerView::note_in_name("A440.wav") < 0);
+    verify(SamplerView::note_in_name("Kick 808.wav") < 0 && SamplerView::note_in_name("Pad_B9.wav") < 0);
+    verify(SamplerView::note_in_name("abc4.wav") < 0 && SamplerView::note_in_name("Take C.wav") < 0);
+    // Lowest note first; unnamed and repeated notes left out.
+    let files: list<str8> = ["Tone_G4.wav", "noise.wav", "Tone_C4.wav", "Tone_C5.wav", "Other_C4.wav"];
+    let order: list<i64> = SamplerView::auto_map_order(files);
+    verify(order.len() == 3 && order[0] == 2 && order[1] == 0 && order[2] == 3);
+}
+
+#[test]
+fn tui_clip_slice_points() {
+    var clip: AudioClip = AudioClip { source: clone("/loops/beat.wav"), channels: 1, sample_rate: 48000, frames: 48000, frames_per_row: 100 };
+    // Silence with three bursts, at 12000, 24000 and 36000 frames.
+    for f in 0..48000 {
+        let burst: bool = (f >= 12000 && f < 14000) || (f >= 24000 && f < 26000) || (f >= 36000 && f < 38000);
+        clip.samples.push(burst ? (f % 8 < 4 ? 0.8f : -0.8f) : 0.0f);
+    }
+    let equal: list<i64> = clip.slice_points(4, false);
+    verify(equal.len() == 5 && equal[0] == 0 && equal[1] == 12000 && equal[3] == 36000 && equal[4] == 48000);
+    // Each cut sits just before a burst, in order.
+    let cuts: list<i64> = clip.slice_points(4, true);
+    verify(cuts.len() == 5 && cuts[0] == 0 && cuts[4] == 48000);
+    verify(cuts[1] >= 11936 && cuts[1] <= 12000 && cuts[2] >= 23936 && cuts[2] <= 24000 && cuts[3] >= 35936 && cuts[3] <= 36000);
+    // Asked for more, only the three transients cut.
+    let fewer: list<i64> = clip.slice_points(8, true); verify(fewer.len() == 5);
+    let two: list<i64> = clip.slice_points(2, true); verify(two.len() == 3 && two[1] > 11700 && two[1] <= 36000);
+    free(clip.source);
+}
+
+#[test]
 fn tui_project_paths() {
     verify(is_project_path("/a/Song.mlaproj") && is_project_path("Song.MLAPROJ/") && !is_project_path("/a/Song.mlack"));
     let appended: str8 = project_folder("/a/Song//"); verify(appended == "/a/Song.mlaproj"); free(appended);
@@ -3111,6 +3147,8 @@ fn tui_automation_step_text() {
     verify(automation_controller("cc:74") == 74 && automation_controller("pitchbend") == 129 && automation_controller("cutoff:0:9") == -1);
     let title: str8 = automation_title("cc:74"); let bend: str8 = automation_title("pitchbend"); let named: str8 = automation_title("resonance:0:9");
     verify(title == "CC74" && bend == "PB" && named == "reson"); free(title); free(bend); free(named);
+    verify(automation_controller("aftertouch") == 128);
+    let pressure: str8 = automation_title("aftertouch"); verify(pressure == "AT"); free(pressure);
 }
 
 #[test]
@@ -3188,6 +3226,10 @@ fn tui_record_controllers_into_cc_columns() {
     verify(table.record_control(129, 0, 26250));
     let second: TableRow = table.rows[1]; verify(second.cells[6] == "40" && second.cells[7] == ". . . -8192");
     let bend: TableColumn = table.columns[7]; verify(bend.title == "PB" && table.track_start(1) == 8);
+    // Aftertouch (controller 128) gets an AT column of 0-127.
+    verify(table.record_control(128, 64, 0));
+    let pressure: TableColumn = table.columns[8]; verify(pressure.title == "AT");
+    let pressed: TableRow = table.rows[0]; verify(pressed.cells[8] == "64");
     // Notes of the take still fill the note columns before the CC columns.
     verify(table.record_timed(60, 90, 0, 0, true));
     let notes: TableRow = table.rows[0]; verify(notes.cells[1] == "C-4" && notes.cells[6] == "10 30 . .");

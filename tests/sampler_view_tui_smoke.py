@@ -54,6 +54,8 @@ def main():
         write_wav(pad, 12000)
         square = root / "square.wav"
         write_square(square)
+        tone = root / "Tone_G4.wav"
+        write_wav(tone, 8000)
         path = root / "sampler.mlack"
         tui = Terminal(cwd=directory)
         try:
@@ -233,6 +235,9 @@ def main():
             expect(tui.send(b"KKKK"), b"Level")
             tui.send(b"l")
             expect(tui.send(b"["), b"-10")
+            # Route 2's source: the controllers come last, Mod CC at the end.
+            tui.send(b"l")
+            expect(tui.send(b"K" * 11), b"ModCC")
             # e: the Play page. Legato with a glide, three unison voices.
             expect(tui.send(b"e"), b"Play |", b"Glide", b"Uni", b"Poly")
             expect(tui.send(b"KK"), b"Legato")
@@ -283,12 +288,27 @@ def main():
             expect(tui.send(b"e"), b"LP24", b"10.0k", b"+1.0", b"+6.0", b"Own")
             expect(tui.send(b"e"), b"Sqr", b"On", b"1/8", b"50")
             tui.send(b"e")
-            expect(tui.send(b"e"), b"Veloc", b"Level", b"-10")
+            expect(tui.send(b"e"), b"Veloc", b"Level", b"-10", b"ModCC")
             expect(tui.send(b"e"), b"Legato", b"180ms", b"20")
             tui.send(b"e")
             # Frame-accurate loop points survive the round trip.
             tui.send(b"jj")
             expect(tui.send(b"w"), b"Slot 3 square.wav", b"Start 0", b"End 4700", b"Ofs 0")
+            tui.send(b"w")
+            # C slices slot 3's sample into the slots after it: 8 equal
+            # slices at first, down to 2, which Enter puts on slots 3 and 4.
+            expect(tui.send(b"C"), b"Slice slot 3", b"8 slices equal", b"Slice to slots 3-10")
+            expect(tui.send(b"t"), b"at transients")
+            expect(tui.send(b"t"), b"slices equal")
+            expect(tui.send(b"JJJJJJJ"), b"2 slices equal", b"Slice to slots 3-4")
+            expect(tui.send(b"\r", 0.6), b"Sliced slot 3 into slots 3-4")
+            expect(tui.send(b"w"), b"Slot 3 square slice 1.wav", b"End 2350")
+            tui.send(b"w")
+            # A auto-maps note-named samples as key zones from the selected slot.
+            tui.send(b"j" * 7)
+            expect(tui.send_until(b"A", b"Auto-map samples from slot 10"), b"Auto-map samples from slot 10")
+            expect(tui.send(b"\x15" + bytes(tone) + b"\r", 0.7), b"Auto-mapped 1 sample(s) to slots 10-10")
+            expect(tui.send(b"w"), b"Slot 10 Tone_G4.wav")
             tui.send(b"w")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:

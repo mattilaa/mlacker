@@ -406,6 +406,8 @@ pub fn run() -> i32 {
     var editing_sampler_slot: i32 = -1; var editing_sampler_pad: i32 = -1;
     // Sampler slot a slot preset saves from or loads into (W / R).
     var preset_sampler_pad: i32 = 0;
+    // The pad-file dialog auto-maps samples by note name (Sampler pane A).
+    var auto_map: bool = false;
     if !fixture {
         let arguments: list<str8> = __env_args();
         if arguments.len() == 2 { free(request_path); request_path = clone(arguments[1]); session_request = 1; }
@@ -755,6 +757,53 @@ pub fn run() -> i32 {
                     : (loaded == paths.len() ? format!("Added {} samples", loaded)
                         : format!("Added {} of {} samples: {}", loaded, paths.len(), library.audio.error));
                 adding_audio = false;
+            }
+            else if adding_pad_file && auto_map {
+                // Auto-map: samples named by note become key zones on the
+                // slots from the selected one, lowest note first, each zone
+                // reaching up to the next sample's note.
+                var names: list<str8> = [];
+                for path in paths { names.push(base_name(path)); }
+                let order: list<i64> = SamplerView::auto_map_order(names);
+                var roots: list<i32> = []; var chosen: list<str8> = [];
+                for n in order {
+                    let name: str8 = base_name(paths[n]); roots.push(SamplerView::note_in_name(name)); free(name);
+                    chosen.push(paths[n]);
+                }
+                for name in names { free(name); }
+                let left_over: i64 = paths.len() - order.len();
+                let room: i64 = wide(16 - pad_index);
+                let count: i64 = roots.len() < room ? roots.len() : room;
+                var mapped: i32 = 0; var failure: str8 = "";
+                for i in 0..count {
+                    if !library.audio.load(chosen[i], transport.bpm) { failure = clone(library.audio.error); break; }
+                    let index: i32 = i32(library.audio.samples.len()) - 1;
+                    let clip: AudioClip = library.audio.samples[index];
+                    let name: str8 = base_name(clip.source);
+                    let error: str8 = midi.assign_pad(pad_slot, pad_index + i32(i), index, clip.samples, clip.channels, clip.sample_rate, name);
+                    free(name);
+                    if error != "" { failure = error; break; }
+                    let low: i32 = i == 0 ? 0 : roots[i];
+                    let high: i32 = i == count - 1 ? 127 : roots[i + 1] - 1;
+                    SamplerView::make_zone(midi.output, pad_slot, pad_index + i32(i), low, high, roots[i]);
+                    mapped = mapped + 1;
+                }
+                var notes: str8 = clone("");
+                if mapped > 0 {
+                    let lowest: str8 = piano_note_name(roots[0]); let highest: str8 = piano_note_name(roots[mapped - 1]);
+                    free(notes); notes = format!(" ({}..{})", lowest, highest); free(lowest); free(highest);
+                }
+                var left_out: str8 = clone("");
+                if left_over > 0 || count < roots.len() {
+                    free(left_out);
+                    left_out = format!(" | skipped {} without a new note name, {} past slot 16", left_over, roots.len() - count);
+                }
+                message = failure != "" ? format!("Auto-mapped {} sample(s), then stopped: {}", mapped, failure)
+                    : (mapped == 0 ? format!("No sample names a note (e.g. Piano_C4.wav){}", left_out)
+                        : format!("Auto-mapped {} sample(s) to slots {}-{}{}{}", mapped, pad_index + 1, pad_index + mapped, notes, left_out));
+                free(notes); free(left_out);
+                if failure != "" { free(failure); }
+                adding_pad_file = false; auto_map = false;
             }
             else if adding_pad_file {
                 // Several files fill consecutive pads from the chosen key.
@@ -1649,6 +1698,51 @@ pub fn run() -> i32 {
                 }
                 else if request == 10 { command = Action::EditSamplerSample; }
                 else if request == 11 { command = Action::SaveSamplerSlot; }
+                else if request == 15 { free(message); message = clone("Slot 16 is the last: slice from an earlier slot, into the slots after it"); }
+                else if request == 14 {
+                    adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
+                    adding_pad_file = true; auto_map = true; pad_slot = target; pad_index = sampler.slot;
+                    dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
+                    dialog.title = format!("Auto-map samples from slot {} by note name (C4 = 60)", sampler.slot + 1);
+                    dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
+                    dialog.open(last_audio_dir); focus.set_menu_active(true);
+                    if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
+                }
+                else if request == 13 {
+                    // Slice k of the slot's sample goes to slot + k, a one-shot pad.
+                    let points: list<i64> = sampler.slice_points;
+                    var made: i32 = 0; var failure: str8 = "";
+                    if has_clip && points.len() > 2 {
+                        let source: AudioClip = clip;
+                        let dot: i64 = std::strbuf::rfind(source.source, ".");
+                        let slash: i64 = std::strbuf::rfind(source.source, "/");
+                        let stem: str8 = dot > slash + 1 ? std::strbuf::sub(source.source, 0, dot) : clone(source.source);
+                        let slices: i64 = points.len() - 1;
+                        for i in 0..slices {
+                            var piece: AudioClip = source.slice_frames(points[i], points[i + 1]);
+                            free(piece.source); piece.source = format!("{} slice {}.wav", stem, i + 1);
+                            let index: i32 = library.audio.add_clip(piece);
+                            if index < 0 { failure = clone(library.audio.error); break; }
+                            let added: AudioClip = library.audio.samples[index];
+                            let name: str8 = base_name(added.source);
+                            let error: str8 = midi.assign_pad(target, sampler.slot + i32(i), index, added.samples, added.channels, added.sample_rate, name);
+                            free(name);
+                            if error != "" { failure = error; break; }
+                            SamplerView::make_one_shot(midi.output, target, sampler.slot + i32(i));
+                            made = made + 1;
+                        }
+                        free(stem);
+                    }
+                    sampler.end_slicing();
+                    free(message);
+                    if failure != "" { message = format!("Sliced {} part(s), then stopped: {}", made, failure); free(failure); }
+                    else if made == 0 { message = clone("Nothing to slice: the sample is too short"); }
+                    else {
+                        let first_key: str8 = piano_note_name(i32(midi.output.instrument_sampler(target, 0)) + sampler.slot);
+                        message = format!("Sliced slot {} into slots {}-{}, pads from {} (added to Audio)", sampler.slot + 1, sampler.slot + 1, sampler.slot + made, first_key);
+                        free(first_key);
+                    }
+                }
                 else if request == 12 { command = Action::LoadSamplerSlotPreset; }
                 else if request == 9 { free(message); message = format!("Slot {} uses the instance filter envelope: set its FEnv to Own first", sampler.slot + 1); }
                 else if request == 8 { free(message); message = format!("Slot {} uses the instance envelope: set its Env to Own first", sampler.slot + 1); }
@@ -2119,7 +2213,7 @@ pub fn run() -> i32 {
                     free(name);
                 } else {
                     adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
-                    adding_pad_file = true; dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
+                    adding_pad_file = true; auto_map = false; dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
                     dialog.title = format!("Load sample for pad {}", pad_index + 1);
                     dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
                     dialog.open(last_audio_dir); focus.set_menu_active(true);

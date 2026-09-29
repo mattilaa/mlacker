@@ -433,7 +433,10 @@ int main(int argc, char **argv) {
     CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
     CHECK(__mlang_std_audio_controller_parameter_info(c, 2, 0, 2) == 64.0 / 127.0);
     CHECK(__mlang_std_audio_controller_live_control(c, 16, 1, 0) == -1);
-    CHECK(__mlang_std_audio_controller_live_control(c, 0, 128, 0) == -1);
+    // 128 is aftertouch (channel pressure), 0..127; nothing sits above pitch bend.
+    CHECK(__mlang_std_audio_controller_live_control(c, 0, 128, 64) == 0);
+    CHECK(__mlang_std_audio_controller_live_control(c, 0, 128, 128) == -1);
+    CHECK(__mlang_std_audio_controller_live_control(c, 0, 130, 0) == -1);
     CHECK(__mlang_std_audio_controller_live_control(c, 0, 1, 128) == -1);
     CHECK(__mlang_std_audio_controller_live_control(c, 0, 129, 16384) == -1);
     // Learn is global to this controller/session, not the selected track.

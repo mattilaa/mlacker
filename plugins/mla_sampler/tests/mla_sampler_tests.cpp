@@ -19,6 +19,7 @@
 #include "public.sdk/source/vst/hosting/processdata.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstmessage.h"
+#include "pluginterfaces/vst/ivstmidicontrollers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -84,7 +85,10 @@ constexpr ParamID lfoParam(int slot, LfoField k) { return 3000 + slot * 32 + k; 
 constexpr ParamID lfo2Param(int slot, LfoField k) { return 3016 + slot * 32 + k; }
 enum RouteField { kRouteSource, kRouteTarget, kRouteAmount };
 constexpr ParamID routeParam(int slot, int route, RouteField k) { return 4000 + slot * 32 + route * 4 + k; }
-enum { kSrcLfo1 = 1, kSrcLfo2, kSrcAmpEnv, kSrcFilterEnv, kSrcVelocity, kSrcKey };
+enum { kSrcLfo1 = 1, kSrcLfo2, kSrcAmpEnv, kSrcFilterEnv, kSrcVelocity, kSrcKey, kSrcModWheel, kSrcAftertouch, kSrcPitchBend, kSrcModCc };
+// MIDI controllers: bend range (0..24 st), the Mod CC choice, and the values.
+constexpr ParamID kBendRangeId = 110, kModCcId = 111, kModWheelId = 112, kAftertouchId = 113, kPitchBendId = 114;
+constexpr ParamID ccValueParam(int choice) { return 120 + choice; } // CC 2, 4, 11, 16, 17, 18, 19, 74
 enum { kTgtPitch = 1, kTgtCutoff, kTgtResonance, kTgtLevel, kTgtPan, kTgtStart };
 double listValue(int index) { return index / 15.0; }
 double amount(double share) { return (share + 1.0) / 2.0; }
@@ -1090,6 +1094,64 @@ void testUnisonAndGlide(const std::string &path)
     CHECK(std::fabs((left(back, 101) - left(back, 100)) - 1.0f / 48000) < 2e-7f);
 }
 
+void testControllers(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    // The host learns which parameter each controller drives.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        auto mapping = U::cast<IMidiMapping>(plugin.provider->getControllerPtr());
+        CHECK(mapping);
+        if(mapping) {
+            ParamID id = 0;
+            CHECK(mapping->getMidiControllerAssignment(0, 0, kCtrlModWheel, id) == kResultOk && id == kModWheelId);
+            CHECK(mapping->getMidiControllerAssignment(0, 3, kAfterTouch, id) == kResultOk && id == kAftertouchId);
+            CHECK(mapping->getMidiControllerAssignment(0, 0, kPitchBend, id) == kResultOk && id == kPitchBendId);
+            CHECK(mapping->getMidiControllerAssignment(0, 0, 11, id) == kResultOk && id == ccValueParam(2));
+            CHECK(mapping->getMidiControllerAssignment(0, 0, 74, id) == kResultOk && id == ccValueParam(7));
+            CHECK(mapping->getMidiControllerAssignment(0, 0, 3, id) != kResultOk);
+        }
+    }
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto rate = [](const std::vector<float> &out) { return (left(out, 1001) - left(out, 1000)) * 48000.0f; };
+    // Pitch bend, always on: full up is the default 2 semitones, full down
+    // with a 12-semitone range an octave down, the centre nothing.
+    CHECK(std::fabs(rate(filtered(path, slope, {{kPitchBendId, 1.0}})) - std::pow(2.0f, 2.0f / 12)) < 1e-3f);
+    CHECK(std::fabs(rate(filtered(path, slope, {{kPitchBendId, 0.0}, {kBendRangeId, 0.5}})) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(rate(filtered(path, slope, {{kPitchBendId, 8192.0 / 16383}})) - 1.0f) < 1e-4f);
+    // It bends a sounding note too.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, slope) == kResultOk);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(kBendRangeId, 0.5);
+        plugin.param(kPitchBendId, 1.0);
+        CHECK(std::fabs(rate(plugin.render(4096)) - 2.0f) < 1e-3f);
+    }
+    const auto route = [](int source, int target, double share) {
+        return Params{{routeParam(0, 0, kRouteSource), listValue(source)}, {routeParam(0, 0, kRouteTarget), listValue(target)},
+                      {routeParam(0, 0, kRouteAmount), amount(share)}};
+    };
+    const auto join = [](Params a, const Params &b) { for(const auto &p : b) a.push_back(p); return a; };
+    // Mod wheel, aftertouch and the chosen CC -> Level -100 %.
+    const auto level = [&](const Params &params) { return left(filtered(path, dc(), params), 1000); };
+    CHECK(std::fabs(level(join(route(kSrcModWheel, kTgtLevel, -1.0), {{kModWheelId, 0.5}})) - 0.25f) < 1e-3f);
+    CHECK(std::fabs(level(join(route(kSrcModWheel, kTgtLevel, -1.0), {{kModWheelId, 1.0}}))) < 1e-3f);
+    CHECK(std::fabs(level(join(route(kSrcAftertouch, kTgtLevel, -1.0), {{kAftertouchId, 1.0}}))) < 1e-3f);
+    // Mod CC reads the chosen CC only: CC 11 (Expression) here.
+    const Params expression = {{kModCcId, listValue(2)}, {ccValueParam(2), 1.0}};
+    CHECK(std::fabs(level(join(route(kSrcModCc, kTgtLevel, -1.0), expression))) < 1e-3f);
+    CHECK(std::fabs(level(join(route(kSrcModCc, kTgtLevel, -1.0), {{kModCcId, listValue(0)}, {ccValueParam(2), 1.0}})) - 0.5f) < 1e-3f);
+    // Pitch bend as a source, -1 .. 1: down to Pitch -100 % (24 st) is two
+    // octaves up on top of the 2-semitone bend.
+    CHECK(std::fabs(rate(filtered(path, slope, join(route(kSrcPitchBend, kTgtPitch, -1.0), {{kPitchBendId, 0.0}, {kBendRangeId, 0.0}}))) - 4.0f) < 1e-3f);
+}
+
 void testChokeGroups(const std::string &path)
 {
     // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
@@ -1213,12 +1275,13 @@ int main(int argc, char **argv)
     testModMatrix(path);
     testReverse(path);
     testUnisonAndGlide(path);
+    testControllers(path);
     testOutputRouting(path);
     testStateRoundTrip(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
     }
-    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, choke groups, loop off/forward/bidirectional, output routing, state");
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, choke groups, loop off/forward/bidirectional, output routing, state");
     return 0;
 }

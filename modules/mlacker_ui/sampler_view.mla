@@ -1,4 +1,6 @@
 mod std::audio::controller;
+mod std::bytes;
+use std::bytes::Bytes;
 use tui::geometry::*;
 use tui::surface::*;
 use tui::theme::*;
@@ -63,6 +65,12 @@ pub struct SamplerView {
     /// (`until`).
     var audition_note: i32{-1}; var audition_target: i64; var audition_until: i64;
     var releases_seen: bool;
+    /// Slice mode (`C`): the selected slot's sample cut into `slice_count`
+    /// slices, evenly or at its transients, at `slice_points` (frame 0, the
+    /// cuts, the end), shown in the wave view (`slice_wave`: whether it was
+    /// on before). Enter puts slice k on slot + k.
+    var slicing: bool; var slice_count: i32{8}; var slice_transients: bool;
+    var slice_points: list<i64>; var slice_wave: bool;
 };
 impl SamplerView {
     /// Keys the focused pane keeps for itself: everything printable ("q"
@@ -126,6 +134,31 @@ impl SamplerView {
         return 200 + s * 7 + col - 3;
     }
     /// Normalized value of a slot's column, or -1 when the plugin lacks it.
+    /// Set parameter `id` of instance `slot` to `plain`: a list or stepped
+    /// parameter's step number, otherwise its normalized value.
+    pub fn set_plain(output: AudioController, slot: i32, id: i32, plain: f64) -> bool {
+        let index: i32 = SamplerView::parameter_index(output, slot, id);
+        return index >= 0 && output.set_parameter(slot, index, plain) == 0;
+    }
+    /// Make sample slot `s` a pad playing its whole sample once, forwards:
+    /// what a slice needs.
+    pub fn make_one_shot(output: AudioController, slot: i32, s: i32) -> void {
+        SamplerView::set_plain(output, slot, 400 + s * 5, 0.0);
+        SamplerView::set_plain(output, slot, 200 + s * 7 + 4, 0.0);
+        SamplerView::set_plain(output, slot, 200 + s * 7 + 5, 0.0);
+        SamplerView::set_plain(output, slot, 200 + s * 7 + 6, 1.0);
+        SamplerView::set_plain(output, slot, 800 + s, 0.0);
+        SamplerView::set_plain(output, slot, 1300 + s, 0.0);
+    }
+    /// Make sample slot `s` a key zone from `low` to `high` with its sample
+    /// at `root`, tracking the key.
+    pub fn make_zone(output: AudioController, slot: i32, s: i32, low: i32, high: i32, root: i32) -> void {
+        SamplerView::set_plain(output, slot, 400 + s * 5, 1.0);
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 1, f64(low));
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 2, f64(high));
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 3, f64(root));
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 4, 1.0);
+    }
     /// Slot preset key of parameter `id` of sample slot `s`: its block's
     /// base * 64 + its field there, or -1 when `id` is not one of the slot's.
     /// The per-slot blocks are (base, stride, width), the slot's IDs being
@@ -236,7 +269,8 @@ impl SamplerView {
             if col == 600 && value > 2.0 { value = 2.0; }
             if col == 602 && value > 7.0 { value = 7.0; }
             // Mod sources and targets likewise.
-            if col >= 500 && col < 600 && (col - 500) % 3 < 2 && value > 6.0 { value = 6.0; }
+            if col >= 500 && col < 600 && (col - 500) % 3 == 0 && value > 10.0 { value = 10.0; }
+            if col >= 500 && col < 600 && (col - 500) % 3 == 1 && value > 6.0 { value = 6.0; }
             if col == 1 || col == 5 { let high: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col + 1))); if value > high { value = high; } }
             if col == 2 || col == 6 { let low: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col - 1))); if value < low { value = low; } }
             if velocity_column && value < 1.0 { value = 1.0; }
@@ -267,9 +301,24 @@ impl SamplerView {
     /// audition it (see `audition_key`), 8 tell that its envelope columns
     /// need Env set to Own, 9 that its filter envelope columns need FEnv set
     /// to Own, 10 edit its sample, 11 save it as a slot preset, 12 load a
-    /// slot preset into it. (An i32 rather than an enum: MLang
+    /// slot preset into it, 13 slice it into the slots from it on (see
+    /// `slice_points`), 14 auto-map samples into the slots from it on, 15
+    /// tell that the last slot has no slots after it to slice into. (An i32 rather than an enum: MLang
     /// before its let-enum fix ran an enum `let` initializer twice.)
     pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
+        if self.slicing { return self.slice_event(event, clip, has_clip); }
+        // C slices the slot's sample, A auto-maps samples by their note names.
+        if (event.code == 67 && event.modifiers == 1) || (event.code == 99 && event.modifiers == 2) {
+            if slot < 1 { return 0; }
+            if !has_clip { return 6; }
+            if self.slot >= 15 { return 15; }
+            self.slicing = true; self.slice_wave = self.wave; self.wave = true; self.zoom = 0;
+            self.slice_count = 16 - self.slot < 8 ? 16 - self.slot : 8;
+            var source: AudioClip = AudioClip {}; source = clip;
+            self.slice_points = source.slice_points(self.slice_count, self.slice_transients);
+            return 1;
+        }
+        if (event.code == 65 && event.modifiers == 1) || (event.code == 97 && event.modifiers == 2) { return slot < 1 ? 0 : 14; }
         if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; return 1; }
         if self.wave {
             let handled: i32 = self.wave_event(event, output, slot, clip, has_clip);
@@ -385,6 +434,93 @@ impl SamplerView {
         var start: i64 = marker_frame - span / 2;
         if start > frames - span { start = frames - span; }
         return start < 0 ? 0 : start;
+    }
+    /// Slice mode keys: J/K and [ ] the slice count (2 up to the slots left
+    /// from the selected one), t equal or transients, Enter slices (13), C
+    /// or Backspace cancels. Other keys do nothing meanwhile.
+    fn slice_event(self: &mut Self, event: InputEvent, clip: &AudioClip, has_clip: bool) -> i32 {
+        let cancel: bool = (event.code == 67 && event.modifiers == 1) || (event.code == 99 && event.modifiers == 2)
+            || event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace);
+        if cancel || !has_clip { self.end_slicing(); return 1; }
+        if (event.kind == InputKind::Menu && event.key == Key::Enter) || event.code == 13 || event.code == 10 { return 13; }
+        let most: i32 = 16 - self.slot;
+        var count: i32 = self.slice_count;
+        if (event.code == 74 && event.modifiers == 1) || (event.code == 106 && event.modifiers == 2) { count = count - 1; }
+        else if (event.code == 75 && event.modifiers == 1) || (event.code == 107 && event.modifiers == 2) { count = count + 1; }
+        else if event.code == 91 && event.modifiers == 1 { count = count - 4; }
+        else if event.code == 93 && event.modifiers == 1 { count = count + 4; }
+        else if event.code == 116 && event.modifiers == 1 { self.slice_transients = !self.slice_transients; }
+        else { return 0; }
+        count = count < 2 ? 2 : (count > most ? most : count);
+        self.slice_count = count;
+        var source: AudioClip = AudioClip {}; source = clip;
+        self.slice_points = source.slice_points(count, self.slice_transients);
+        return 1;
+    }
+    /// Leave slice mode, the wave view as it was before.
+    pub fn end_slicing(self: &mut Self) -> void {
+        self.slicing = false; self.wave = self.slice_wave; self.slice_points = [];
+    }
+    /// MIDI key named at the end of a sample's file name, or -1: a note
+    /// letter, an optional # or b, and an octave -1 .. 9, with C4 = 60
+    /// ("Piano_C4.wav", "Strings F#2", "PianoEb3"). The last such name counts;
+    /// it must not follow a letter unless it starts a capitalized word, nor be
+    /// followed by a digit.
+    pub fn note_in_name(name: str8) -> i32 {
+        let raw: result<Bytes, str8> = Bytes::from_string(name);
+        if raw.is_err() { return -1; }
+        let bytes: Bytes = raw.unwrap();
+        let count: i64 = bytes.len();
+        // Up to the extension.
+        var end: i64 = count;
+        for i in 0..count { if bytes.get(i) == 46 { end = i; } }
+        var found: i32 = -1;
+        let semitones: array<i32, 7> = {9, 11, 0, 2, 4, 5, 7};
+        for i in 0..end {
+            let c: i32 = bytes.get(i);
+            let upper: bool = c >= 65 && c <= 71; let lower: bool = c >= 97 && c <= 103;
+            if !upper && !lower { continue; }
+            if i > 0 {
+                let p: i32 = bytes.get(i - 1);
+                let letter: bool = (p >= 65 && p <= 90) || (p >= 97 && p <= 122);
+                if letter && !(upper && p >= 97 && p <= 122) { continue; }
+            }
+            var at: i64 = i + 1;
+            var semitone: i32 = semitones[upper ? c - 65 : c - 97];
+            if at < end && bytes.get(at) == 35 { semitone = semitone + 1; at = at + 1; }
+            else if at < end && bytes.get(at) == 98 { semitone = semitone - 1; at = at + 1; }
+            var octave: i32 = -2;
+            if at + 1 < end && bytes.get(at) == 45 && bytes.get(at + 1) == 49 { octave = -1; at = at + 2; }
+            else if at < end && bytes.get(at) >= 48 && bytes.get(at) <= 57 { octave = bytes.get(at) - 48; at = at + 1; }
+            if octave < -1 { continue; }
+            if at < end && bytes.get(at) >= 48 && bytes.get(at) <= 57 { continue; }
+            let note: i32 = (octave + 1) * 12 + semitone;
+            if note >= 0 && note <= 127 { found = note; }
+        }
+        bytes.close();
+        return found;
+    }
+    /// Auto-map order: indexes of the file `names` that name a note (see
+    /// `note_in_name`), lowest note first; a name without a note, or with one
+    /// an earlier name took, is left out.
+    pub fn auto_map_order(files: &list<str8>) -> list<i64> {
+        var names: list<str8> = []; names = files;
+        var order: list<i64> = []; var roots: list<i32> = [];
+        for n in 0..names.len() {
+            let note: i32 = SamplerView::note_in_name(names[n]);
+            if note < 0 { continue; }
+            var at: i64 = 0; var same: bool = false;
+            while at < roots.len() && roots[at] <= note { if roots[at] == note { same = true; } at = at + 1; }
+            if same { continue; }
+            var next_roots: list<i32> = []; var next_order: list<i64> = [];
+            for i in 0..roots.len() {
+                if i == at { next_roots.push(note); next_order.push(n); }
+                next_roots.push(roots[i]); next_order.push(order[i]);
+            }
+            if at == roots.len() { next_roots.push(note); next_order.push(n); }
+            roots = next_roots; order = next_order;
+        }
+        return order;
     }
     /// Wave view keys; -1 when the key is not one of them (the table's keys
     /// then apply: j/k slot, Enter, Backspace, o). 6 = no waveform to edit.
@@ -654,8 +790,16 @@ impl SamplerView {
     fn paint_wave(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, labels: &list<str8>, clip: &AudioClip, has_clip: bool) -> void {
         var names: list<str8> = []; names = labels;
         let help_y: i32 = area.y + area.height - 2;
-        surface.text(Rect::new(area.x, help_y, area.width, 1),
-            "m start/end/ofs  h/l dot  H/L frame  z zero  [ ] xfade  -/= zoom  j/k slot  p play  w table", theme.muted, theme.panel);
+        let slicing: bool = self.slicing;
+        if slicing {
+            let last: i32 = self.slot + i32(self.slice_points.len()) - 1;
+            let help: str8 = format!("Slice to slots {}-{} | J/K [ ] count  t {}  Enter slice  C cancel",
+                self.slot + 1, last, self.slice_transients ? "equal" : "transients");
+            surface.text(Rect::new(area.x, help_y, area.width, 1), help, theme.muted, theme.panel); free(help);
+        } else {
+            surface.text(Rect::new(area.x, help_y, area.width, 1),
+                "m start/end/ofs  h/l dot  H/L frame  z zero  [ ] xfade  -/= zoom  j/k slot  p play  w table", theme.muted, theme.panel);
+        }
         let label: str8 = self.slot < names.len() ? names[self.slot] : "";
         var source: AudioClip = AudioClip {}; if has_clip { source = clip; }
         if !has_clip || source.frames < 2 {
@@ -665,13 +809,15 @@ impl SamplerView {
         }
         let frames: i64 = source.frames;
         let samples: list<f32> = source.samples; let channels: i64 = source.channels;
-        let reversed: bool = SamplerView::value(output, slot, self.slot, 111) >= 0.5;
-        let start_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, false, frames);
-        let end_frame: i64 = SamplerView::loop_frame(output, slot, self.slot, true, frames);
+        // Slicing shows the stored sample whole, with its cuts.
+        let reversed: bool = !slicing && SamplerView::value(output, slot, self.slot, 111) >= 0.5;
+        let start_frame: i64 = slicing ? 0 : SamplerView::loop_frame(output, slot, self.slot, false, frames);
+        let end_frame: i64 = slicing ? frames : SamplerView::loop_frame(output, slot, self.slot, true, frames);
         let mode: str8 = SamplerView::field_text(7, SamplerView::value(output, slot, self.slot, 7));
-        let crossfade: i64 = SamplerView::crossfade_frames(output, slot, self.slot, frames);
-        let offset_frame: i64 = SamplerView::frame_at(output, slot, self.slot, 108, frames);
-        let info: str8 = format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {}/{} | Xfade {} | {}Ofs {}{} | Zoom {}x",
+        let crossfade: i64 = slicing ? 0 : SamplerView::crossfade_frames(output, slot, self.slot, frames);
+        let offset_frame: i64 = slicing ? -1 : SamplerView::frame_at(output, slot, self.slot, 108, frames);
+        let info: str8 = slicing ? format!("Slice slot {} {} | {} slices {} | {} frames", self.slot + 1, label,
+            self.slice_points.len() - 1, self.slice_transients ? "at transients" : "equal", frames) : format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {}/{} | Xfade {} | {}Ofs {}{} | Zoom {}x",
             self.slot + 1, label, mode, self.marker == 0 ? "[" : "", start_frame, self.marker == 0 ? "]" : "",
             self.marker == 1 ? "[" : "", end_frame, self.marker == 1 ? "]" : "", end_frame - start_frame, frames, crossfade,
             self.marker == 2 ? "[" : "", offset_frame, self.marker == 2 ? "]" : "", 1 << self.zoom);
@@ -708,7 +854,8 @@ impl SamplerView {
         let left_bits: array<i32, 4> = {1, 2, 4, 64};
         let right_bits: array<i32, 4> = {8, 16, 32, 128};
         let start_x: i64 = (start_frame - first) * wide(area.width) / (span > 0 ? span : 1);
-        let offset_x: i64 = offset_frame >= first && offset_frame < first + span ? (offset_frame - first) * wide(area.width) / (span > 0 ? span : 1) : -1;
+        let cuts: list<i64> = self.slice_points;
+        let offset_x: i64 = offset_frame >= 0 && offset_frame >= first && offset_frame < first + span ? (offset_frame - first) * wide(area.width) / (span > 0 ? span : 1) : -1;
         var end_x: i64 = (end_frame - first) * wide(area.width) / (span > 0 ? span : 1);
         // A loop ending at the window's right edge (e.g. the sample's end)
         // marks the last column.
@@ -727,10 +874,20 @@ impl SamplerView {
                 let looped: bool = cell_frame >= start_frame && cell_frame < end_frame;
                 // The crossfade region is shaded.
                 let fading: bool = crossfade > 0 && cell_frame >= end_frame - crossfade && cell_frame < end_frame;
-                let marker: bool = wide(i32(x)) == start_x || wide(i32(x)) == end_x;
+                let marker: bool = !slicing && (wide(i32(x)) == start_x || wide(i32(x)) == end_x);
+                // A cut (not the ends) in the column it falls in.
+                var cut: bool = false;
+                if slicing {
+                    let inner: i64 = cuts.len() - 1;
+                    for c in 1..inner {
+                        if (cuts[c] - first) * wide(area.width) / (span > 0 ? span : 1) == wide(i32(x)) { cut = true; }
+                    }
+                }
                 // The sample start is a dashed marker (under a loop marker
                 // sharing its column).
-                if wide(i32(x)) == offset_x && !marker {
+                if cut {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2503, foreground: theme.accent, background: theme.panel });
+                } else if wide(i32(x)) == offset_x && !marker {
                     surface.put(area.x + i32(x), y, Cell { glyph: 0x2506, foreground: self.marker == 2 ? theme.accent : theme.foreground, background: theme.panel });
                 } else if marker {
                     let selected: bool = (self.marker == 0 && wide(i32(x)) == start_x) || (self.marker == 1 && wide(i32(x)) == end_x);
@@ -822,8 +979,8 @@ impl SamplerView {
             let part: i32 = (col - 500) % 3;
             let index: i32 = i32(std::math::floor(value * 15.0 + 0.5));
             if part == 0 {
-                let sources: array<str8, 7> = {"-", "LFO1", "LFO2", "AmpEn", "FltEn", "Veloc", "Key"};
-                return index < 7 ? clone(sources[index]) : format!("#{}", index);
+                let sources: array<str8, 11> = {"-", "LFO1", "LFO2", "AmpEn", "FltEn", "Veloc", "Key", "ModWh", "AftT", "Bend", "ModCC"};
+                return index < 11 ? clone(sources[index]) : format!("#{}", index);
             }
             if part == 1 {
                 let targets: array<str8, 7> = {"-", "Pitch", "Cut", "Reso", "Level", "Pan", "Start"};

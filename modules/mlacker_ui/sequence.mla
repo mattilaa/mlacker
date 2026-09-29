@@ -49,20 +49,23 @@ pub fn automation_pattern() -> str8 { return "(-?[0-9]{1,10}|\\.)( (-?[0-9]{1,10
 pub fn default_automation() -> list<AutomationSlot> {
     return [AutomationSlot { parameter: clone("cc:1"), minimum: 0, maximum: 127 }];
 }
-/// MIDI controller of an automation parameter: 0-127 for "cc:N", 129 for
-/// pitch bend, -1 for a named parameter that plays nothing.
+/// MIDI controller of an automation parameter: 0-127 for "cc:N", 128 for
+/// aftertouch (channel pressure), 129 for pitch bend, -1 for a named parameter
+/// that plays nothing.
 pub fn automation_controller(parameter: str8) -> i64 {
     if parameter == "pitchbend" { return 129; }
+    if parameter == "aftertouch" { return 128; }
     if !table_matches("cc:[0-9]{1,3}", parameter) { return -1; }
     let suffix: str8 = sub(parameter, 3, len(parameter) - 3);
     let parsed: result<i64, str8> = table_integer(suffix); free(suffix);
     if parsed.is_err() { return -1; }
     let number: i64 = parsed.unwrap(); return number <= 127 ? number : -1;
 }
-/// Column header of an automation parameter: "CC74", "PB", or the name.
+/// Column header of an automation parameter: "CC74", "PB", "AT", or the name.
 pub fn automation_title(parameter: str8) -> str8 {
     let controller: i64 = automation_controller(parameter);
     if controller == 129 { return clone("PB"); }
+    if controller == 128 { return clone("AT"); }
     if controller >= 0 { return format!("CC{}", controller); }
     let colon: i64 = find(parameter, ":");
     let size: i64 = colon > 0 ? colon : len(parameter);
@@ -570,9 +573,9 @@ pub fn record_timed(self: &mut Self, note: i64, velocity: i64, channel: i64, tic
 }
 /// Record a controller of the take at the nearest 1/64 step, adding a CC
 /// column when the armed track does not automate that controller yet.
-/// `controller` 129 is pitch bend with its raw 14-bit value.
+/// `controller` 128 is aftertouch, 129 pitch bend with its raw 14-bit value.
 pub fn record_control(self: &mut Self, controller: i64, value: i64, tick: i64) -> bool {
-    if self.recording_track < 0 || controller < 0 || (controller > 127 && controller != 129) { return false; }
+    if self.recording_track < 0 || controller < 0 || controller > 129 { return false; }
     let bend: bool = controller == 129;
     let stored: i64 = bend ? value - 8192 : value;
     if bend && (stored < -8192 || stored > 8191) { return false; }
@@ -586,7 +589,7 @@ pub fn record_control(self: &mut Self, controller: i64, value: i64, tick: i64) -
     let track: SequenceTrack = self.tracks[self.recording_track];
     var slot: i32 = track.automation_of(controller) + 1;
     if slot == 0 {
-        let spec: str8 = bend ? clone("pitchbend") : format!("cc:{}", controller);
+        let spec: str8 = bend ? clone("pitchbend") : (controller == 128 ? clone("aftertouch") : format!("cc:{}", controller));
         slot = self.add_automation(self.recording_track, spec); free(spec);
         if slot == 0 { return false; }
     }
@@ -1748,11 +1751,12 @@ pub fn rename_track(self: &mut Self, name: str8) -> bool {
     let copy: str8 = clone(name); free(track.name); track.name = copy;
     self.replace_track(index, track); self.rebuild_columns(); self.error = ""; return true;
 }
-/// Parse "cc:N", "pitchbend" or "name:min:max" into an owned slot; sets
+/// Parse "cc:N", "pitchbend", "aftertouch" or "name:min:max" into an owned slot; sets
 /// `error` and returns an empty parameter when the spec is invalid.
 fn parse_automation(self: &mut Self, spec: str8) -> AutomationSlot {
     var low: i64 = 0; var high: i64 = 127;
     if spec == "pitchbend" { low = -8192; high = 8191; }
+    else if spec == "aftertouch" { }
     else if table_matches("cc:[0-9]{1,3}", spec) {
         let suffix: str8 = sub(spec, 3, len(spec) - 3);
         let parsed: result<i64, str8> = table_integer(suffix); free(suffix);
@@ -1768,7 +1772,7 @@ fn parse_automation(self: &mut Self, spec: str8) -> AutomationSlot {
         if a.is_err() || b.is_err() { self.error = "Invalid limits"; return AutomationSlot { parameter: "" }; }
         low = a.unwrap(); high = b.unwrap();
         if low < -2147483648 || high > 2147483647 || low > high { self.error = "Limits must fit i32, minimum <= maximum"; return AutomationSlot { parameter: "" }; }
-    } else { self.error = "Use cc:N, pitchbend, or name:min:max"; return AutomationSlot { parameter: "" }; }
+    } else { self.error = "Use cc:N, pitchbend, aftertouch, or name:min:max"; return AutomationSlot { parameter: "" }; }
     return AutomationSlot { parameter: clone(spec), minimum: low, maximum: high };
 }
 /// True when another slot of track `index` than `skip` (one-based) already
@@ -2929,7 +2933,7 @@ pub fn paint_track_dialog(self: SequenceTable, surface: Surface, viewport: Rect,
     var dialog: TextPrompt = TextPrompt {}; dialog = frame;
     dialog.title = self.edit_mode == 1 ? "Rename track" : (self.edit_mode == 2 ? "Configure CC column" : "Add CC column");
     let content: Rect = dialog.paint_frame(surface, viewport, theme);
-    surface.text(Rect::new(content.x, content.y, content.width, 1), self.edit_mode == 1 ? "Track name:" : "cc:N | pitchbend | name:min:max", theme.foreground, theme.panel);
+    surface.text(Rect::new(content.x, content.y, content.width, 1), self.edit_mode == 1 ? "Track name:" : "cc:N | pitchbend | aftertouch | name:min:max", theme.foreground, theme.panel);
     if content.height > 2 { self.editor.paint(surface, Rect::new(content.x, content.y + 2, content.width, 1), theme.foreground, theme.selection, dialog.focus.selected == 0); }
     if content.height > 4 { surface.text(Rect::new(content.x, content.y + 4, content.width, 1), self.error, theme.accent, theme.panel); }
 }

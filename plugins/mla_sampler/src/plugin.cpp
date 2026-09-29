@@ -80,6 +80,8 @@ extern "C" void mlasampler_voice_set_route__ptr_struct_SamplerVoice_i32_i32_i32_
 extern "C" void mlasampler_voice_set_note__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float velocity, float key);
 extern "C" void mlasampler_voice_set_glide__ptr_struct_SamplerVoice_f32_f32(SamplerVoice *voice, float semitones,
                                                                         float seconds);
+extern "C" void mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32(
+    SamplerVoice *voice, float wheel, float aftertouch, float bend, float cc, float bendSemitones);
 extern "C" int32_t mlasampler_voice_is_active__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
 extern "C" double mlasampler_voice_next_frame__ptr_struct_SamplerVoice(SamplerVoice *voice);
@@ -137,6 +139,14 @@ enum ParamId : ParamID {
     kDecayParam,
     kSustainParam,
     kReleaseParam,
+    // MIDI controllers (see getMidiControllerAssignment): the pitch bend
+    // range, which CC the Mod CC source reads, and the controllers' values.
+    kBendRangeParam = 110,  // 0 .. 24 semitones, stepped
+    kModCcParam = 111,      // one of kModCcNumbers, a 16-entry list
+    kModWheelParam = 112,   // CC 1
+    kAftertouchParam = 113, // channel pressure
+    kPitchBendParam = 114,  // centre 8192 / 16383
+    kCcValueParamBase = 120, // 120 + i: the value of kModCcNumbers[i]
     kSlotParamBase = 200, // slot s: 200 + 7s, see SlotParam
     kZoneParamBase = 400, // slot s: 400 + 5s, see ZoneParam
     kCrossfadeParamBase = 500, // slot s: 500 + s, loop crossfade (fraction of the sample)
@@ -195,11 +205,30 @@ enum RouteField : int { kRouteSource = 0, kRouteTarget, kRouteAmount, kRouteFiel
 constexpr int kRouteSlotStride = 32;
 constexpr int kRouteStride = 4;
 constexpr int kRouteListCount = 16;
-static const char *const kRouteSourceNames[] = {"Off", "LFO 1", "LFO 2", "Amp Env", "Filter Env", "Velocity", "Key"};
+static const char *const kRouteSourceNames[] = {"Off",      "LFO 1",      "LFO 2",      "Amp Env",
+                                                "Filter Env", "Velocity", "Key",        "Mod Wheel",
+                                                "Aftertouch", "Pitch Bend", "Mod CC"};
 constexpr int kRouteSourcesKnown = sizeof(kRouteSourceNames) / sizeof(kRouteSourceNames[0]);
 static const char *const kRouteTargetNames[] = {"Off", "Pitch", "Cutoff", "Resonance", "Level", "Pan", "Start"};
 constexpr int kRouteTargetsKnown = sizeof(kRouteTargetNames) / sizeof(kRouteTargetNames[0]);
-enum RouteSource : int { kSourceVelocity = 5, kSourceKey = 6 };
+enum RouteSource : int {
+    kSourceVelocity = 5,
+    kSourceKey = 6,
+    kSourceModWheel = 7,
+    kSourceAftertouch = 8,
+    kSourcePitchBend = 9, // -1 .. 1
+    kSourceModCc = 10,
+};
+
+// The CCs the Mod CC source can read. A VST3 host asks a plugin once which
+// parameter each CC drives, so every choice has its own value parameter.
+constexpr int kModCcCount = 16;
+static const int kModCcNumbers[] = {2, 4, 11, 16, 17, 18, 19, 74};
+static const char *const kModCcNames[] = {"CC 2 Breath", "CC 4 Foot", "CC 11 Expression", "CC 16",
+                                          "CC 17",       "CC 18",     "CC 19",            "CC 74 Brightness"};
+constexpr int kModCcsKnown = sizeof(kModCcNumbers) / sizeof(kModCcNumbers[0]);
+constexpr int kBendRangeMax = 24;
+constexpr int kControllerParams = 5 + kModCcsKnown;
 enum RouteTarget : int { kTargetStart = 6 };
 // Full-amount range of each target in its units: semitones, octaves, dB,
 // level share, pan, share of the sample.
@@ -290,14 +319,14 @@ constexpr int kNumParams = kNumGlobalParams + kNumSlotParams + kNumZoneParams + 
                             kNumEnvelopeParams + kNumSlots + kNumSlots + 1 + 4 + kNumSlots * kParamsPerEnvelope +
                             kNumSlots * kFilterStages * kFilterFieldsFirst + kNumSlots + kNumSlots * kFilterStages +
                             kNumSlots * kLfos * kLfoFields + kNumSlots * kRoutes * kRouteFields + kNumSlots +
-                            kNumSlots * 3 + kNumSlots * 2;
+                            kNumSlots * 3 + kNumSlots * 2 + kControllerParams;
 constexpr ParamID kMaxParamId = kRouteParamBase + kNumSlots * kRouteSlotStride;
 
 // Flat index <-> ParamID, in the order parameters are registered: globals,
 // slot parameters, key zones, crossfades, velocity ranges, envelopes, sample
 // starts, groups, group mode, the instance filter envelope, slot filter
 // envelopes, filter stages, choke groups, filter gains, LFO 1, LFO 2, mod
-// routes, reverse, unison and play mode. Each block was appended after the
+// routes, reverse, unison, play mode and the MIDI controllers. Each block was appended after the
 // ones before it, so saved states keep their meaning.
 struct ParamLayout {
     ParamID ids[kNumParams];
@@ -343,6 +372,8 @@ struct ParamLayout {
             run(kUnisonParamBase + slot * 4, 3);
         for(int slot = 0; slot < kNumSlots; ++slot)
             run(kPlayParamBase + slot * 4, 2);
+        run(kBendRangeParam, 5);
+        run(kCcValueParamBase, kModCcsKnown);
     }
 };
 static const ParamLayout kLayout;
@@ -382,6 +413,7 @@ static ParamID zoneParamId(int slot, ZoneParam param)
 
 // --- Normalized -> physical mappings ----------------------------------------
 constexpr double kUnityLevelNorm = 60.0 / 66.0;
+constexpr double kBendCentre = 8192.0 / 16383.0; // Pitch Bend at rest
 
 static float gainFromNorm(double norm)
 {
@@ -708,6 +740,19 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 mode->appendString(utf16(k < kPlayModesKnown ? kPlayModeNames[k] : "(reserved)").c_str());
             addParam(static_cast<ParamID>(kPlayParamBase + slot * 4 + 1), slotTitle(slot, "Glide").c_str(), STR16("s"), 0.0);
         }
+        // MIDI controllers last: the bend range and Mod CC choice, then the
+        // values the host sends (getMidiControllerAssignment).
+        parameters.addParameter(STR16("Bend Range"), STR16("st"), kBendRangeMax, 2.0 / kBendRangeMax,
+                                ParameterInfo::kCanAutomate, kBendRangeParam);
+        norm_[indexOf(kBendRangeParam)].store(2.0 / kBendRangeMax);
+        auto *modCc = addList(kModCcParam, u"Mod CC");
+        for(int k = 0; k < kModCcCount; ++k)
+            modCc->appendString(utf16(k < kModCcsKnown ? kModCcNames[k] : "(reserved)").c_str());
+        addParam(kModWheelParam, STR16("Mod Wheel"), nullptr, 0.0);
+        addParam(kAftertouchParam, STR16("Aftertouch"), nullptr, 0.0);
+        addParam(kPitchBendParam, STR16("Pitch Bend"), nullptr, kBendCentre);
+        for(int k = 0; k < kModCcsKnown; ++k)
+            addParam(static_cast<ParamID>(kCcValueParamBase + k), utf16(kModCcNames[k]).c_str(), nullptr, 0.0);
         return kResultOk;
     }
 
@@ -736,7 +781,15 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             case 73: id = kAttackParam; return kResultOk;  // Sound controller 4 (attack)
             case 75: id = kDecayParam; return kResultOk;   // Sound controller 6 (decay)
             case 72: id = kReleaseParam; return kResultOk; // Sound controller 3 (release)
+            case 1: id = kModWheelParam; return kResultOk;
+            case kAfterTouch: id = kAftertouchParam; return kResultOk;
+            case kPitchBend: id = kPitchBendParam; return kResultOk;
         }
+        for(int k = 0; k < kModCcsKnown; ++k)
+            if(cc == kModCcNumbers[k]) {
+                id = static_cast<ParamID>(kCcValueParamBase + k);
+                return kResultOk;
+            }
         return kResultFalse;
     }
 
@@ -792,6 +845,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             pushEnvelope();
             for(int slot = 0; slot < kNumSlots; ++slot)
                 applyLive(slot, true, true, true, true);
+            for(auto &voice : voices_)
+                if(voice.dsp && voice.sample && mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
+                    applyControllers(voice.dsp);
         }
         handleParameterChanges(data.inputParameterChanges);
         // Synced LFOs follow the host tempo.
@@ -1198,6 +1254,33 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         }
     }
 
+    // A controller source's value now: the mod wheel, aftertouch and the
+    // chosen CC 0..1, pitch bend -1..1.
+    double controllerValue(int source) const
+    {
+        if(source == kSourceModWheel)
+            return norm(kModWheelParam);
+        if(source == kSourceAftertouch)
+            return norm(kAftertouchParam);
+        if(source == kSourcePitchBend)
+            return std::clamp((norm(kPitchBendParam) * 16383.0 - 8192.0) / 8192.0, -1.0, 1.0);
+        if(source == kSourceModCc) {
+            const int choice = static_cast<int>(std::lround(norm(kModCcParam) * (kModCcCount - 1)));
+            return choice < kModCcsKnown ? norm(static_cast<ParamID>(kCcValueParamBase + choice)) : 0.0;
+        }
+        return 0.0;
+    }
+
+    // The controllers' values and the pitch bend, on a new or sounding voice.
+    void applyControllers(SamplerVoice *dsp)
+    {
+        const double range = std::lround(norm(kBendRangeParam) * kBendRangeMax);
+        mlasampler_voice_set_controllers__ptr_struct_SamplerVoice_f32_f32_f32_f32_f32(
+            dsp, static_cast<float>(controllerValue(kSourceModWheel)), static_cast<float>(controllerValue(kSourceAftertouch)),
+            static_cast<float>(controllerValue(kSourcePitchBend)), static_cast<float>(controllerValue(kSourceModCc)),
+            static_cast<float>(range));
+    }
+
     void syncSlots()
     {
         for(int slot = 0; slot < kNumSlots; ++slot) {
@@ -1256,6 +1339,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         bool filterChanged[kNumSlots] = {};
         bool lfoChanged[kNumSlots] = {};
         bool routeChanged[kNumSlots] = {};
+        bool controllersChanged = false;
         const int32 count = changes->getParameterCount();
         for(int32 q = 0; q < count; ++q) {
             IParamValueQueue *queue = changes->getParameterData(q);
@@ -1296,7 +1380,14 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 lfoChanged[(id - kLfoParamBase) / kLfoSlotStride] = true;
             if(id >= kRouteParamBase && id < kMaxParamId)
                 routeChanged[(id - kRouteParamBase) / kRouteSlotStride] = true;
+            if((id >= kBendRangeParam && id <= kPitchBendParam) ||
+               (id >= kCcValueParamBase && id < kCcValueParamBase + kModCcsKnown))
+                controllersChanged = true;
         }
+        if(controllersChanged)
+            for(auto &voice : voices_)
+                if(voice.dsp && voice.sample && mlasampler_voice_is_active__ptr_struct_SamplerVoice(voice.dsp))
+                    applyControllers(voice.dsp);
         if(envelopeChanged)
             pushEnvelope();
         for(int slot = 0; slot < kNumSlots; ++slot)
@@ -1528,6 +1619,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         applyFilter(target->dsp, slot, pitch);
         applyLfo(target->dsp, slot);
         applyRoutes(target->dsp, slot);
+        applyControllers(target->dsp);
         // Retrigger starts an LFO with the note; Free picks up where its
         // rate has taken it since activation.
         const double elapsed = framesRendered_ / sampleRate_;
@@ -1550,6 +1642,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 startShare += routeAmount(slot, route) * std::clamp(velocity, 0.0f, 1.0f);
             if(source == kSourceKey)
                 startShare += routeAmount(slot, route) * (pitch - 60) / 60.0;
+            if(source >= kSourceModWheel)
+                startShare += routeAmount(slot, route) * controllerValue(source);
         }
         mlasampler_voice_set_start__ptr_struct_SamplerVoice_f64(target->dsp,
                                                                 std::floor(std::clamp(startShare, 0.0, 1.0) * frames));

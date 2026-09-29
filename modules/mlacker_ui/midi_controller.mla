@@ -15,7 +15,8 @@ use std::time::sleep_ms;
 
 // Fixed-size values only: safe to byte-copy across the SPSC boundary.
 // kind: 1 note-on, 2 note-off, 3 other MIDI, 4 connected, 5 unavailable,
-// 6 CC (note=controller, velocity=value), 7 pitch bend (note=129).
+// 6 CC (note=controller, velocity=value; channel pressure is controller
+// 128), 7 pitch bend (note=129).
 pub struct MidiInputEvent {
     var kind: i64; var channel: i64; var note: i64; var velocity: i64;
     var received_ms: i64;
@@ -57,6 +58,7 @@ impl MidiDecoder {
         if family == 9 { event.kind = byte == 0 ? 2 : 1; }
         if family == 8 { event.kind = 2; }
         if family == 11 { event.kind = 6; }
+        if family == 13 { event.kind = 6; event.note = 128; event.velocity = wide(self.first); }
         if family == 14 { event.kind = 7; event.note = 129; event.velocity = wide(self.first) + wide(byte) * 128; }
         if self.status >= 240 { self.status = 0; }
         return event;

@@ -73,6 +73,11 @@ fn midi_live_controls_and_velocity() {
     verify(running.kind == 6 && running.velocity == 96);
     decoder.feed(227, 12); decoder.feed(0, 12); let bend: MidiInputEvent = decoder.feed(64, 12);
     verify(bend.kind == 7 && bend.channel == 3 && bend.note == 129 && bend.velocity == 8192);
+    // Channel pressure (one data byte) is controller 128, running status too.
+    let pressure_status: MidiInputEvent = decoder.feed(210, 12); verify(pressure_status.kind == 0);
+    let pressure: MidiInputEvent = decoder.feed(77, 12);
+    verify(pressure.kind == 6 && pressure.channel == 2 && pressure.note == 128 && pressure.velocity == 77);
+    let again: MidiInputEvent = decoder.feed(5, 12); verify(again.kind == 6 && again.note == 128 && again.velocity == 5);
     decoder.feed(147, 13); decoder.feed(60, 13); let soft: MidiInputEvent = decoder.feed(32, 13);
     decoder.feed(61, 14); let hard: MidiInputEvent = decoder.feed(96, 14);
     verify(soft.kind == 1 && soft.velocity == 32 && hard.kind == 1 && hard.velocity == 96);

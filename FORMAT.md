@@ -44,7 +44,7 @@ are accepted. Unsupported major or minor versions fail closed.
      assigned instrument slot, note-line count, waveform zoom, zoom stage;
      automation slots; audio-instance list.
    - Automation slots: a count (0–16), then per slot its parameter string
-     (`cc:N`, `pitchbend` or `name:min:max`), minimum and maximum. Each slot is
+     (`cc:N`, `pitchbend`, `aftertouch` or `name:min:max`), minimum and maximum. Each slot is
      one column after the track's note lines. A minor-0 document has no count
      and always stores exactly two slots.
    - An automation cell is empty, one integer played on its row, or four
