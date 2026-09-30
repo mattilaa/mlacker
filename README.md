@@ -628,6 +628,9 @@ hidden and read-only cells stay unchanged; selection remains active for repeats.
   new instance. Removing a track does not unload the library entry.
 - Audio-device changes reload all instances at the new sample rate. Disabling
   output keeps them loaded in an offline controller.
+- Live MIDI plays sample-accurately: each note and controller change sounds on
+  the frame it arrived on, one audio block later (a fixed ~2.7 ms at 128 frames
+  and 48 kHz, instead of up to a block of jitter).
 - Live MIDI follows the selected Pattern-view track, even while another pane or
   menu has keyboard focus. Instrument tracks address their VST3 instance; MIDI
   tracks use the preview/master path. Audio, muted, and unassigned instrument
@@ -707,7 +710,7 @@ Overlapping zones layer.
 | `h` / `l` (Left / Right) | Previous / next column |
 | `J` / `K` | Decrease / increase the column: choices and velocities by one, keys by a semitone, loop points by 1% |
 | `[` / `]` | Keys by an octave, velocities by 10, loop points by 10% |
-| Enter | Load a WAV/AIFF into the slot (added to the Audio list) |
+| Enter | Load a WAV/AIFF into the slot (added to the Audio list); several on a zone make a round-robin set |
 | Backspace | Clear the slot |
 | `o` | Route the slot's output bus (see Plugin outputs below) |
 | `w` | Wave view of the slot (again returns to the table) |
@@ -807,8 +810,17 @@ the samples whose names end in a note into key zones on the slots from the
 selected one, lowest note first: `Piano_C4.wav`, `Strings F#2.aif`,
 `PianoEb3.wav` (C4 = MIDI 60). Each zone has its sample's note as root and
 reaches up to the next sample's note; the lowest reaches down to key 0 and the
-highest up to 127. Files without a note name, a second file on the same note,
-and files past slot 16 are skipped, and the status line counts them.
+highest up to 127. Files on the same note (`Snare_D2_rr1.wav`,
+`Snare_D2_rr2.wav`) share that zone and a group of their own: a round-robin
+set. Files without a note name and files past slot 16 are skipped, and the
+status line counts them.
+
+**Round-robin per zone**: slots in one group (the Sound page's **Grp**) take
+turns on each note they share, round-robin or random (`G`), so repeated notes
+do not sound machine-gunned. Enter on a Zone slot with several files marked
+(Space in the file dialog) loads them into that slot and the ones after it,
+gives each the zone's keys and velocity range, and puts them all in the
+zone's group (or the first free one).
 
 **Slot presets** keep one slot, its sample and every setting on all pages, in a
 `.mlaslot` file. `W` saves the selected slot (the file name suggested is the

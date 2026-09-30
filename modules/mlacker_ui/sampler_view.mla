@@ -31,6 +31,11 @@ use std::strbuf::free;
 // pitch, cutoff, level, trigger), and 4000 + 32s + 4r + field its mod route r
 // (source, target, amount).
 
+/// One file of an auto-map (`SamplerView::auto_map_plan`): its index in
+/// the list, its zone (`low` .. `high`, sample at `root`) and its group (0
+/// none; files on one note share one, so they take turns).
+pub struct AutoMapEntry { var file: i64; var root: i32; var low: i32; var high: i32; var group: i32; };
+
 /// Keys a sample slot plays: `low` .. `high`, its sample at `root`.
 pub struct KeySpan { var low: i32; var high: i32; var root: i32; };
 
@@ -654,27 +659,86 @@ impl SamplerView {
         bytes.close();
         return found;
     }
-    /// Auto-map order: indexes of the file `names` that name a note (see
-    /// `note_in_name`), lowest note first; a name without a note, or with one
-    /// an earlier name took, is left out.
-    pub fn auto_map_order(files: &list<str8>) -> list<i64> {
+    /// Auto-map plan for the file `names`: those that name a note (see
+    /// `note_in_name`), lowest note first (files on one note in their list
+    /// order). Each note's zone reaches from it up to the next note (the
+    /// lowest from key 0, the highest to 127). Files sharing a note are a
+    /// round-robin set: they share the next of the free `groups`, or play as
+    /// layers once those run out. Files without a note are left out.
+    pub fn auto_map_plan(files: &list<str8>, groups: list<i32>) -> list<AutoMapEntry> {
         var names: list<str8> = []; names = files;
-        var order: list<i64> = []; var roots: list<i32> = [];
+        var order: list<i64> = []; var notes: list<i32> = [];
         for n in 0..names.len() {
             let note: i32 = SamplerView::note_in_name(names[n]);
             if note < 0 { continue; }
-            var at: i64 = 0; var same: bool = false;
-            while at < roots.len() && roots[at] <= note { if roots[at] == note { same = true; } at = at + 1; }
-            if same { continue; }
-            var next_roots: list<i32> = []; var next_order: list<i64> = [];
-            for i in 0..roots.len() {
-                if i == at { next_roots.push(note); next_order.push(n); }
-                next_roots.push(roots[i]); next_order.push(order[i]);
+            var at: i64 = 0;
+            while at < notes.len() && notes[at] <= note { at = at + 1; }
+            var next_notes: list<i32> = []; var next_order: list<i64> = [];
+            for i in 0..notes.len() {
+                if i == at { next_notes.push(note); next_order.push(n); }
+                next_notes.push(notes[i]); next_order.push(order[i]);
             }
-            if at == roots.len() { next_roots.push(note); next_order.push(n); }
-            roots = next_roots; order = next_order;
+            if at == notes.len() { next_notes.push(note); next_order.push(n); }
+            notes = next_notes; order = next_order;
         }
-        return order;
+        // The distinct notes, for the zones, and a group for each shared one.
+        var roots: list<i32> = []; var root_groups: list<i32> = []; var used: i64 = 0;
+        for i in 0..notes.len() {
+            if roots.len() > 0 && roots[roots.len() - 1] == notes[i] { continue; }
+            var copies: i32 = 0;
+            for j in 0..notes.len() { if notes[j] == notes[i] { copies = copies + 1; } }
+            var group: i32 = 0;
+            if copies > 1 && used < groups.len() { group = groups[used]; used = used + 1; }
+            roots.push(notes[i]); root_groups.push(group);
+        }
+        var plan: list<AutoMapEntry> = [];
+        for i in 0..notes.len() {
+            var r: i64 = 0;
+            while roots[r] != notes[i] { r = r + 1; }
+            let low: i32 = r == 0 ? 0 : roots[r];
+            let high: i32 = r == roots.len() - 1 ? 127 : roots[r + 1] - 1;
+            plan.push(AutoMapEntry { file: order[i], root: notes[i], low: low, high: high, group: root_groups[r] });
+        }
+        return plan;
+    }
+    /// Groups (1-8) no sample slot of instance `slot` uses, lowest first.
+    pub fn free_groups(output: AudioController, slot: i32) -> list<i32> {
+        var free: list<i32> = [];
+        for g in 1..9 {
+            var taken: bool = false;
+            for s in 0..16 {
+                let value: f64 = SamplerView::value(output, slot, i32(s), 109);
+                if value >= 0.0 && i32(std::math::floor(value * 8.0 + 0.5)) == i32(g) { taken = true; }
+            }
+            if !taken { free.push(i32(g)); }
+        }
+        return free;
+    }
+    /// Group (1-8) of sample slot `s`, 0 for none.
+    pub fn group_of(output: AudioController, slot: i32, s: i32) -> i32 {
+        let value: f64 = SamplerView::value(output, slot, s, 109);
+        return value < 0.0 ? 0 : i32(std::math::floor(value * 8.0 + 0.5));
+    }
+    /// True when sample slot `s` is a key zone (not a pad).
+    pub fn zone_slot(output: AudioController, slot: i32, s: i32) -> bool { return SamplerView::is_zone(output, slot, s); }
+    /// Give sample slot `to` the key zone and velocity range of `from`.
+    pub fn copy_zone(output: AudioController, slot: i32, from: i32, to: i32) -> void {
+        for f in 0..5 {
+            let index: i32 = SamplerView::parameter_index(output, slot, 400 + from * 5 + i32(f));
+            let target: i32 = SamplerView::parameter_index(output, slot, 400 + to * 5 + i32(f));
+            if index >= 0 && target >= 0 { SamplerView::set_like(output, slot, index, target); }
+        }
+        for f in 0..2 {
+            let index: i32 = SamplerView::parameter_index(output, slot, 600 + from * 2 + i32(f));
+            let target: i32 = SamplerView::parameter_index(output, slot, 600 + to * 2 + i32(f));
+            if index >= 0 && target >= 0 { SamplerView::set_like(output, slot, index, target); }
+        }
+    }
+    /// Set parameter `target` to parameter `index`'s value (same kind).
+    fn set_like(output: AudioController, slot: i32, index: i32, target: i32) -> void {
+        let steps: f64 = output.parameter_info(slot, index, 1);
+        let value: f64 = output.parameter_info(slot, index, 2);
+        output.set_parameter(slot, target, steps > 0.0 ? std::math::floor(value * steps + 0.5) : value);
     }
     /// Wave view keys; -1 when the key is not one of them (the table's keys
     /// then apply: j/k slot, Enter, Backspace, o). 6 = no waveform to edit.

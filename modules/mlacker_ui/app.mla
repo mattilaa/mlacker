@@ -49,6 +49,7 @@ use mlacker_ui::virtual_keyboard::VirtualKeyboard;
 use mlacker_ui::virtual_keyboard::HeldNote;
 mod mlacker_ui::sampler_view;
 use mlacker_ui::sampler_view::SamplerView;
+use mlacker_ui::sampler_view::AutoMapEntry;
 mod tui::piano;
 use tui::piano::piano_note_name;
 use mlacker_ui::sample_editor::SampleEditor;
@@ -413,6 +414,9 @@ pub fn run() -> i32 {
     var preset_sampler_pad: i32 = 0;
     // The pad-file dialog auto-maps samples by note name (Sampler pane A).
     var auto_map: bool = false;
+    // The pad-file dialog loads into a Sampler zone: several files become a
+    // round-robin set on it.
+    var pad_file_zone: bool = false;
     if !fixture {
         let arguments: list<str8> = __env_args();
         if arguments.len() == 2 { free(request_path); request_path = clone(arguments[1]); session_request = 1; }
@@ -766,42 +770,41 @@ pub fn run() -> i32 {
             else if adding_pad_file && auto_map {
                 // Auto-map: samples named by note become key zones on the
                 // slots from the selected one, lowest note first, each zone
-                // reaching up to the next sample's note.
+                // reaching up to the next sample's note; samples on one note
+                // take turns (a round-robin group).
                 var names: list<str8> = [];
                 for path in paths { names.push(base_name(path)); }
-                let order: list<i64> = SamplerView::auto_map_order(names);
-                var roots: list<i32> = []; var chosen: list<str8> = [];
-                for n in order {
-                    let name: str8 = base_name(paths[n]); roots.push(SamplerView::note_in_name(name)); free(name);
-                    chosen.push(paths[n]);
-                }
+                let plan: list<AutoMapEntry> = SamplerView::auto_map_plan(names, SamplerView::free_groups(midi.output, pad_slot));
                 for name in names { free(name); }
-                let left_over: i64 = paths.len() - order.len();
+                let left_over: i64 = paths.len() - plan.len();
                 let room: i64 = wide(16 - pad_index);
-                let count: i64 = roots.len() < room ? roots.len() : room;
-                var mapped: i32 = 0; var failure: str8 = "";
+                let count: i64 = plan.len() < room ? plan.len() : room;
+                var mapped: i32 = 0; var failure: str8 = ""; var grouped: i32 = 0;
                 for i in 0..count {
-                    if !library.audio.load(chosen[i], transport.bpm) { failure = clone(library.audio.error); break; }
+                    let entry: AutoMapEntry = plan[i];
+                    if !library.audio.load(paths[entry.file], transport.bpm) { failure = clone(library.audio.error); break; }
                     let index: i32 = i32(library.audio.samples.len()) - 1;
                     let clip: AudioClip = library.audio.samples[index];
                     let name: str8 = base_name(clip.source);
                     let error: str8 = midi.assign_pad(pad_slot, pad_index + i32(i), index, clip.samples, clip.channels, clip.sample_rate, name);
                     free(name);
                     if error != "" { failure = error; break; }
-                    let low: i32 = i == 0 ? 0 : roots[i];
-                    let high: i32 = i == count - 1 ? 127 : roots[i + 1] - 1;
-                    SamplerView::make_zone(midi.output, pad_slot, pad_index + i32(i), low, high, roots[i]);
+                    SamplerView::make_zone(midi.output, pad_slot, pad_index + i32(i), entry.low, entry.high, entry.root);
+                    SamplerView::set_plain(midi.output, pad_slot, 900 + pad_index + i32(i), f64(entry.group));
+                    if entry.group > 0 { grouped = grouped + 1; }
                     mapped = mapped + 1;
                 }
                 var notes: str8 = clone("");
                 if mapped > 0 {
-                    let lowest: str8 = piano_note_name(roots[0]); let highest: str8 = piano_note_name(roots[mapped - 1]);
-                    free(notes); notes = format!(" ({}..{})", lowest, highest); free(lowest); free(highest);
+                    let first_entry: AutoMapEntry = plan[0]; let last_entry: AutoMapEntry = plan[mapped - 1];
+                    let lowest: str8 = piano_note_name(first_entry.root); let highest: str8 = piano_note_name(last_entry.root);
+                    free(notes); notes = format!(" ({}..{}{})", lowest, highest, grouped > 0 ? format!(", {} in round-robin groups", grouped) : clone(""));
+                    free(lowest); free(highest);
                 }
                 var left_out: str8 = clone("");
-                if left_over > 0 || count < roots.len() {
+                if left_over > 0 || count < plan.len() {
                     free(left_out);
-                    left_out = format!(" | skipped {} without a new note name, {} past slot 16", left_over, roots.len() - count);
+                    left_out = format!(" | skipped {} without a note name, {} past slot 16", left_over, plan.len() - count);
                 }
                 message = failure != "" ? format!("Auto-mapped {} sample(s), then stopped: {}", mapped, failure)
                     : (mapped == 0 ? format!("No sample names a note (e.g. Piano_C4.wav){}", left_out)
@@ -826,9 +829,23 @@ pub fn run() -> i32 {
                     if error != "" { failure = error; break; }
                     filled = filled + 1;
                 }
+                // Into a Sampler zone, several files are a round-robin set:
+                // each slot gets the zone and velocity range, all one group
+                // (the zone's own, or the first free one), taking turns.
+                var round_robin: i32 = 0;
+                if pad_file_zone && filled > 1 {
+                    var group: i32 = SamplerView::group_of(midi.output, pad_slot, pad_index);
+                    if group == 0 { let free_groups: list<i32> = SamplerView::free_groups(midi.output, pad_slot); if free_groups.len() > 0 { group = free_groups[0]; } }
+                    for i in 0..filled {
+                        if i > 0 { SamplerView::copy_zone(midi.output, pad_slot, pad_index, pad_index + i32(i)); }
+                        SamplerView::set_plain(midi.output, pad_slot, 900 + pad_index + i32(i), f64(group));
+                    }
+                    round_robin = group;
+                }
                 message = failure != "" ? format!("Filled {} pad(s), then stopped: {}", filled, failure)
+                    : (round_robin > 0 ? format!("Slots {}-{}: {} samples take turns on the zone (group {})", pad_index + 1, pad_index + filled, filled, round_robin)
                     : (filled == 1 ? format!("Pad {}: {} (added to Audio)", pad_index + 1, first_name)
-                        : format!("Pads {}-{}: {} samples added to Audio", pad_index + 1, pad_index + filled, filled));
+                        : format!("Pads {}-{}: {} samples added to Audio", pad_index + 1, pad_index + filled, filled)));
                 free(first_name);
                 if failure != "" { free(failure); }
                 adding_pad_file = false;
@@ -2225,6 +2242,7 @@ pub fn run() -> i32 {
                 let from_sampler: bool = command != Action::ApplyPadChoice;
                 if from_sampler { pad_action = Action::LoadPadFromFile; pad_slot = library.table.active_instrument(); pad_index = sampler.slot; }
                 else { pad_index = piano.pad(); }
+                pad_file_zone = from_sampler && SamplerView::zone_slot(midi.output, pad_slot, pad_index);
                 if (from_sampler && command == Action::ClearSamplerSlot) || (!from_sampler && piano.result == 3) {
                     let error: str8 = midi.clear_pad(pad_slot, pad_index);
                     free(message); message = error == "" ? format!("Pad {} cleared", pad_index + 1) : error;
@@ -2238,7 +2256,8 @@ pub fn run() -> i32 {
                 } else {
                     adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
                     adding_pad_file = true; auto_map = false; dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
-                    dialog.title = format!("Load sample for pad {}", pad_index + 1);
+                    dialog.title = pad_file_zone ? format!("Load sample for pad {} (Space marks several: round-robin)", pad_index + 1)
+                        : format!("Load sample for pad {}", pad_index + 1);
                     dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
                     dialog.open(last_audio_dir); focus.set_menu_active(true);
                     if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }

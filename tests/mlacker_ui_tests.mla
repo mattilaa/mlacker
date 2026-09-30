@@ -92,6 +92,7 @@ mod mlacker_ui::piano_dialog;
 mod tui::piano;
 mod mlacker_ui::sampler_view;
 use mlacker_ui::sampler_view::SamplerView;
+use mlacker_ui::sampler_view::AutoMapEntry;
 mod mlacker_ui::virtual_keyboard;
 use mlacker_ui::virtual_keyboard::*;
 use mlacker_ui::midi_controller::MidiInputEvent;
@@ -483,7 +484,7 @@ fn tui_sampler_slot_preset_keys_and_file() {
 }
 
 #[test]
-fn tui_sampler_note_names_and_auto_map_order() {
+fn tui_sampler_note_names_and_auto_map_plan() {
     verify(SamplerView::note_in_name("Piano_C4.wav") == 60 && SamplerView::note_in_name("Strings F#2.aif") == 42);
     verify(SamplerView::note_in_name("PianoEb3.wav") == 51 && SamplerView::note_in_name("Bass C-1.wav") == 0);
     verify(SamplerView::note_in_name("vox_a3_soft.wav") == 57 && SamplerView::note_in_name("Pad_G9.wav") == 127);
@@ -492,10 +493,21 @@ fn tui_sampler_note_names_and_auto_map_order() {
     verify(SamplerView::note_in_name("Cello.wav") < 0 && SamplerView::note_in_name("A440.wav") < 0);
     verify(SamplerView::note_in_name("Kick 808.wav") < 0 && SamplerView::note_in_name("Pad_B9.wav") < 0);
     verify(SamplerView::note_in_name("abc4.wav") < 0 && SamplerView::note_in_name("Take C.wav") < 0);
-    // Lowest note first; unnamed and repeated notes left out.
+    // Lowest note first, unnamed files left out; zones reach up to the next
+    // note. Files on one note share the first free group: a round-robin set.
     let files: list<str8> = ["Tone_G4.wav", "noise.wav", "Tone_C4.wav", "Tone_C5.wav", "Other_C4.wav"];
-    let order: list<i64> = SamplerView::auto_map_order(files);
-    verify(order.len() == 3 && order[0] == 2 && order[1] == 0 && order[2] == 3);
+    let plan: list<AutoMapEntry> = SamplerView::auto_map_plan(files, [3, 5]);
+    verify(plan.len() == 4);
+    let a: AutoMapEntry = plan[0]; let b: AutoMapEntry = plan[1]; let c: AutoMapEntry = plan[2]; let d: AutoMapEntry = plan[3];
+    verify(a.file == 2 && b.file == 4 && c.file == 0 && d.file == 3);
+    verify(a.root == 60 && a.low == 0 && a.high == 66 && a.group == 3);
+    verify(b.root == 60 && b.low == 0 && b.high == 66 && b.group == 3);
+    verify(c.root == 67 && c.low == 67 && c.high == 71 && c.group == 0);
+    verify(d.root == 72 && d.low == 72 && d.high == 127 && d.group == 0);
+    // Out of free groups, a shared note plays as layers.
+    let again: list<str8> = ["Tone_C4.wav", "Other_C4.wav"];
+    let crowded: list<AutoMapEntry> = SamplerView::auto_map_plan(again, []);
+    let first: AutoMapEntry = crowded[0]; verify(first.group == 0);
 }
 
 #[test]
