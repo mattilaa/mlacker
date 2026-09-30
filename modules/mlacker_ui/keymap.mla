@@ -51,7 +51,8 @@ pub fn default_keymap() -> list<KeyBinding> {
         bind(Action::ViewInstruments, [fkey(3, true, true)], false),          // <C-S-F3>
         bind(Action::ViewSongMatrix, [key(109, false, true)], false),          // <S-m>
         bind(Action::ToggleSpectrum, [key(109, true, true)], false),           // <C-S-m>
-        bind(Action::ToggleVirtualKeyboard, [key(112, false, true)], false)    // <S-p>
+        bind(Action::ToggleVirtualKeyboard, [key(112, false, true)], false),   // <S-p>
+        bind(Action::ToggleSampler, [key(115, false, true)], false)            // <S-s>
     ];
 }
 

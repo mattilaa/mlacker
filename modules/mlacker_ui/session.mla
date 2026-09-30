@@ -17,6 +17,7 @@ use mlacker_ui::audio_clip::*;
 use mlacker_ui::audio_controller::AudioSystem;
 use mlacker_ui::audio_controller::EffectChannel;
 use mlacker_ui::audio_controller::PadAssignment;
+use mlacker_ui::audio_controller::PadMarkers;
 use mlacker_ui::patterns::SongLane;
 use std::audio::controller::AudioController;
 use std::audio::PcmAudio;
@@ -95,9 +96,9 @@ pub struct SessionView {
 };
 /// Plugin preset outcome. Kit presets (MLAPRE 1.1) also carry sampler pads:
 /// `pads[i]` is loaded from `clips[i]`; the caller owns the clips.
-pub struct PresetResult { var status: str8; var ok: bool; var has_pads: bool; var pads: list<i32>; var clips: list<AudioClip>; };
+pub struct PresetResult { var status: str8; var ok: bool; var has_pads: bool; var pads: list<i32>; var clips: list<AudioClip>; var keys: list<i64>; var values: list<f64>; };
 pub struct MidiLearnSnapshot { var key: i32; var slot: i32; var parameter_id: i64; };
-pub struct SessionData { var library: PatternLibrary; var plugins: list<PluginSnapshot>; var view: SessionView; var midi_learn: list<MidiLearnSnapshot>; var effect_volumes: list<i32>; var pads: list<PadAssignment>; };
+pub struct SessionData { var library: PatternLibrary; var plugins: list<PluginSnapshot>; var view: SessionView; var midi_learn: list<MidiLearnSnapshot>; var effect_volumes: list<i32>; var pads: list<PadAssignment>; var markers: list<PadMarkers>; };
 impl SessionData {
     pub fn release_plugins(self: &mut Self) -> void {
         let plugins: list<PluginSnapshot> = self.plugins; for plugin in plugins { free(plugin.path); }
@@ -161,6 +162,16 @@ impl SessionData {
             if sent != 0 { next.release(); return Err<AudioSystem, str8>("Cannot restore a sampler pad; session retained"); }
         }
         next.pads = self.pads;
+        // Hand-set slice markers follow their pads' samples.
+        let markers: list<PadMarkers> = self.markers;
+        for entry in markers {
+            var frames: list<f64> = []; let marks: list<i64> = entry.frames;
+            for frame in marks { frames.push(f64(frame)); }
+            if next.output.instrument_set_markers(wide(entry.slot), wide(entry.pad), frames, false) != 0 {
+                next.release(); return Err<AudioSystem, str8>("Cannot restore a pad's slice markers; session retained");
+            }
+        }
+        next.pad_markers = self.markers;
         return Ok<AudioSystem, str8>(next);
     }
 }
@@ -319,6 +330,66 @@ impl SessionCodec {
         result.ok = !codec.failed;
         if restart { if output.start() != 0 { free(status); status = clone("Preset processed but audio restart failed; reopen Settings"); } }
         free(actual); result.status = status; return result;
+    }
+    /// Mla Sampler slot preset (.mlaslot): one slot's parameters, as
+    /// slot-independent `keys` (see SamplerView::slot_key) with their
+    /// normalized `values`, and its sample when `has_clip`. Loading returns
+    /// them in the result (`clips` empty for a slot without a sample) and
+    /// leaves applying them to the caller.
+    pub fn sampler_slot_file(path: str8, plugin_name: str8, saving: bool, keys: list<i64>, values: list<f64>, clip: AudioClip, has_clip: bool) -> PresetResult {
+        var result: PresetResult = PresetResult { status: "" };
+        let actual: str8 = saving && !tui::table::table_matches(".*\\.[mM][lL][aA][sS][lL][oO][tT]", path) ? format!("{}.mlaslot", path) : clone(path);
+        var codec: SessionCodec = SessionCodec { reading: !saving };
+        if saving {
+            let created: result<SessionBuffer, str8> = SessionBuffer::new(4096);
+            if created.is_err() { free(actual); result.status = clone("Cannot allocate slot preset"); return result; }
+            codec.binary = created.unwrap();
+        } else {
+            let opened: result<File, str8> = File::open(actual);
+            if opened.is_err() { free(actual); result.status = clone("Cannot open slot preset"); return result; }
+            let file: File = opened.unwrap(); let size: result<i64, str8> = file.size(); file.close();
+            if size.is_err() || size.unwrap() > 268435456 { free(actual); result.status = clone("Cannot read slot preset"); return result; }
+            let read: result<SessionReader, str8> = SessionReader::from_file(actual);
+            if read.is_err() { free(actual); result.status = clone("Cannot read slot preset"); return result; }
+            codec.reader = read.unwrap();
+        }
+        let magic: str8 = codec.text("MLASLOT");
+        if magic != "MLASLOT" { codec.failed = true; } if !saving { free(magic); }
+        codec.number(1, 1, 1); codec.number(0, 0, 0);
+        let name: str8 = codec.text(plugin_name);
+        if name != plugin_name { codec.failed = true; } if !saving { free(name); }
+        let count: i32 = codec.number(i32(keys.len()), 0, 4096);
+        for i in 0..count {
+            if codec.failed { break; }
+            let key: i64 = codec.integer(saving ? keys[i] : 0, 0, 1048575);
+            let value: f64 = codec.real(saving ? values[i] : 0.0, 0.0, 1.0);
+            if !saving {
+                let seen: list<i64> = result.keys;
+                for other in seen { if other == key { codec.failed = true; } }
+                result.keys.push(key); result.values.push(value);
+            }
+        }
+        let sampled: bool = codec.flag(has_clip);
+        if sampled && !codec.failed {
+            var source: AudioClip = AudioClip {}; if saving { source = clip; }
+            let decoded: AudioClip = codec.clip(source);
+            if !saving { result.clips.push(decoded); }
+        }
+        if saving {
+            if !codec.failed { let written: result<i32, str8> = codec.binary.write_atomic(actual); if written.is_err() { codec.failed = true; } }
+            codec.binary.close();
+            result.ok = !codec.failed;
+            result.status = codec.failed ? clone("Cannot save slot preset") : format!("Saved slot preset: {}", actual);
+            free(actual); return result;
+        }
+        if codec.reader.remaining() != 0 { codec.failed = true; } codec.reader.close();
+        if codec.failed {
+            let decoded: list<AudioClip> = result.clips; for unused in decoded { unused.release(); }
+            result.clips = []; result.keys = []; result.values = [];
+            free(actual); result.status = clone("Invalid/incompatible slot preset; slot unchanged"); return result;
+        }
+        result.ok = true; result.status = format!("Loaded slot preset: {}", actual);
+        free(actual); return result;
     }
     pub fn learn_suggestion(name: str8) -> str8 {
         let safe: str8 = file_safe(name);
@@ -697,9 +768,14 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
+        // Hand-set slice markers of sampler pads.
+        let marked: bool = !self.reading && audio.pad_markers.len() > 0;
+        // Plugin aux outputs routed away from their instrument's main output.
+        let aux_routed: bool = !self.reading && (library.has_aux_routes() || marked);
         // Every extension is written when a later one is, so the chain stays
-        // in order; MASTER_BUS precedes MATRIX_LOOPS.
-        let mastered: bool = mastered_view || looped;
+        // in order; MASTER_BUS precedes MATRIX_LOOPS, which precedes
+        // AUX_OUTPUTS, which precedes PAD_MARKERS.
+        let mastered: bool = mastered_view || looped || aux_routed;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
         // A project session (1.2) keeps samples and plugin state in files.
         let project: bool = self.root != "";
@@ -1019,7 +1095,7 @@ impl SessionCodec {
         // Optional MATRIX_LOOPS extension: cells whose pattern loops down its
         // lane (kind 1) and splits that end a loop or long pattern (kind 2),
         // as lane, row, kind. The lanes above store these cells' plain IDs.
-        let loops_extension: bool = self.reading ? self.reader.remaining() > 0 : looped;
+        let loops_extension: bool = self.reading ? self.reader.remaining() > 0 : looped || aux_routed;
         if loops_extension && !self.failed {
             let tag: str8 = self.text("MATRIX_LOOPS"); if tag != "MATRIX_LOOPS" { self.failed = true; } if self.reading { free(tag); }
             var cells: list<i32> = [];
@@ -1045,11 +1121,72 @@ impl SessionCodec {
                 library.set_song_raw(row, lane, kind == 1 ? id + song_loop_flag() : song_end_marker());
             }
         }
+        // Optional AUX_OUTPUTS extension: per pattern track, the routes of its
+        // instrument's aux output buses (Out 2 first): -1 = with the main
+        // output, 0 = master, otherwise a track index + 1. A route to a track
+        // that is not an AUDIO track reads as -1 when played.
+        let aux_extension: bool = self.reading ? self.reader.remaining() > 0 : aux_routed;
+        if aux_extension && !self.failed {
+            let tag: str8 = self.text("AUX_OUTPUTS"); if tag != "AUX_OUTPUTS" { self.failed = true; } if self.reading { free(tag); }
+            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
+            for p in 0..patterns.len() {
+                if self.failed { break; }
+                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
+                let track_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
+                if track_count != entry.data.tracks.len() { self.failed = true; break; }
+                var tracks: list<SequenceTrack> = [];
+                for t in 0..track_count {
+                    var track: SequenceTrack = entry.data.tracks[t];
+                    let buses: i32 = self.number(i32(track.aux_outputs.len()), 0, 15);
+                    var aux: list<i32> = [];
+                    for b in 0..buses {
+                        // -2 .. -9 feed an aux effect channel, -10 nowhere.
+                        let destination: i32 = self.number(self.reading ? 0 : track.aux_outputs[b], -10, track_count);
+                        if destination - 1 == i32(t) { self.failed = true; }
+                        aux.push(destination);
+                    }
+                    if self.reading { track.aux_outputs = aux; }
+                    tracks.push(track);
+                }
+                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
+            }
+            if self.reading && !self.failed {
+                library.patterns = updated;
+                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
+                library.table.release(); library.table = entry.data.copy_pattern();
+            }
+        }
+        // Optional PAD_MARKERS extension: slice markers set by hand, per
+        // sampler pad (which must be one of the pads above), as frames
+        // ascending from 0.
+        var markers: list<PadMarkers> = [];
+        let markers_extension: bool = self.reading ? self.reader.remaining() > 0 : marked;
+        if markers_extension && !self.failed {
+            let tag: str8 = self.text("PAD_MARKERS"); if tag != "PAD_MARKERS" { self.failed = true; } if self.reading { free(tag); }
+            let count: i32 = self.number(i32(audio.pad_markers.len()), 0, 4096);
+            for i in 0..count {
+                if self.failed { break; }
+                var entry: PadMarkers = PadMarkers {}; if !self.reading { entry = audio.pad_markers[i]; }
+                let marker_slot: i32 = self.number(entry.slot, 1, 32);
+                let marker_pad: i32 = self.number(entry.pad, 0, 127);
+                var known: bool = false; for pad in pads { if pad.slot == marker_slot && pad.pad == marker_pad { known = true; } }
+                if !known { self.failed = true; break; }
+                let frame_count: i32 = self.number(i32(entry.frames.len()), 1, 65536);
+                var frames: list<i64> = [];
+                var previous: i64 = -1;
+                for f in 0..frame_count {
+                    let frame: i64 = self.integer(self.reading ? 0 : entry.frames[f], 0, 16777216);
+                    if (f == 0 && frame != 0) || frame <= previous { self.failed = true; break; }
+                    previous = frame; frames.push(frame);
+                }
+                markers.push(PadMarkers { slot: marker_slot, pad: marker_pad, frames: frames });
+            }
+        }
         if state.editor_slot > 32 {
             var found: bool = false; for plugin in plugins { if plugin.slot == state.editor_slot { found = true; } }
             if !found { self.failed = true; }
         }
-        return SessionData { library: library, plugins: plugins, view: state, midi_learn: mappings, effect_volumes: effect_volumes, pads: pads };
+        return SessionData { library: library, plugins: plugins, view: state, midi_learn: mappings, effect_volumes: effect_volumes, pads: pads, markers: markers };
     }
     pub fn save_pattern(path: str8, name: str8, source: &SequenceTable) -> bool {
         let created: result<SessionBuffer, str8> = SessionBuffer::new(4096);

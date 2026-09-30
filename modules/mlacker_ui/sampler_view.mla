@@ -1,0 +1,1458 @@
+mod std::audio::controller;
+mod std::bytes;
+use std::bytes::Bytes;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use tui::menu::Key;
+use tui::menu::function_number;
+use tui::piano::piano_note_name;
+use std::audio::controller::AudioController;
+use mlacker_ui::audio_clip::AudioClip;
+use std::strbuf::clone;
+use std::strbuf::free;
+
+// Mla Sampler's layout (plugins/mla_sampler/src/plugin.cpp): 16 slots and 8
+// outputs. Slot `s` parameter IDs are 200 + 7s + field (level, pan, tune,
+// output, loop, loop start, loop end), 400 + 5s + field for its key zone
+// (mode, low key, high key, zone root, key track), 500 + s for its loop
+// crossfade, 600 + 2s + field for its velocity range (low, high) and
+// 700 + 5s + field for its envelope (own, attack, decay, sustain, release)
+// 800 + s for its sample start and 900 + s for its group (Off, 1-8); 950 is
+// the instance's group mode (Round-robin, Random). The filter chain: 2000 +
+// 32s + 8t + field for stage t (type, cutoff, resonance, env amount, key
+// track, gain) and 1100 + 5s + field for the slot's filter envelope (own, attack,
+// decay, sustain, release); 1200 + s is its choke group (Off, 1-8), 1300 + s
+// reverse (Off, On), and
+// 1400 + 4s + field its unison (voices, detune, spread), 1500 + 4s + field its
+// play mode and glide, 1600 + 4s + field its pitch envelope (depth, attack,
+// decay), 1700 + 4s + field its sends (A, B), 3000 + 32s + 16l + field its LFO l (shape, rate, sync, division, delay,
+// pitch, cutoff, level, trigger), and 4000 + 32s + 4r + field its mod route r
+// (source, target, amount).
+
+/// One file of an auto-map (`SamplerView::auto_map_plan`): its index in
+/// the list, its zone (`low` .. `high`, sample at `root`) and its group (0
+/// none; files on one note share one, so they take turns).
+pub struct AutoMapEntry { var file: i64; var root: i32; var low: i32; var high: i32; var group: i32; };
+
+/// Keys a sample slot plays: `low` .. `high`, its sample at `root`.
+pub struct KeySpan { var low: i32; var high: i32; var root: i32; };
+
+/// Mla Sampler editor in the Pattern view's bottom pane (View menu / Shift+S),
+/// sharing it with the virtual keyboard. It edits the instance on the selected
+/// Instrument track through its VST3 parameters, so its edits are saved with
+/// the session and the plugin state like any parameter. While the pane is
+/// focused it keeps the keys for itself (see `handles`).
+pub struct SamplerView {
+    var visible: bool;
+    /// Selected slot 0-15, first slot shown, and the selected column: 0 key
+    /// mode, 1 low key, 2 high key, 3 zone root, 4 key track, 5 low velocity,
+    /// 6 high velocity, 7 loop mode, 8 loop start, 9 loop end, 10 loop
+    /// crossfade, 11 output. On the Sound page (`page` 1, key `e`): 0 level,
+    /// 1 pan, 2 tune, 3 envelope (instance or own), 4-7 attack, decay,
+    /// sustain, release, 8 sample start, 9 group, 10 choke group, 11 reverse. On the
+    /// Filter page (`page`
+    /// 2): 0-5 filter 1 type, cutoff, resonance, envelope amount, key track,
+    /// gain, 6-11 the same for filter 2, 12 filter envelope (instance or
+    /// own), 13-16 its attack, decay, sustain, release. On the LFO page
+    /// (`page` 3): 0 shape, 1 rate, 2 sync, 3 division, 4 delay, 5 pitch
+    /// depth, 6 cutoff depth, 7 level depth, 8 trigger; the LFO 2 page
+    /// (`page` 4) the same for LFO 2. On the Mod page (`page` 5): per route
+    /// r (0-3) 3r source, 3r + 1 target, 3r + 2 amount. On the Play page
+    /// (`page` 6): 0 mode, 1 glide, 2 unison voices, 3 detune, 4 spread,
+    /// 5-7 pitch envelope depth, attack and decay, 8-9 send A and B levels.
+    /// On the Filter 3/4 page (`page` 7): 0 the chain, 1-6 filter 3 and
+    /// 7-12 filter 4 as the Filter page's stages. On the Vel/Tempo page
+    /// (`page` 8): 0 velocity curve, 1 velocity depth, 2 key level, 3 tempo
+    /// sync, 4 beats.
+    var slot: i32; var column: i32; var scroll: i32; var page: i32;
+    /// Wave view (`w`): the selected slot's waveform with its loop markers.
+    /// `marker` 0 edits the loop start, 1 the loop end, 2 the sample start
+    /// (where playback begins). `zoom` halves the
+    /// frames shown per step, centred on the marker. `dots` is the dot
+    /// columns the waveform last painted, for moving a marker one dot.
+    var wave: bool; var marker: i32; var zoom: i32; var dots: i32{160};
+    /// Key map view (`v`): every slot's keys and velocities over the MIDI
+    /// keyboard, instead of the page's table. The page's columns still edit.
+    var key_map: bool;
+    /// Audition (`p`): the note sounding (-1 for none) and the live target it
+    /// went to. Like the virtual keyboard, it lasts until the key's release,
+    /// or on terminals without key releases until the key stops repeating
+    /// (`until`).
+    var audition_note: i32{-1}; var audition_target: i64; var audition_until: i64;
+    var releases_seen: bool;
+    /// Slice mode (`C`): the selected slot's sample cut into `slice_count`
+    /// slices, evenly or at its transients, at `slice_points` (frame 0, the
+    /// cuts, the end), shown in the wave view (`slice_wave`: whether it was
+    /// on before). Enter puts slice k on slot + k.
+    var slicing: bool; var slice_count: i32{8}; var slice_mode: i32;
+    var slice_points: list<i64>; var slice_wave: bool;
+    /// The selected slot's slice markers ("cuts", frames ascending from 0) as
+    /// the instrument plays them with Beats tempo sync, fetched by the
+    /// application (`needs_cuts`, `take_cuts`) for the slot, pad sample and
+    /// its length they were read for; `cut` is the one the wave view's Cut
+    /// marker (`marker` 3) edits.
+    var cuts: list<i64>; var cut: i32;
+    var cuts_slot: i32{-1}; var cuts_pad: i32{-1}; var cuts_sample: i32{-1}; var cuts_frames: i64{-1};
+};
+impl SamplerView {
+    /// Keys the focused pane keeps for itself: everything printable ("q"
+    /// included), Enter, Backspace and the arrows. Pane moves, Tab, F-keys,
+    /// Escape, control shortcuts, Space (transport) and the Shift+S / Shift+M
+    /// / Shift+P view toggles still reach the application.
+    pub fn handles(event: InputEvent) -> bool {
+        if event.kind == InputKind::None || event.kind == InputKind::Pane { return false; }
+        if event.modifiers != 1 && event.modifiers != 2 { return false; }
+        if event.kind == InputKind::Menu && (event.key == Key::Toggle || event.key == Key::Escape || function_number(event.key) > 0) { return false; }
+        if event.code == 32 || event.code == 77 || event.code == 80 || event.code == 83 { return false; }
+        if event.modifiers == 2 && (event.code == 109 || event.code == 112 || event.code == 115) { return false; }
+        if event.code == 13 || event.code == 10 || event.code == 8 || event.code == 127 { return true; }
+        return event.code == 0 || event.code >= 33;
+    }
+    /// Instrument slot (1-32) of a loaded Mla Sampler, or 0 when `slot` holds
+    /// something else.
+    pub fn target(output: AudioController, slot: i32) -> i32 {
+        if slot < 1 || output.instrument_sampler(slot, 1) < 0 { return 0; }
+        let name: str8 = output.instrument_name(slot);
+        return name == "Mla Sampler" ? slot : 0;
+    }
+    /// Parameter index of stable ID `id` in instrument `slot`, or -1.
+    fn parameter_index(output: AudioController, slot: i32, id: i32) -> i32 {
+        let count: i32 = i32(output.parameter_info(slot, 0, 0));
+        for i in 0..count {
+            if i32(output.parameter_info(slot, i, 4)) == id { return i32(i); }
+        }
+        return -1;
+    }
+    /// The selected column as `column_id` takes it: Sound page columns are
+    /// 100 + column.
+    fn col(self: SamplerView) -> i32 { return self.page * 100 + self.column; }
+    /// The page `e` goes to: keys & loops, Sound, Filter, Filter 3/4 (7),
+    /// Filter Mod (9),
+    /// LFO 1, LFO 2, Mod, Play, Vel/Tempo (8), and round again. Pages keep
+    /// their numbers (column codes are page * 100 + column) as more are added.
+    fn next_page(page: i32) -> i32 {
+        if page == 2 { return 7; }
+        if page == 7 { return 9; }
+        if page == 9 { return 3; }
+        if page == 6 { return 8; }
+        if page == 8 { return 0; }
+        return page + 1;
+    }
+    /// Columns on a page: keys & loops, Sound, Filter.
+    fn page_columns(page: i32) -> i32 {
+        if page == 9 { return 8; }
+        if page == 8 { return 5; }
+        if page == 7 { return 13; }
+        if page == 6 { return 10; }
+        if page == 1 { return 12; }
+        if page == 2 { return 17; }
+        if page == 3 || page == 4 { return 9; }
+        return 12;
+    }
+    /// Parameter ID of a column (see `column`; 100 + column on the Sound
+    /// page) of sample slot `s`.
+    fn column_id(s: i32, col: i32) -> i32 {
+        // Filter Mod page: per stage its drive, then its mod scale.
+        if col >= 900 { return 2000 + s * 32 + (col - 900) / 2 * 8 + 6 + (col - 900) % 2; }
+        // Vel/Tempo page: velocity curve, depth, key level, then tempo sync
+        // and beats.
+        if col >= 803 { return 1800 + s * 4 + col - 802; }
+        if col >= 800 { return 1900 + s * 4 + col - 800; }
+        // Filter 3/4 page: the chain, then stages 3 and 4 as the Filter
+        // page's two.
+        if col == 700 { return 1800 + s * 4; }
+        if col >= 701 { return 2000 + s * 32 + (2 + (col - 701) / 6) * 8 + (col - 701) % 6; }
+        if col >= 608 { return 1700 + s * 4 + col - 608; }
+        if col >= 605 { return 1600 + s * 4 + col - 605; }
+        if col >= 600 { return col < 602 ? 1500 + s * 4 + col - 600 : 1400 + s * 4 + col - 602; }
+        if col >= 500 && col < 600 { return 4000 + s * 32 + (col - 500) / 3 * 4 + (col - 500) % 3; }
+        if col >= 400 { return 3016 + s * 32 + col - 400; }
+        if col >= 300 { return 3000 + s * 32 + col - 300; }
+        if col >= 212 { return 1100 + s * 5 + col - 212; }
+        if col >= 200 { return 2000 + s * 32 + (col - 200) / 6 * 8 + (col - 200) % 6; }
+        if col == 108 { return 800 + s; }
+        if col == 109 { return 900 + s; }
+        if col == 110 { return 1200 + s; }
+        if col == 111 { return 1300 + s; }
+        if col >= 103 { return 700 + s * 5 + col - 103; }
+        if col >= 100 { return 200 + s * 7 + col - 100; }
+        if col < 5 { return 400 + s * 5 + col; }
+        if col == 5 || col == 6 { return 600 + s * 2 + col - 5; }
+        if col == 10 { return 500 + s; }
+        if col == 11 { return 200 + s * 7 + 3; }
+        return 200 + s * 7 + col - 3;
+    }
+    /// Normalized value of a slot's column, or -1 when the plugin lacks it.
+    /// Set parameter `id` of instance `slot` to `plain`: a list or stepped
+    /// parameter's step number, otherwise its normalized value.
+    pub fn set_plain(output: AudioController, slot: i32, id: i32, plain: f64) -> bool {
+        let index: i32 = SamplerView::parameter_index(output, slot, id);
+        return index >= 0 && output.set_parameter(slot, index, plain) == 0;
+    }
+    /// Make sample slot `s` a pad playing its whole sample once, forwards:
+    /// what a slice needs.
+    pub fn make_one_shot(output: AudioController, slot: i32, s: i32) -> void {
+        SamplerView::set_plain(output, slot, 400 + s * 5, 0.0);
+        SamplerView::set_plain(output, slot, 200 + s * 7 + 4, 0.0);
+        SamplerView::set_plain(output, slot, 200 + s * 7 + 5, 0.0);
+        SamplerView::set_plain(output, slot, 200 + s * 7 + 6, 1.0);
+        SamplerView::set_plain(output, slot, 800 + s, 0.0);
+        SamplerView::set_plain(output, slot, 1300 + s, 0.0);
+    }
+    /// Make sample slot `s` a key zone from `low` to `high` with its sample
+    /// at `root`, tracking the key.
+    pub fn make_zone(output: AudioController, slot: i32, s: i32, low: i32, high: i32, root: i32) -> void {
+        SamplerView::set_plain(output, slot, 400 + s * 5, 1.0);
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 1, f64(low));
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 2, f64(high));
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 3, f64(root));
+        SamplerView::set_plain(output, slot, 400 + s * 5 + 4, 1.0);
+    }
+    /// Slot preset key of parameter `id` of sample slot `s`: its block's
+    /// base * 64 + its field there, or -1 when `id` is not one of the slot's.
+    /// The per-slot blocks are (base, stride, width), the slot's IDs being
+    /// base + stride * s + field for field < width.
+    pub fn slot_key(id: i64, s: i32) -> i64 {
+        let blocks: list<i64> = SamplerView::slot_blocks(); let count: i64 = blocks.len() / 3;
+        for b in 0..count {
+            let offset: i64 = id - blocks[b * 3] - blocks[b * 3 + 1] * wide(s);
+            if offset >= 0 && offset < blocks[b * 3 + 2] { return blocks[b * 3] * 64 + offset; }
+        }
+        return -1;
+    }
+    /// The parameter ID a slot preset `key` has on sample slot `s`, or -1.
+    pub fn slot_id(key: i64, s: i32) -> i64 {
+        let blocks: list<i64> = SamplerView::slot_blocks(); let count: i64 = blocks.len() / 3;
+        for b in 0..count {
+            if key / 64 == blocks[b * 3] && key % 64 < blocks[b * 3 + 2] { return blocks[b * 3] + blocks[b * 3 + 1] * wide(s) + key % 64; }
+        }
+        return -1;
+    }
+    fn slot_blocks() -> list<i64> {
+        return [200, 7, 7, 400, 5, 5, 500, 1, 1, 600, 2, 2, 700, 5, 5, 800, 1, 1, 900, 1, 1,
+            1100, 5, 5, 1200, 1, 1, 1300, 1, 1, 1400, 4, 3, 1500, 4, 2, 1600, 4, 3, 1700, 4, 2, 1800, 4, 3, 1900, 4, 3, 2000, 32, 32, 3000, 32, 32, 4000, 32, 32];
+    }
+    fn value(output: AudioController, slot: i32, s: i32, col: i32) -> f64 {
+        let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, col));
+        return index < 0 ? -1.0 : output.parameter_info(slot, index, 2);
+    }
+    fn key_of(value: f64) -> i32 { return i32(std::math::floor(value * 127.0 + 0.5)); }
+    fn is_zone(output: AudioController, slot: i32, s: i32) -> bool { return SamplerView::value(output, slot, s, 0) >= 0.5; }
+    fn own_envelope(output: AudioController, slot: i32, s: i32) -> bool { return SamplerView::value(output, slot, s, 103) >= 0.5; }
+    fn own_filter_envelope(output: AudioController, slot: i32, s: i32) -> bool { return SamplerView::value(output, slot, s, 212) >= 0.5; }
+    /// Filter type number of a stage type column (200 or 206); 0 = off.
+    fn filter_type(output: AudioController, slot: i32, s: i32, col: i32) -> i32 {
+        let value: f64 = SamplerView::value(output, slot, s, col);
+        return value < 0.0 ? 0 : i32(std::math::floor(value * 63.0 + 0.5));
+    }
+    /// Shown dim: an envelope that follows the instance's, the settings of a
+    /// filter stage that is off, and gain except on peak and shelves (14-16).
+    fn column_dim(output: AudioController, slot: i32, s: i32, col: i32) -> bool {
+        // LFO: Rate without sync, Division with it.
+        if col == 301 || col == 401 { return SamplerView::value(output, slot, s, col + 1) >= 0.5; }
+        if col == 303 || col == 403 { return SamplerView::value(output, slot, s, col - 1) < 0.5; }
+        // Play: glide in poly mode, detune and spread without unison.
+        if col == 601 { return SamplerView::value(output, slot, s, 600) < 0.07; }
+        if col == 603 || col == 604 { return SamplerView::value(output, slot, s, 602) < 0.03; }
+        // The pitch envelope's times while it has no depth.
+        if col == 606 || col == 607 { let depth: f64 = SamplerView::value(output, slot, s, 605); return depth > 0.4995 && depth < 0.5005; }
+        // Filter 3/4: as the Filter page's stages.
+        if col >= 701 && col <= 712 {
+            let part: i32 = (col - 701) % 6;
+            if part == 0 { return false; }
+            let kind: i32 = SamplerView::filter_type(output, slot, s, col < 707 ? 701 : 707);
+            if part == 5 { return kind < 14 || kind > 16; }
+            return kind == 0;
+        }
+        // Filter Mod: a stage that is off.
+        if col >= 900 {
+            let stage: i32 = (col - 900) / 2;
+            return SamplerView::filter_type(output, slot, s, stage < 2 ? 200 + stage * 6 : 701 + (stage - 2) * 6) == 0;
+        }
+        // Vel/Tempo: the depth of a Fixed curve, beats without tempo sync.
+        if col == 801 { return SamplerView::value(output, slot, s, 800) > 0.4 && SamplerView::value(output, slot, s, 800) < 0.46; }
+        if col == 804 { return SamplerView::value(output, slot, s, 803) < 0.07; }
+        // Mod: a route's target and amount while it has no source or target.
+        if col >= 500 && col < 600 && (col - 500) % 3 > 0 {
+            let first: i32 = col - (col - 500) % 3;
+            return SamplerView::value(output, slot, s, first) < 0.03 || SamplerView::value(output, slot, s, first + 1) < 0.03;
+        }
+        if col >= 104 && col <= 107 { return !SamplerView::own_envelope(output, slot, s); }
+        if col >= 213 && col < 300 { return !SamplerView::own_filter_envelope(output, slot, s); }
+        if col >= 201 && col <= 211 && col != 206 {
+            let kind: i32 = SamplerView::filter_type(output, slot, s, col < 206 ? 200 : 206);
+            if col == 205 || col == 211 { return kind < 14 || kind > 16; }
+            return kind == 0;
+        }
+        return false;
+    }
+    /// Normalized step of a continuous column: level 1 dB (6 with `big`),
+    /// tune a semitone (an octave), everything else 1% (10%).
+    fn continuous_step(col: i32, big: bool) -> f64 {
+        // LFO 2's columns step as LFO 1's, filter stages 3 and 4 as 1 and 2.
+        if col >= 400 && col < 500 { return SamplerView::continuous_step(col - 100, big); }
+        if col >= 701 && col <= 712 { return SamplerView::continuous_step(col - 501, big); }
+        // Filter Mod: drive 1 % (10 %); mod -100 .. +100 %: 1 % (10 %).
+        if col >= 900 { return (col - 900) % 2 == 0 ? (big ? 0.1 : 0.01) : (big ? 0.05 : 0.005); }
+        // Key level +-12 dB/octave: 0.5 dB (3 dB).
+        if col == 802 { return (big ? 3.0 : 0.5) / 24.0; }
+        // Mod amounts span -100 .. +100 %: 1 % (10 %).
+        if col >= 500 && col < 600 { return big ? 0.05 : 0.005; }
+        if col == 100 { return (big ? 6.0 : 1.0) / 66.0; }
+        if col == 102 { return (big ? 12.0 : 1.0) / 48.0; }
+        // Pitch envelope depth +-48 st: a semitone (an octave).
+        if col == 605 { return (big ? 12.0 : 1.0) / 96.0; }
+        // Cutoff: about a semitone (an octave) of its 20 Hz .. 20 kHz sweep.
+        if col == 201 || col == 207 { return big ? 0.1 : 1.0 / 120.0; }
+        // Resonance 0-36 dB: 1 dB (6 dB).
+        if col == 202 || col == 208 { return (big ? 6.0 : 1.0) / 36.0; }
+        // Envelope amount +-8 octaves: a tenth of an octave (an octave).
+        if col == 203 || col == 209 { return big ? 1.0 / 16.0 : 1.0 / 160.0; }
+        // Gain +-24 dB: 1 dB (6 dB).
+        if col == 205 || col == 211 { return (big ? 6.0 : 1.0) / 48.0; }
+        // LFO rate (0.05-20 Hz): about 6% (80%); pitch depth +-12 st: a tenth
+        // of a semitone (a semitone); cutoff depth +-4 octaves: a tenth (one).
+        if col == 301 { return big ? 0.1 : 0.01; }
+        if col == 305 { return big ? 1.0 / 24.0 : 1.0 / 240.0; }
+        if col == 306 { return big ? 1.0 / 8.0 : 1.0 / 80.0; }
+        return big ? 0.1 : 0.01;
+    }
+    /// Steps the selected column by `delta`: choices and velocities by one,
+    /// keys by a semitone, loop points by 1%. `big` steps keys by an octave,
+    /// velocities by 10 and loop points by 10%. Each range's low end stays at
+    /// or below its high end (velocities within 1-127), and the loop start
+    /// below the loop end. False when nothing changed.
+    fn adjust(self: SamplerView, output: AudioController, slot: i32, delta: i32, big: bool) -> bool {
+        let col: i32 = self.col();
+        let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(self.slot, col));
+        if index < 0 { return false; }
+        let steps: f64 = output.parameter_info(slot, index, 1);
+        let normalized: f64 = output.parameter_info(slot, index, 2);
+        var value: f64 = 0.0;
+        if steps > 0.0 {
+            let current: f64 = std::math::floor(normalized * steps + 0.5);
+            let key_column: bool = col >= 1 && col <= 3;
+            let velocity_column: bool = col == 5 || col == 6;
+            value = current + f64(delta) * (big && key_column ? 12.0 : (big && velocity_column ? 10.0 : 1.0));
+            // Filter types stop at the last one the plugin knows.
+            if (col == 200 || col == 206 || col == 701 || col == 707) && value > 21.0 { value = 21.0; }
+            // Chains, tempo syncs, beats and velocity curves likewise.
+            if col == 700 && value > 2.0 { value = 2.0; }
+            if col == 803 && value > 3.0 { value = 3.0; }
+            if col == 804 && value > 13.0 { value = 13.0; }
+            if col == 800 && value > 3.0 { value = 3.0; }
+            // LFO shapes and divisions likewise.
+            if (col == 300 || col == 400) && value > 5.0 { value = 5.0; }
+            if (col == 303 || col == 403) && value > 13.0 { value = 13.0; }
+            // Play modes and unison voice counts likewise.
+            if col == 600 && value > 2.0 { value = 2.0; }
+            if col == 602 && value > 7.0 { value = 7.0; }
+            // Mod sources and targets likewise.
+            if col >= 500 && col < 600 && (col - 500) % 3 == 0 && value > 10.0 { value = 10.0; }
+            if col >= 500 && col < 600 && (col - 500) % 3 == 1 && value > 6.0 { value = 6.0; }
+            if col == 1 || col == 5 { let high: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col + 1))); if value > high { value = high; } }
+            if col == 2 || col == 6 { let low: f64 = f64(SamplerView::key_of(SamplerView::value(output, slot, self.slot, col - 1))); if value < low { value = low; } }
+            if velocity_column && value < 1.0 { value = 1.0; }
+            if value < 0.0 { value = 0.0; }
+            if value > steps { value = steps; }
+            if value == current { return false; }
+        } else {
+            value = normalized + f64(delta) * SamplerView::continuous_step(col, big);
+            if col == 8 {
+                let end: f64 = SamplerView::value(output, slot, self.slot, 9);
+                if value > end - 0.01 { value = end - 0.01; }
+            }
+            if col == 9 {
+                let start: f64 = SamplerView::value(output, slot, self.slot, 8);
+                if value < start + 0.01 { value = start + 0.01; }
+            }
+            if value < 0.0 { value = 0.0; }
+            if value > 1.0 { value = 1.0; }
+            if value == normalized { return false; }
+        }
+        return output.set_parameter(slot, index, value) == 0;
+    }
+    /// A key press while the pane is focused. `slot` is the Mla Sampler
+    /// instrument slot (0 when the selected track has none). Returns what the
+    /// application should do for the selected slot: 0 nothing, 1 repaint,
+    /// 2 load a file into it, 3 clear it, 4 route its output bus, 5 tell that
+    /// its zone columns need Zone mode, 6 tell that it has no waveform, 7
+    /// audition it (see `audition_key`), 8 tell that its envelope columns
+    /// need Env set to Own, 9 that its filter envelope columns need FEnv set
+    /// to Own, 10 edit its sample, 11 save it as a slot preset, 12 load a
+    /// slot preset into it, 13 slice it into the slots from it on (see
+    /// `slice_points`), 14 auto-map samples into the slots from it on, 15
+    /// tell that the last slot has no slots after it to slice into. (An i32 rather than an enum: MLang
+    /// before its let-enum fix ran an enum `let` initializer twice.)
+    pub fn on_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
+        if self.slicing { return self.slice_event(event, clip, has_clip); }
+        // C slices the slot's sample, A auto-maps samples by their note names.
+        if (event.code == 67 && event.modifiers == 1) || (event.code == 99 && event.modifiers == 2) {
+            if slot < 1 { return 0; }
+            if !has_clip { return 6; }
+            if self.slot >= 15 { return 15; }
+            self.slicing = true; self.slice_wave = self.wave; self.wave = true; self.zoom = 0;
+            self.slice_count = 16 - self.slot < 8 ? 16 - self.slot : 8;
+            var source: AudioClip = AudioClip {}; source = clip;
+            self.slice_points = self.plan_slices(source, self.slice_count);
+            return 1;
+        }
+        if (event.code == 65 && event.modifiers == 1) || (event.code == 97 && event.modifiers == 2) { return slot < 1 ? 0 : 14; }
+        if event.code == 119 && event.modifiers == 1 { self.wave = !self.wave; if self.wave { self.key_map = false; } return 1; }
+        if event.code == 118 && event.modifiers == 1 { self.key_map = !self.key_map; if self.key_map { self.wave = false; } return 1; }
+        if self.wave {
+            let handled: i32 = self.wave_event(event, output, slot, clip, has_clip);
+            if handled >= 0 { return handled; }
+        }
+        let up: bool = (event.kind == InputKind::Menu && event.key == Key::Up) || (event.code == 107 && event.modifiers == 1);
+        let down: bool = (event.kind == InputKind::Menu && event.key == Key::Down) || (event.code == 106 && event.modifiers == 1);
+        let left: bool = (event.kind == InputKind::Menu && event.key == Key::Left) || (event.code == 104 && event.modifiers == 1);
+        let right: bool = (event.kind == InputKind::Menu && event.key == Key::Right) || (event.code == 108 && event.modifiers == 1);
+        if up && self.slot > 0 { self.slot = self.slot - 1; return 1; }
+        if down && self.slot < 15 { self.slot = self.slot + 1; return 1; }
+        if left && self.column > 0 { self.column = self.column - 1; return 1; }
+        if right && self.column < SamplerView::page_columns(self.page) - 1 { self.column = self.column + 1; return 1; }
+        // e switches between the keys & loops page and the Sound page.
+        if event.code == 101 && event.modifiers == 1 { self.page = SamplerView::next_page(self.page); self.column = 0; return 1; }
+        if slot < 1 { return 0; }
+        // Shift+J/K adjust, as everywhere else in the tracker; [ and ] take
+        // octave / 10% steps.
+        let lower: bool = (event.code == 74 && event.modifiers == 1) || (event.code == 106 && event.modifiers == 2);
+        let raise: bool = (event.code == 75 && event.modifiers == 1) || (event.code == 107 && event.modifiers == 2);
+        let big_lower: bool = event.code == 91 && event.modifiers == 1;
+        let big_raise: bool = event.code == 93 && event.modifiers == 1;
+        if lower || raise || big_lower || big_raise {
+            if self.page == 0 && self.column >= 1 && self.column <= 4 && !SamplerView::is_zone(output, slot, self.slot) { return 5; }
+            if self.page == 1 && self.column >= 4 && self.column <= 7 && !SamplerView::own_envelope(output, slot, self.slot) { return 8; }
+            if self.page == 2 && self.column >= 13 && !SamplerView::own_filter_envelope(output, slot, self.slot) { return 9; }
+            return self.adjust(output, slot, raise || big_raise ? 1 : -1, big_lower || big_raise) ? 1 : 0;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Enter { return 2; }
+        if event.code == 13 || event.code == 10 { return 2; }
+        if event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace) { return 3; }
+        if event.code == 111 && event.modifiers == 1 { return 4; }
+        // G switches the instance's group mode: round-robin or random.
+        if (event.code == 71 && event.modifiers == 1) || (event.code == 103 && event.modifiers == 2) {
+            let index: i32 = SamplerView::parameter_index(output, slot, 950);
+            if index < 0 { return 0; }
+            return output.set_parameter(slot, index, output.parameter_info(slot, index, 2) >= 0.5 ? 0.0 : 1.0) == 0 ? 1 : 0;
+        }
+        if event.code == 112 && event.modifiers == 1 { return 7; }
+        // E edits the slot's sample in the sample editor.
+        if (event.code == 69 && event.modifiers == 1) || (event.code == 101 && event.modifiers == 2) { return 10; }
+        // W / R save the slot as a slot preset / load one into it.
+        if (event.code == 87 && event.modifiers == 1) || (event.code == 119 && event.modifiers == 2) { return 11; }
+        if (event.code == 82 && event.modifiers == 1) || (event.code == 114 && event.modifiers == 2) { return 12; }
+        return 0;
+    }
+    /// Column a wave view marker edits: loop start, loop end, sample start.
+    fn marker_column(marker: i32) -> i32 { return marker == 0 ? 8 : (marker == 1 ? 9 : 108); }
+    /// A position column (loop start/end, sample start) of sample slot `s` in
+    /// frames of a `frames`-long sample, as the plugin reads it (floor of
+    /// value * frames).
+    fn frame_at(output: AudioController, slot: i32, s: i32, col: i32, frames: i64) -> i64 {
+        let value: f64 = SamplerView::value(output, slot, s, col);
+        if value < 0.0 { return col == 9 ? frames : 0; }
+        let frame: i64 = wide(i32(std::math::floor(value * f64(frames))));
+        return frame < 0 ? 0 : (frame > frames ? frames : frame);
+    }
+    fn loop_frame(output: AudioController, slot: i32, s: i32, end: bool, frames: i64) -> i64 {
+        return SamplerView::frame_at(output, slot, s, end ? 9 : 8, frames);
+    }
+    /// Set a position column to an exact frame. The value sits mid-frame so
+    /// the plugin's floor lands on it; the end of the sample is exactly 1.
+    fn set_frame(output: AudioController, slot: i32, s: i32, col: i32, frame: i64, frames: i64) -> bool {
+        let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, col));
+        if index < 0 || frames < 1 { return false; }
+        let value: f64 = frame >= frames ? 1.0 : (f64(frame) + 0.5) / f64(frames);
+        return output.set_parameter(slot, index, value) == 0;
+    }
+    /// The zero crossing nearest `frame` (a frame whose sign differs from the
+    /// one before it), searched up to 1 s of 48 kHz either way; `frame` when
+    /// there is none.
+    /// `reversed`: search the sample as a reversed slot plays it.
+    fn zero_crossing(clip: &AudioClip, frame: i64, reversed: bool) -> i64 {
+        var source: AudioClip = AudioClip {}; source = clip;
+        let samples: list<f32> = source.samples; let channels: i64 = source.channels;
+        for distance in 0..48000 {
+            for side in 0..2 {
+                let f: i64 = side == 0 ? frame - distance : frame + distance;
+                if f < 1 || f >= source.frames { continue; }
+                // Mono: the channel average.
+                let fa: i64 = reversed ? source.frames - f : f - 1;
+                let fb: i64 = reversed ? source.frames - 1 - f : f;
+                let a: f32 = channels < 2 ? samples[fa] : (samples[fa * channels] + samples[fa * channels + 1]) * 0.5f;
+                let b: f32 = channels < 2 ? samples[fb] : (samples[fb * channels] + samples[fb * channels + 1]) * 0.5f;
+                if (a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f) { return f; }
+            }
+        }
+        return frame;
+    }
+    /// Crossfade of sample slot `s` in frames, clamped as the plugin clamps it:
+    /// to the loop length and to the frames before the loop start. 0 unless
+    /// the loop is forward.
+    fn crossfade_frames(output: AudioController, slot: i32, s: i32, frames: i64) -> i64 {
+        if i32(std::math::floor(SamplerView::value(output, slot, s, 7) * 2.0 + 0.5)) != 1 { return 0; }
+        let value: f64 = SamplerView::value(output, slot, s, 10);
+        if value <= 0.0 { return 0; }
+        var length: i64 = wide(i32(std::math::floor(value * f64(frames))));
+        let start: i64 = SamplerView::loop_frame(output, slot, s, false, frames);
+        let end: i64 = SamplerView::loop_frame(output, slot, s, true, frames);
+        if length > end - start { length = end - start; }
+        if length > start { length = start; }
+        return length < 0 ? 0 : length;
+    }
+    /// Frames the wave view shows: the whole sample, halved per zoom step.
+    fn span(self: SamplerView, frames: i64) -> i64 {
+        var span: i64 = frames;
+        for _z in 0..self.zoom { span = span / 2; }
+        return span < 16 ? (frames < 16 ? frames : 16) : span;
+    }
+    /// First frame the wave view shows: the span centred on the marker.
+    fn window_start(self: SamplerView, frames: i64, marker_frame: i64) -> i64 {
+        let span: i64 = self.span(frames);
+        var start: i64 = marker_frame - span / 2;
+        if start > frames - span { start = frames - span; }
+        return start < 0 ? 0 : start;
+    }
+    /// Slice mode keys: J/K and [ ] the slice count (2 up to the slots left
+    /// from the selected one), t equal or transients, Enter slices (13), C
+    /// or Backspace cancels. Other keys do nothing meanwhile.
+    fn slice_event(self: &mut Self, event: InputEvent, clip: &AudioClip, has_clip: bool) -> i32 {
+        let cancel: bool = (event.code == 67 && event.modifiers == 1) || (event.code == 99 && event.modifiers == 2)
+            || event.code == 127 || event.code == 8 || (event.kind == InputKind::Menu && event.key == Key::Backspace);
+        if cancel || !has_clip { self.end_slicing(); return 1; }
+        if (event.kind == InputKind::Menu && event.key == Key::Enter) || event.code == 13 || event.code == 10 { return 13; }
+        let most: i32 = 16 - self.slot;
+        var count: i32 = self.slice_count;
+        if (event.code == 74 && event.modifiers == 1) || (event.code == 106 && event.modifiers == 2) { count = count - 1; }
+        else if (event.code == 75 && event.modifiers == 1) || (event.code == 107 && event.modifiers == 2) { count = count + 1; }
+        else if event.code == 91 && event.modifiers == 1 { count = count - 4; }
+        else if event.code == 93 && event.modifiers == 1 { count = count + 4; }
+        else if event.code == 116 && event.modifiers == 1 { self.slice_mode = (self.slice_mode + 1) % 3; }
+        else { return 0; }
+        count = count < 2 ? 2 : (count > most ? most : count);
+        self.slice_count = count;
+        var source: AudioClip = AudioClip {}; source = clip;
+        self.slice_points = self.plan_slices(source, count);
+        return 1;
+    }
+    /// Slice points for `count` slices by the slice mode: equal, at
+    /// transients, or at the cuts (as many slices as cuts, up to the slots
+    /// left; equal when there are none).
+    fn plan_slices(self: SamplerView, source: AudioClip, count: i32) -> list<i64> {
+        if self.slice_mode == 2 && self.cuts.len() > 1 {
+            let most: i64 = wide(16 - self.slot);
+            var points: list<i64> = [];
+            let cuts: list<i64> = self.cuts;
+            for c in cuts { if points.len() < most && c < source.frames { points.push(c); } }
+            points.push(source.frames);
+            return points;
+        }
+        return source.slice_points(count, self.slice_mode == 1);
+    }
+    /// Name of the slice mode.
+    fn slice_mode_text(mode: i32) -> str8 { return mode == 1 ? "at transients" : (mode == 2 ? "at cuts" : "equal"); }
+    /// True when the cuts must be (re)read: the wave view or slicing shows
+    /// another slot, pad sample or length than they were read for.
+    pub fn needs_cuts(self: SamplerView, slot: i32, sample: i32, frames: i64) -> bool {
+        return (self.wave || self.slicing) && (slot != self.cuts_slot || self.slot != self.cuts_pad || sample != self.cuts_sample || frames != self.cuts_frames);
+    }
+    /// The cuts read for `slot`'s selected pad, holding `sample` of `frames`.
+    pub fn take_cuts(self: &mut Self, cuts: list<i64>, slot: i32, sample: i32, frames: i64) -> void {
+        self.cuts = cuts; self.cuts_slot = slot; self.cuts_pad = self.slot; self.cuts_sample = sample; self.cuts_frames = frames;
+        let count: i32 = i32(self.cuts.len());
+        if self.cut >= count { self.cut = count > 0 ? count - 1 : 0; }
+    }
+    /// Read the cuts again next time (a sample was edited).
+    pub fn forget_cuts(self: &mut Self) -> void { self.cuts_slot = -1; }
+    /// The wave view's Cut marker: `,`/`.` select, h/l/H/L and z move the
+    /// selected cut between its neighbours (the first stays at 0), n adds one
+    /// half way to the next, x deletes the selected one: 16 when the cuts
+    /// changed (the application sends them), u detects them again (17).
+    fn cut_event(self: &mut Self, event: InputEvent, clip: &AudioClip, frames: i64, left: bool, right: bool,
+        fine_left: bool, fine_right: bool, snap: bool) -> i32 {
+        var cuts: list<i64> = []; cuts = self.cuts;
+        let count: i32 = i32(cuts.len());
+        if count == 0 { return 0; }
+        var selected: i32 = self.cut < count ? self.cut : count - 1;
+        if event.code == 44 && event.modifiers == 1 { if selected > 0 { self.cut = selected - 1; } return 1; }
+        if event.code == 46 && event.modifiers == 1 { if selected < count - 1 { self.cut = selected + 1; } return 1; }
+        if event.code == 117 && event.modifiers == 1 { return 17; }
+        let next: i64 = selected + 1 < count ? cuts[selected + 1] : frames;
+        if event.code == 110 && event.modifiers == 1 {
+            let middle: i64 = (cuts[selected] + next) / 2;
+            if middle - cuts[selected] < 2 { return 0; }
+            var added: list<i64> = [];
+            for i in 0..count { added.push(cuts[i]); if i32(i) == selected { added.push(middle); } }
+            self.cuts = added; self.cut = selected + 1;
+            return 16;
+        }
+        if event.code == 120 && event.modifiers == 1 {
+            if selected == 0 { return 0; }
+            var kept: list<i64> = [];
+            for i in 0..count { if i32(i) != selected { kept.push(cuts[i]); } }
+            self.cuts = kept; self.cut = selected - 1;
+            return 16;
+        }
+        if selected == 0 || !(left || right || fine_left || fine_right || snap) { return 0; }
+        let current: i64 = cuts[selected];
+        var target: i64 = current;
+        if snap { target = SamplerView::zero_crossing(clip, current, false); }
+        else {
+            let dots: i64 = self.dots > 0 ? wide(self.dots) : 160;
+            var step: i64 = fine_left || fine_right ? 1 : self.span(frames) / dots;
+            if step < 1 { step = 1; }
+            target = left || fine_left ? current - step : current + step;
+        }
+        let low: i64 = cuts[selected - 1] + 1;
+        let high: i64 = next - 1;
+        if target < low { target = low; } if target > high { target = high; }
+        if target == current { return 0; }
+        var moved: list<i64> = [];
+        for i in 0..count { moved.push(i32(i) == selected ? target : cuts[i]); }
+        self.cuts = moved;
+        return 16;
+    }
+    /// Leave slice mode, the wave view as it was before.
+    pub fn end_slicing(self: &mut Self) -> void {
+        self.slicing = false; self.wave = self.slice_wave; self.slice_points = [];
+    }
+    /// MIDI key named at the end of a sample's file name, or -1: a note
+    /// letter, an optional # or b, and an octave -1 .. 9, with C4 = 60
+    /// ("Piano_C4.wav", "Strings F#2", "PianoEb3"). The last such name counts;
+    /// it must not follow a letter unless it starts a capitalized word, nor be
+    /// followed by a digit.
+    pub fn note_in_name(name: str8) -> i32 {
+        let raw: result<Bytes, str8> = Bytes::from_string(name);
+        if raw.is_err() { return -1; }
+        let bytes: Bytes = raw.unwrap();
+        let count: i64 = bytes.len();
+        // Up to the extension.
+        var end: i64 = count;
+        for i in 0..count { if bytes.get(i) == 46 { end = i; } }
+        var found: i32 = -1;
+        let semitones: array<i32, 7> = {9, 11, 0, 2, 4, 5, 7};
+        for i in 0..end {
+            let c: i32 = bytes.get(i);
+            let upper: bool = c >= 65 && c <= 71; let lower: bool = c >= 97 && c <= 103;
+            if !upper && !lower { continue; }
+            if i > 0 {
+                let p: i32 = bytes.get(i - 1);
+                let letter: bool = (p >= 65 && p <= 90) || (p >= 97 && p <= 122);
+                if letter && !(upper && p >= 97 && p <= 122) { continue; }
+            }
+            var at: i64 = i + 1;
+            var semitone: i32 = semitones[upper ? c - 65 : c - 97];
+            if at < end && bytes.get(at) == 35 { semitone = semitone + 1; at = at + 1; }
+            else if at < end && bytes.get(at) == 98 { semitone = semitone - 1; at = at + 1; }
+            var octave: i32 = -2;
+            if at + 1 < end && bytes.get(at) == 45 && bytes.get(at + 1) == 49 { octave = -1; at = at + 2; }
+            else if at < end && bytes.get(at) >= 48 && bytes.get(at) <= 57 { octave = bytes.get(at) - 48; at = at + 1; }
+            if octave < -1 { continue; }
+            if at < end && bytes.get(at) >= 48 && bytes.get(at) <= 57 { continue; }
+            let note: i32 = (octave + 1) * 12 + semitone;
+            if note >= 0 && note <= 127 { found = note; }
+        }
+        bytes.close();
+        return found;
+    }
+    /// Auto-map plan for the file `names`: those that name a note (see
+    /// `note_in_name`), lowest note first (files on one note in their list
+    /// order). Each note's zone reaches from it up to the next note (the
+    /// lowest from key 0, the highest to 127). Files sharing a note are a
+    /// round-robin set: they share the next of the free `groups`, or play as
+    /// layers once those run out. Files without a note are left out.
+    pub fn auto_map_plan(files: &list<str8>, groups: list<i32>) -> list<AutoMapEntry> {
+        var names: list<str8> = []; names = files;
+        var order: list<i64> = []; var notes: list<i32> = [];
+        for n in 0..names.len() {
+            let note: i32 = SamplerView::note_in_name(names[n]);
+            if note < 0 { continue; }
+            var at: i64 = 0;
+            while at < notes.len() && notes[at] <= note { at = at + 1; }
+            var next_notes: list<i32> = []; var next_order: list<i64> = [];
+            for i in 0..notes.len() {
+                if i == at { next_notes.push(note); next_order.push(n); }
+                next_notes.push(notes[i]); next_order.push(order[i]);
+            }
+            if at == notes.len() { next_notes.push(note); next_order.push(n); }
+            notes = next_notes; order = next_order;
+        }
+        // The distinct notes, for the zones, and a group for each shared one.
+        var roots: list<i32> = []; var root_groups: list<i32> = []; var used: i64 = 0;
+        for i in 0..notes.len() {
+            if roots.len() > 0 && roots[roots.len() - 1] == notes[i] { continue; }
+            var copies: i32 = 0;
+            for j in 0..notes.len() { if notes[j] == notes[i] { copies = copies + 1; } }
+            var group: i32 = 0;
+            if copies > 1 && used < groups.len() { group = groups[used]; used = used + 1; }
+            roots.push(notes[i]); root_groups.push(group);
+        }
+        var plan: list<AutoMapEntry> = [];
+        for i in 0..notes.len() {
+            var r: i64 = 0;
+            while roots[r] != notes[i] { r = r + 1; }
+            let low: i32 = r == 0 ? 0 : roots[r];
+            let high: i32 = r == roots.len() - 1 ? 127 : roots[r + 1] - 1;
+            plan.push(AutoMapEntry { file: order[i], root: notes[i], low: low, high: high, group: root_groups[r] });
+        }
+        return plan;
+    }
+    /// Groups (1-8) no sample slot of instance `slot` uses, lowest first.
+    pub fn free_groups(output: AudioController, slot: i32) -> list<i32> {
+        var free: list<i32> = [];
+        for g in 1..9 {
+            var taken: bool = false;
+            for s in 0..16 {
+                let value: f64 = SamplerView::value(output, slot, i32(s), 109);
+                if value >= 0.0 && i32(std::math::floor(value * 8.0 + 0.5)) == i32(g) { taken = true; }
+            }
+            if !taken { free.push(i32(g)); }
+        }
+        return free;
+    }
+    /// Group (1-8) of sample slot `s`, 0 for none.
+    pub fn group_of(output: AudioController, slot: i32, s: i32) -> i32 {
+        let value: f64 = SamplerView::value(output, slot, s, 109);
+        return value < 0.0 ? 0 : i32(std::math::floor(value * 8.0 + 0.5));
+    }
+    /// True when sample slot `s` is a key zone (not a pad).
+    pub fn zone_slot(output: AudioController, slot: i32, s: i32) -> bool { return SamplerView::is_zone(output, slot, s); }
+    /// Give sample slot `to` the key zone and velocity range of `from`.
+    pub fn copy_zone(output: AudioController, slot: i32, from: i32, to: i32) -> void {
+        for f in 0..5 {
+            let index: i32 = SamplerView::parameter_index(output, slot, 400 + from * 5 + i32(f));
+            let target: i32 = SamplerView::parameter_index(output, slot, 400 + to * 5 + i32(f));
+            if index >= 0 && target >= 0 { SamplerView::set_like(output, slot, index, target); }
+        }
+        for f in 0..2 {
+            let index: i32 = SamplerView::parameter_index(output, slot, 600 + from * 2 + i32(f));
+            let target: i32 = SamplerView::parameter_index(output, slot, 600 + to * 2 + i32(f));
+            if index >= 0 && target >= 0 { SamplerView::set_like(output, slot, index, target); }
+        }
+    }
+    /// Set parameter `target` to parameter `index`'s value (same kind).
+    fn set_like(output: AudioController, slot: i32, index: i32, target: i32) -> void {
+        let steps: f64 = output.parameter_info(slot, index, 1);
+        let value: f64 = output.parameter_info(slot, index, 2);
+        output.set_parameter(slot, target, steps > 0.0 ? std::math::floor(value * steps + 0.5) : value);
+    }
+    /// Wave view keys; -1 when the key is not one of them (the table's keys
+    /// then apply: j/k slot, Enter, Backspace, o). 6 = no waveform to edit.
+    fn wave_event(self: &mut Self, event: InputEvent, output: AudioController, slot: i32, clip: &AudioClip, has_clip: bool) -> i32 {
+        let left: bool = (event.kind == InputKind::Menu && event.key == Key::Left) || (event.code == 104 && event.modifiers == 1);
+        let right: bool = (event.kind == InputKind::Menu && event.key == Key::Right) || (event.code == 108 && event.modifiers == 1);
+        let fine_left: bool = (event.code == 72 && event.modifiers == 1) || (event.code == 104 && event.modifiers == 2);
+        let fine_right: bool = (event.code == 76 && event.modifiers == 1) || (event.code == 108 && event.modifiers == 2);
+        let zoom_in: bool = event.code == 61 || event.code == 43;
+        let zoom_out: bool = event.code == 45 && event.modifiers == 1;
+        let toggle: bool = event.code == 109 && event.modifiers == 1;
+        let snap: bool = event.code == 122 && event.modifiers == 1;
+        let shorter: bool = event.code == 91 && event.modifiers == 1;
+        let longer: bool = event.code == 93 && event.modifiers == 1;
+        let cut_key: bool = self.marker == 3 && event.modifiers == 1 &&
+            (event.code == 44 || event.code == 46 || event.code == 110 || event.code == 120 || event.code == 117);
+        if !(left || right || fine_left || fine_right || zoom_in || zoom_out || toggle || snap || shorter || longer || cut_key) { return -1; }
+        if toggle { self.marker = (self.marker + 1) % 4; return 1; }
+        if zoom_out { if self.zoom > 0 { self.zoom = self.zoom - 1; } return 1; }
+        if zoom_in { if self.zoom < 20 { self.zoom = self.zoom + 1; } return 1; }
+        if slot < 1 || !has_clip { return 6; }
+        var source: AudioClip = AudioClip {}; source = clip;
+        let frames: i64 = source.frames;
+        if frames < 2 { return 6; }
+        var probe: AudioClip = AudioClip {}; probe = source;
+        if self.marker == 3 && !shorter && !longer {
+            return self.cut_event(event, probe, frames, left, right, fine_left, fine_right, snap);
+        }
+        if shorter || longer {
+            // [ and ] change the crossfade by one dot of the waveform.
+            let index: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(self.slot, 10));
+            if index < 0 { return 0; }
+            let dots: i64 = self.dots > 0 ? wide(self.dots) : 160;
+            var step: i64 = self.span(frames) / dots; if step < 1 { step = 1; }
+            var length: i64 = SamplerView::crossfade_frames(output, slot, self.slot, frames) + (longer ? step : 0 - step);
+            if length < 0 { length = 0; }
+            let value: f64 = length == 0 ? 0.0 : (f64(length) + 0.5) / f64(frames);
+            return output.set_parameter(slot, index, value > 1.0 ? 1.0 : value) == 0 ? 1 : 0;
+        }
+        let end: bool = self.marker == 1;
+        let marker_col: i32 = SamplerView::marker_column(self.marker);
+        let current: i64 = SamplerView::frame_at(output, slot, self.slot, marker_col, frames);
+        var target: i64 = current;
+        if snap { target = SamplerView::zero_crossing(probe, current, SamplerView::value(output, slot, self.slot, 111) >= 0.5); }
+        else {
+            // One dot of the waveform, or one frame with Shift.
+            let dots: i64 = self.dots > 0 ? wide(self.dots) : 160;
+            var step: i64 = fine_left || fine_right ? 1 : self.span(frames) / dots;
+            if step < 1 { step = 1; }
+            target = left || fine_left ? current - step : current + step;
+        }
+        if self.marker == 2 {
+            // The sample start: anywhere in the sample.
+            if target < 0 { target = 0; } if target > frames - 1 { target = frames - 1; }
+        } else {
+            // The loop keeps at least two frames.
+            let other: i64 = SamplerView::loop_frame(output, slot, self.slot, !end, frames);
+            if end { if target < other + 2 { target = other + 2; } if target > frames { target = frames; } }
+            else { if target > other - 2 { target = other - 2; } if target < 0 { target = 0; } }
+        }
+        if target == current { return 0; }
+        return SamplerView::set_frame(output, slot, self.slot, marker_col, target, frames) ? 1 : 0;
+    }
+    /// Key that auditions the selected slot at its recorded pitch: a pad's
+    /// key, or a zone's root (moved into the zone when it lies outside, as
+    /// the zone would not play it). -1 when unknown. Other slots whose key or
+    /// zone holds that key sound with it.
+    pub fn audition_key(self: SamplerView, output: AudioController, slot: i32) -> i32 {
+        if slot < 1 { return -1; }
+        if SamplerView::is_zone(output, slot, self.slot) {
+            let low: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 1));
+            let high: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 2));
+            let root: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 3));
+            let bottom: i32 = low < high ? low : high; let top: i32 = low < high ? high : low;
+            return root < bottom ? bottom : (root > top ? top : root);
+        }
+        let root: i64 = output.instrument_sampler(slot, 0);
+        let key: i32 = root < 0 ? -1 : i32(root) + self.slot;
+        return key > 127 ? -1 : key;
+    }
+    /// Velocity that auditions the selected slot: 100, moved into the slot's
+    /// velocity range so the slot answers it.
+    pub fn audition_velocity(self: SamplerView, output: AudioController, slot: i32) -> i32 {
+        let low: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 5));
+        let high: i32 = SamplerView::key_of(SamplerView::value(output, slot, self.slot, 6));
+        let bottom: i32 = low < high ? low : high; let top: i32 = low < high ? high : low;
+        let velocity: i32 = 100 < bottom ? bottom : (100 > top ? top : 100);
+        return velocity < 1 ? 1 : velocity;
+    }
+    /// Start an audition note, or keep a held one sounding on a key repeat.
+    /// Returns the note to start, or -1 when it only extended the held one.
+    pub fn audition(self: &mut Self, note: i32, target: i64, now: i64) -> i32 {
+        self.audition_until = now + 400;
+        if self.audition_note >= 0 { return -1; }
+        self.audition_note = note; self.audition_target = target;
+        return note;
+    }
+    /// The held audition note when it should end now: on the key's release
+    /// (`released`), when the pane is hidden, or once the key stopped
+    /// repeating on a terminal without key releases. -1 otherwise. Clears it.
+    pub fn audition_due(self: &mut Self, now: i64, released: bool) -> i32 {
+        if self.audition_note < 0 { return -1; }
+        if released { self.releases_seen = true; }
+        if !released && self.visible && (self.releases_seen || now < self.audition_until) { return -1; }
+        let note: i32 = self.audition_note; self.audition_note = -1;
+        return note;
+    }
+    /// The frames of the selected slot's sample (`frames` long) that its loop
+    /// covers, as stored: a reversed slot's loop counts from the end, so it
+    /// is mirrored here. The whole sample when the loop is off.
+    pub fn loop_range_start(self: SamplerView, output: AudioController, slot: i32, frames: i64) -> i64 {
+        if !self.looping(output, slot) { return 0; }
+        let reversed: bool = SamplerView::value(output, slot, self.slot, 111) >= 0.5;
+        return reversed ? frames - SamplerView::loop_frame(output, slot, self.slot, true, frames)
+            : SamplerView::loop_frame(output, slot, self.slot, false, frames);
+    }
+    pub fn loop_range_end(self: SamplerView, output: AudioController, slot: i32, frames: i64) -> i64 {
+        if !self.looping(output, slot) { return frames; }
+        let reversed: bool = SamplerView::value(output, slot, self.slot, 111) >= 0.5;
+        return reversed ? frames - SamplerView::loop_frame(output, slot, self.slot, false, frames)
+            : SamplerView::loop_frame(output, slot, self.slot, true, frames);
+    }
+    fn looping(self: SamplerView, output: AudioController, slot: i32) -> bool {
+        return i32(std::math::floor(SamplerView::value(output, slot, self.slot, 7) * 2.0 + 0.5)) != 0;
+    }
+    /// After the slot's sample was cropped to its loop: the loop covers the
+    /// whole new sample, and playback starts at its beginning.
+    pub fn loop_to_whole(output: AudioController, slot: i32, s: i32) -> void {
+        let start: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, 8));
+        let end: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, 9));
+        let offset: i32 = SamplerView::parameter_index(output, slot, SamplerView::column_id(s, 108));
+        if start >= 0 { output.set_parameter(slot, start, 0.0); }
+        if end >= 0 { output.set_parameter(slot, end, 1.0); }
+        if offset >= 0 { output.set_parameter(slot, offset, 0.0); }
+    }
+    /// Output bus (0 = Main, 1-7 = Out 2-8) of the selected slot, or -1.
+    pub fn output_bus(self: SamplerView, output: AudioController, slot: i32) -> i32 {
+        let value: f64 = SamplerView::value(output, slot, self.slot, 11);
+        return value < 0.0 ? -1 : i32(std::math::floor(value * 7.0 + 0.5));
+    }
+    /// Pane title, e.g. " Sampler | Mla Sampler #2 | Groups: Round-robin ".
+    pub fn title(self: SamplerView, output: AudioController, slot: i32) -> str8 {
+        if slot < 1 { return clone(" Sampler "); }
+        let index: i32 = SamplerView::parameter_index(output, slot, 950);
+        let random: bool = index >= 0 && output.parameter_info(slot, index, 2) >= 0.5;
+        return format!(" Sampler | {} #{} | Groups: {} ", output.instrument_name(slot), slot, random ? "Random" : "Round-robin");
+    }
+    /// Width of a column; the sample name takes the space left over.
+    fn width(col: i32) -> i32 {
+        if col == 4 || col == 5 || col == 6 { return 4; }
+        if col < 4 { return 5; }
+        if col == 7 || col == 10 { return 6; }
+        if col == 11 { return 10; }
+        return 7;
+    }
+    /// Left edge of a column: the key and velocity columns, the sample name,
+    /// then the rest.
+    fn column_x(area: Rect, col: i32, name_width: i32) -> i32 {
+        var x: i32 = area.x + 1;
+        for c in 0..col { x = x + SamplerView::width(i32(c)); if c == 6 { x = x + name_width; } }
+        return x;
+    }
+    /// Paints into the pane's inner area: one row per slot (key mode and zone,
+    /// sample name, loop mode, loop start/end, output), a key help line and
+    /// `status` on the last row. `names[s]` is the session sample in slot `s`
+    /// ("" when unknown), `routes[b]` where output bus `b` goes ("MAIN",
+    /// "MST", "A3"; unused for Main); `slot` is the Mla Sampler instrument
+    /// slot or 0. A pad slot shows its key under Low.
+    pub fn paint(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, names: &list<str8>, routes: &list<str8>, clip: &AudioClip, has_clip: bool, status: str8) -> void {
+        if area.width < 20 || area.height < 3 { return; }
+        let help_y: i32 = area.y + area.height - 2;
+        surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), status, theme.foreground, theme.panel);
+        if slot < 1 {
+            surface.text(Rect::new(area.x, area.y, area.width, 1), "Select an Instrument track playing Mla Sampler", theme.muted, theme.panel);
+            surface.text(Rect::new(area.x, help_y, area.width, 1), "Track > Create Instrument track, Instrument > Add instrument: MlaSampler.vst3 | Shift+S hide", theme.muted, theme.panel);
+            return;
+        }
+        var labels: list<str8> = []; labels = names;
+        var destinations: list<str8> = []; destinations = routes;
+        if self.wave { self.paint_wave(surface, area, theme, output, slot, labels, clip, has_clip); return; }
+        if self.key_map { self.paint_map(surface, area, theme, output, slot, labels); return; }
+        // Typed lists: a bare integer list literal would be i64.
+        if self.page == 1 {
+            let widths: list<i32> = [7, 5, 6, 5, 7, 7, 5, 7, 7, 4, 4, 4];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Level", "Pan", "Tune", "Env", "Atk", "Dec", "Sus%", "Rel", "Ofs%", "Grp", "Chk", "Rev"],
+                "j/k slot  h/l col  J/K [ ] adjust  G group mode  e filter  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 3 || self.page == 4 {
+            let widths: list<i32> = [6, 7, 5, 6, 6, 6, 5, 5, 6];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Shape", "Rate", "Sync", "Div", "Delay", "Pitch", "Cut", "Lvl%", "Trig"],
+                self.page == 3 ? "LFO 1 | j/k slot  h/l col  J/K [ ] adjust  e lfo 2  w wave  p play  Enter load"
+                    : "LFO 2 | j/k slot  h/l col  J/K [ ] adjust  e mod  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 5 {
+            let widths: list<i32> = [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Src1", "Tgt1", "Amt1", "Src2", "Tgt2", "Amt2", "Src3", "Tgt3", "Amt3", "Src4", "Tgt4", "Amt4"],
+                "Mod | j/k slot  h/l col  J/K [ ] adjust  e play  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 6 {
+            let widths: list<i32> = [7, 7, 5, 5, 5, 6, 6, 6, 5, 5];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Mode", "Glide", "Uni", "Det", "Spr%", "PEnv", "PAtk", "PDec", "SnA%", "SnB%"],
+                "Play | j/k slot  h/l col  J/K [ ] adjust  e vel/tempo  W/R save/load slot  p play");
+            return;
+        }
+        if self.page == 7 {
+            let widths: list<i32> = [7, 6, 6, 4, 5, 4, 5, 6, 6, 4, 5, 4, 5];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Chain", "F3", "Cut", "Res", "Env", "Key", "Gain", "F4", "Cut", "Res", "Env", "Key", "Gain"],
+                "Filter 3/4 | j/k slot  h/l col  J/K [ ] adjust  e filter mod  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 9 {
+            let widths: list<i32> = [5, 6, 5, 6, 5, 6, 5, 6];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["Drv1", "Mod1", "Drv2", "Mod2", "Drv3", "Mod3", "Drv4", "Mod4"],
+                "Filter Mod | j/k slot  h/l col  J/K [ ] adjust  e lfo 1  w wave  p play  Enter load");
+            return;
+        }
+        if self.page == 8 {
+            let widths: list<i32> = [7, 5, 6, 8, 5];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["VCurve", "Vel%", "KeyL", "Sync", "Beats"],
+                "Vel/Tempo | j/k slot  h/l col  J/K [ ] adjust  e keys & loops  p play  Enter load");
+            return;
+        }
+        if self.page == 2 {
+            let widths: list<i32> = [6, 6, 4, 5, 4, 5, 6, 6, 4, 5, 4, 5, 5, 6, 6, 5, 6];
+            self.paint_columns(surface, area, theme, output, slot, labels, widths,
+                ["F1", "Cut", "Res", "Env", "Key", "Gain", "F2", "Cut", "Res", "Env", "Key", "Gain", "FEnv", "Atk", "Dec", "Sus%", "Rel"],
+                "j/k slot  h/l col  J/K [ ] adjust  e filter 3/4  w wave  p play  Enter load  Bksp clear");
+            return;
+        }
+        let root: i64 = output.instrument_sampler(slot, 0);
+        let occupied: i64 = output.instrument_sampler(slot, 2);
+        var fixed: i32 = 1;
+        for c in 0..12 { fixed = fixed + SamplerView::width(i32(c)); }
+        let name_width: i32 = area.width - fixed > 8 ? area.width - fixed : 8;
+        let headings: array<str8, 12> = {"Mode", "Low", "High", "Root", "Trk", "VLo", "VHi", "Loop", "Start%", "End%", "Xf%", "Out"};
+        for c in 0..12 {
+            let col: i32 = i32(c);
+            surface.text(Rect::new(SamplerView::column_x(area, col, name_width), area.y, SamplerView::width(col), 1), headings[c],
+                col == self.column ? theme.accent : theme.muted, theme.panel);
+        }
+        surface.text(Rect::new(SamplerView::column_x(area, 7, name_width) - name_width, area.y, name_width, 1), "Sample", theme.muted, theme.panel);
+        let rows: i32 = area.height - 3;
+        if rows < 1 { return; }
+        if self.slot < self.scroll { self.scroll = self.slot; }
+        if self.slot >= self.scroll + rows { self.scroll = self.slot - rows + 1; }
+        for r in 0..rows {
+            let s: i32 = self.scroll + i32(r);
+            if s >= 16 { break; }
+            let y: i32 = area.y + 1 + i32(r);
+            let selected: bool = s == self.slot;
+            let background: i32 = selected ? theme.selection : theme.panel;
+            surface.fill(Rect::new(area.x, y, area.width, 1), Cell { glyph: 32, foreground: theme.foreground, background: background });
+            let zone: bool = SamplerView::is_zone(output, slot, s);
+            for c in 0..12 {
+                let col: i32 = i32(c);
+                let value: f64 = SamplerView::value(output, slot, s, col);
+                var text: str8 = clone("-");
+                var dim: bool = false;
+                if col == 1 && !zone { free(text); text = root >= 0 ? piano_note_name(i32(root) + s) : clone("-"); }
+                else if col >= 2 && col <= 4 && !zone { dim = true; }
+                else { free(text); text = SamplerView::field_text(col, value); }
+                // An aux bus routed away from Main shows where: "Out 2>A3".
+                let bus: i32 = col == 11 && value >= 0.0 ? i32(std::math::floor(value * 7.0 + 0.5)) : 0;
+                if bus > 0 && bus < destinations.len() && destinations[bus] != "MAIN" {
+                    let routed: str8 = format!("{}>{}", text, destinations[bus]); free(text); text = routed;
+                }
+                let focused: bool = selected && col == self.column;
+                surface.text(Rect::new(SamplerView::column_x(area, col, name_width), y, SamplerView::width(col) - 1, 1), text,
+                    focused ? theme.accent : (dim ? theme.muted : theme.foreground), background);
+                free(text);
+            }
+            let loaded: bool = occupied >= 0 && ((occupied >> wide(s)) & 1) == 1;
+            let label: str8 = s < labels.len() ? labels[s] : "";
+            let name: str8 = loaded ? (label != "" ? label : "(loaded)") : "(empty)";
+            surface.text(Rect::new(SamplerView::column_x(area, 7, name_width) - name_width, y, name_width - 1, 1), name,
+                loaded ? theme.foreground : theme.muted, background);
+        }
+        surface.text(Rect::new(area.x, help_y, area.width, 1),
+            "j/k slot  h/l col  J/K [ ] adjust  e sound  w wave  p play  E edit  Enter load  o route", theme.muted, theme.panel);
+    }
+    /// Wave view: a summary line, the selected slot's waveform with the loop
+    /// region highlighted and its start/end markers, and a key help line.
+    /// `clip` is the slot's session sample when `has_clip`.
+    fn paint_wave(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, labels: &list<str8>, clip: &AudioClip, has_clip: bool) -> void {
+        var names: list<str8> = []; names = labels;
+        let help_y: i32 = area.y + area.height - 2;
+        let slicing: bool = self.slicing;
+        if slicing {
+            let last: i32 = self.slot + i32(self.slice_points.len()) - 1;
+            let next_mode: str8 = SamplerView::slice_mode_text((self.slice_mode + 1) % 3);
+            let help: str8 = format!("Slice to slots {}-{} | J/K [ ] count  t {}  Enter slice  C cancel",
+                self.slot + 1, last, next_mode);
+            surface.text(Rect::new(area.x, help_y, area.width, 1), help, theme.muted, theme.panel); free(help);
+        } else {
+            surface.text(Rect::new(area.x, help_y, area.width, 1), self.marker == 3
+                ? ", . cut  h/l H/L move  z zero  n add  x delete  u detect  m marker  -/= zoom  w table"
+                : "m start/end/ofs/cut  h/l dot  H/L frame  z zero  [ ] xfade  -/= zoom  j/k slot  p play  w table", theme.muted, theme.panel);
+        }
+        let label: str8 = self.slot < names.len() ? names[self.slot] : "";
+        var source: AudioClip = AudioClip {}; if has_clip { source = clip; }
+        if !has_clip || source.frames < 2 {
+            let why: str8 = format!("Slot {}: {}", self.slot + 1, label != "" ? "no waveform (not in the Audio list)" : "empty - Enter loads a sample");
+            surface.text(Rect::new(area.x, area.y, area.width, 1), why, theme.muted, theme.panel); free(why);
+            return;
+        }
+        let frames: i64 = source.frames;
+        let samples: list<f32> = source.samples; let channels: i64 = source.channels;
+        // Slicing shows the stored sample whole, with its cuts.
+        let reversed: bool = !slicing && SamplerView::value(output, slot, self.slot, 111) >= 0.5;
+        let start_frame: i64 = slicing ? 0 : SamplerView::loop_frame(output, slot, self.slot, false, frames);
+        let end_frame: i64 = slicing ? frames : SamplerView::loop_frame(output, slot, self.slot, true, frames);
+        let mode: str8 = SamplerView::field_text(7, SamplerView::value(output, slot, self.slot, 7));
+        let crossfade: i64 = slicing ? 0 : SamplerView::crossfade_frames(output, slot, self.slot, frames);
+        let offset_frame: i64 = slicing ? -1 : SamplerView::frame_at(output, slot, self.slot, 108, frames);
+        var info: str8 = slicing ? format!("Slice slot {} {} | {} slices {} | {} frames", self.slot + 1, label,
+            self.slice_points.len() - 1, SamplerView::slice_mode_text(self.slice_mode), frames) : format!("Slot {} {} | Loop {} | {}Start {}{} {}End {}{} | Len {}/{} | Xfade {} | {}Ofs {}{} | Zoom {}x",
+            self.slot + 1, label, mode, self.marker == 0 ? "[" : "", start_frame, self.marker == 0 ? "]" : "",
+            self.marker == 1 ? "[" : "", end_frame, self.marker == 1 ? "]" : "", end_frame - start_frame, frames, crossfade,
+            self.marker == 2 ? "[" : "", offset_frame, self.marker == 2 ? "]" : "", 1 << self.zoom);
+        let cut_count: i32 = i32(self.cuts.len());
+        let cut_index: i32 = self.cut < cut_count ? self.cut : (cut_count > 0 ? cut_count - 1 : 0);
+        let cut_frame: i64 = cut_count > 0 ? self.cuts[cut_index] : 0;
+        // The Cut marker: which of the cuts, and where.
+        if !slicing && self.marker == 3 {
+            free(info);
+            info = format!("Slot {} {} | {} cuts | [Cut {}/{} at {}] | Zoom {}x", self.slot + 1, label, cut_count,
+                cut_index + 1, cut_count, cut_frame, 1 << self.zoom);
+        }
+        surface.text(Rect::new(area.x, area.y, area.width, 1), info, theme.foreground, theme.panel);
+        free(info); free(mode);
+        let rows: i32 = area.height - 3;
+        if rows < 1 || area.width < 4 { return; }
+        let dot_rows: i32 = rows * 4;
+        let columns: i32 = area.width * 2;
+        self.dots = columns;
+        let span: i64 = self.span(frames);
+        let marker_frame: i64 = self.marker == 3 ? cut_frame : (self.marker == 1 ? end_frame : (self.marker == 2 ? offset_frame : start_frame));
+        let first: i64 = self.window_start(frames, marker_frame < 0 ? 0 : marker_frame);
+        // Top and bottom dot row of each dot column, from its min and max.
+        var tops: list<i32> = []; var bottoms: list<i32> = [];
+        for px in 0..columns {
+            let f0: i64 = first + span * wide(i32(px)) / wide(columns);
+            var f1: i64 = first + span * (wide(i32(px)) + 1) / wide(columns);
+            if f1 <= f0 { f1 = f0 + 1; }
+            let stride: i64 = (f1 - f0) / 64 + 1;
+            var low: f32 = 1.0f; var high: f32 = -1.0f;
+            var f: i64 = f0;
+            while f < f1 && f < frames {
+                // A reversed slot's waveform is shown as it plays: mirrored.
+                let fr: i64 = reversed ? frames - 1 - f : f;
+                let v: f32 = channels < 2 ? samples[fr] : (samples[fr * channels] + samples[fr * channels + 1]) * 0.5f;
+                if v < low { low = v; } if v > high { high = v; }
+                f = f + stride;
+            }
+            if high < low { low = 0.0f; high = 0.0f; }
+            if high > 1.0f { high = 1.0f; } if low < -1.0f { low = -1.0f; }
+            tops.push(i32(std::math::floor(f64((1.0f - high) * 0.5f) * f64(dot_rows - 1) + 0.5)));
+            bottoms.push(i32(std::math::floor(f64((1.0f - low) * 0.5f) * f64(dot_rows - 1) + 0.5)));
+        }
+        let left_bits: array<i32, 4> = {1, 2, 4, 64};
+        let right_bits: array<i32, 4> = {8, 16, 32, 128};
+        let start_x: i64 = (start_frame - first) * wide(area.width) / (span > 0 ? span : 1);
+        let cuts: list<i64> = self.slice_points;
+        let offset_x: i64 = offset_frame >= 0 && offset_frame >= first && offset_frame < first + span ? (offset_frame - first) * wide(area.width) / (span > 0 ? span : 1) : -1;
+        var end_x: i64 = (end_frame - first) * wide(area.width) / (span > 0 ? span : 1);
+        // A loop ending at the window's right edge (e.g. the sample's end)
+        // marks the last column.
+        if end_x == wide(area.width) && end_frame == first + span { end_x = wide(area.width) - 1; }
+        for r in 0..rows {
+            let y: i32 = area.y + 1 + i32(r);
+            for x in 0..area.width {
+                var mask: i32 = 0;
+                for dot in 0..4 {
+                    let dy: i32 = i32(r) * 4 + i32(dot);
+                    let a: i32 = i32(x) * 2; let b: i32 = a + 1;
+                    if dy >= tops[a] && dy <= bottoms[a] { mask = mask + left_bits[dot]; }
+                    if dy >= tops[b] && dy <= bottoms[b] { mask = mask + right_bits[dot]; }
+                }
+                let cell_frame: i64 = first + span * wide(i32(x)) / wide(area.width);
+                let looped: bool = cell_frame >= start_frame && cell_frame < end_frame;
+                // The crossfade region is shaded.
+                let fading: bool = crossfade > 0 && cell_frame >= end_frame - crossfade && cell_frame < end_frame;
+                let marker: bool = !slicing && (wide(i32(x)) == start_x || wide(i32(x)) == end_x);
+                // A cut (not the ends) in the column it falls in.
+                var cut: bool = false;
+                if slicing {
+                    let inner: i64 = cuts.len() - 1;
+                    for c in 1..inner {
+                        if (cuts[c] - first) * wide(area.width) / (span > 0 ? span : 1) == wide(i32(x)) { cut = true; }
+                    }
+                }
+                // The sample start is a dashed marker (under a loop marker
+                // sharing its column).
+                // Cuts (after the first, at 0), outside slicing and on forward
+                // slots: dotted, the selected one bright on the Cut marker.
+                var on_cut: bool = false; var selected_cut: bool = false;
+                if !slicing && !reversed {
+                    for c in 1..cut_count {
+                        if (self.cuts[c] - first) * wide(area.width) / (span > 0 ? span : 1) == wide(i32(x)) {
+                            on_cut = true; if i32(c) == cut_index && self.marker == 3 { selected_cut = true; }
+                        }
+                    }
+                }
+                if cut {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2503, foreground: theme.accent, background: theme.panel });
+                } else if on_cut && !marker {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x250A, foreground: selected_cut ? theme.accent : theme.muted, background: theme.panel });
+                } else if wide(i32(x)) == offset_x && !marker {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2506, foreground: self.marker == 2 ? theme.accent : theme.foreground, background: theme.panel });
+                } else if marker {
+                    let selected: bool = (self.marker == 0 && wide(i32(x)) == start_x) || (self.marker == 1 && wide(i32(x)) == end_x);
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2502, foreground: selected ? theme.accent : theme.foreground, background: theme.panel });
+                } else if mask != 0 {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 0x2800 + mask, foreground: looped ? theme.accent : theme.muted, background: fading ? theme.selection : theme.panel });
+                } else if fading {
+                    surface.put(area.x + i32(x), y, Cell { glyph: 32, foreground: theme.foreground, background: theme.selection });
+                }
+            }
+        }
+    }
+    /// Lowest and highest key sample slot `s` plays, and its root (a pad's
+    /// key is its root).
+    fn key_span(output: AudioController, slot: i32, s: i32) -> KeySpan {
+        if SamplerView::is_zone(output, slot, s) {
+            let low: i32 = SamplerView::key_of(SamplerView::value(output, slot, s, 1));
+            let high: i32 = SamplerView::key_of(SamplerView::value(output, slot, s, 2));
+            return KeySpan { low: low < high ? low : high, high: low < high ? high : low, root: SamplerView::key_of(SamplerView::value(output, slot, s, 3)) };
+        }
+        let key: i32 = i32(output.instrument_sampler(slot, 0)) + s;
+        return KeySpan { low: key, high: key, root: key };
+    }
+    /// The key map (`v`): a ruler of octaves, a layer row (how many loaded
+    /// slots play the keys under each column: blank for a gap, a dot for
+    /// one, the count for more), then a row per slot with its keys (its
+    /// root marked) and velocity range. Unloaded slots are dim.
+    fn paint_map(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32, labels: &list<str8>) -> void {
+        var names: list<str8> = []; names = labels;
+        let help_y: i32 = area.y + area.height - 2;
+        surface.text(Rect::new(area.x, help_y, area.width, 1), "Map | j/k slot  h/l col  J/K [ ] adjust  e page  v table  w wave  p play", theme.muted, theme.panel);
+        let gutter: i32 = 3; let suffix: i32 = 9;
+        let keys_width: i32 = area.width - gutter - suffix;
+        if keys_width < 16 || area.height < 5 { return; }
+        let span: KeySpan = SamplerView::key_span(output, slot, self.slot);
+        let low_name: str8 = piano_note_name(span.low); let high_name: str8 = piano_note_name(span.high); let root_name: str8 = piano_note_name(span.root);
+        let label: str8 = self.slot < names.len() ? names[self.slot] : "";
+        let header: str8 = format!("Key map | slot {} {} | {}..{} root {} | vel {}-{}", self.slot + 1, label == "" ? "(empty)" : label,
+            low_name, high_name, root_name, SamplerView::key_of(SamplerView::value(output, slot, self.slot, 5)),
+            SamplerView::key_of(SamplerView::value(output, slot, self.slot, 6)));
+        surface.text(Rect::new(area.x, area.y, area.width, 1), header, theme.foreground, theme.panel);
+        free(header); free(low_name); free(high_name); free(root_name);
+        // Each column covers keys first_key(x) .. last_key(x).
+        var spans: list<KeySpan> = [];
+        for s in 0..16 { spans.push(SamplerView::key_span(output, slot, i32(s))); }
+        let ruler_y: i32 = area.y + 1;
+        for x in 0..keys_width {
+            let key: i32 = i32(x) * 128 / keys_width;
+            let previous: i32 = x == 0 ? -1 : (i32(x) - 1) * 128 / keys_width;
+            if key % 12 == 0 && key != previous {
+                let name: str8 = piano_note_name(key);
+                if i32(x) + 3 <= keys_width { surface.text(Rect::new(area.x + gutter + i32(x), ruler_y, 3, 1), name, theme.muted, theme.panel); }
+                free(name);
+            }
+        }
+        let layers_y: i32 = area.y + 2;
+        surface.text(Rect::new(area.x, layers_y, gutter, 1), "Lyr", theme.muted, theme.panel);
+        for x in 0..keys_width {
+            let first: i32 = i32(x) * 128 / keys_width;
+            let next: i32 = (i32(x) + 1) * 128 / keys_width;
+            let last: i32 = next - 1 < first ? first : next - 1;
+            var most: i32 = 0;
+            for key in first..last + 1 {
+                var count: i32 = 0;
+                for s in 0..16 {
+                    let occupied: bool = s < names.len() && names[s] != "";
+                    let span_s: KeySpan = spans[s];
+                    if occupied && i32(key) >= span_s.low && i32(key) <= span_s.high { count = count + 1; }
+                }
+                if count > most { most = count; }
+            }
+            let glyph: i32 = most == 0 ? 32 : (most == 1 ? 0x00B7 : (most < 10 ? 48 + most : 43));
+            surface.put(area.x + gutter + i32(x), layers_y, Cell { glyph: glyph, foreground: most > 1 ? theme.accent : theme.muted, background: theme.panel });
+        }
+        // Slot rows, scrolled to keep the selected slot in view.
+        let rows: i32 = area.height - 5;
+        if rows < 1 { return; }
+        var top: i32 = self.slot - rows / 2;
+        if top > 16 - rows { top = 16 - rows; }
+        if top < 0 { top = 0; }
+        for r in 0..rows {
+            let s: i32 = top + i32(r);
+            if s >= 16 { break; }
+            let y: i32 = area.y + 3 + i32(r);
+            let occupied: bool = s < names.len() && names[s] != "";
+            let selected: bool = s == self.slot;
+            let color: i32 = selected ? theme.accent : (occupied ? theme.foreground : theme.muted);
+            let number: str8 = format!("{}", s + 1);
+            surface.text(Rect::new(area.x, y, gutter, 1), number, color, selected ? theme.selection : theme.panel); free(number);
+            let span_s: KeySpan = spans[s];
+            for x in 0..keys_width {
+                let first: i32 = i32(x) * 128 / keys_width;
+                let next: i32 = (i32(x) + 1) * 128 / keys_width;
+                let last: i32 = next - 1 < first ? first : next - 1;
+                if last < span_s.low || first > span_s.high { continue; }
+                let root: bool = span_s.root >= first && span_s.root <= last;
+                let glyph: i32 = root ? (span_s.low == span_s.high ? 0x25CF : 0x25C6) : 0x2501;
+                surface.put(area.x + gutter + i32(x), y, Cell { glyph: glyph, foreground: color, background: theme.panel });
+            }
+            let velocity: str8 = format!(" v{}-{}", SamplerView::key_of(SamplerView::value(output, slot, s, 5)), SamplerView::key_of(SamplerView::value(output, slot, s, 6)));
+            surface.text(Rect::new(area.x + gutter + keys_width, y, suffix, 1), velocity, color, theme.panel); free(velocity);
+        }
+    }
+    /// The Sound and Filter pages: per slot its number, the page's columns
+    /// (`widths`, `headings`; codes page * 100 + column), dim where
+    /// `column_dim` says, then the sample name in what is left.
+    fn paint_columns(self: &mut Self, surface: Surface, area: Rect, theme: Theme, output: AudioController, slot: i32,
+        labels: &list<str8>, widths: list<i32>, headings: list<str8>, help: str8) -> void {
+        var names: list<str8> = []; names = labels;
+        let help_y: i32 = area.y + area.height - 2;
+        surface.text(Rect::new(area.x, help_y, area.width, 1), help, theme.muted, theme.panel);
+        let count: i32 = i32(widths.len());
+        surface.text(Rect::new(area.x, area.y, 4, 1), " #", theme.muted, theme.panel);
+        var x: i32 = area.x + 4;
+        for c in 0..count {
+            surface.text(Rect::new(x, area.y, widths[c], 1), headings[c], i32(c) == self.column ? theme.accent : theme.muted, theme.panel);
+            x = x + widths[c];
+        }
+        if area.width - (x - area.x) > 6 { surface.text(Rect::new(x, area.y, area.width - (x - area.x), 1), "Sample", theme.muted, theme.panel); }
+        let occupied: i64 = output.instrument_sampler(slot, 2);
+        let rows: i32 = area.height - 3;
+        if rows < 1 { return; }
+        if self.slot < self.scroll { self.scroll = self.slot; }
+        if self.slot >= self.scroll + rows { self.scroll = self.slot - rows + 1; }
+        for r in 0..rows {
+            let s: i32 = self.scroll + i32(r);
+            if s >= 16 { break; }
+            let y: i32 = area.y + 1 + i32(r);
+            let selected: bool = s == self.slot;
+            let background: i32 = selected ? theme.selection : theme.panel;
+            surface.fill(Rect::new(area.x, y, area.width, 1), Cell { glyph: 32, foreground: theme.foreground, background: background });
+            let number: str8 = format!(" {}", s + 1);
+            surface.text(Rect::new(area.x, y, 4, 1), number, theme.muted, background); free(number);
+            var cell_x: i32 = area.x + 4;
+            for c in 0..count {
+                let col: i32 = self.page * 100 + i32(c);
+                let text: str8 = SamplerView::field_text(col, SamplerView::value(output, slot, s, col));
+                let dim: bool = SamplerView::column_dim(output, slot, s, col);
+                let focused: bool = selected && i32(c) == self.column;
+                surface.text(Rect::new(cell_x, y, widths[c] - 1, 1), text, focused ? theme.accent : (dim ? theme.muted : theme.foreground), background);
+                free(text);
+                cell_x = cell_x + widths[c];
+            }
+            if area.width - (cell_x - area.x) > 6 {
+                let loaded: bool = occupied >= 0 && ((occupied >> wide(s)) & 1) == 1;
+                let label: str8 = s < names.len() ? names[s] : "";
+                let name: str8 = loaded ? (label != "" ? label : "(loaded)") : "(empty)";
+                surface.text(Rect::new(cell_x, y, area.width - (cell_x - area.x), 1), name, loaded ? theme.foreground : theme.muted, background);
+            }
+        }
+    }
+    /// Tenths as text, e.g. -35 -> "-3.5"; `plus` marks positive values.
+    fn tenths_text(tenths: i32, plus: bool) -> str8 {
+        let magnitude: i32 = tenths < 0 ? 0 - tenths : tenths;
+        let sign: str8 = tenths < 0 ? "-" : (plus && tenths > 0 ? "+" : "");
+        return format!("{}{}.{}", sign, magnitude / 10, magnitude % 10);
+    }
+    /// A duration in seconds as "35ms" or "1.2s".
+    fn seconds_text(seconds: f64) -> str8 {
+        let ms: i32 = i32(std::math::floor(seconds * 1000.0 + 0.5));
+        if ms < 1000 { return format!("{}ms", ms); }
+        return format!("{}s", SamplerView::tenths_text(i32(std::math::floor(seconds * 10.0 + 0.5)), false));
+    }
+    /// Owned display text of a column's normalized value.
+    fn field_text(col: i32, value: f64) -> str8 {
+        if value < 0.0 { return clone("-"); }
+        // LFO 2's columns read as LFO 1's, filter stages 3 and 4 as 1 and 2.
+        if col >= 400 && col < 500 { return SamplerView::field_text(col - 100, value); }
+        if col >= 701 && col <= 712 { return SamplerView::field_text(col - 501, value); }
+        // Filter Mod page: drive in %, mod scale in +-%.
+        if col >= 900 {
+            if (col - 900) % 2 == 0 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+            let percent: i32 = i32(std::math::floor((value * 2.0 - 1.0) * 100.0 + 0.5));
+            return percent > 0 ? format!("+{}", percent) : format!("{}", percent);
+        }
+        // Filter chain; Vel/Tempo page.
+        if col == 700 || col == 800 || col == 803 {
+            let index: i32 = i32(std::math::floor(value * 7.0 + 0.5));
+            let chains: array<str8, 3> = {"Serial", "Parall", "2 x 2"};
+            let curves: array<str8, 4> = {"Linear", "Soft", "Hard", "Fixed"};
+            let syncs: array<str8, 4> = {"Off", "Repitch", "Stretch", "Beats"};
+            if col == 700 { return index < 3 ? clone(chains[index]) : format!("#{}", index); }
+            if col == 800 { return index < 4 ? clone(curves[index]) : format!("#{}", index); }
+            return index < 4 ? clone(syncs[index]) : format!("#{}", index);
+        }
+        if col == 801 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 802 { return SamplerView::tenths_text(i32(std::math::floor((value * 24.0 - 12.0) * 10.0 + 0.5)), true); }
+        if col == 804 {
+            let beats: array<str8, 14> = {"1/4", "1/2", "1", "2", "3", "4", "6", "8", "12", "16", "24", "32", "48", "64"};
+            let index: i32 = i32(std::math::floor(value * 15.0 + 0.5));
+            return index < 14 ? clone(beats[index]) : format!("#{}", index);
+        }
+        // Play page.
+        if col == 600 {
+            let modes: array<str8, 3> = {"Poly", "Mono", "Legato"};
+            let mode: i32 = i32(std::math::floor(value * 7.0 + 0.5));
+            return mode < 3 ? clone(modes[mode]) : format!("#{}", mode);
+        }
+        if col == 601 { return SamplerView::seconds_text(2.0 * value * value); }
+        if col == 602 { return format!("{}", i32(std::math::floor(value * 15.0 + 0.5)) + 1); }
+        if col == 603 || col == 604 || col == 608 || col == 609 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 605 { return SamplerView::tenths_text(i32(std::math::floor((value * 96.0 - 48.0) * 10.0 + 0.5)), true); }
+        if col == 606 { return SamplerView::seconds_text(2.0 * value * value * value); }
+        if col == 607 { return SamplerView::seconds_text(0.001 * std::math::pow(10000.0, value)); }
+        // Mod page: source and target names, and the amount in percent.
+        if col >= 500 && col < 600 {
+            let part: i32 = (col - 500) % 3;
+            let index: i32 = i32(std::math::floor(value * 15.0 + 0.5));
+            if part == 0 {
+                let sources: array<str8, 11> = {"-", "LFO1", "LFO2", "AmpEn", "FltEn", "Veloc", "Key", "ModWh", "AftT", "Bend", "ModCC"};
+                return index < 11 ? clone(sources[index]) : format!("#{}", index);
+            }
+            if part == 1 {
+                let targets: array<str8, 7> = {"-", "Pitch", "Cut", "Reso", "Level", "Pan", "Start"};
+                return index < 7 ? clone(targets[index]) : format!("#{}", index);
+            }
+            let percent: i32 = i32(std::math::floor((value * 2.0 - 1.0) * 100.0 + 0.5));
+            return percent > 0 ? format!("+{}", percent) : format!("{}", percent);
+        }
+        // Sound page, as the plugin maps them (plugins/mla_sampler/src/plugin.cpp).
+        if col == 100 {
+            if value <= 0.0 { return clone("off"); }
+            let db: str8 = SamplerView::tenths_text(i32(std::math::floor((value * 66.0 - 60.0) * 10.0 + 0.5)), true);
+            return db;
+        }
+        if col == 101 {
+            let percent: i32 = i32(std::math::floor((value * 2.0 - 1.0) * 100.0 + 0.5));
+            return percent == 0 ? clone("C") : (percent < 0 ? format!("L{}", 0 - percent) : format!("R{}", percent));
+        }
+        if col == 102 { return SamplerView::tenths_text(i32(std::math::floor((value * 48.0 - 24.0) * 10.0 + 0.5)), true); }
+        if col == 103 || col == 212 { return clone(value >= 0.5 ? "Own" : "Inst"); }
+        if col == 111 { return clone(value >= 0.5 ? "On" : "Off"); }
+        // LFO page, as the plugin maps them.
+        if col == 300 {
+            let shapes: array<str8, 6> = {"Sine", "Tri", "SawUp", "SawDn", "Sqr", "S&H"};
+            let shape: i32 = i32(std::math::floor(value * 15.0 + 0.5));
+            return shape < 6 ? clone(shapes[shape]) : format!("#{}", shape);
+        }
+        if col == 301 {
+            let hz: f64 = 0.05 * std::math::pow(400.0, value);
+            let cents: i32 = i32(std::math::floor(hz * 100.0 + 0.5));
+            if cents < 100 { return format!("0.{}{}Hz", cents / 10, cents % 10); }
+            return format!("{}Hz", SamplerView::tenths_text(i32(std::math::floor(hz * 10.0 + 0.5)), false));
+        }
+        if col == 302 { return clone(value >= 0.5 ? "On" : "Off"); }
+        if col == 303 {
+            let divisions: array<str8, 14> = {"1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/2.", "1/4.", "1/8.", "1/16.",
+                "1/2T", "1/4T", "1/8T", "1/16T"};
+            let division: i32 = i32(std::math::floor(value * 15.0 + 0.5));
+            return division < 14 ? clone(divisions[division]) : format!("#{}", division);
+        }
+        if col == 304 { return SamplerView::seconds_text(value * 2.0); }
+        if col == 305 { return SamplerView::tenths_text(i32(std::math::floor((value * 2.0 - 1.0) * 120.0 + 0.5)), true); }
+        if col == 306 { return SamplerView::tenths_text(i32(std::math::floor((value * 2.0 - 1.0) * 40.0 + 0.5)), true); }
+        if col == 307 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 308 { return clone(value >= 0.5 ? "Retrg" : "Free"); }
+        // Filter page, as the plugin maps them.
+        if col == 200 || col == 206 {
+            let names: array<str8, 22> = {"Off", "LP12", "LP24", "HP12", "HP24", "BP12", "BP24", "Ldr12", "Ldr24", "Notch",
+                "SvLP", "SvHP", "SvBP", "SvNt", "Peak", "LoShf", "HiShf", "Vowel", "Comb+", "Comb-", "Flang", "Phasr"};
+            let kind: i32 = i32(std::math::floor(value * 63.0 + 0.5));
+            return kind < 22 ? clone(names[kind]) : format!("#{}", kind);
+        }
+        if col == 201 || col == 207 {
+            let hz: f64 = 20.0 * std::math::pow(1000.0, value);
+            if hz < 1000.0 { return format!("{}", i32(std::math::floor(hz + 0.5))); }
+            let tenths: i32 = i32(std::math::floor(hz / 100.0 + 0.5));
+            return format!("{}.{}k", tenths / 10, tenths % 10);
+        }
+        if col == 202 || col == 208 { return format!("{}", i32(std::math::floor(value * 36.0 + 0.5))); }
+        if col == 203 || col == 209 { return SamplerView::tenths_text(i32(std::math::floor((value * 2.0 - 1.0) * 80.0 + 0.5)), true); }
+        if col == 204 || col == 210 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 205 || col == 211 { return SamplerView::tenths_text(i32(std::math::floor((value * 2.0 - 1.0) * 240.0 + 0.5)), true); }
+        if col == 213 { return SamplerView::seconds_text(2.0 * value * value * value); }
+        if col == 214 || col == 216 { return SamplerView::seconds_text(0.001 * std::math::pow(10000.0, value)); }
+        if col == 215 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 109 || col == 110 {
+            let group: i32 = i32(std::math::floor(value * 8.0 + 0.5));
+            return group == 0 ? clone("-") : format!("{}", group);
+        }
+        if col == 104 { return SamplerView::seconds_text(2.0 * value * value * value); }
+        if col == 105 || col == 107 { return SamplerView::seconds_text(0.001 * std::math::pow(10000.0, value)); }
+        if col == 106 { return format!("{}", i32(std::math::floor(value * 100.0 + 0.5))); }
+        if col == 0 { return clone(value >= 0.5 ? "Zone" : "Pad"); }
+        if col >= 1 && col <= 3 { return piano_note_name(SamplerView::key_of(value)); }
+        if col == 4 { return clone(value >= 0.5 ? "On" : "Off"); }
+        if col == 5 || col == 6 { return format!("{}", SamplerView::key_of(value)); }
+        if col == 7 {
+            let mode: i32 = i32(std::math::floor(value * 2.0 + 0.5));
+            return clone(mode == 1 ? "Fwd" : (mode == 2 ? "Bidir" : "Off"));
+        }
+        if col == 11 {
+            let bus: i32 = i32(std::math::floor(value * 7.0 + 0.5));
+            return bus == 0 ? clone("Main") : format!("Out {}", bus + 1);
+        }
+        let tenths: i32 = i32(std::math::floor(value * 1000.0 + 0.5));
+        return format!("{}.{}", tenths / 10, tenths % 10);
+    }
+}

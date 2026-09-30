@@ -1,0 +1,1530 @@
+// Offline functional tests for the Mla Sampler bundle.
+//
+// Loads the built .vst3 through the SDK hosting classes (as mlacker does),
+// fills slots through the mla_sampler_protocol messages and checks rendered
+// audio: the bus layout, slot/key mapping, key zones with pitch tracking and
+// layering, loop off / forward (with and without a crossfade) / bidirectional, per-slot output routing with
+// the fallback to Main, and state round trips.
+//
+// Usage: mla_sampler_tests <path/to/MlaSampler.vst3> <scratch dir>
+
+#include "mla_sampler_protocol.h"
+
+#include "public.sdk/source/common/memorystream.h"
+#include "public.sdk/source/vst/hosting/eventlist.h"
+#include "public.sdk/source/vst/hosting/hostclasses.h"
+#include "public.sdk/source/vst/hosting/module.h"
+#include "public.sdk/source/vst/hosting/parameterchanges.h"
+#include "public.sdk/source/vst/hosting/plugprovider.h"
+#include "public.sdk/source/vst/hosting/processdata.h"
+#include "pluginterfaces/vst/ivstaudioprocessor.h"
+#include "pluginterfaces/vst/ivstmessage.h"
+#include "pluginterfaces/vst/ivstmidicontrollers.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <memory>
+#include <string>
+#include <vector>
+
+using namespace Steinberg;
+using namespace Steinberg::Vst;
+
+namespace {
+
+int failures = 0;
+// A test stops at a failed open; there is nothing to render.
+#define OPEN(instance, ...)                                                                    \
+    do {                                                                                       \
+        if(!(instance).open(__VA_ARGS__)) {                                                    \
+            std::fprintf(stderr, "FAIL %s:%d: cannot open the bundle\n", __FILE__, __LINE__); \
+            ++failures;                                                                        \
+            return;                                                                            \
+        }                                                                                      \
+    } while(0)
+#define CHECK(condition)                                                                       \
+    do {                                                                                       \
+        if(!(condition)) {                                                                     \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #condition);          \
+            ++failures;                                                                        \
+        }                                                                                      \
+    } while(0)
+
+constexpr double kRate = 48000.0;
+constexpr int32 kBlock = 256;
+constexpr int kRootKey = 36;
+constexpr int kOutputs = 10; // Main, Out 2..8, Send A, Send B
+
+// Parameter IDs (see plugin.cpp).
+constexpr ParamID kRelease = 107;
+enum SlotParam { kSlotLevel, kSlotPan, kSlotTune, kSlotOutput, kSlotLoop, kSlotLoopStart, kSlotLoopEnd };
+constexpr ParamID slotParam(int slot, SlotParam k) { return 200 + slot * 7 + k; }
+constexpr double kLoopForward = 0.5, kLoopBidirectional = 1.0;
+enum ZoneParam { kZoneMode, kZoneLow, kZoneHigh, kZoneRoot, kZoneTrack };
+constexpr ParamID zoneParam(int slot, ZoneParam k) { return 400 + slot * 5 + k; }
+constexpr double key(int midi) { return midi / 127.0; }
+constexpr ParamID crossfadeParam(int slot) { return 500 + slot; }
+constexpr ParamID velocityParam(int slot, bool high) { return 600 + slot * 2 + (high ? 1 : 0); }
+constexpr ParamID kVelocitySensitivity = 102;
+constexpr ParamID kDecay = 105, kSustain = 106;
+enum EnvelopeParam { kEnvelopeOwn, kEnvelopeAttack, kEnvelopeDecay, kEnvelopeSustain, kEnvelopeRelease };
+constexpr ParamID envelopeParam(int slot, EnvelopeParam k) { return 700 + slot * 5 + k; }
+constexpr ParamID startParam(int slot) { return 800 + slot; }
+constexpr ParamID groupParam(int slot) { return 900 + slot; }
+constexpr ParamID kGroupMode = 950;
+constexpr ParamID chokeParam(int slot) { return 1200 + slot; }
+constexpr ParamID reverseParam(int slot) { return 1300 + slot; }
+constexpr ParamID unisonParam(int slot, int k) { return 1400 + slot * 4 + k; } // 0 voices, 1 detune, 2 spread
+constexpr ParamID playParam(int slot, int k) { return 1500 + slot * 4 + k; }   // 0 mode, 1 glide
+constexpr double kMono = 1.0 / 7.0, kLegato = 2.0 / 7.0;
+constexpr ParamID kAttack = 104;
+enum LfoField { kLfoShape, kLfoRate, kLfoSync, kLfoDivision, kLfoDelay, kLfoPitch, kLfoCutoff, kLfoLevel, kLfoTrigger };
+constexpr ParamID lfoParam(int slot, LfoField k) { return 3000 + slot * 32 + k; }
+constexpr ParamID lfo2Param(int slot, LfoField k) { return 3016 + slot * 32 + k; }
+enum RouteField { kRouteSource, kRouteTarget, kRouteAmount };
+constexpr ParamID routeParam(int slot, int route, RouteField k) { return 4000 + slot * 32 + route * 4 + k; }
+enum { kSrcLfo1 = 1, kSrcLfo2, kSrcAmpEnv, kSrcFilterEnv, kSrcVelocity, kSrcKey, kSrcModWheel, kSrcAftertouch, kSrcPitchBend, kSrcModCc };
+// MIDI controllers: bend range (0..24 st), the Mod CC choice, and the values.
+constexpr ParamID kBendRangeId = 110, kModCcId = 111, kModWheelId = 112, kAftertouchId = 113, kPitchBendId = 114;
+constexpr ParamID pitchEnvParam(int slot, int k) { return 1600 + slot * 4 + k; } // 0 depth, 1 attack, 2 decay
+constexpr ParamID sendParam(int slot, int send) { return 1700 + slot * 4 + send; }
+constexpr ParamID chainParam(int slot, int k) { return 1800 + slot * 4 + k; } // 0 chain, 1 tempo sync, 2 beats
+constexpr ParamID curveParam(int slot, int k) { return 1900 + slot * 4 + k; } // 0 curve, 1 depth, 2 key level
+constexpr double kParallel = 1.0 / 7.0, kPairs = 2.0 / 7.0, kRepitch = 1.0 / 7.0, kStretch = 2.0 / 7.0, kBeatsSync = 3.0 / 7.0;
+double beatsValue(int index) { return index / 15.0; } // 1/4, 1/2, 1, 2, 3, 4, ...
+constexpr ParamID ccValueParam(int choice) { return 120 + choice; } // CC 2, 4, 11, 16, 17, 18, 19, 74
+enum { kTgtPitch = 1, kTgtCutoff, kTgtResonance, kTgtLevel, kTgtPan, kTgtStart };
+double listValue(int index) { return index / 15.0; }
+double amount(double share) { return (share + 1.0) / 2.0; }
+constexpr int kSquare = 4, kSampleHold = 5;
+double lfoShape(int shape) { return shape / 15.0; }
+double lfoRate(double hz) { return std::log(hz / 0.05) / std::log(400.0); }
+constexpr ParamID kFilterEnvelope = 960; // + 0 attack, 1 decay, 2 sustain, 3 release
+constexpr ParamID slotFilterEnvelope(int slot, EnvelopeParam k) { return 1100 + slot * 5 + k; }
+enum FilterField { kFilterType, kFilterCutoff, kFilterResonance, kFilterEnvAmount, kFilterKeyTrack, kFilterGain, kFilterDrive, kFilterMod };
+constexpr ParamID filterParam(int slot, int stage, FilterField k) { return 2000 + slot * 32 + stage * 8 + k; }
+// Filter types (plugin.cpp kFilterTypeNames), as normalized list values.
+constexpr double filterType(int type) { return type / 63.0; }
+constexpr int kLowpass24 = 2, kHighpass24 = 4, kNotch = 9;
+constexpr int kSvfLowpass = 10, kSvfHighpass = 11, kSvfBandpass = 12, kPeak = 14, kLowShelf = 15, kVowel = 17;
+constexpr int kCombPlus = 18, kCombMinus = 19, kFlanger = 20, kPhaser = 21;
+double gainNorm(double db) { return (db / 24.0 + 1.0) / 2.0; }
+// Cutoff normalized value for a frequency: 20 Hz * 1000^norm.
+double cutoff(double hz) { return std::log(hz / 20.0) / std::log(1000.0); }
+
+class Application final : public HostApplication {
+  public:
+    tresult PLUGIN_API getName(String128 name) override
+    {
+        const char16_t text[] = u"mla_sampler_tests";
+        std::copy(std::begin(text), std::end(text), name);
+        return kResultOk;
+    }
+};
+Application application;
+
+struct Instance {
+    VST3::Hosting::Module::Ptr module;
+    IPtr<PlugProvider> provider;
+    IPtr<IComponent> component;
+    IPtr<IAudioProcessor> processor;
+    HostProcessData data;
+    EventList events{512};
+    ParameterChanges changes{64};
+    ProcessContext context{};
+    std::vector<std::string> subCategories;
+
+    // `auxActive`: also activate bus 1 ("Out 2"); `sendsActive`: the two
+    // send buses.
+    bool open(const std::string &path, bool auxActive = false, bool sendsActive = false)
+    {
+        std::string error;
+        module = VST3::Hosting::Module::create(path, error);
+        if(!module) {
+            std::fprintf(stderr, "load failed: %s\n", error.c_str());
+            return false;
+        }
+        const auto &factory = module->getFactory();
+        factory.setHostContext(&application);
+        for(const auto &info : factory.classInfos()) {
+            if(info.category() != kVstAudioEffectClass)
+                continue;
+            subCategories = info.subCategories();
+            provider = owned(new PlugProvider(factory, info, true));
+            if(!provider->initialize())
+                return false;
+            component = provider->getComponentPtr();
+            processor = U::cast<IAudioProcessor>(component);
+            break;
+        }
+        if(!component || !processor)
+            return false;
+        std::vector<SpeakerArrangement> stereo(kOutputs, SpeakerArr::kStereo);
+        if(processor->setBusArrangements(nullptr, 0, stereo.data(), kOutputs) != kResultOk)
+            return false;
+        component->activateBus(kAudio, kOutput, 0, true);
+        if(auxActive)
+            component->activateBus(kAudio, kOutput, 1, true);
+        if(sendsActive) {
+            component->activateBus(kAudio, kOutput, 8, true);
+            component->activateBus(kAudio, kOutput, 9, true);
+        }
+        component->activateBus(kEvent, kInput, 0, true);
+        ProcessSetup setup{kOffline, kSample32, kBlock, kRate};
+        if(processor->setupProcessing(setup) != kResultOk || !data.prepare(*component, kBlock, kSample32))
+            return false;
+        context.sampleRate = kRate;
+        data.processContext = &context;
+        data.inputEvents = &events;
+        data.inputParameterChanges = &changes;
+        component->setActive(true);
+        processor->setProcessing(true);
+        return true;
+    }
+
+    ~Instance()
+    {
+        if(processor)
+            processor->setProcessing(false);
+        if(component)
+            component->setActive(false);
+        data.unprepare();
+        processor.reset();
+        component.reset();
+        provider.reset();
+    }
+
+    // A parameter change at frame `offset` of the next block.
+    void param(ParamID id, double value, int32 offset = 0)
+    {
+        int32 index = 0;
+        if(auto *queue = changes.addParameterData(id, index))
+            queue->addPoint(offset, value, index);
+    }
+
+    void noteOn(int pitch, float velocity = 1.0f, int32 offset = 0)
+    {
+        Event e{};
+        e.type = Event::kNoteOnEvent;
+        e.sampleOffset = offset;
+        e.noteOn.pitch = static_cast<int16>(pitch);
+        e.noteOn.velocity = velocity;
+        e.noteOn.noteId = -1;
+        events.addEvent(e);
+    }
+
+    void noteOff(int pitch, int32 offset = 0)
+    {
+        Event e{};
+        e.type = Event::kNoteOffEvent;
+        e.sampleOffset = offset;
+        e.noteOff.pitch = static_cast<int16>(pitch);
+        e.noteOff.noteId = -1;
+        events.addEvent(e);
+    }
+
+    // Render `frames` (multiple of the block), appending bus `bus`'s
+    // interleaved stereo.
+    std::vector<float> render(int frames, int bus = 0)
+    {
+        std::vector<float> out;
+        for(int done = 0; done < frames; done += kBlock) {
+            data.numSamples = kBlock;
+            processor->process(data);
+            events.clear();
+            changes.clearQueue();
+            const auto &buffers = data.outputs[bus];
+            for(int32 i = 0; i < kBlock; ++i) {
+                out.push_back(buffers.channelBuffers32[0][i]);
+                out.push_back(buffers.channelBuffers32[1][i]);
+            }
+        }
+        return out;
+    }
+
+    tresult send(IPtr<IMessage> message)
+    {
+        auto connection = U::cast<IConnectionPoint>(component);
+        return connection ? connection->notify(message) : kNoInterface;
+    }
+};
+
+IPtr<IMessage> message(const char *id)
+{
+    auto msg = owned(new HostMessage);
+    msg->setMessageID(id);
+    return msg;
+}
+
+tresult loadPcm(Instance &plugin, int slot, const std::vector<float> &mono)
+{
+    auto msg = message(mla_sampler::kLoadPcmMessage);
+    auto *a = msg->getAttributes();
+    a->setInt("pad", slot);
+    a->setInt("channels", 1);
+    a->setInt("frames", static_cast<int64>(mono.size()));
+    a->setFloat("rate", kRate);
+    a->setBinary("data", mono.data(), static_cast<uint32>(mono.size() * sizeof(float)));
+    return plugin.send(msg);
+}
+
+// Rising ramp 1/n .. 1 over `frames` frames: a frame's value names its index.
+std::vector<float> ramp(int frames)
+{
+    std::vector<float> pcm(frames);
+    for(int i = 0; i < frames; ++i)
+        pcm[i] = static_cast<float>(i + 1) / static_cast<float>(frames);
+    return pcm;
+}
+
+float left(const std::vector<float> &stereo, int frame) { return stereo[static_cast<size_t>(frame) * 2]; }
+
+double energy(const std::vector<float> &stereo, int from, int to)
+{
+    double sum = 0.0;
+    for(int f = from; f < to; ++f)
+        sum += std::fabs(left(stereo, f));
+    return sum;
+}
+
+void testLayout(const std::string &path)
+{
+    Instance plugin;
+    OPEN(plugin, path);
+    CHECK(std::find(plugin.subCategories.begin(), plugin.subCategories.end(), "Instrument") !=
+          plugin.subCategories.end());
+    CHECK(std::find(plugin.subCategories.begin(), plugin.subCategories.end(), "Sampler") !=
+          plugin.subCategories.end());
+    CHECK(plugin.component->getBusCount(kAudio, kOutput) == kOutputs);
+    CHECK(plugin.component->getBusCount(kAudio, kInput) == 0);
+    for(int32 bus = 0; bus < kOutputs; ++bus) {
+        BusInfo info{};
+        CHECK(plugin.component->getBusInfo(kAudio, kOutput, bus, info) == kResultOk);
+        CHECK(info.channelCount == 2);
+        CHECK(info.busType == (bus == 0 ? kMain : kAux));
+        if(bus == 8)
+            CHECK(std::u16string(info.name) == u"Send A");
+        CHECK(((info.flags & BusInfo::kDefaultActive) != 0) == (bus == 0));
+    }
+    // mla_sampler.info: 16 slots from the root key, occupancy bitmask.
+    CHECK(loadPcm(plugin, 3, ramp(64)) == kResultOk);
+    auto info = message(mla_sampler::kInfoMessage);
+    CHECK(plugin.send(info) == kResultOk);
+    int64 root = -1, pads = -1, occupied = -1;
+    info->getAttributes()->getInt("root", root);
+    info->getAttributes()->getInt("pads", pads);
+    info->getAttributes()->getInt("occupied", occupied);
+    CHECK(root == kRootKey);
+    CHECK(pads == 16);
+    CHECK(occupied == (int64(1) << 3));
+}
+
+void testLoopOff(const std::string &path)
+{
+    Instance plugin;
+    OPEN(plugin, path);
+    CHECK(loadPcm(plugin, 0, std::vector<float>(1000, 0.5f)) == kResultOk);
+    plugin.noteOn(kRootKey);
+    const auto out = plugin.render(4096);
+    CHECK(std::fabs(left(out, 10) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(left(out, 990) - 0.5f) < 1e-3f);
+    CHECK(energy(out, 1001, 4096) == 0.0); // The sample ends; the key is still held.
+}
+
+void testForwardLoop(const std::string &path)
+{
+    Instance plugin;
+    OPEN(plugin, path);
+    const int frames = 1000;
+    CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+    plugin.param(slotParam(0, kSlotLoop), kLoopForward);
+    plugin.param(slotParam(0, kSlotLoopStart), 0.5); // frames 500..999
+    plugin.noteOn(kRootKey);
+    const auto out = plugin.render(8192);
+    // Frame f of the output is source frame f until the loop end, then
+    // 500 + (f - 500) % 500.
+    for(int f : {100, 700, 999, 1000, 1250, 4321, 8000}) {
+        const int source = f < frames ? f : 500 + (f - 500) % 500;
+        CHECK(std::fabs(left(out, f) - static_cast<float>(source + 1) / frames) < 2e-3f);
+    }
+    // Note-off releases the looping voice; it fades out and stops.
+    plugin.param(kRelease, 0.0); // 1 ms
+    plugin.noteOff(kRootKey);
+    const auto tail = plugin.render(4096);
+    CHECK(energy(tail, 2048, 4096) == 0.0);
+}
+
+// Largest step between consecutive output frames in [from, to).
+float largestStep(const std::vector<float> &stereo, int from, int to)
+{
+    float largest = 0.0f;
+    for(int f = from + 1; f < to; ++f)
+        largest = std::max(largest, std::fabs(left(stereo, f) - left(stereo, f - 1)));
+    return largest;
+}
+
+void testLoopCrossfade(const std::string &path)
+{
+    // Frames 0..999 rise from -1 to +1: the loop 500..999 jumps from ~1 back
+    // to 0 at its seam, while the audio before it (400..499) rises into 0.
+    const int frames = 1000;
+    std::vector<float> pcm(frames);
+    for(int f = 0; f < frames; ++f)
+        pcm[f] = static_cast<float>(f - 500) / 500.0f;
+    for(double crossfade : {0.0, 0.1}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, pcm) == kResultOk);
+        plugin.param(slotParam(0, kSlotLoop), kLoopForward);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.5);
+        plugin.param(crossfadeParam(0), crossfade); // 100 frames
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(4096);
+        const float step = largestStep(out, 10, 4096);
+        if(crossfade == 0.0)
+            CHECK(step > 0.9f); // the click at the seam
+        else
+            CHECK(step < 0.03f); // smooth through several passes
+        // Away from the seam the loop plays unchanged.
+        CHECK(std::fabs(left(out, 1500 + 200) - static_cast<float>(700 - 500) / 500.0f) < 2e-3f);
+    }
+}
+
+void testBidirectionalLoop(const std::string &path)
+{
+    Instance plugin;
+    OPEN(plugin, path);
+    const int frames = 1000;
+    CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+    plugin.param(slotParam(0, kSlotLoop), kLoopBidirectional);
+    plugin.param(slotParam(0, kSlotLoopStart), 0.2); // frames 200..999, turning on 999
+    plugin.noteOn(kRootKey);
+    const auto out = plugin.render(8192);
+    // Rises to the last loop frame, falls to the loop start, rises again.
+    CHECK(left(out, 998) < left(out, 999));
+    CHECK(left(out, 1001) < left(out, 999));
+    CHECK(left(out, 1500) < left(out, 1400));
+    CHECK(std::fabs(left(out, 999 + 799) - static_cast<float>(201) / frames) < 2e-3f); // Back at the start.
+    CHECK(left(out, 2000) > left(out, 1900));
+    for(int f = 0; f < 8192; ++f) {
+        const float value = left(out, f);
+        if(f >= 200 && (value < 0.2f || value > 1.0f + 1e-3f)) {
+            CHECK(!"bidirectional playhead left the loop");
+            break;
+        }
+    }
+}
+
+// One note on `pitch` in a fresh block; returns the left channel of `frames`.
+std::vector<float> play(Instance &plugin, int pitch, int frames = 1024)
+{
+    plugin.noteOn(pitch);
+    return plugin.render(frames);
+}
+
+void zone(Instance &plugin, int slot, int low, int high, int root, bool track = true)
+{
+    plugin.param(zoneParam(slot, kZoneMode), 1.0);
+    plugin.param(zoneParam(slot, kZoneLow), key(low));
+    plugin.param(zoneParam(slot, kZoneHigh), key(high));
+    plugin.param(zoneParam(slot, kZoneRoot), key(root));
+    plugin.param(zoneParam(slot, kZoneTrack), track ? 1.0 : 0.0);
+}
+
+void testKeyZones(const std::string &path)
+{
+    const int frames = 4000;
+    // Pitch tracking: an octave up plays twice as fast, an octave down half.
+    for(const auto &[pitch, step] : {std::pair<int, double>{72, 2.0}, {60, 1.0}, {48, 0.5}}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60);
+        const auto out = play(plugin, pitch);
+        for(int f : {100, 700}) {
+            const double source = f * step;
+            CHECK(std::fabs(left(out, f) - static_cast<float>((source + 1) / frames)) < 2e-3f);
+        }
+    }
+    // Keys outside the zone are silent, including the slot's old pad key.
+    for(int pitch : {kRootKey, 47, 73}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60);
+        CHECK(energy(play(plugin, pitch), 0, 1024) == 0.0);
+    }
+    // Key Track off: every key in the zone plays the recorded pitch.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60, false);
+        const auto out = play(plugin, 72);
+        CHECK(std::fabs(left(out, 100) - 101.0f / frames) < 2e-3f);
+    }
+    // Overlapping zones layer, and pad slots keep their keys beside them.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(frames, 0.25f)) == kResultOk);
+        CHECK(loadPcm(plugin, 2, std::vector<float>(frames, 0.5f)) == kResultOk);
+        zone(plugin, 0, 48, 72, 60);
+        zone(plugin, 1, 55, 65, 60, false);
+        plugin.param(kRelease, 0.0); // 1 ms, so the layer is gone before the pad
+        const auto layered = play(plugin, 60);
+        CHECK(std::fabs(left(layered, 100) - (101.0f / frames + 0.25f)) < 2e-3f);
+        plugin.noteOff(60);
+        plugin.render(2048);
+        const auto pad = play(plugin, kRootKey + 2);
+        CHECK(std::fabs(left(pad, 100) - 0.5f) < 1e-3f);
+    }
+}
+
+void testVelocityLayers(const std::string &path)
+{
+    // Two layers on one zone: soft (1-63) and hard (64-127). Velocity
+    // sensitivity 0 plays every note at full level, so the level names the layer.
+    const auto layered = [&](float velocity) -> float {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, std::vector<float>(4000, 0.25f)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(4000, 0.5f)) == kResultOk);
+        CHECK(loadPcm(plugin, 2, std::vector<float>(4000, 0.125f)) == kResultOk);
+        plugin.param(kVelocitySensitivity, 0.0);
+        zone(plugin, 0, 48, 72, 60);
+        zone(plugin, 1, 48, 72, 60);
+        plugin.param(velocityParam(0, false), key(1));
+        plugin.param(velocityParam(0, true), key(63));
+        plugin.param(velocityParam(1, false), key(64));
+        plugin.param(velocityParam(1, true), key(127));
+        // Pad slot 3 (key 38) only answers the softest notes.
+        plugin.param(velocityParam(2, true), key(20));
+        plugin.noteOn(60, velocity);
+        plugin.noteOn(kRootKey + 2, velocity);
+        const auto out = plugin.render(1024);
+        return left(out, 100);
+    };
+    CHECK(std::fabs(layered(0.3f) - 0.25f) < 1e-3f);   // 38: soft layer only
+    CHECK(std::fabs(layered(0.9f) - 0.5f) < 1e-3f);    // 114: hard layer only
+    CHECK(std::fabs(layered(64.0f / 127.0f) - 0.5f) < 1e-3f); // the boundary belongs to the hard layer
+    CHECK(std::fabs(layered(0.1f) - (0.25f + 0.125f)) < 1e-3f); // 13: soft layer and the pad
+}
+
+void testSlotEnvelopes(const std::string &path)
+{
+    // Slot 1 (key 36) holds 0.5 and slot 2 (key 37) 0.25; both play at once.
+    // A 1 ms decay to sustain 0 silences a voice long before frame 1500.
+    const auto both = [&](bool own_dies) -> float {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, std::vector<float>(4000, 0.5f)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(4000, 0.25f)) == kResultOk);
+        plugin.param(envelopeParam(0, kEnvelopeOwn), 1.0);
+        plugin.param(envelopeParam(0, kEnvelopeDecay), 0.0);
+        plugin.param(envelopeParam(0, kEnvelopeSustain), own_dies ? 0.0 : 1.0);
+        plugin.param(kDecay, 0.0);
+        plugin.param(kSustain, own_dies ? 1.0 : 0.0);
+        plugin.noteOn(kRootKey);
+        plugin.noteOn(kRootKey + 1);
+        const auto out = plugin.render(2048);
+        CHECK(std::fabs(left(out, 0) - 0.75f) < 1e-2f); // both start
+        return left(out, 1500);
+    };
+    // Slot 1's own envelope ends it; slot 2 keeps the instance's sustain...
+    CHECK(std::fabs(both(true) - 0.25f) < 1e-3f);
+    // ...and the other way round: the instance envelope ends slot 2 only.
+    CHECK(std::fabs(both(false) - 0.5f) < 1e-3f);
+}
+
+void testSampleStart(const std::string &path)
+{
+    const int frames = 1000;
+    // Mid-frame 0.2505 names frame 250 exactly: playback starts there and,
+    // with the loop off, ends 750 output frames later.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.param(startParam(0), 250.5 / frames);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(2048);
+        CHECK(std::fabs(left(out, 0) - 251.0f / frames) < 1e-4f);
+        CHECK(std::fabs(left(out, 700) - 951.0f / frames) < 1e-4f);
+        CHECK(energy(out, 751, 2048) == 0.0);
+    }
+    // A start past a forward loop's end plays on into the loop.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.param(slotParam(0, kSlotLoop), kLoopForward);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.2);
+        plugin.param(slotParam(0, kSlotLoopEnd), 0.5); // frames 200..499
+        plugin.param(startParam(0), 0.9);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(2048);
+        for(int f = 10; f < 2048; f += 97) {
+            const float value = left(out, f);
+            CHECK(value > 0.2f && value <= 0.5f + 1e-3f);
+        }
+    }
+}
+
+void testLiveEdits(const std::string &path)
+{
+    const int frames = 1000;
+    // Turning a loop on keeps a sounding note going past the sample's end.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(slotParam(0, kSlotLoop), kLoopForward);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.5);
+        const auto out = plugin.render(4096);
+        CHECK(energy(out, 3000, 4096) > 100.0);
+        CHECK(left(out, 2000) > 0.5f && left(out, 2000) <= 1.0f + 1e-3f);
+    }
+    // Turning it off lets the note finish, even a bidirectional loop on its
+    // way back (which must not run backwards for ever).
+    for(double mode : {kLoopForward, kLoopBidirectional}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(frames)) == kResultOk);
+        plugin.param(slotParam(0, kSlotLoop), mode);
+        plugin.param(slotParam(0, kSlotLoopStart), 0.2);
+        plugin.noteOn(kRootKey);
+        plugin.render(1280); // a bidirectional loop is heading back by now
+        plugin.param(slotParam(0, kSlotLoop), 0.0);
+        const auto out = plugin.render(2048);
+        CHECK(energy(out, 1024, 2048) == 0.0);
+    }
+    // Tune and level follow at once: an octave up doubles the ramp's slope;
+    // -6 dB roughly halves a constant.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, ramp(4000)) == kResultOk);
+        plugin.noteOn(kRootKey);
+        const auto before = plugin.render(kBlock);
+        CHECK(std::fabs((left(before, 101) - left(before, 100)) - 1.0f / 4000) < 1e-5f);
+        plugin.param(slotParam(0, kSlotTune), 0.75); // +12 semitones
+        const auto after = plugin.render(kBlock);
+        CHECK(std::fabs((left(after, 101) - left(after, 100)) - 2.0f / 4000) < 1e-5f);
+    }
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, std::vector<float>(4000, 0.5f)) == kResultOk);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(slotParam(0, kSlotLevel), 54.0 / 66.0); // -6 dB
+        const auto out = plugin.render(kBlock);
+        CHECK(std::fabs(left(out, 100) - 0.5f * std::pow(10.0f, -6.0f / 20.0f)) < 1e-3f);
+    }
+}
+
+void testGroups(const std::string &path)
+{
+    // Slots 1-3 (0.1, 0.2, 0.3) share key 60 in group 1; slot 4 (0.05) is on
+    // the same key without a group, so it layers on every hit.
+    const auto hits = [&](bool random, int count) -> std::vector<float> {
+        std::vector<float> levels;
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return levels;
+        }
+        for(int slot = 0; slot < 4; ++slot) {
+            CHECK(loadPcm(plugin, slot, std::vector<float>(4000, slot == 3 ? 0.05f : 0.1f * (slot + 1))) == kResultOk);
+            zone(plugin, slot, 60, 60, 60);
+            plugin.param(groupParam(slot), slot == 3 ? 0.0 : 1.0 / 8.0);
+        }
+        plugin.param(kGroupMode, random ? 1.0 : 0.0);
+        plugin.param(kRelease, 0.0);
+        for(int i = 0; i < count; ++i) {
+            plugin.noteOn(60);
+            const auto out = plugin.render(kBlock);
+            levels.push_back(left(out, 100) - 0.05f);
+            plugin.noteOff(60);
+            plugin.render(kBlock);
+        }
+        return levels;
+    };
+    const auto turns = hits(false, 5);
+    const float expected[] = {0.1f, 0.2f, 0.3f, 0.1f, 0.2f};
+    for(int i = 0; i < 5 && i < static_cast<int>(turns.size()); ++i)
+        CHECK(std::fabs(turns[i] - expected[i]) < 1e-3f);
+    // Random: every member plays, and never the same one twice in a row.
+    const auto picks = hits(true, 60);
+    int seen[3] = {};
+    for(size_t i = 0; i < picks.size(); ++i) {
+        const int member = static_cast<int>(std::lround(picks[i] * 10.0f)) - 1;
+        CHECK(member >= 0 && member < 3);
+        if(member >= 0 && member < 3)
+            ++seen[member];
+        if(i > 0)
+            CHECK(std::fabs(picks[i] - picks[i - 1]) > 1e-3f);
+    }
+    CHECK(seen[0] > 0 && seen[1] > 0 && seen[2] > 0);
+}
+
+double rms(const std::vector<float> &stereo, int from, int to)
+{
+    double sum = 0.0;
+    for(int f = from; f < to; ++f)
+        sum += static_cast<double>(left(stereo, f)) * left(stereo, f);
+    return std::sqrt(sum / std::max(1, to - from));
+}
+
+// A constant (DC) and a Nyquist-rate square: what low- and high-pass keep.
+std::vector<float> dc() { return std::vector<float>(48000, 0.5f); }
+std::vector<float> nyquist()
+{
+    std::vector<float> pcm(48000);
+    for(size_t f = 0; f < pcm.size(); ++f)
+        pcm[f] = f % 2 ? -0.5f : 0.5f;
+    return pcm;
+}
+// A 6 kHz square (8-frame period): above a closed filter, below an open one.
+std::vector<float> tone()
+{
+    std::vector<float> pcm(48000);
+    for(size_t f = 0; f < pcm.size(); ++f)
+        pcm[f] = (f / 4) % 2 ? -0.5f : 0.5f;
+    return pcm;
+}
+
+// Render a held note on slot 1 (key 36) and return 4096 frames.
+std::vector<float> filtered(const std::string &path, const std::vector<float> &pcm,
+                            const std::vector<std::pair<ParamID, double>> &params, int pitch = kRootKey)
+{
+    Instance plugin;
+    if(!plugin.open(path)) {
+        CHECK(!"cannot open the bundle");
+        return std::vector<float>(8192, 0.0f);
+    }
+    CHECK(loadPcm(plugin, 0, pcm) == kResultOk);
+    for(const auto &[id, value] : params)
+        plugin.param(id, value);
+    plugin.noteOn(pitch);
+    return plugin.render(4096);
+}
+
+void testFilters(const std::string &path)
+{
+    const auto stage = [](int t, int type, double hz) {
+        return std::vector<std::pair<ParamID, double>>{{filterParam(0, t, kFilterType), filterType(type)},
+                                                       {filterParam(0, t, kFilterCutoff), cutoff(hz)}};
+    };
+    // Low-pass keeps DC and removes the top of the spectrum; high-pass the reverse.
+    const auto lpDc = filtered(path, dc(), stage(0, kLowpass24, 500));
+    const auto lpTop = filtered(path, nyquist(), stage(0, kLowpass24, 500));
+    CHECK(std::fabs(left(lpDc, 3000) - 0.5f) < 0.01f);
+    CHECK(rms(lpTop, 2048, 4096) < 0.001);
+    const auto hpDc = filtered(path, dc(), stage(0, kHighpass24, 500));
+    const auto hpTop = filtered(path, nyquist(), stage(0, kHighpass24, 500));
+    CHECK(std::fabs(left(hpDc, 3000)) < 0.01f);
+    CHECK(rms(hpTop, 2048, 4096) > 0.4);
+    // Two stages run in series: low-pass then high-pass keep neither.
+    auto both = stage(0, kLowpass24, 500);
+    for(const auto &p : stage(1, kHighpass24, 2000))
+        both.push_back(p);
+    CHECK(rms(filtered(path, dc(), both), 2048, 4096) < 0.01);
+    CHECK(rms(filtered(path, nyquist(), both), 2048, 4096) < 0.01);
+    // A notch leaves DC alone; a reserved type is a pass-through.
+    CHECK(std::fabs(left(filtered(path, dc(), stage(0, kNotch, 5000)), 3000) - 0.5f) < 0.01f);
+    const auto reserved = filtered(path, nyquist(), stage(0, 40, 100));
+    CHECK(std::fabs(left(reserved, 3001) - -0.5f) < 1e-4f); // odd frames of the square are -0.5
+
+    // The filter envelope opens a closed low-pass (+8 octaves from 100 Hz)
+    // and decays back: bright at first, dark once it has fallen.
+    auto swept = stage(0, kLowpass24, 100);
+    swept.push_back({filterParam(0, 0, kFilterEnvAmount), 1.0});
+    swept.push_back({kFilterEnvelope + 1, 0.25}); // decay ~10 ms
+    const auto sweep = filtered(path, tone(), swept);
+    CHECK(rms(sweep, 0, 64) > 20 * rms(sweep, 3000, 4096));
+    CHECK(rms(sweep, 0, 64) > 0.05);
+    // No envelope amount: dark from the start.
+    CHECK(rms(filtered(path, tone(), stage(0, kLowpass24, 100)), 0, 64) < 0.02);
+    // A slot's own filter envelope replaces the instance's: here it holds the
+    // filter open (sustain 1) while the instance one would close it.
+    auto own = swept;
+    own.push_back({slotFilterEnvelope(0, kEnvelopeOwn), 1.0});
+    own.push_back({slotFilterEnvelope(0, kEnvelopeSustain), 1.0});
+    CHECK(rms(filtered(path, tone(), own), 3000, 4096) > 0.3);
+
+    // Key tracking: at 100 %, an octave up doubles the cutoff, so the higher
+    // note is brighter. (Key Track of the zone is off, so the sample itself
+    // plays at the same rate on both keys.)
+    const auto keyed = [&](int pitch) {
+        auto params = stage(0, kLowpass24, 3000);
+        params.push_back({filterParam(0, 0, kFilterKeyTrack), 1.0});
+        params.push_back({zoneParam(0, kZoneMode), 1.0});
+        params.push_back({zoneParam(0, kZoneLow), key(0)});
+        params.push_back({zoneParam(0, kZoneHigh), key(127)});
+        params.push_back({zoneParam(0, kZoneTrack), 0.0});
+        return rms(filtered(path, tone(), params, pitch), 2048, 4096);
+    };
+    CHECK(keyed(84) > 4 * keyed(60));
+}
+
+// A 100 Hz sawtooth: broadband, for the vowel filter's formants.
+std::vector<float> saw()
+{
+    std::vector<float> pcm(48000);
+    for(size_t f = 0; f < pcm.size(); ++f)
+        pcm[f] = static_cast<float>(f % 480) / 480.0f - 0.5f;
+    return pcm;
+}
+
+void testMoreFilterTypes(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto stage = [](int type, double hz, Params extra = {}) {
+        Params params{{filterParam(0, 0, kFilterType), filterType(type)}, {filterParam(0, 0, kFilterCutoff), cutoff(hz)}};
+        for(const auto &p : extra)
+            params.push_back(p);
+        return params;
+    };
+    // State-variable low- and high-pass behave like the 24 dB ones.
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kSvfLowpass, 500)), 3000) - 0.5f) < 0.01f);
+    CHECK(rms(filtered(path, nyquist(), stage(kSvfLowpass, 500)), 2048, 4096) < 0.001);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kSvfHighpass, 500)), 3000)) < 0.01f);
+    CHECK(rms(filtered(path, nyquist(), stage(kSvfHighpass, 500)), 2048, 4096) > 0.4);
+    // Band-pass keeps a tone at its centre, not DC.
+    CHECK(rms(filtered(path, tone(), stage(kSvfBandpass, 6000)), 2048, 4096) > 0.2);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kSvfBandpass, 6000)), 3000)) < 0.01f);
+    // A fast full sweep at full resonance stays finite and bounded.
+    const auto sweep = filtered(path, saw(), stage(kSvfLowpass, 50, {{filterParam(0, 0, kFilterResonance), 1.0},
+                                                                     {filterParam(0, 0, kFilterEnvAmount), 1.0},
+                                                                     {kFilterEnvelope + 1, 0.2}}));
+    bool bounded = true;
+    for(float v : sweep)
+        bounded = bounded && std::isfinite(v) && std::fabs(v) < 20.0f;
+    CHECK(bounded);
+    // Peak: +12 dB lifts a tone at its centre; 0 dB leaves it alone.
+    const double plain = rms(filtered(path, tone(), {}), 2048, 4096);
+    CHECK(rms(filtered(path, tone(), stage(kPeak, 6000, {{filterParam(0, 0, kFilterGain), gainNorm(12)}})), 2048, 4096) > 1.5 * plain);
+    CHECK(std::fabs(rms(filtered(path, tone(), stage(kPeak, 6000, {{filterParam(0, 0, kFilterGain), gainNorm(0)}})), 2048, 4096) - plain) < 0.01);
+    // Low shelf -24 dB at 1 kHz: DC drops by 24 dB, a 6 kHz tone passes.
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kLowShelf, 1000, {{filterParam(0, 0, kFilterGain), gainNorm(-24)}})), 3000) -
+                    0.5f * std::pow(10.0f, -24.0f / 20.0f)) < 0.005f);
+    CHECK(rms(filtered(path, tone(), stage(kLowShelf, 1000, {{filterParam(0, 0, kFilterGain), gainNorm(-24)}})), 2048, 4096) > 0.8 * plain);
+    // Vowel: formants pass a sawtooth, and the A and U ends differ.
+    const auto vowelA = filtered(path, saw(), stage(kVowel, 20));
+    const auto vowelU = filtered(path, saw(), stage(kVowel, 20000));
+    CHECK(rms(vowelA, 2048, 4096) > 0.01);
+    double difference = 0.0;
+    for(int f = 2048; f < 4096; ++f)
+        difference += std::fabs(left(vowelA, f) - left(vowelU, f));
+    CHECK(difference / 2048 > 0.005);
+}
+
+void testLfo(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const Params square10 = {{lfoParam(0, kLfoShape), lfoShape(kSquare)}, {lfoParam(0, kLfoRate), lfoRate(10)}};
+    const auto with = [](Params base, Params extra) { for(const auto &p : extra) base.push_back(p); return base; };
+    // Tremolo: a 10 Hz square at full depth, full level for 2400 frames, then silent.
+    const auto tremolo = filtered(path, dc(), with(square10, {{lfoParam(0, kLfoLevel), 1.0}}));
+    CHECK(std::fabs(left(tremolo, 1000) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(left(tremolo, 3500)) < 1e-3f);
+    // Vibrato: +-12 semitones doubles, then halves, a ramp's slope.
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto vibrato = filtered(path, slope, with(square10, {{lfoParam(0, kLfoPitch), 1.0}}));
+    CHECK(std::fabs((left(vibrato, 1001) - left(vibrato, 1000)) - 2.0f / 48000) < 2e-6f);
+    CHECK(std::fabs((left(vibrato, 3501) - left(vibrato, 3500)) - 0.5f / 48000) < 2e-6f);
+    // Filter: +-4 octaves around a 1 kHz low-pass opens it for a 6 kHz tone,
+    // then shuts it.
+    const auto wobble = filtered(path, tone(), with(square10, {{lfoParam(0, kLfoCutoff), 1.0},
+                                                               {filterParam(0, 0, kFilterType), filterType(kLowpass24)},
+                                                               {filterParam(0, 0, kFilterCutoff), cutoff(1000)}}));
+    CHECK(rms(wobble, 1000, 2200) > 0.3);
+    CHECK(rms(wobble, 3500, 4096) < 0.05);
+    // The cutoff's jump glides rather than ringing the filter out of range.
+    double loudest = 0.0;
+    for(int f = 0; f < 4096; ++f)
+        loudest = std::max(loudest, static_cast<double>(std::fabs(left(wobble, f))));
+    CHECK(loudest < 1.0);
+    // Sync: a quarter note at the default 120 BPM is a 2 Hz cycle (24000 frames).
+    Params synced = {{lfoParam(0, kLfoShape), lfoShape(kSquare)}, {lfoParam(0, kLfoSync), 1.0},
+                     {lfoParam(0, kLfoDivision), 2.0 / 15.0}, {lfoParam(0, kLfoLevel), 1.0}};
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : synced)
+            plugin.param(id, value);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(20480);
+        CHECK(std::fabs(left(out, 5000) - 0.5f) < 1e-3f);
+        CHECK(std::fabs(left(out, 17000)) < 1e-3f);
+    }
+    // Delay: the depth fades in over 0.5 s, so the first dip is shallow.
+    const auto delayed = filtered(path, dc(), with(square10, {{lfoParam(0, kLfoLevel), 1.0}, {lfoParam(0, kLfoDelay), 0.25}}));
+    CHECK(left(delayed, 3500) > 0.3f);
+    // Retrigger starts the cycle with the note; Free runs in time, so a note
+    // 3000 frames in starts partway through a dip.
+    for(double trigger : {1.0, 0.0}) {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : with(square10, {{lfoParam(0, kLfoLevel), 1.0}, {lfoParam(0, kLfoTrigger), trigger}}))
+            plugin.param(id, value);
+        plugin.render(3072);
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(kBlock);
+        if(trigger > 0.5)
+            CHECK(std::fabs(left(out, 10) - 0.5f) < 1e-3f);
+        else
+            CHECK(left(out, 10) < 0.01f);
+    }
+    // Sample & hold: levels stay in range and change from step to step.
+    const auto held = filtered(path, dc(), {{lfoParam(0, kLfoShape), lfoShape(kSampleHold)},
+                                             {lfoParam(0, kLfoRate), lfoRate(20)}, {lfoParam(0, kLfoLevel), 1.0}});
+    bool inRange = true;
+    for(int f = 0; f < 4096; ++f)
+        inRange = inRange && left(held, f) >= -1e-4f && left(held, f) <= 0.5f + 1e-4f;
+    CHECK(inRange);
+    CHECK(std::fabs(left(held, 100) - left(held, 2500)) > 1e-3f);
+}
+
+void testDelayLineFilters(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto stage = [](int type, double hz, double resonance = 0.0) {
+        return Params{{filterParam(0, 0, kFilterType), filterType(type)}, {filterParam(0, 0, kFilterCutoff), cutoff(hz)},
+                      {filterParam(0, 0, kFilterResonance), resonance}};
+    };
+    // Combs at half resonance (feedback 0.49), tuned to 1 kHz: + keeps DC
+    // (its peaks are normalized to unity), - cuts it to 0.51 / 1.49 of that
+    // (it favours odd harmonics).
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kCombPlus, 1000, 0.5)), 4000) - 0.5f) < 0.01f);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kCombMinus, 1000, 0.5)), 4000) - 0.5f * 0.51f / 1.49f) < 0.01f);
+    // Flanger: a delay of half the 6 kHz square's period (12 kHz) cancels it;
+    // a whole period (6 kHz) adds it to itself.
+    CHECK(rms(filtered(path, tone(), stage(kFlanger, 12000)), 2048, 4096) < 0.01);
+    CHECK(rms(filtered(path, tone(), stage(kFlanger, 6000)), 2048, 4096) > 0.45);
+    // Phaser: at 12 kHz its four all-passes turn 6 kHz by 180 degrees, so it
+    // notches the square's fundamental; DC passes.
+    const double plain = rms(filtered(path, tone(), {}), 2048, 4096);
+    CHECK(rms(filtered(path, tone(), stage(kPhaser, 12000)), 2048, 4096) < 0.5 * plain);
+    CHECK(std::fabs(left(filtered(path, dc(), stage(kPhaser, 1000)), 3000) - 0.5f) < 0.01f);
+    // A comb swept fast at full feedback stays bounded.
+    auto swept = stage(kCombPlus, 100, 1.0);
+    swept.push_back({filterParam(0, 0, kFilterEnvAmount), 1.0});
+    swept.push_back({kFilterEnvelope + 1, 0.2});
+    const auto sweep = filtered(path, saw(), swept);
+    bool bounded = true;
+    for(float v : sweep)
+        bounded = bounded && std::isfinite(v) && std::fabs(v) < 4.0f;
+    CHECK(bounded);
+}
+
+void testModMatrix(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto route = [](int r, int source, int target, double share) {
+        return Params{{routeParam(0, r, kRouteSource), listValue(source)}, {routeParam(0, r, kRouteTarget), listValue(target)},
+                      {routeParam(0, r, kRouteAmount), amount(share)}};
+    };
+    const auto join = [](Params a, const Params &b) { for(const auto &p : b) a.push_back(p); return a; };
+    const Params lfo2Square = {{lfo2Param(0, kLfoShape), lfoShape(kSquare)}, {lfo2Param(0, kLfoRate), lfoRate(10)}};
+    // LFO 2 has its own direct depths: tremolo as LFO 1's.
+    const auto tremolo = filtered(path, dc(), join(lfo2Square, {{lfo2Param(0, kLfoLevel), 1.0}}));
+    CHECK(std::fabs(left(tremolo, 1000) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(left(tremolo, 3500)) < 1e-3f);
+    // LFO 2 -> Pan +100 %: hard right at the square's top, hard left at its
+    // bottom (constant power: sqrt(2) * 0.5 in the one channel).
+    const auto panned = filtered(path, dc(), join(lfo2Square, route(0, kSrcLfo2, kTgtPan, 1.0)));
+    CHECK(std::fabs(left(panned, 1000)) < 1e-3f);
+    CHECK(std::fabs(left(panned, 3500) - 0.5f * std::sqrt(2.0f)) < 1e-3f);
+    // Velocity -> Level -100 %: the harder the note, the quieter.
+    const auto byVelocity = [&](float velocity) {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : join(route(0, kSrcVelocity, kTgtLevel, -1.0), {{kVelocitySensitivity, 0.0}}))
+            plugin.param(id, value);
+        plugin.noteOn(kRootKey, velocity);
+        return left(plugin.render(kBlock), 100);
+    };
+    CHECK(std::fabs(byVelocity(1.0f)) < 1e-3f);
+    CHECK(std::fabs(byVelocity(0.5f) - 0.25f) < 2e-3f);
+    // Filter Env -> Pitch +100 % (24 semitones): a fast decay drops the pitch
+    // from two octaves up to the key's.
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto drop = filtered(path, slope, join(route(0, kSrcFilterEnv, kTgtPitch, 1.0), {{kFilterEnvelope + 1, 0.0}}));
+    CHECK(std::fabs((left(drop, 6) - left(drop, 5)) - 4.0f / 48000) < 2e-6f);
+    CHECK(std::fabs((left(drop, 3001) - left(drop, 3000)) - 1.0f / 48000) < 2e-6f);
+    // Velocity -> Start +50 %: a full-velocity note starts halfway in.
+    const auto late = filtered(path, ramp(1000), route(0, kSrcVelocity, kTgtStart, 0.5));
+    CHECK(std::fabs(left(late, 0) - 501.0f / 1000) < 1e-3f);
+    // Routes reach sounding notes: silencing Velocity -> Level mid-note
+    // brings the level back.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : join(route(0, kSrcVelocity, kTgtLevel, -1.0), {{kVelocitySensitivity, 0.0}}))
+            plugin.param(id, value);
+        plugin.noteOn(kRootKey);
+        CHECK(std::fabs(left(plugin.render(kBlock), 100)) < 1e-3f);
+        plugin.param(routeParam(0, 0, kRouteAmount), amount(0.0));
+        CHECK(std::fabs(left(plugin.render(kBlock), 100) - 0.5f) < 1e-3f);
+    }
+    // LFO 1 -> Resonance swings a state-variable filter to full resonance and
+    // back without leaving range.
+    const auto swinging = filtered(path, saw(), join(route(0, kSrcLfo1, kTgtResonance, 1.0),
+        {{lfoParam(0, kLfoShape), lfoShape(kSquare)}, {lfoParam(0, kLfoRate), lfoRate(20)},
+         {filterParam(0, 0, kFilterType), filterType(kSvfLowpass)}, {filterParam(0, 0, kFilterCutoff), cutoff(800)}}));
+    bool bounded = true;
+    for(float v : swinging)
+        bounded = bounded && std::isfinite(v) && std::fabs(v) < 20.0f;
+    CHECK(bounded);
+}
+
+void testReverse(const std::string &path)
+{
+    const int frames = 1000;
+    // Backwards from the last frame to the first, then silent.
+    const auto back = filtered(path, ramp(frames), {{reverseParam(0), 1.0}});
+    CHECK(std::fabs(left(back, 0) - 1000.0f / frames) < 1e-4f);
+    CHECK(std::fabs(left(back, 999) - 1.0f / frames) < 1e-4f);
+    CHECK(energy(back, 1001, 4096) == 0.0);
+    // Start and loop points are in the reversed timeline: starting a quarter
+    // in begins at frame 749; a forward loop over its second half cycles
+    // through frames 499 .. 0.
+    const auto started = filtered(path, ramp(frames), {{reverseParam(0), 1.0}, {startParam(0), 250.5 / frames}});
+    CHECK(std::fabs(left(started, 0) - 750.0f / frames) < 1e-4f);
+    const auto looped = filtered(path, ramp(frames), {{reverseParam(0), 1.0}, {slotParam(0, kSlotLoop), kLoopForward},
+                                                       {slotParam(0, kSlotLoopStart), 0.5}});
+    for(int f = 1100; f < 4096; f += 173)
+        CHECK(left(looped, f) > 0.0f && left(looped, f) <= 500.0f / frames + 1e-4f);
+    CHECK(energy(looped, 3000, 4096) > 10.0);
+}
+
+void testUnisonAndGlide(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    // Three unison voices at 1/sqrt(3) each: DC sums to sqrt(3) x 0.5.
+    const Params three = {{unisonParam(0, 0), 2.0 / 15.0}};
+    CHECK(std::fabs(left(filtered(path, dc(), three), 100) - 0.5f * std::sqrt(3.0f)) < 1e-3f);
+    // Full spread pans them left, centre and right (constant power).
+    Params spread = three;
+    spread.push_back({unisonParam(0, 2), 1.0});
+    CHECK(std::fabs(left(filtered(path, dc(), spread), 100) - 0.5f / std::sqrt(3.0f) * (std::sqrt(2.0f) + 1.0f)) < 1e-3f);
+    // +-100 cents: the three ramps run a semitone down, level and a semitone up.
+    Params detuned = three;
+    detuned.push_back({unisonParam(0, 1), 1.0});
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto stacked = filtered(path, slope, detuned);
+    const float expected = (std::pow(2.0f, -1.0f / 12) + 1.0f + std::pow(2.0f, 1.0f / 12)) / std::sqrt(3.0f) / 48000.0f;
+    CHECK(std::fabs((left(stacked, 1001) - left(stacked, 1000)) - expected) < 1e-6f);
+
+    // A zone slot over C-3 .. C-5 that tracks the key, on a slow ramp.
+    const auto zoned = [&](Params extra) {
+        Params params{{zoneParam(0, kZoneMode), 1.0}, {zoneParam(0, kZoneLow), key(48)}, {zoneParam(0, kZoneHigh), key(72)},
+                      {zoneParam(0, kZoneRoot), key(60)}, {zoneParam(0, kZoneTrack), 1.0}};
+        for(const auto &p : extra)
+            params.push_back(p);
+        return params;
+    };
+    const auto run = [&](const Params &params, const std::vector<float> &pcm, auto play) {
+        Instance plugin;
+        std::vector<float> out;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return out;
+        }
+        CHECK(loadPcm(plugin, 0, pcm) == kResultOk);
+        for(const auto &[id, value] : params)
+            plugin.param(id, value);
+        play(plugin, out);
+        return out;
+    };
+    // Mono: a second note replaces the first instead of stacking on it.
+    const auto mono = run(zoned({{playParam(0, 0), kMono}}), dc(), [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(kBlock);
+        plugin.noteOn(64);
+        plugin.render(kBlock);
+        out = plugin.render(kBlock);
+    });
+    CHECK(std::fabs(left(mono, 100) - 0.5f) < 1e-3f);
+    // Legato: with a slow attack, a second note held over the first carries
+    // the envelope on rather than starting it again from silence.
+    const auto legato = run(zoned({{playParam(0, 0), kLegato}, {kAttack, 0.8}}), dc(), [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(4096);
+        out = plugin.render(kBlock);
+        plugin.noteOn(64);
+        const auto next = plugin.render(kBlock);
+        out.insert(out.end(), next.begin(), next.end());
+    });
+    CHECK(left(legato, kBlock + 10) >= left(legato, kBlock - 1) - 1e-4f);
+    CHECK(left(legato, kBlock + 10) > 0.01f);
+    // Glide: a legato octave up over 0.1 s leaves at the old pitch and
+    // arrives at the new one (the ramp's slope doubles).
+    const auto glide = run(zoned({{playParam(0, 0), kLegato}, {playParam(0, 1), std::sqrt(0.05)}}), slope,
+                           [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(kBlock);
+        plugin.noteOn(72);
+        out = plugin.render(8192);
+    });
+    CHECK(std::fabs((left(glide, 21) - left(glide, 20)) - 1.0f / 48000) < 2e-7f);
+    CHECK(std::fabs((left(glide, 7001) - left(glide, 7000)) - 2.0f / 48000) < 2e-7f);
+    // Releasing the top key goes back to the one still held.
+    const auto back = run(zoned({{playParam(0, 0), kLegato}}), slope, [](Instance &plugin, std::vector<float> &out) {
+        plugin.noteOn(60);
+        plugin.render(kBlock);
+        plugin.noteOn(72);
+        plugin.render(kBlock);
+        plugin.noteOff(72);
+        out = plugin.render(kBlock);
+    });
+    CHECK(std::fabs((left(back, 101) - left(back, 100)) - 1.0f / 48000) < 2e-7f);
+}
+
+void testControllers(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    // The host learns which parameter each controller drives.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        auto mapping = U::cast<IMidiMapping>(plugin.provider->getControllerPtr());
+        CHECK(mapping);
+        if(mapping) {
+            ParamID id = 0;
+            CHECK(mapping->getMidiControllerAssignment(0, 0, kCtrlModWheel, id) == kResultOk && id == kModWheelId);
+            CHECK(mapping->getMidiControllerAssignment(0, 3, kAfterTouch, id) == kResultOk && id == kAftertouchId);
+            CHECK(mapping->getMidiControllerAssignment(0, 0, kPitchBend, id) == kResultOk && id == kPitchBendId);
+            CHECK(mapping->getMidiControllerAssignment(0, 0, 11, id) == kResultOk && id == ccValueParam(2));
+            CHECK(mapping->getMidiControllerAssignment(0, 0, 74, id) == kResultOk && id == ccValueParam(7));
+            CHECK(mapping->getMidiControllerAssignment(0, 0, 3, id) != kResultOk);
+        }
+    }
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto rate = [](const std::vector<float> &out) { return (left(out, 1001) - left(out, 1000)) * 48000.0f; };
+    // Pitch bend, always on: full up is the default 2 semitones, full down
+    // with a 12-semitone range an octave down, the centre nothing.
+    CHECK(std::fabs(rate(filtered(path, slope, {{kPitchBendId, 1.0}})) - std::pow(2.0f, 2.0f / 12)) < 1e-3f);
+    CHECK(std::fabs(rate(filtered(path, slope, {{kPitchBendId, 0.0}, {kBendRangeId, 0.5}})) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(rate(filtered(path, slope, {{kPitchBendId, 8192.0 / 16383}})) - 1.0f) < 1e-4f);
+    // It bends a sounding note too.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, slope) == kResultOk);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(kBendRangeId, 0.5);
+        plugin.param(kPitchBendId, 1.0);
+        CHECK(std::fabs(rate(plugin.render(4096)) - 2.0f) < 1e-3f);
+    }
+    // A bend at frame 128 of a block takes effect there, not at the block's
+    // start, and glides over a few ms rather than jumping.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, slope) == kResultOk);
+        plugin.param(kBendRangeId, 0.5);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        plugin.param(kPitchBendId, 1.0, 128);
+        const auto out = plugin.render(4096);
+        const auto at = [&](int frame) { return (left(out, frame + 1) - left(out, frame)) * 48000.0f; };
+        CHECK(std::fabs(at(100) - 1.0f) < 1e-3f);             // before it
+        CHECK(at(150) > 1.02f && at(150) < 1.9f);              // gliding
+        CHECK(std::fabs(at(1500) - 2.0f) < 1e-3f);             // there
+    }
+    const auto route = [](int source, int target, double share) {
+        return Params{{routeParam(0, 0, kRouteSource), listValue(source)}, {routeParam(0, 0, kRouteTarget), listValue(target)},
+                      {routeParam(0, 0, kRouteAmount), amount(share)}};
+    };
+    const auto join = [](Params a, const Params &b) { for(const auto &p : b) a.push_back(p); return a; };
+    // Mod wheel, aftertouch and the chosen CC -> Level -100 %.
+    const auto level = [&](const Params &params) { return left(filtered(path, dc(), params), 1000); };
+    CHECK(std::fabs(level(join(route(kSrcModWheel, kTgtLevel, -1.0), {{kModWheelId, 0.5}})) - 0.25f) < 1e-3f);
+    CHECK(std::fabs(level(join(route(kSrcModWheel, kTgtLevel, -1.0), {{kModWheelId, 1.0}}))) < 1e-3f);
+    CHECK(std::fabs(level(join(route(kSrcAftertouch, kTgtLevel, -1.0), {{kAftertouchId, 1.0}}))) < 1e-3f);
+    // Mod CC reads the chosen CC only: CC 11 (Expression) here.
+    const Params expression = {{kModCcId, listValue(2)}, {ccValueParam(2), 1.0}};
+    CHECK(std::fabs(level(join(route(kSrcModCc, kTgtLevel, -1.0), expression))) < 1e-3f);
+    CHECK(std::fabs(level(join(route(kSrcModCc, kTgtLevel, -1.0), {{kModCcId, listValue(0)}, {ccValueParam(2), 1.0}})) - 0.5f) < 1e-3f);
+    // Pitch bend as a source, -1 .. 1: down to Pitch -100 % (24 st) is two
+    // octaves up on top of the 2-semitone bend.
+    CHECK(std::fabs(rate(filtered(path, slope, join(route(kSrcPitchBend, kTgtPitch, -1.0), {{kPitchBendId, 0.0}, {kBendRangeId, 0.0}}))) - 4.0f) < 1e-3f);
+}
+
+void testPitchEnvelopeAndSends(const std::string &path)
+{
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto rate = [](const std::vector<float> &out, int frame) { return (left(out, frame + 1) - left(out, frame)) * 48000.0f; };
+    // +12 semitones, no attack, 0.1 s decay: an octave up at the start,
+    // exp(-4.6 t / 0.1) of it later (t at the frame's 16-frame step).
+    const double up = 0.5 + 12.0 / 96.0;
+    const auto drop = filtered(path, slope, {{pitchEnvParam(0, 0), up}, {pitchEnvParam(0, 2), std::log10(100.0) / 4.0}});
+    CHECK(std::fabs(rate(drop, 5) - 2.0f) < 1e-3f);
+    const float t = 992.0f / 48000.0f;
+    CHECK(std::fabs(rate(drop, 1000) - std::pow(2.0f, std::exp(-4.6f * t / 0.1f))) < 1e-3f);
+    // A 0.1 s attack rises from the note's pitch: none at first, half way at 50 ms.
+    const auto rise = filtered(path, slope, {{pitchEnvParam(0, 0), up}, {pitchEnvParam(0, 1), std::cbrt(0.05)}});
+    CHECK(std::fabs(rate(rise, 5) - 1.0f) < 1e-3f);
+    CHECK(std::fabs(rate(rise, 2405) - std::pow(2.0f, 2400.0f / 4800.0f)) < 2e-3f);
+    // Depth 0 is off.
+    CHECK(std::fabs(rate(filtered(path, slope, {}), 5) - 1.0f) < 1e-4f);
+
+    // Sends: the slot's sound again on Send A / Send B, times their levels,
+    // while Main keeps all of it.
+    Instance plugin;
+    OPEN(plugin, path, false, true);
+    CHECK(loadPcm(plugin, 0, std::vector<float>(4096, 0.5f)) == kResultOk);
+    CHECK(loadPcm(plugin, 1, std::vector<float>(4096, 0.5f)) == kResultOk);
+    plugin.param(sendParam(0, 0), 0.5);
+    plugin.param(sendParam(0, 1), 0.25);
+    plugin.noteOn(kRootKey);
+    plugin.render(kBlock);
+    const auto &main = plugin.data.outputs[0];
+    const auto &sendA = plugin.data.outputs[8];
+    const auto &sendB = plugin.data.outputs[9];
+    CHECK(std::fabs(main.channelBuffers32[0][100] - 0.5f) < 1e-3f);
+    CHECK(std::fabs(sendA.channelBuffers32[0][100] - 0.25f) < 1e-3f);
+    CHECK(std::fabs(sendB.channelBuffers32[1][100] - 0.125f) < 1e-3f);
+    // Slot 2 sends nothing.
+    plugin.noteOff(kRootKey);
+    plugin.render(4096);
+    plugin.noteOn(kRootKey + 1);
+    plugin.render(kBlock);
+    CHECK(std::fabs(main.channelBuffers32[0][100] - 0.5f) < 1e-3f);
+    CHECK(sendA.channelBuffers32[0][100] == 0.0f);
+}
+
+void testChainCurvesAndTempo(const std::string &path)
+{
+    using Params = std::vector<std::pair<ParamID, double>>;
+    const auto stage = [](int t, int type, double hz) {
+        return Params{{filterParam(0, t, kFilterType), filterType(type)}, {filterParam(0, t, kFilterCutoff), cutoff(hz)}};
+    };
+    const auto join = [](Params a, const Params &b) { for(const auto &p : b) a.push_back(p); return a; };
+    const auto dcLevel = [&](const Params &params) { return left(filtered(path, dc(), params), 3000); };
+    // Stages 3 and 4 filter like the first two: a high-pass on stage 3 (or 4)
+    // takes the DC out.
+    CHECK(std::fabs(dcLevel(stage(2, kHighpass24, 500))) < 0.01f);
+    CHECK(std::fabs(dcLevel(join(stage(0, kLowpass24, 500), stage(3, kHighpass24, 500)))) < 0.01f);
+    // A low-pass and a high-pass: in series nothing is left of DC; in
+    // parallel the low-pass's DC is; so with two pairs (1-2 and 3-4).
+    const Params split = join(stage(0, kLowpass24, 500), stage(1, kHighpass24, 500));
+    CHECK(std::fabs(dcLevel(split)) < 0.01f);
+    CHECK(std::fabs(dcLevel(join(split, {{chainParam(0, 0), kParallel}})) - 0.5f) < 0.01f);
+    const Params pairs = join(stage(0, kLowpass24, 500), stage(2, kHighpass24, 500));
+    CHECK(std::fabs(dcLevel(join(pairs, {{chainParam(0, 0), kPairs}})) - 0.5f) < 0.01f);
+    // With nothing on, every chain passes the signal.
+    CHECK(std::fabs(dcLevel({{chainParam(0, 0), kParallel}}) - 0.5f) < 1e-3f);
+    // Drive saturates into a stage: DC 0.5 through an open low-pass comes out
+    // tanh(5) / tanh(10) at full drive, and unchanged without.
+    CHECK(std::fabs(dcLevel(stage(0, kLowpass24, 20000)) - 0.5f) < 0.01f);
+    CHECK(std::fabs(dcLevel(join(stage(0, kLowpass24, 20000), {{filterParam(0, 0, kFilterDrive), 1.0}})) -
+                    static_cast<float>(std::tanh(5.0) / std::tanh(10.0))) < 0.01f);
+    // A stage's Mod scales the LFO's cutoff movement: a 2 kHz tone through a
+    // 500 Hz low-pass that a square LFO opens 4 octaves on its top half.
+    std::vector<float> tone2k(48000);
+    for(size_t f = 0; f < tone2k.size(); ++f)
+        tone2k[f] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 2000.0 * f / 48000.0));
+    const Params wobble = join(stage(0, kLowpass24, 500), {{lfoParam(0, kLfoShape), lfoShape(kSquare)},
+                                                            {lfoParam(0, kLfoRate), lfoRate(10)}, {lfoParam(0, kLfoCutoff), 1.0}});
+    const auto modded = [&](double scale) { return filtered(path, tone2k, join(wobble, {{filterParam(0, 0, kFilterMod), scale}})); };
+    const auto full = modded(1.0), none = modded(0.5), inverted = modded(0.0);
+    CHECK(rms(full, 1000, 2000) > 0.2);      // top: open
+    CHECK(rms(none, 1000, 2000) < 0.05);     // Mod 0: the LFO does not reach it
+    CHECK(rms(inverted, 1000, 2000) < 0.05); // -100 %: closed on the top...
+    CHECK(rms(inverted, 3500, 4500) > 0.2);  // ...open on the bottom
+
+    // Velocity curves on a half-hard note (DC 0.5): linear halves it, soft
+    // takes sqrt(0.5), hard 0.25, fixed full; depth 0 ignores velocity.
+    const auto soft = [&](const Params &params, int pitch = kRootKey) {
+        Instance plugin;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return -1.0f;
+        }
+        CHECK(loadPcm(plugin, 0, dc()) == kResultOk);
+        for(const auto &[id, value] : params)
+            plugin.param(id, value);
+        plugin.noteOn(pitch, 0.5f);
+        return left(plugin.render(kBlock), 100);
+    };
+    CHECK(std::fabs(soft({}) - 0.25f) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 0), listValue(1) * 15.0 / 7.0}}) - 0.5f * std::sqrt(0.5f)) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 0), 2.0 / 7.0}}) - 0.125f) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 0), 3.0 / 7.0}}) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(soft({{curveParam(0, 1), 0.0}}) - 0.5f) < 1e-3f);
+    // Key level +6 dB/octave: the pad at C-2 (MIDI 36), two octaves under
+    // C-4, plays 12 dB down.
+    CHECK(std::fabs(soft({{curveParam(0, 1), 0.0}, {curveParam(0, 2), 0.75}}) - 0.5f * std::pow(10.0f, -12.0f / 20.0f)) < 1e-3f);
+
+    // Tempo sync at the default 120 BPM of a 1 s sample: Repitch over 4
+    // beats (2 s) plays at half speed, over 2 beats (1 s) at its own.
+    std::vector<float> slope(48000);
+    for(size_t f = 0; f < slope.size(); ++f)
+        slope[f] = static_cast<float>(f) / 48000.0f;
+    const auto rate = [](const std::vector<float> &out) { return (left(out, 1001) - left(out, 1000)) * 48000.0f; };
+    CHECK(std::fabs(rate(filtered(path, slope, {{chainParam(0, 1), kRepitch}})) - 0.5f) < 1e-3f);
+    CHECK(std::fabs(rate(filtered(path, slope, {{chainParam(0, 1), kRepitch}, {chainParam(0, 2), beatsValue(3)}})) - 1.0f) < 1e-3f);
+    // Stretch over 4 beats keeps the pitch of a 1 kHz tone and lasts 2 s; a
+    // constant level stays constant through the grains' crossfades.
+    std::vector<float> tone(48000);
+    for(size_t f = 0; f < tone.size(); ++f)
+        tone[f] = 0.5f * static_cast<float>(std::sin(2.0 * 3.14159265358979 * 1000.0 * f / 48000.0));
+    Instance plugin;
+    OPEN(plugin, path);
+    CHECK(loadPcm(plugin, 0, tone) == kResultOk);
+    plugin.param(chainParam(0, 1), kStretch);
+    plugin.noteOn(kRootKey);
+    const auto stretched = plugin.render(72192);
+    int crossings = 0;
+    for(int f = 60001; f < 64800; ++f)
+        if((left(stretched, f) >= 0.0f) != (left(stretched, f - 1) >= 0.0f))
+            ++crossings;
+    CHECK(crossings > 180 && crossings < 220); // 200 at 1 kHz over 0.1 s
+    CHECK(energy(stretched, 60000, 64800) > 100.0); // still playing at 1.25 s
+    const auto level = filtered(path, dc(), {{chainParam(0, 1), kStretch}});
+    CHECK(std::fabs(left(level, 3000) - 0.5f) < 2e-3f);
+
+    // Beats: four 200-frame hits a quarter second apart in a 1 s sample.
+    // Over 4 beats (2 s) each hit starts at its stretched time, whole (its
+    // attack at full level), with silence after.
+    std::vector<float> hits(48000, 0.0f);
+    for(int h = 0; h < 4; ++h)
+        for(int f = 0; f < 200; ++f)
+            hits[h * 12000 + f] = (f % 8 < 4 ? 0.8f : -0.8f);
+    const auto play = [&](double sync, double beats, int frames) {
+        Instance plugin;
+        std::vector<float> out;
+        if(!plugin.open(path)) {
+            CHECK(!"cannot open the bundle");
+            return out;
+        }
+        CHECK(loadPcm(plugin, 0, hits) == kResultOk);
+        plugin.param(chainParam(0, 1), sync);
+        plugin.param(chainParam(0, 2), beats);
+        plugin.noteOn(kRootKey);
+        return plugin.render(frames);
+    };
+    const auto slow = play(kBeatsSync, beatsValue(5), 96000);
+    for(int h = 0; h < 4; ++h) {
+        CHECK(energy(slow, h * 24000, h * 24000 + 200) > 50.0);         // the hit, on time
+        CHECK(energy(slow, h * 24000 + 400, h * 24000 + 23000) < 1e-3); // then nothing
+    }
+    CHECK(std::fabs(left(slow, 24000 + 50) - hits[50]) < 0.05f); // its shape kept
+    // The markers message reads the detected hits and replaces them: with
+    // only 0 and 24000, hits 1 and 2 play as one segment (hit 2 at its
+    // recorded distance, 12000 frames in), then silence until 48000.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, hits) == kResultOk);
+        const auto markers = [&](int set, std::vector<double> frames) {
+            auto msg = message(mla_sampler::kMarkersMessage);
+            msg->getAttributes()->setInt("pad", 0);
+            if(set) {
+                msg->getAttributes()->setInt("set", set);
+                msg->getAttributes()->setBinary("frames", frames.data(), static_cast<uint32>(frames.size() * sizeof(double)));
+            }
+            CHECK(plugin.send(msg) == kResultOk);
+            const void *data = nullptr;
+            uint32 size = 0;
+            std::vector<double> out;
+            if(msg->getAttributes()->getBinary("frames", data, size) == kResultOk && data)
+                out.assign(static_cast<const double *>(data), static_cast<const double *>(data) + size / sizeof(double));
+            return out;
+        };
+        const auto detected = markers(0, {});
+        CHECK(detected.size() == 4);
+        for(size_t h = 0; h < detected.size() && h < 4; ++h)
+            CHECK(std::fabs(detected[h] - h * 12000.0) <= 64.0);
+        // Set: sorted, inside the sample, 0 first, no repeats.
+        const auto set = markers(1, {24000.0, 90000.0, 24000.0});
+        CHECK(set.size() == 2 && set[0] == 0.0 && set[1] == 24000.0);
+        plugin.param(chainParam(0, 1), kBeatsSync);
+        plugin.param(chainParam(0, 2), beatsValue(5));
+        plugin.noteOn(kRootKey);
+        const auto out = plugin.render(96000);
+        CHECK(energy(out, 12000, 12200) > 50.0);  // hit 2 inside segment 1
+        CHECK(energy(out, 24000, 24200) < 1e-3);  // not at its stretched time
+        CHECK(energy(out, 48000, 48200) > 50.0);  // hit 3 starts segment 2
+        CHECK(markers(2, {}).size() == 4);        // detected again
+        auto empty = message(mla_sampler::kMarkersMessage);
+        empty->getAttributes()->setInt("pad", 5);
+        CHECK(plugin.send(empty) != kResultOk);   // an empty pad has none
+    }
+    // Faster, over 1 beat (0.5 s): the hits come every 6000 frames.
+    const auto fast = play(kBeatsSync, beatsValue(2), 24064);
+    for(int h = 0; h < 4; ++h) {
+        CHECK(energy(fast, h * 6000, h * 6000 + 200) > 50.0);
+        CHECK(energy(fast, h * 6000 + 400, h * 6000 + 5500) < 1e-3);
+    }
+}
+
+void testChokeGroups(const std::string &path)
+{
+    // Pads 1 and 2 (keys 36, 37; 0.5 and 0.25) share choke group 1; pad 3
+    // (key 38, 0.125) has none.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        const float levels[] = {0.5f, 0.25f, 0.125f};
+        for(int slot = 0; slot < 3; ++slot)
+            CHECK(loadPcm(plugin, slot, std::vector<float>(48000, levels[slot])) == kResultOk);
+        plugin.param(chokeParam(0), 1.0 / 8.0);
+        plugin.param(chokeParam(1), 1.0 / 8.0);
+        plugin.noteOn(kRootKey);
+        plugin.noteOn(kRootKey + 2);
+        plugin.render(kBlock);
+        // Pad 2 cuts pad 1 off within 3 ms; pad 3 plays on.
+        plugin.noteOn(kRootKey + 1);
+        const auto out = plugin.render(kBlock);
+        CHECK(std::fabs(left(out, 200) - (0.25f + 0.125f)) < 1e-3f);
+        // A retrigger chokes the slot's own earlier note: one pad 2 voice, not two.
+        plugin.noteOn(kRootKey + 1);
+        const auto again = plugin.render(kBlock);
+        CHECK(std::fabs(left(again, 200) - (0.25f + 0.125f)) < 1e-3f);
+    }
+    // Slots a note starts together do not choke each other: two zone layers
+    // in one choke group both sound.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, std::vector<float>(48000, 0.5f)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(48000, 0.25f)) == kResultOk);
+        for(int slot = 0; slot < 2; ++slot) {
+            zone(plugin, slot, 60, 60, 60);
+            plugin.param(chokeParam(slot), 2.0 / 8.0);
+        }
+        plugin.noteOn(60);
+        const auto out = plugin.render(kBlock);
+        CHECK(std::fabs(left(out, 200) - 0.75f) < 1e-3f);
+    }
+}
+
+void testOutputRouting(const std::string &path)
+{
+    // Out 2 is inactive: the slot falls back to Main.
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 0, std::vector<float>(2048, 0.5f)) == kResultOk);
+        plugin.param(slotParam(0, kSlotOutput), 1.0 / 7.0);
+        plugin.noteOn(kRootKey);
+        const auto main = plugin.render(1024, 0);
+        CHECK(energy(main, 0, 1024) > 100.0);
+    }
+    // Out 2 is active: the slot plays there, Main stays silent, and a slot
+    // left on Main still plays on Main.
+    {
+        Instance plugin;
+        OPEN(plugin, path, true);
+        CHECK(loadPcm(plugin, 0, std::vector<float>(2048, 0.5f)) == kResultOk);
+        CHECK(loadPcm(plugin, 1, std::vector<float>(2048, 0.25f)) == kResultOk);
+        plugin.param(slotParam(0, kSlotOutput), 1.0 / 7.0);
+        plugin.noteOn(kRootKey);
+        plugin.render(kBlock);
+        const auto &aux = plugin.data.outputs[1];
+        const auto &main = plugin.data.outputs[0];
+        CHECK(std::fabs(aux.channelBuffers32[0][100] - 0.5f) < 1e-3f);
+        CHECK(main.channelBuffers32[0][100] == 0.0f);
+        plugin.noteOn(kRootKey + 1);
+        plugin.render(kBlock);
+        CHECK(std::fabs(aux.channelBuffers32[0][100] - 0.5f) < 1e-3f);
+        CHECK(std::fabs(main.channelBuffers32[0][100] - 0.25f) < 1e-3f);
+    }
+}
+
+void testStateRoundTrip(const std::string &path)
+{
+    auto state = owned(new MemoryStream);
+    {
+        Instance plugin;
+        OPEN(plugin, path);
+        CHECK(loadPcm(plugin, 2, ramp(1000)) == kResultOk);
+        plugin.param(slotParam(2, kSlotLoop), kLoopForward);
+        plugin.param(slotParam(2, kSlotLoopStart), 0.5);
+        plugin.render(kBlock);
+        CHECK(plugin.component->getState(state) == kResultOk);
+    }
+    Instance restored;
+    OPEN(restored, path);
+    state->seek(0, IBStream::kIBSeekSet, nullptr);
+    CHECK(restored.component->setState(state) == kResultOk);
+    restored.noteOn(kRootKey + 2);
+    const auto out = restored.render(4096);
+    CHECK(std::fabs(left(out, 3000) - static_cast<float>(500 + (3000 - 500) % 500 + 1) / 1000.0f) < 2e-3f);
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    if(argc < 2) {
+        std::fprintf(stderr, "usage: %s <MlaSampler.vst3> [scratch dir]\n", argv[0]);
+        return 2;
+    }
+    const std::string path = argv[1];
+    testLayout(path);
+    testLoopOff(path);
+    testForwardLoop(path);
+    testBidirectionalLoop(path);
+    testLoopCrossfade(path);
+    testKeyZones(path);
+    testVelocityLayers(path);
+    testSlotEnvelopes(path);
+    testSampleStart(path);
+    testLiveEdits(path);
+    testGroups(path);
+    testFilters(path);
+    testChokeGroups(path);
+    testMoreFilterTypes(path);
+    testLfo(path);
+    testDelayLineFilters(path);
+    testModMatrix(path);
+    testReverse(path);
+    testUnisonAndGlide(path);
+    testControllers(path);
+    testPitchEnvelopeAndSends(path);
+    testChainCurvesAndTempo(path);
+    testOutputRouting(path);
+    testStateRoundTrip(path);
+    if(failures) {
+        std::fprintf(stderr, "%d check(s) failed\n", failures);
+        return 1;
+    }
+    std::puts("PASS: layout, key zones, velocity layers, slot envelopes, sample start, live edits, groups, filters, more filter types, delay-line filters, LFO, LFO 2 and mod matrix, reverse, unison and glide, MIDI controllers, pitch envelope and sends, filter chain, velocity/key curves and tempo sync (repitch, stretch, beats), choke groups, loop off/forward/bidirectional, output routing, state");
+    return 0;
+}

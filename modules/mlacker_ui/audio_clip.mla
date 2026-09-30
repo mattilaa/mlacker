@@ -175,6 +175,82 @@ impl AudioClip {
         out.rebuild_peaks();
         return out;
     }
+    /// Boundaries of `count` slices: frame 0, the cuts, then `frames`.
+    /// Equal cuts are evenly spaced. Transient cuts go at the strongest rises
+    /// in level, at least 30 ms apart and from the start, each moved back to
+    /// the quietest frame of the 256 before it; a clip with fewer such rises
+    /// gets fewer slices.
+    pub fn slice_points(self: AudioClip, count: i32, transients: bool) -> list<i64> {
+        let frames: i64 = self.frames; let channels: i64 = self.channels < 1 ? 1 : self.channels;
+        var points: list<i64> = [0];
+        let wanted: i64 = wide(count);
+        if wanted < 2 || frames < wanted || self.samples.len() < frames * channels { points.push(frames); return points; }
+        if !transients {
+            for k in 1..wanted { points.push(frames * k / wanted); }
+            points.push(frames); return points;
+        }
+        let samples: list<f32> = self.samples;
+        let hop: i64 = 256; let hops: i64 = frames / hop;
+        // RMS per hop, then its rise over the hop before.
+        var levels: list<f32> = [];
+        for h in 0..hops {
+            var sum: f32 = 0.0f; let from: i64 = h * hop; let to: i64 = from + hop;
+            for f in from..to {
+                let v: f32 = channels < 2 ? samples[f] : (samples[f * channels] + samples[f * channels + 1]) * 0.5f;
+                sum = sum + v * v;
+            }
+            levels.push(std::math::sqrt(sum / f32(hop)));
+        }
+        var rises: list<f32> = [];
+        var strongest: f32 = 0.0f;
+        for h in 0..hops {
+            let rise: f32 = h == 0 ? 0.0f : levels[h] - levels[h - 1];
+            rises.push(rise > 0.0f ? rise : 0.0f);
+            if rise > strongest { strongest = rise; }
+        }
+        let rate: i64 = self.sample_rate < 1 ? 48000 : self.sample_rate;
+        let spacing: i64 = (rate * 30 / 1000 + hop - 1) / hop;
+        // The strongest rises first, each far enough from those taken.
+        var taken: list<i64> = [];
+        while taken.len() < wanted - 1 {
+            var best: i64 = -1; var best_rise: f32 = strongest * 0.1f;
+            for h in spacing..hops {
+                if rises[h] <= best_rise { continue; }
+                var near: bool = false;
+                for t in taken { let gap: i64 = t > h ? t - h : h - t; if gap < spacing { near = true; } }
+                if !near { best = h; best_rise = rises[h]; }
+            }
+            if best < 0 { break; }
+            taken.push(best);
+        }
+        // In order, each at its onset (the first frame around the rise at 30%
+        // of the peak there), moved back to the quietest of the 64 frames
+        // before it.
+        var cuts: list<i64> = [];
+        for t in taken {
+            let lo: i64 = t * hop - hop; let far: i64 = t * hop + 2 * hop; let hi: i64 = far < frames ? far : frames;
+            var peak: f32 = 0.0f;
+            for f in lo..hi { let a: f32 = self.level_at(f); if a > peak { peak = a; } }
+            var onset: i64 = t * hop;
+            for f in lo..hi { if self.level_at(f) >= peak * 0.3f { onset = f; break; } }
+            let back: i64 = onset - 64 < lo ? lo : onset - 64; let through: i64 = onset + 1;
+            var quiet: i64 = onset; var level: f32 = 2.0f;
+            for f in back..through { let a: f32 = self.level_at(f); if a <= level { level = a; quiet = f; } }
+            var at: i64 = 0;
+            while at < cuts.len() && cuts[at] < quiet { at = at + 1; }
+            var sorted: list<i64> = [];
+            for i in 0..cuts.len() { if i == at { sorted.push(quiet); } sorted.push(cuts[i]); }
+            if at == cuts.len() { sorted.push(quiet); }
+            cuts = sorted;
+        }
+        for c in cuts { points.push(c); }
+        points.push(frames); return points;
+    }
+    /// Absolute mono level of frame `f` (the channels averaged).
+    fn level_at(self: AudioClip, f: i64) -> f32 {
+        let v: f32 = self.channels < 2 ? self.samples[f] : (self.samples[f * self.channels] + self.samples[f * self.channels + 1]) * 0.5f;
+        return v < 0.0f ? -v : v;
+    }
     /// Owned clip with the same source, format and row size but new interleaved
     /// PCM; frames and peaks are recomputed. `samples` must not be shared.
     pub fn with_samples(self: AudioClip, samples: list<f32>) -> AudioClip {
@@ -203,7 +279,7 @@ impl AudioClip {
     pub fn load(path: str8, bpm: i32) -> result<AudioClip, str8> {
         if bpm <= 0 { return Err<AudioClip, str8>("Invalid BPM"); }
         let loaded: result<PcmAudio, str8> = PcmAudio::load(path);
-        if loaded.is_err() { return Err<AudioClip, str8>("Cannot decode audio: use mono/stereo PCM16/float32 WAV or PCM16 AIFF"); }
+        if loaded.is_err() { return Err<AudioClip, str8>("Cannot decode audio: use mono/stereo PCM16/float32 WAV, or 8-32-bit/float32/float64 AIFF"); }
         let audio: PcmAudio = loaded.unwrap();
         let frames: i64 = audio.frame_count(); let rate: i64 = audio.sample_rate();
         let channels: i64 = audio.channels();

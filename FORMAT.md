@@ -45,7 +45,7 @@ are accepted. Unsupported major or minor versions fail closed.
      (written 0, ignored on read), zoom stage;
      automation slots; audio-instance list.
    - Automation slots: a count (0–16), then per slot its parameter string
-     (`cc:N`, `pitchbend` or `name:min:max`), minimum and maximum. Each slot is
+     (`cc:N`, `pitchbend`, `aftertouch` or `name:min:max`), minimum and maximum. Each slot is
      one column after the track's note lines. A minor-0 document has no count
      and always stores exactly two slots.
    - An automation cell is empty, one integer played on its row, or four
@@ -140,6 +140,24 @@ are accepted. Unsupported major or minor versions fail closed.
     store plain pattern IDs. It is written only when the matrix has a loop or
     a split, and it requires the preceding tags (a default `MASTER_BUS` is
     written when only this extension is needed).
+17. Optional `AUX_OUTPUTS` extension follows `MATRIX_LOOPS`: per pattern, a
+    track count that must match the pattern, then per track a bus count (0–15)
+    and, for each of the track's instrument's aux output buses from Out 2 on,
+    its route: -1 to stay with the instrument's main output, 0 for master,
+    a destination track index + 1, -2 - n to feed aux effect channel n (0–7)
+    as a send, or -10 for nowhere. Readers before the effect routes reject
+    -2 .. -10. A track cannot route to itself.
+18. Optional `PAD_MARKERS` extension follows `AUX_OUTPUTS`: slice markers set
+    by hand for sampler pads. A count (0–4096), then per pad its instrument
+    slot (1–32) and pad (0–127), which must be one of the `SAMPLER_PADS`
+    pads, a marker count (1–65536) and the markers as frames (0–16777216),
+    the first 0 and each after it larger. On load they are sent to the
+    instrument after the pads. It is written only when some pad has hand-set
+    markers, and it requires the preceding tags (an `AUX_OUTPUTS` extension,
+    possibly empty of routes, is written with it). A route to
+    a track that is not an AUDIO track plays as -1. It is written only when
+    some Instrument track routes an aux bus, and it requires the preceding
+    tags.
 
 The active pattern is serialized from the live editor, not its older library
 snapshot. Audio placements reference the embedded sample list; plugin assignments
@@ -233,3 +251,19 @@ non-finite values, values outside 0–1, and trailing/truncated data are rejecte
 before applying. Read-only parameters are recorded but not written on restore.
 Unchanged values are not resent, preserving the session restoration safeguards.
 MIDI bindings and opaque VST3 component/controller state are not part of a preset.
+
+## Sampler slot preset files (`.mlaslot`, version 1.0)
+
+One Mla Sampler slot, loadable into any slot. String `MLASLOT`, i64 major 1
+and minor 0, plugin display-name string (`Mla Sampler`), i64 field count
+(0–4096), then `(i64 key, f64 normalized value)` pairs, then an i64 flag (0 or
+1) and, when 1, the slot's sample in the session's sample-list encoding. Same
+little-endian primitives and limits as `.mlapre`.
+
+A key names a slot field independently of the slot: `base * 64 + field`,
+where the slot's parameter ID is `base + stride * slot + field` for one of
+Mla Sampler's per-slot ID blocks (see its README: `200 + 7s`, `400 + 5s`, …,
+`4000 + 32s`). The plugin name must match; duplicate keys, values outside 0–1
+and trailing/truncated data are rejected before anything is applied. Keys the
+plugin lacks are skipped, and slot fields the file lacks keep their values.
+Without a sample, loading empties the slot.

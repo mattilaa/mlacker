@@ -3,8 +3,8 @@
 
 Terminal tracker built with MLang, the MLang `tui` widget library, macOS AUHAL,
 and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
-(imported as `mlacker_ui::*`); the VST3 effects and the Mla Drum instrument are
-under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+(imported as `mlacker_ui::*`); the VST3 effects and the Mla Drum and Mla Sampler
+instruments are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run
@@ -245,6 +245,7 @@ shortcut of several presses in a row is written `<C-a><C-m>`.
 | `<S-m>` | Show or hide the song matrix |
 | `<C-S-m>` | Show or hide the spectrum analyzer |
 | `<S-p>` | Show or hide the virtual keyboard |
+| `<S-s>` | Show or hide the Sampler pane (Mla Sampler) |
 
 These use Ctrl+Shift because macOS keeps Ctrl+F1–F3 for keyboard focus. The
 terminal must pass modified function keys on; the View menu works everywhere.
@@ -262,8 +263,8 @@ dialog or text field has the keyboard.
 |------|----------|
 | File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
-| View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Reset layout, Show details |
-| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Note lines ▸, Automation ▸, Clear pattern, Delete |
+| View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
+| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
 | Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
@@ -627,6 +628,9 @@ hidden and read-only cells stay unchanged; selection remains active for repeats.
   new instance. Removing a track does not unload the library entry.
 - Audio-device changes reload all instances at the new sample rate. Disabling
   output keeps them loaded in an offline controller.
+- Live MIDI plays sample-accurately: each note and controller change sounds on
+  the frame it arrived on, one audio block later (a fixed ~2.7 ms at 128 frames
+  and 48 kHz, instead of up to a block of jitter).
 - Live MIDI follows the selected Pattern-view track, even while another pane or
   menu has keyboard focus. Instrument tracks address their VST3 instance; MIDI
   tracks use the preview/master path. Audio, muted, and unassigned instrument
@@ -671,6 +675,253 @@ reloads the pads on open and after audio-device changes. Removing an instrument
 forgets its pads. **Save plugin preset** on a sampler writes a kit preset that
 embeds its pad samples. Loading it restores all pads and clears pads the kit
 does not use.
+
+### Sampler pane
+
+**Shift+S**, or **View → Show sampler**, shows the Sampler pane in the lowest
+pane of the Pattern view and focuses it. It edits the
+[Mla Sampler](plugins/mla_sampler) instance on the selected Instrument track;
+other tracks show a hint instead. Shift+S again hides it. The Sampler pane and
+the virtual keyboard share the pane, so opening one closes the other.
+
+Each of the 16 slots is one row with these columns:
+
+- **Mode**: `Pad` or `Zone`. A pad plays one key, shown under **Low** (slot 1
+  at the Root Key, default `C-2`, then one key up per slot).
+- **Low** / **High**: a zone's key range.
+- **Root**: the key that plays the sample at its recorded pitch.
+- **Trk**: key tracking, `On` or `Off`. On pitches each key from Root; off
+  plays every key at the recorded pitch.
+- **VLo** / **VHi**: the velocity range (1-127) the slot plays, for pads and
+  zones alike. Two slots on the same keys with ranges 1-63 and 64-127 switch
+  samples by how hard a key is hit.
+- The sample.
+- **Loop**: `Off`, `Fwd` forward, `Bidir` bidirectional.
+- **Start%** / **End%**: the loop points, in percent of the sample.
+- **Xf%**: a forward loop's crossfade length, in percent of the sample. It
+  smooths a clicking seam (see the Mla Sampler README).
+- **Out**: the output bus (`Main`, `Out 2`..`Out 8`).
+
+Overlapping zones layer.
+
+| Keys | Action |
+|------|--------|
+| `j` / `k` (Down / Up) | Next / previous slot |
+| `h` / `l` (Left / Right) | Previous / next column |
+| `J` / `K` | Decrease / increase the column: choices and velocities by one, keys by a semitone, loop points by 1% |
+| `[` / `]` | Keys by an octave, velocities by 10, loop points by 10% |
+| Enter | Load a WAV/AIFF into the slot (added to the Audio list); several on a zone make a round-robin set |
+| Backspace | Clear the slot |
+| `o` | Route the slot's output bus (see Plugin outputs below) |
+| `w` | Wave view of the slot (again returns to the table) |
+| `v` | Key map of all slots (again returns to the table) |
+| `e` | Next page: keys & loops, Sound, Filter, Filter 3/4, Filter Mod, LFO 1, LFO 2, Mod, Play, Vel/Tempo |
+| `G` | Group mode: round-robin or random |
+| `p` | Play the slot: a pad at its key, a zone at its root |
+| `E` | Edit the slot's sample (see below) |
+| `W` / `R` | Save the slot as a slot preset / load one into it (see below) |
+| `C` | Slice the slot's sample into the slots after it (see below) |
+| `A` | Auto-map note-named samples as key zones from the slot (see below) |
+
+The **Filter page** (`e` from the Sound page) shows each slot's filter chain,
+its first two stages: per stage its type (**F1**/**F2**: `Off`, `LP12`,
+`LP24`, `HP12`, `HP24`, `BP12`, `BP24`, `Ldr12`, `Ldr24`, `Notch`, the
+state-variable `SvLP`, `SvHP`, `SvBP`, `SvNt`, `Peak`, `LoShf`, `HiShf`,
+`Vowel`, `Comb+`, `Comb-`, `Flang` and `Phasr`), **Cut** (20 Hz .. 20k), **Res** (dB), **Env** (octaves of filter
+envelope), **Key** (key tracking, %) and **Gain** (dB, for Peak and the
+shelves; dim otherwise). Then **FEnv** (`Inst` uses the instance's filter envelope,
+`Own` the slot's) and its **Atk**, **Dec**, **Sus%** and **Rel**, editable
+once FEnv is `Own`. `J`/`K` step the cutoff by about a semitone, resonance and
+gain by 1 dB and Env by a tenth of an octave; `[`/`]` by an octave, 6 dB and an
+octave. The instance filter envelope is edited like its amp envelope, in the
+instrument's parameter editor. See the Mla Sampler README for the filter types
+and how the list grows.
+
+The **Filter 3/4 page** (`e` from the Filter page) shows **Chain**, how the
+four stages connect (`Serial`; `Parall`: all side by side, summed; `2 x 2`:
+stages 1-2 beside 3-4), then filter stages 3 and 4 (**F3**, **F4**) with the
+same columns and keys as the first two.
+
+The **Filter Mod page** (`e` from Filter 3/4) shows each stage's **Drv**
+(drive, %: saturation into the stage) and **Mod** (-100 .. +100 % of the LFO
+and mod-route cutoff movement it takes; +100 by default), dim while the stage
+is Off. Opposite Mod values sweep two stages apart.
+
+The **LFO 1** and **LFO 2** pages (`e` from the Filter Mod page, then again) set
+each slot's two LFOs alike: **Shape**
+(`Sine`, `Tri`, `SawUp`, `SawDn`, `Sqr`, `S&H`), **Rate** (0.05-20 Hz, dim
+while synced), **Sync** and **Div** (a division of the tempo: `1/1`..`1/32`,
+dotted `1/4.`, triplet `1/8T`), **Delay** (depth fade-in), **Pitch**
+(semitones, vibrato), **Cut** (octaves of filter cutoff) and **Lvl%**
+(tremolo), and **Trig** (`Retrg` restarts it with each note, `Free` keeps it
+running). `J`/`K` step Pitch by a tenth of a semitone and Cut by a tenth of an
+octave; `[`/`]` by a semitone and an octave. Depths start at 0, so an LFO does
+nothing until one is set.
+
+The **Mod page** (`e` from LFO 2) shows each slot's four mod routes: per
+route its source (**Src**: `LFO1`, `LFO2`, `AmpEn`, `FltEn`, `Veloc`, `Key`,
+and the MIDI controllers `ModWh`, `AftT`, `Bend` and `ModCC`; the instance's
+Bend Range and which CC `ModCC` reads are in its parameter editor),
+target (**Tgt**: `Pitch`, `Cut`, `Reso`, `Level`, `Pan`, `Start`) and amount
+(**Amt**, -100 .. +100 %). A route's target and amount are dim until it has
+both a source and a target. `J`/`K` step the amount by 1 %, `[`/`]` by 10 %.
+See the Mla Sampler README for what each target moves at 100 %.
+
+The **Play page** (`e` from Mod) sets how each slot plays notes: **Mode**
+(`Poly`, `Mono`, or `Legato`, which keeps the playhead and envelopes when a
+note is played over a held one), **Glide** (the slide from the previous note in
+Mono and Legato; dim in Poly), **Uni** (1-8 unison voices per note), **Det**
+(their detune, cents) and **Spr%** (their stereo spread). Det and Spr% are dim
+with one voice. Then the pitch envelope, **PEnv** (semitones at its peak; `J`/`K`
+a semitone, `[`/`]` an octave), **PAtk** and **PDec** (dim at depth 0), and the
+sends, **SnA%** and **SnB%**: how much of the slot goes to the instance's Send A
+and Send B buses as well, which feed aux effect channels 1 and 2 (see Plugin
+outputs), so one instance can send its snare to a reverb and not its kick.
+
+The **Vel/Tempo page** (`e` from Play) sets how velocity and key shape a
+note's level, **VCurve** (`Linear`, `Soft`, `Hard`, `Fixed`), **Vel%** (its
+depth; dim for Fixed) and **KeyL** (dB per octave from C-4), and tempo sync:
+**Sync** (`Off`, `Repitch` changes speed and pitch, `Stretch` keeps the pitch,
+`Beats` keeps the pitch and every hit's attack: for drums)
+plays the whole sample in **Beats** (dim while Sync is Off) at the tempo.
+
+The **key map** (`v`) draws every slot over the 128 MIDI keys, instead of the
+page's table: an octave ruler, a **Lyr** row counting the loaded slots under
+each key (blank where no slot plays: a gap; a dot for one; the count, in the
+accent color, where slots layer), then a row per slot with its keys (`━`), root
+(`◆`, or `●` for a pad) and velocity range. The header describes the selected
+slot. The page's columns still edit, so moving a zone's Low or High on the keys
+& loops page shows at once. Empty slots are dim.
+
+**Slicing** (`C`) cuts the selected slot's sample into slices and puts
+slice 1 on that slot, slice 2 on the next, and so on, each a one-shot pad
+(Pad mode, loop off, whole slice, forwards), so the slices play on consecutive
+keys, Akai-style. `C` shows the wave view with the cuts marked; `J`/`K` (`[`/`]`
+by 4) set how many slices (2 up to the slots left), `t` switches between equal
+slices, slicing at transients and slicing at the cuts (one slice per cut, see
+Wave view), Enter slices, and `C` or Backspace cancels.
+At transients the strongest rises in level are cut (at least 30 ms apart), just
+before each onset; a sample with fewer transients gets fewer slices. The slices
+join the Audio list as `name slice N.wav`; other settings of the slots they
+land on stay.
+
+**Auto-map** (`A`) opens the file dialog (Space marks several files) and turns
+the samples whose names end in a note into key zones on the slots from the
+selected one, lowest note first: `Piano_C4.wav`, `Strings F#2.aif`,
+`PianoEb3.wav` (C4 = MIDI 60). Each zone has its sample's note as root and
+reaches up to the next sample's note; the lowest reaches down to key 0 and the
+highest up to 127. Files on the same note (`Snare_D2_rr1.wav`,
+`Snare_D2_rr2.wav`) share that zone and a group of their own: a round-robin
+set. Files without a note name and files past slot 16 are skipped, and the
+status line counts them.
+
+**Round-robin per zone**: slots in one group (the Sound page's **Grp**) take
+turns on each note they share, round-robin or random (`G`), so repeated notes
+do not sound machine-gunned. Enter on a Zone slot with several files marked
+(Space in the file dialog) loads them into that slot and the ones after it,
+gives each the zone's keys and velocity range, and puts them all in the
+zone's group (or the first free one).
+
+**Slot presets** keep one slot, its sample and every setting on all pages, in a
+`.mlaslot` file. `W` saves the selected slot (the file name suggested is the
+sample's); `R` loads a preset into the selected slot, whichever slot it was
+saved from. The sample joins the Audio list; a preset of an empty slot empties
+the slot. Settings a newer Mla Sampler added that the preset lacks keep their
+values, and settings this Mla Sampler lacks are skipped.
+
+The **Sound page** (`e`) lists each slot's **Level** (dB, `off` at the
+bottom), **Pan** (`L50`, `C`, `R20`), **Tune** (semitones), **Env** (`Inst`
+uses the instance's envelope, `Own` the slot's) and the slot's own **Atk**,
+**Dec**, **Sus%** and **Rel**, **Ofs%**, where playback starts in the
+sample, **Grp**, the slot's group (`-` or 1-8), and **Chk**, its choke group
+(`-` or 1-8): a slot in a choke group cuts off that group's sounding notes,
+its own included, like a closed hi-hat stopping the open one. **Rev** plays the
+slot's sample backwards; its loop points and start then count from the end,
+and the wave view shows the waveform reversed, as it plays. Slots in one group take
+turns on a note instead of layering: round-robin or random, as the pane title
+shows (`Groups: Round-robin`). `G` switches between the two. The four envelope columns are dimmed, and cannot be edited,
+until Env is `Own`. `J`/`K` step level by 1 dB, tune by a semitone and the
+rest by 1%. `[`/`]` step by 6 dB, an octave and 10%. A slot on its own
+envelope keeps it, so a short pad and a sustained, looping zone can share one
+instance.
+
+`E` opens the slot's sample in the destructive sample editor (see
+Destructive sample editing), with the slot's loop already selected, or the
+whole sample when the loop is off. A reversed slot's loop is selected where it
+lies in the stored sample. `n`, `i`/`o`, `r` and the other edits then work on
+the loop, and `t` crops the sample to it. Saving a crop to exactly the loop
+resets the slot's loop to span the whole new sample and its start to the
+beginning, so it plays as before, without the audio outside the loop. The
+edit changes the session sample, so every placement and pad using it updates;
+other slots' loop points stay as they were.
+
+**Wave view** shows the selected slot's waveform across the pane, with the
+loop region highlighted, the crossfade region shaded, its start and end as `│`
+markers and the sample start (where playback begins) as a dashed `┆` marker. The line above
+names the slot and shows the loop mode, the loop start and end in frames (the
+one being edited in brackets), the loop length, the crossfade and the zoom. Frames are exact:
+a loop point set here plays from that frame.
+
+| Keys | Action |
+|------|--------|
+| `m` | Edit the loop start, the loop end, the sample start or the cuts, in turn |
+| `h` / `l` (Left / Right) | Move the marker one dot of the waveform |
+| `H` / `L` | Move the marker one frame |
+| `z` | Snap the marker to the nearest zero crossing (within 48000 frames) |
+| `[` / `]` | Shorten / lengthen the loop crossfade by one dot (forward loops) |
+| `=` / `-` | Zoom in / out, centred on the marker |
+| `j` / `k` | Next / previous slot |
+| `p` | Play the slot |
+| `,` / `.` | Cuts: select the previous / next cut |
+| `n` / `x` | Cuts: add a cut half way to the next / delete the selected one |
+| `u` | Cuts: detect them again |
+
+The **cuts** are the slot's slice markers, shown as dotted `┊` lines: where
+its hits start, as Mla Sampler detects them when a sample loads. Beats tempo
+sync plays from one cut to the next, and `C` slicing can slice at them. With
+the Cut marker (`m` past the sample start) `h`/`l`, `H`/`L` and `z` move the
+selected cut between its neighbours (the first stays at frame 0). Cuts set by
+hand are kept with the session until the pad gets another sample, and `u`
+brings back the detected ones. A reversed slot's cuts are not drawn.
+
+`p` plays through the Instrument track like a key of the virtual keyboard, at
+velocity 100 or the nearest velocity in the slot's range, so
+you hear loop and zone edits without leaving the pane. Loop, level, pan, tune
+and envelope edits change a held note as it plays. A zone plays at its root,
+or at the nearest key of the zone when the root lies outside it. Other slots
+whose key or zone holds that key sound too. On terminals that report key
+releases (the kitty keyboard protocol, see Virtual keyboard) the note lasts
+while `p` is held; elsewhere it ends once `p` stops repeating.
+
+The loop keeps at least two frames. The waveform comes from the slot's sample
+in the Audio list, so a slot filled only by a plugin preset has none. Enter
+loads one.
+
+While focused, the pane keeps every printable key, `q` included, plus Enter,
+Backspace and the arrows. Tab, Space, the function keys, Escape, Ctrl
+shortcuts and the Shift+M / Shift+P / Shift+S toggles still work. A pad slot's
+Low, High, Root and Trk need Zone mode first. Zones, loop settings and outputs
+are ordinary plugin parameters, so sessions, plugin presets and
+automation keep them. Slots are saved like drum pads (see above).
+
+#### Plugin outputs
+
+A multi-output instrument such as Mla Sampler brings its extra output buses
+(`Out 2`..`Out 8`) into mlacker. By default each one plays with the instrument's
+main output, through the Instrument track's inserts, fader and sends. To give a
+bus its own mixer channel, create an AUDIO track and route the bus there:
+**Track → Route plugin outputs** on the Instrument track lists each bus with its
+route (`MAIN`, `MST` or `A3`). Pick one, then its destination. In the Sampler
+pane, `o` does the same for the selected slot's bus. The Out column then shows
+the route, e.g. `Out 2>A3`. A routed bus skips the instrument's own inserts,
+fader and sends and takes the destination track's instead; routed to `MST` it
+goes straight to the master bus. Routed to an aux effect channel (`FX1`..`FX8`)
+it feeds only that effect's input, as a send (nothing plays while the channel
+has no effect), and `OFF` silences it. A bus named `Send ...`, such as Mla
+Sampler's Send A and Send B, is a send: it defaults to aux effect channel 1,
+2, and so on instead of joining the main output (choosing `MAIN` for it picks
+that default again). Routes belong to the Instrument track in each
+pattern, like its output channel, and `.mlack` saves them.
 
 ### Destructive sample editing
 
@@ -983,10 +1234,11 @@ parameter notifications are not handled yet; reopen to refresh cached values.
 ### Pattern CC columns
 
 Each MIDI track has its own list of automation columns after its note lines, one
-per controller, headed by what it plays: `CC1`, `CC74`, `PB` for pitch bend.
+per controller, headed by what it plays: `CC1`, `CC74`, `PB` for pitch bend,
+`AT` for aftertouch (channel pressure).
 A new track has only `CC1` (modulation wheel). **Track → Automation → Add CC
 column** adds one for `cc:N` (0–127; values 0–127), `pitchbend` (values
--8192–8191) or a custom `name:min:max`, up to 16 per track and one per
+-8192–8191), `aftertouch` (values 0–127) or a custom `name:min:max`, up to 16 per track and one per
 controller; **Configure CC column** changes the selected one (the first one
 when the cursor is elsewhere) and **Remove CC column** deletes the selected
 one with its values after confirmation. AUDIO tracks have no CC columns.
@@ -1143,7 +1395,12 @@ The session PTY test separately checks real empty startup, command-line opening,
 parameter/editor-state round trips and rejected files. The spectrum PTY test toggles the
 analyzer, edits the master bus and checks it survives a session round trip. The
 virtual keyboard PTY test toggles the keyboard, changes octave, step-enters a note
-and checks that Space and `q` behave. Legacy widget tests opt in
+and checks that Space and `q` behave. The Sampler pane PTY test (run when
+`MlaSampler.vst3` is built) loads and clears slots, edits loops, outputs and
+every page, saves a slot preset and loads it into another slot, checks that
+the edits survive a session round trip, then slices a slot, auto-maps a
+note-named sample and shows the key map; it also edits cuts and checks
+that they survive the round trip. Legacy widget tests opt in
 to seeded demo data with `MLACKER_DEMO=1`; normal mlacker startup does not.
 
 For a hardware-free manual run:

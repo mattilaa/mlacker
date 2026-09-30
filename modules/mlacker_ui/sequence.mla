@@ -49,20 +49,23 @@ pub fn automation_pattern() -> str8 { return "(-?[0-9]{1,10}|\\.)( (-?[0-9]{1,10
 pub fn default_automation() -> list<AutomationSlot> {
     return [AutomationSlot { parameter: clone("cc:1"), minimum: 0, maximum: 127 }];
 }
-/// MIDI controller of an automation parameter: 0-127 for "cc:N", 129 for
-/// pitch bend, -1 for a named parameter that plays nothing.
+/// MIDI controller of an automation parameter: 0-127 for "cc:N", 128 for
+/// aftertouch (channel pressure), 129 for pitch bend, -1 for a named parameter
+/// that plays nothing.
 pub fn automation_controller(parameter: str8) -> i64 {
     if parameter == "pitchbend" { return 129; }
+    if parameter == "aftertouch" { return 128; }
     if !table_matches("cc:[0-9]{1,3}", parameter) { return -1; }
     let suffix: str8 = sub(parameter, 3, len(parameter) - 3);
     let parsed: result<i64, str8> = table_integer(suffix); free(suffix);
     if parsed.is_err() { return -1; }
     let number: i64 = parsed.unwrap(); return number <= 127 ? number : -1;
 }
-/// Column header of an automation parameter: "CC74", "PB", or the name.
+/// Column header of an automation parameter: "CC74", "PB", "AT", or the name.
 pub fn automation_title(parameter: str8) -> str8 {
     let controller: i64 = automation_controller(parameter);
     if controller == 129 { return clone("PB"); }
+    if controller == 128 { return clone("AT"); }
     if controller >= 0 { return format!("CC{}", controller); }
     let colon: i64 = find(parameter, ":");
     let size: i64 = colon > 0 ? colon : len(parameter);
@@ -181,6 +184,10 @@ pub struct SequenceTrack {
     /// Only audio tracks are destinations; an instrument track sends the audio
     /// of its instrument there.
     var output: i32;
+    /// Instrument tracks: where the instrument's aux output buses go, index
+    /// bus - 1 (Out 2 first). -1 (and a missing entry) = with the main
+    /// output, 0 = master, otherwise the destination track index + 1.
+    var aux_outputs: list<i32>;
     var instrument: bool; var instrument_id: i32;
     var note_lines: i32{1};
     var instances: list<AudioInstance>;
@@ -189,6 +196,10 @@ pub struct SequenceTrack {
 impl SequenceTrack {
     pub fn insert_id(self: SequenceTrack, position: i32) -> i32 {
         if position < 0 || position >= self.inserts.len() { return 0; } return self.inserts[position];
+    }
+    /// Stored route of aux bus `bus` (1-15): -1 = with the main output.
+    pub fn aux_output(self: SequenceTrack, bus: i32) -> i32 {
+        if bus < 1 || bus > self.aux_outputs.len() { return -1; } return self.aux_outputs[bus - 1];
     }
     pub fn send_level(self: SequenceTrack, fx: i32) -> i32 {
         if fx < 0 || fx >= self.sends.len() { return 0; } return self.sends[fx];
@@ -561,9 +572,9 @@ pub fn record_timed(self: &mut Self, note: i64, velocity: i64, channel: i64, tic
 }
 /// Record a controller of the take at the nearest 1/64 step, adding a CC
 /// column when the armed track does not automate that controller yet.
-/// `controller` 129 is pitch bend with its raw 14-bit value.
+/// `controller` 128 is aftertouch, 129 pitch bend with its raw 14-bit value.
 pub fn record_control(self: &mut Self, controller: i64, value: i64, tick: i64) -> bool {
-    if self.recording_track < 0 || controller < 0 || (controller > 127 && controller != 129) { return false; }
+    if self.recording_track < 0 || controller < 0 || controller > 129 { return false; }
     let bend: bool = controller == 129;
     let stored: i64 = bend ? value - 8192 : value;
     if bend && (stored < -8192 || stored > 8191) { return false; }
@@ -577,7 +588,7 @@ pub fn record_control(self: &mut Self, controller: i64, value: i64, tick: i64) -
     let track: SequenceTrack = self.tracks[self.recording_track];
     var slot: i32 = track.automation_of(controller) + 1;
     if slot == 0 {
-        let spec: str8 = bend ? clone("pitchbend") : format!("cc:{}", controller);
+        let spec: str8 = bend ? clone("pitchbend") : (controller == 128 ? clone("aftertouch") : format!("cc:{}", controller));
         slot = self.add_automation(self.recording_track, spec); free(spec);
         if slot == 0 { return false; }
     }
@@ -677,6 +688,45 @@ pub fn set_track_output(self: &mut Self, index: i32, destination: i32) -> bool {
     }
     self.revision = self.revision + 1; self.error = ""; return true;
 }
+/// Validated route of aux bus `bus` of the instrument track `index` (see
+/// `set_aux_output`). A route to a missing or non-audio track reads as -1.
+pub fn track_aux_output(self: SequenceTable, index: i32, bus: i32) -> i32 {
+    if index < 0 || index >= self.tracks.len() { return -1; }
+    let track: SequenceTrack = self.tracks[index];
+    if !track.instrument { return -1; }
+    let destination: i32 = track.aux_output(bus);
+    if destination >= -10 && destination <= -2 { return destination; }
+    if destination < 0 || destination > self.tracks.len() { return -1; }
+    if destination == 0 { return 0; }
+    let target: SequenceTrack = self.tracks[destination - 1];
+    return target.audio ? destination : -1;
+}
+/// Route aux bus `bus` (1-15) of an instrument track's instrument: -1 = with
+/// the main output, 0 = master, an AUDIO track index + 1, -2 - n = the input
+/// of aux effect channel n (0-7, a send), or -10 = nowhere. Tracks on the
+/// same instance share the routes, as they share its output channel.
+pub fn set_aux_output(self: &mut Self, index: i32, bus: i32, destination: i32) -> bool {
+    if index < 0 || index >= self.tracks.len() || bus < 1 || bus > 15 || destination < -10 || destination > self.tracks.len() { return false; }
+    let selected: SequenceTrack = self.tracks[index];
+    if !selected.instrument || selected.instrument_id < 1 { self.error = "Select an Instrument track"; return false; }
+    if destination > 0 {
+        let target: SequenceTrack = self.tracks[destination - 1];
+        if !target.audio { self.error = "Only an AUDIO track can take a plugin output"; return false; }
+    }
+    let old: list<SequenceTrack> = self.tracks;
+    for i in 0..old.len() {
+        var track: SequenceTrack = old[i];
+        if track.instrument && track.instrument_id == selected.instrument_id {
+            var aux: list<i32> = [];
+            let count: i32 = track.aux_outputs.len() > bus ? i32(track.aux_outputs.len()) : bus;
+            for b in 0..count { aux.push(i32(b) + 1 == bus ? destination : track.aux_output(i32(b) + 1)); }
+            // Trailing "with main" entries are the default; keep the list short.
+            while aux.len() > 0 && aux[aux.len() - 1] == -1 { aux.pop(); }
+            track.aux_outputs = aux; self.replace_track(i32(i), track);
+        }
+    }
+    self.revision = self.revision + 1; self.error = ""; return true;
+}
 /// MIDI output of a track: the instrument instance its notes play, 0 to detach
 /// it back to a plain MIDI track. Tracks on one instance share its inserts,
 /// sends and output channel.
@@ -688,7 +738,7 @@ pub fn set_instrument_output(self: &mut Self, index: i32, id: i32) -> bool {
     for i in 0..self.tracks.len() {
         let other: SequenceTrack = self.tracks[i];
         if i != index && id > 0 && other.instrument && other.instrument_id == id {
-            track.inserts = other.inserts; track.sends = other.copy_sends(); track.output = other.output;
+            track.inserts = other.inserts; track.sends = other.copy_sends(); track.output = other.output; track.aux_outputs = other.aux_outputs;
         }
     }
     self.replace_track(index, track); self.rebuild_columns();
@@ -701,6 +751,12 @@ fn remap_outputs(self: &mut Self, removed: i32) -> void {
         var track: SequenceTrack = old[i];
         if track.output == removed + 1 { track.output = 0; }
         else if track.output > removed + 1 { track.output = track.output - 1; }
+        var aux: list<i32> = [];
+        for i in 0..track.aux_outputs.len() {
+            let destination: i32 = track.aux_outputs[i];
+            aux.push(destination == removed + 1 ? -1 : (destination > removed + 1 ? destination - 1 : destination));
+        }
+        track.aux_outputs = aux;
         tracks.push(track);
     }
     self.tracks = tracks;
@@ -1335,7 +1391,7 @@ pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
     }
     var tracks: list<SequenceTrack> = []; let source_tracks: list<SequenceTrack> = self.tracks;
     for track in source_tracks {
-        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
+        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, aux_outputs: track.aux_outputs, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
             automation: track.copy_automation() });
     }
     var notes: array<str8, 128> = {};
@@ -1618,7 +1674,7 @@ pub fn create_track_kind(self: &mut Self, duplicate: bool, audio: bool, area: Re
     if duplicate {
         let original: SequenceTrack = self.tracks[source];
         track.release_strings();
-        track = SequenceTrack { name: format!("{} copy", original.name), muted: original.muted, volume: original.volume, pan: original.pan, sends: original.copy_sends(), audio: original.audio, output: original.output, instrument: original.instrument, instrument_id: original.instrument_id, note_lines: original.note_lines, instances: original.copy_audio(), zoom_stage: original.zoom_stage,
+        track = SequenceTrack { name: format!("{} copy", original.name), muted: original.muted, volume: original.volume, pan: original.pan, sends: original.copy_sends(), audio: original.audio, output: original.output, aux_outputs: original.aux_outputs, instrument: original.instrument, instrument_id: original.instrument_id, note_lines: original.note_lines, instances: original.copy_audio(), zoom_stage: original.zoom_stage,
             automation: original.copy_automation() };
     }
     if duplicate && track.instrument { let original: SequenceTrack = self.tracks[source]; track.inserts = original.inserts; }
@@ -1716,11 +1772,12 @@ pub fn rename_track(self: &mut Self, name: str8) -> bool {
     let copy: str8 = clone(name); free(track.name); track.name = copy;
     self.replace_track(index, track); self.rebuild_columns(); self.error = ""; return true;
 }
-/// Parse "cc:N", "pitchbend" or "name:min:max" into an owned slot; sets
+/// Parse "cc:N", "pitchbend", "aftertouch" or "name:min:max" into an owned slot; sets
 /// `error` and returns an empty parameter when the spec is invalid.
 fn parse_automation(self: &mut Self, spec: str8) -> AutomationSlot {
     var low: i64 = 0; var high: i64 = 127;
     if spec == "pitchbend" { low = -8192; high = 8191; }
+    else if spec == "aftertouch" { }
     else if table_matches("cc:[0-9]{1,3}", spec) {
         let suffix: str8 = sub(spec, 3, len(spec) - 3);
         let parsed: result<i64, str8> = table_integer(suffix); free(suffix);
@@ -1736,7 +1793,7 @@ fn parse_automation(self: &mut Self, spec: str8) -> AutomationSlot {
         if a.is_err() || b.is_err() { self.error = "Invalid limits"; return AutomationSlot { parameter: "" }; }
         low = a.unwrap(); high = b.unwrap();
         if low < -2147483648 || high > 2147483647 || low > high { self.error = "Limits must fit i32, minimum <= maximum"; return AutomationSlot { parameter: "" }; }
-    } else { self.error = "Use cc:N, pitchbend, or name:min:max"; return AutomationSlot { parameter: "" }; }
+    } else { self.error = "Use cc:N, pitchbend, aftertouch, or name:min:max"; return AutomationSlot { parameter: "" }; }
     return AutomationSlot { parameter: clone(spec), minimum: low, maximum: high };
 }
 /// True when another slot of track `index` than `skip` (one-based) already
@@ -1906,7 +1963,7 @@ pub fn append_tracks_from(self: &mut Self, source: &SequenceTable, area: Rect, s
         free(copy.name); copy.name = clone(track.name);
         copy.muted = track.muted; copy.volume = track.volume; copy.pan = track.pan;
         copy.instrument = track.instrument; copy.instrument_id = track.instrument_id;
-        copy.sends = track.copy_sends(); copy.inserts = track.inserts; copy.output = track.output;
+        copy.sends = track.copy_sends(); copy.inserts = track.inserts; copy.output = track.output; copy.aux_outputs = track.aux_outputs;
         // Clips live in the track, not in its cells: a merged lane plays its
         // audio, not just its LEN column.
         copy.instances = track.copy_audio();
@@ -2893,7 +2950,7 @@ pub fn paint_track_dialog(self: SequenceTable, surface: Surface, viewport: Rect,
     var dialog: TextPrompt = TextPrompt {}; dialog = frame;
     dialog.title = self.edit_mode == 1 ? "Rename track" : (self.edit_mode == 2 ? "Configure CC column" : "Add CC column");
     let content: Rect = dialog.paint_frame(surface, viewport, theme);
-    surface.text(Rect::new(content.x, content.y, content.width, 1), self.edit_mode == 1 ? "Track name:" : "cc:N | pitchbend | name:min:max", theme.foreground, theme.panel);
+    surface.text(Rect::new(content.x, content.y, content.width, 1), self.edit_mode == 1 ? "Track name:" : "cc:N | pitchbend | aftertouch | name:min:max", theme.foreground, theme.panel);
     if content.height > 2 { self.editor.paint(surface, Rect::new(content.x, content.y + 2, content.width, 1), theme.foreground, theme.selection, dialog.focus.selected == 0); }
     if content.height > 4 { surface.text(Rect::new(content.x, content.y + 4, content.width, 1), self.error, theme.accent, theme.panel); }
 }

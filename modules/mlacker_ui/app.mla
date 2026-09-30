@@ -47,6 +47,11 @@ use mlacker_ui::piano_dialog::PianoDialog;
 mod mlacker_ui::virtual_keyboard;
 use mlacker_ui::virtual_keyboard::VirtualKeyboard;
 use mlacker_ui::virtual_keyboard::HeldNote;
+mod mlacker_ui::sampler_view;
+use mlacker_ui::sampler_view::SamplerView;
+use mlacker_ui::sampler_view::AutoMapEntry;
+mod tui::piano;
+use tui::piano::piano_note_name;
 use mlacker_ui::sample_editor::SampleEditor;
 use mlacker_ui::audio_clip::base_name;
 mod mlacker_ui::bpm_dialog;
@@ -104,7 +109,7 @@ fn menu_item(label: str8, action: Action, enabled: bool, keymap: &Keymap) -> Men
     return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: keys.shortcut_for(action) };
 }
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, keymap: &Keymap) -> MenuBar {
+fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, keymap: &Keymap) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
@@ -152,6 +157,7 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item("Change details", Action::SpectrumDetails, true, keymap),
                                                 menu_item("Update rate", Action::SpectrumUpdateRate, true, keymap)]),
                                 menu_item(keyboard ? "[x] Show virtual keyboard" : "[ ] Show virtual keyboard", Action::ToggleVirtualKeyboard, true, keymap),
+                                menu_item(sampler ? "[x] Show sampler" : "[ ] Show sampler", Action::ToggleSampler, true, keymap),
                                 menu_item("Reset layout", Action::ResetLayout, true, keymap),
                                 menu_item("Show details", Action::ShowDetails, true, keymap)] },
                     Menu {title: "Track", items: [
@@ -175,7 +181,9 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item("Configure CC column", Action::ConfigureCcColumn, true, keymap),
                                                 menu_item("Remove CC column", Action::RemoveCcColumn, true, keymap)]),
                                 menu_item("Clear pattern", Action::ClearTrack, true, keymap),
-                                menu_item("Delete", Action::DeleteTrack, true, keymap)] },
+                                menu_item("Delete", Action::DeleteTrack, true, keymap),
+                                // Last, so the items above keep their positions.
+                                menu_item("Route plugin outputs", Action::RoutePluginOutput, plugins, keymap)] },
                     Menu {title: "Pattern", items: [
                                 menu_item("Add pattern", Action::AddPattern, true, keymap),
                                 menu_item("Clone pattern", Action::ClonePattern, true, keymap),
@@ -247,7 +255,30 @@ fn demo_panes(content: Rect) -> list<Pane> {
             Pane { id: 2, bounds: right[1] }];
 }
 
-fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, document: str8) -> void {
+/// Picker rows for where an instrument's aux bus goes: with the main output
+/// (-1), master (0), or an AUDIO track (index + 1).
+struct AuxChoices { var ids: list<i32>; var labels: list<str8>; };
+fn aux_destinations(table: &SequenceTable) -> AuxChoices {
+    var tracks: list<SequenceTrack> = []; tracks = table.tracks;
+    var choices: AuxChoices = AuxChoices { ids: [-1, 0], labels: [clone("  MAIN with the instrument's output"), clone("  MST  master")] };
+    for t in 0..tracks.len() {
+        let track: SequenceTrack = tracks[t];
+        if !track.audio { continue; }
+        choices.ids.push(i32(t) + 1); choices.labels.push(format!("  A{}   {}", t + 1, track.name));
+    }
+    // Aux effect channels take a bus as a send, into the effect only.
+    for fx in 0..8 { choices.ids.push(-2 - i32(fx)); choices.labels.push(format!("  FX{}  aux effect channel {} (send)", fx + 1, fx + 1)); }
+    choices.ids.push(-10); choices.labels.push(clone("  OFF  nowhere"));
+    return choices;
+}
+/// Short route label: "MAIN", "MST", "A3", "FX1" or "OFF".
+fn aux_route_text(destination: i32) -> str8 {
+    if destination == -10 { return clone("OFF"); }
+    if destination <= -2 { return format!("FX{}", -1 - destination); }
+    return destination < 0 ? clone("MAIN") : (destination == 0 ? clone("MST") : format!("A{}", destination));
+}
+
+fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
     let theme: Theme = Theme::dark_blue();
     surface.fill(surface.bounds(), Cell { glyph: 32, foreground: theme.foreground, background: theme.background });
     let library: Pane = panes[0];
@@ -273,17 +304,19 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
         table.paint_note_lengths(surface, top, theme);
         table.paint_editor(surface, top, theme);
     }
-    // The virtual keyboard (Shift+P) covers whatever else this pane shows.
-    let show_keyboard: bool = keyboard.visible;
-    let show_spectrum: bool = !show_keyboard && spectrum.visible;
-    let show_sample: bool = !show_keyboard && !show_spectrum && sample.visible && table.audio_under_cursor();
+    // The sampler (Shift+S) or the virtual keyboard (Shift+P) covers whatever
+    // else this pane shows. The caller paints the sampler over its panel.
+    let show_sampler: bool = sampler_title != "";
+    let show_keyboard: bool = !show_sampler && keyboard.visible;
+    let show_spectrum: bool = !show_sampler && !show_keyboard && spectrum.visible;
+    let show_sample: bool = !show_sampler && !show_keyboard && !show_spectrum && sample.visible && table.audio_under_cursor();
     var sample_title: str8 = "";
     if show_sample {
         let track: SequenceTrack = table.tracks[table.active_track()];
         let instance: AudioInstance = track.instances[track.instance_at(table.selected_row)];
         let name: str8 = base_name(instance.clip.source); sample_title = format!(" Sample: {} ", name); free(name);
     }
-    let details: Panel = Panel { title: show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
+    let details: Panel = Panel { title: show_sampler ? sampler_title : show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
     let bottom: Rect = details.paint_focused(surface, inspector.bounds, theme, focus.is_active(2));
     let label: Label = Label { text: patterns.error != "" ? patterns.error : (table.error != "" ? table.error : (table.editing && table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels": message)) };
     if show_keyboard {
@@ -316,7 +349,7 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
             surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
         }
     }
-    else { label.paint(surface, bottom, theme); table.paint_track_details(surface, bottom, theme); }
+    else if !show_sampler { label.paint(surface, bottom, theme); table.paint_track_details(surface, bottom, theme); }
     if show_sample { free(sample_title); }
     transport.paint(surface, Rect::new(0, surface.height - 1, surface.width, 1), theme, document);
 }
@@ -337,9 +370,11 @@ pub fn run() -> i32 {
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
     // Computer-keyboard piano in the same pane (View menu / Shift+P).
     var keyboard: VirtualKeyboard = VirtualKeyboard {};
+    // Mla Sampler editor in the same pane (View menu / Shift+S).
+    var sampler: SamplerView = SamplerView {};
     // Shortcuts for menu actions; the menus label their items from it.
     var keymap: Keymap = Keymap::new(default_keymap());
-    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
     var input: InputDecoder = InputDecoder::new();
@@ -372,6 +407,16 @@ pub fn run() -> i32 {
     var last_plugin_dir: str8 = clone("/Library/Audio/Plug-Ins/VST3"); var last_preset_dir: str8 = clone("");
     var piano: PianoDialog = PianoDialog::new();
     var sample_editor: SampleEditor = SampleEditor {};
+    // The Sampler slot (instrument slot and sample slot) whose sample the
+    // editor is editing, or -1: a crop to its loop resets the loop.
+    var editing_sampler_slot: i32 = -1; var editing_sampler_pad: i32 = -1;
+    // Sampler slot a slot preset saves from or loads into (W / R).
+    var preset_sampler_pad: i32 = 0;
+    // The pad-file dialog auto-maps samples by note name (Sampler pane A).
+    var auto_map: bool = false;
+    // The pad-file dialog loads into a Sampler zone: several files become a
+    // round-robin set on it.
+    var pad_file_zone: bool = false;
     if !fixture {
         let arguments: list<str8> = __env_args();
         if arguments.len() == 2 { free(request_path); request_path = clone(arguments[1]); session_request = 1; }
@@ -422,6 +467,9 @@ pub fn run() -> i32 {
     // track feeds.
     var outputs: OutputPicker = OutputPicker::new();
     var output_kind: i32 = 0; var output_track: i32 = -1;
+    // Route plugin outputs: kind 3 picks an aux bus of the track's instrument,
+    // kind 4 where `aux_bus` goes.
+    var aux_bus: i32 = 0;
     // Matrix playback: the merged table of the playing row, and which row it is.
     var song_playing: bool = false; var song_row: i32 = -1;
     var song_table: SequenceTable = SequenceTable {};
@@ -518,7 +566,7 @@ pub fn run() -> i32 {
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
-                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                             frame_rate.set(v.meter_fps, now_ms()); note_playback = NotePlayback {}; play_pattern = library.active_id;
                             instrument_editor.release();
                             instrument_editor.slot = v.editor_slot;
@@ -719,6 +767,52 @@ pub fn run() -> i32 {
                         : format!("Added {} of {} samples: {}", loaded, paths.len(), library.audio.error));
                 adding_audio = false;
             }
+            else if adding_pad_file && auto_map {
+                // Auto-map: samples named by note become key zones on the
+                // slots from the selected one, lowest note first, each zone
+                // reaching up to the next sample's note; samples on one note
+                // take turns (a round-robin group).
+                var names: list<str8> = [];
+                for path in paths { names.push(base_name(path)); }
+                let plan: list<AutoMapEntry> = SamplerView::auto_map_plan(names, SamplerView::free_groups(midi.output, pad_slot));
+                for name in names { free(name); }
+                let left_over: i64 = paths.len() - plan.len();
+                let room: i64 = wide(16 - pad_index);
+                let count: i64 = plan.len() < room ? plan.len() : room;
+                var mapped: i32 = 0; var failure: str8 = ""; var grouped: i32 = 0;
+                for i in 0..count {
+                    let entry: AutoMapEntry = plan[i];
+                    if !library.audio.load(paths[entry.file], transport.bpm) { failure = clone(library.audio.error); break; }
+                    let index: i32 = i32(library.audio.samples.len()) - 1;
+                    let clip: AudioClip = library.audio.samples[index];
+                    let name: str8 = base_name(clip.source);
+                    let error: str8 = midi.assign_pad(pad_slot, pad_index + i32(i), index, clip.samples, clip.channels, clip.sample_rate, name);
+                    free(name);
+                    if error != "" { failure = error; break; }
+                    SamplerView::make_zone(midi.output, pad_slot, pad_index + i32(i), entry.low, entry.high, entry.root);
+                    SamplerView::set_plain(midi.output, pad_slot, 900 + pad_index + i32(i), f64(entry.group));
+                    if entry.group > 0 { grouped = grouped + 1; }
+                    mapped = mapped + 1;
+                }
+                var notes: str8 = clone("");
+                if mapped > 0 {
+                    let first_entry: AutoMapEntry = plan[0]; let last_entry: AutoMapEntry = plan[mapped - 1];
+                    let lowest: str8 = piano_note_name(first_entry.root); let highest: str8 = piano_note_name(last_entry.root);
+                    free(notes); notes = format!(" ({}..{}{})", lowest, highest, grouped > 0 ? format!(", {} in round-robin groups", grouped) : clone(""));
+                    free(lowest); free(highest);
+                }
+                var left_out: str8 = clone("");
+                if left_over > 0 || count < plan.len() {
+                    free(left_out);
+                    left_out = format!(" | skipped {} without a note name, {} past slot 16", left_over, plan.len() - count);
+                }
+                message = failure != "" ? format!("Auto-mapped {} sample(s), then stopped: {}", mapped, failure)
+                    : (mapped == 0 ? format!("No sample names a note (e.g. Piano_C4.wav){}", left_out)
+                        : format!("Auto-mapped {} sample(s) to slots {}-{}{}{}", mapped, pad_index + 1, pad_index + mapped, notes, left_out));
+                free(notes); free(left_out);
+                if failure != "" { free(failure); }
+                adding_pad_file = false; auto_map = false;
+            }
             else if adding_pad_file {
                 // Several files fill consecutive pads from the chosen key.
                 var filled: i32 = 0; var failure: str8 = ""; var first_name: str8 = clone("");
@@ -735,9 +829,23 @@ pub fn run() -> i32 {
                     if error != "" { failure = error; break; }
                     filled = filled + 1;
                 }
+                // Into a Sampler zone, several files are a round-robin set:
+                // each slot gets the zone and velocity range, all one group
+                // (the zone's own, or the first free one), taking turns.
+                var round_robin: i32 = 0;
+                if pad_file_zone && filled > 1 {
+                    var group: i32 = SamplerView::group_of(midi.output, pad_slot, pad_index);
+                    if group == 0 { let free_groups: list<i32> = SamplerView::free_groups(midi.output, pad_slot); if free_groups.len() > 0 { group = free_groups[0]; } }
+                    for i in 0..filled {
+                        if i > 0 { SamplerView::copy_zone(midi.output, pad_slot, pad_index, pad_index + i32(i)); }
+                        SamplerView::set_plain(midi.output, pad_slot, 900 + pad_index + i32(i), f64(group));
+                    }
+                    round_robin = group;
+                }
                 message = failure != "" ? format!("Filled {} pad(s), then stopped: {}", filled, failure)
+                    : (round_robin > 0 ? format!("Slots {}-{}: {} samples take turns on the zone (group {})", pad_index + 1, pad_index + filled, filled, round_robin)
                     : (filled == 1 ? format!("Pad {}: {} (added to Audio)", pad_index + 1, first_name)
-                        : format!("Pads {}-{}: {} samples added to Audio", pad_index + 1, pad_index + filled, filled));
+                        : format!("Pads {}-{}: {} samples added to Audio", pad_index + 1, pad_index + filled, filled)));
                 free(first_name);
                 if failure != "" { free(failure); }
                 adding_pad_file = false;
@@ -750,7 +858,8 @@ pub fn run() -> i32 {
             }
             else if adding_effect >= 0 { message = midi.load_effect(adding_effect, first); adding_effect = -1; }
             else if learn_action != Action::None {
-                if learn_action == Action::SaveInstrumentPreset || learn_action == Action::LoadInstrumentPreset || learn_action == Action::LoadEffectPreset || learn_action == Action::SaveEffectPreset {
+                if learn_action == Action::SaveInstrumentPreset || learn_action == Action::LoadInstrumentPreset || learn_action == Action::LoadEffectPreset || learn_action == Action::SaveEffectPreset
+                    || learn_action == Action::SaveSamplerSlot || learn_action == Action::LoadSamplerSlotPreset {
                     // Handled below; kit presets also touch the Audio list.
                     free(preset_path); preset_path = clone(first); preset_request = learn_action; preset_worker = midi.midi.worker.raw != 0;
                     message = clone("");
@@ -781,6 +890,59 @@ pub fn run() -> i32 {
                 if !fixture { free(request_path); request_path = clone(first); session_request = saving_session ? (saving_project ? 4 : 2) : 1; }
             }
             dirty = true;
+        }
+        if preset_request == Action::SaveSamplerSlot || preset_request == Action::LoadSamplerSlotPreset {
+            // A slot preset: the slot's parameters, keyed independently of the
+            // slot (SamplerView::slot_key), and its sample.
+            let slot: i32 = i32(learn_slot);
+            let count: i64 = midi.output.parameter_info(slot, 0, 0);
+            let name: str8 = midi.output.instrument_name(slot);
+            if preset_request == Action::SaveSamplerSlot {
+                var keys: list<i64> = []; var values: list<f64> = [];
+                for i in 0..count {
+                    let key: i64 = SamplerView::slot_key(wide(i32(midi.output.parameter_info(slot, i, 4))), preset_sampler_pad);
+                    if key >= 0 { keys.push(key); values.push(midi.output.parameter_info(slot, i, 2)); }
+                }
+                let used: i32 = midi.pad_sample(slot, preset_sampler_pad);
+                let has_clip: bool = used >= 0 && used < library.audio.samples.len();
+                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used]; }
+                let saved: PresetResult = SessionCodec::sampler_slot_file(preset_path, name, true, keys, values, clip, has_clip);
+                free(message); message = saved.status;
+            } else {
+                let loaded: PresetResult = SessionCodec::sampler_slot_file(preset_path, name, false, [], [], AudioClip {}, false);
+                free(message); message = loaded.status;
+                if loaded.ok {
+                    // Fields the plugin lacks (a newer preset) are skipped;
+                    // fields the preset lacks keep their values.
+                    for i in 0..count {
+                        let key: i64 = SamplerView::slot_key(wide(i32(midi.output.parameter_info(slot, i, 4))), preset_sampler_pad);
+                        if key < 0 { continue; }
+                        // A list parameter takes its step number.
+                        let steps: f64 = midi.output.parameter_info(slot, i, 1);
+                        for k in 0..loaded.keys.len() {
+                            if loaded.keys[k] == key { midi.output.set_parameter(slot, i, steps > 0.0 ? std::math::floor(loaded.values[k] * steps + 0.5) : loaded.values[k]); }
+                        }
+                    }
+                    var failed: str8 = "";
+                    if loaded.clips.len() > 0 {
+                        let clip: AudioClip = loaded.clips[0];
+                        let clip_name: str8 = base_name(clip.source);
+                        let index: i32 = library.audio.add_clip(clip);
+                        if index < 0 { failed = clone(library.audio.error); }
+                        else {
+                            let added: AudioClip = library.audio.samples[index];
+                            failed = midi.assign_pad(slot, preset_sampler_pad, index, added.samples, added.channels, added.sample_rate, clip_name);
+                        }
+                        free(clip_name);
+                    } else {
+                        // A preset of an empty slot empties it.
+                        failed = midi.clear_pad(slot, preset_sampler_pad);
+                    }
+                    if failed != "" { free(message); message = format!("Slot preset settings loaded, but its sample failed: {}", failed); }
+                    else { free(message); message = format!("Slot {}: loaded {}", preset_sampler_pad + 1, preset_path); }
+                }
+            }
+            preset_request = Action::None; dirty = true;
         }
         if preset_request != Action::None {
             // Instrument presets may carry pads; FX presets contain parameters only.
@@ -841,6 +1003,11 @@ pub fn run() -> i32 {
         let released: list<HeldNote> = keyboard.release_due(now, !keyboard.visible);
         if released.len() > 0 { dirty = true; }
         for held in released { midi.keyboard_note(held.target, false, held.note, 0); }
+        // A Sampler audition ends once `p` stops repeating (no key releases)
+        // or the pane closes.
+        let audition_target: i64 = sampler.audition_target;
+        let audition_end: i32 = sampler.audition_due(now, false);
+        if audition_end >= 0 { midi.keyboard_note(audition_target, false, audition_end, 0); dirty = true; }
         midi.midi.inject(keyboard.take_events());
         // An Audio view preview ends at the clip's end, or when the selection,
         // the sidebar focus or the view changes, or a dialog opens.
@@ -1204,11 +1371,36 @@ pub fn run() -> i32 {
                 if target >= 0 { let track: SequenceTrack = library.table.tracks[target % 64]; track_name = track.name; }
                 keyboard_title = keyboard.title(track_name);
             }
+            // The Sampler pane edits the Mla Sampler on the selected Instrument track.
+            let sampler_slot: i32 = sampler.visible ? SamplerView::target(midi.output, library.table.active_instrument()) : 0;
+            let sampler_title: str8 = sampler.visible ? sampler.title(midi.output, sampler_slot) : "";
             // The status bar names the open project or session file.
             let document: str8 = session_path == "" ? clone("Untitled") : base_name(session_path);
-            paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, document);
+            paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, sampler_title, document);
             free(document);
             if keyboard.visible { free(keyboard_title); }
+            if sampler.visible {
+                free(sampler_title);
+                var names: list<str8> = [];
+                for s in 0..16 {
+                    let used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, i32(s)) : -1;
+                    if used >= 0 && used < library.audio.samples.len() { let clip: AudioClip = library.audio.samples[used]; names.push(base_name(clip.source)); }
+                    else { names.push(clone("")); }
+                }
+                // Where each output bus goes, for the Out column.
+                var routes: list<str8> = [clone("")];
+                for bus in 1..8 { routes.push(aux_route_text(midi.aux_route(sampler_slot, i32(bus), library.table.track_aux_output(library.table.active_track(), i32(bus))))); }
+                let wave_used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, sampler.slot) : -1;
+                let wave_known: bool = wave_used >= 0 && wave_used < library.audio.samples.len();
+                var wave_clip: AudioClip = AudioClip {}; if wave_known { wave_clip = library.audio.samples[wave_used]; }
+                // The wave view shows the slot's slice markers (cuts).
+                if sampler_slot > 0 && sampler.needs_cuts(sampler_slot, wave_used, wave_known ? wave_clip.frames : -1) {
+                    sampler.take_cuts(midi.markers(sampler_slot, sampler.slot), sampler_slot, wave_used, wave_known ? wave_clip.frames : -1);
+                }
+                sampler.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), midi.output, sampler_slot, names, routes, wave_clip, wave_known, message);
+                for name in names { free(name); }
+                for route in routes { free(route); }
+            }
             let details_pane: Pane = panes[2]; spectrum_area = details_pane.bounds.inset(1);
             matrix.paint(surface, panes[1].bounds, Theme::dark_blue(), library, focus.is_active(1), song_playing ? song_row : -1);
             instrument_editor.paint(surface, panes[1].bounds, Theme::dark_blue());
@@ -1255,6 +1447,12 @@ pub fn run() -> i32 {
             // Key releases (reported only while the virtual keyboard shows)
             // end its notes and reach nothing else.
             if event.released {
+                // Releasing p ends a Sampler audition.
+                if event.code == 112 && sampler.audition_note >= 0 {
+                    let target: i64 = sampler.audition_target;
+                    let note: i32 = sampler.audition_due(now_ms(), true);
+                    if note >= 0 { midi.keyboard_note(target, false, note, 0); }
+                }
                 let ended: list<HeldNote> = keyboard.on_release(event, now_ms());
                 if ended.len() > 0 { dirty = true; }
                 for held in ended { midi.keyboard_note(held.target, false, held.note, 0); }
@@ -1335,7 +1533,7 @@ pub fn run() -> i32 {
             // pattern, inspector/mixer, the FX bus, and the VST3 editor.
             else if event.kind == InputKind::Menu && event.key == Key::Toggle && menus.active < 0 &&
                     !sample_editor.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
-                let has_bus: bool = mixer.visible && !keyboard.visible && midi.effects.len() > 0;
+                let has_bus: bool = mixer.visible && !keyboard.visible && !sampler.visible && midi.effects.len() > 0;
                 let has_editor: bool = instrument_editor.active;
                 var stop: i32 = focus.selected == 0 ? 0 : (focus.selected == 1 ? 1 : (mixer.bus_focus && has_bus ? 3 : 2));
                 if has_editor && instrument_editor.focused { stop = 4; }
@@ -1365,14 +1563,21 @@ pub fn run() -> i32 {
                 if action == 1 && !sample_editor.modified { sample_editor.release(); free(message); message = clone("Sample unchanged"); }
                 else if action == 1 {
                     let index: i32 = sample_editor.index;
+                    let loop_cropped: bool = editing_sampler_slot > 0 && sample_editor.cropped_to_watch;
                     let placed: i32 = library.replace_sample(index, sample_editor.take());
                     let edited: AudioClip = library.audio.samples[index];
                     let pads: i32 = midi.refresh_pads(index, edited);
+                    sampler.forget_cuts();
+                    // Cropped to a Sampler slot's loop: that slot now loops,
+                    // and starts, over the whole sample.
+                    if loop_cropped { SamplerView::loop_to_whole(midi.output, editing_sampler_slot, editing_sampler_pad); }
                     free(message);
                     message = pads < 0 ? format!("Sample {} saved, but a drum pad rejected it: {}", index + 1, __mlang_std_audio_last_error())
-                        : format!("Sample {} saved: {} placement(s), {} drum pad(s) updated", index + 1, placed, pads);
+                        : format!("Sample {} saved: {} placement(s), {} drum pad(s) updated{}", index + 1, placed, pads,
+                            loop_cropped ? "; the slot's loop now spans it" : "");
+                    editing_sampler_slot = -1;
                 }
-                else if action == 2 { sample_editor.release(); free(message); message = clone("Sample edits discarded"); }
+                else if action == 2 { sample_editor.release(); editing_sampler_slot = -1; free(message); message = clone("Sample edits discarded"); }
                 dirty = true;
             }
             else if piano.active {
@@ -1491,6 +1696,100 @@ pub fn run() -> i32 {
                 else if target < 0 && VirtualKeyboard::key_offset(event.code) >= 0 {
                     free(message); message = clone("Keyboard: select a MIDI or Instrument track (audio and muted tracks do not play)"); dirty = true;
                 }
+            }
+            // The focused Sampler pane keeps its keys (see SamplerView::handles).
+            else if sampler.visible && focus.selected == 2 && !mixer.bus_focus && !instrument_editor.focused && menus.active < 0 && SamplerView::handles(event) {
+                let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
+                // The wave view reads the slot's session sample.
+                let used: i32 = target > 0 ? midi.pad_sample(target, sampler.slot) : -1;
+                let has_clip: bool = used >= 0 && used < library.audio.samples.len();
+                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used]; }
+                if target > 0 && sampler.needs_cuts(target, used, has_clip ? clip.frames : -1) {
+                    sampler.take_cuts(midi.markers(target, sampler.slot), target, used, has_clip ? clip.frames : -1);
+                }
+                let request: i32 = sampler.on_event(event, midi.output, target, clip, has_clip);
+                if request == 2 { command = Action::LoadSamplerSlot; }
+                else if request == 3 { command = Action::ClearSamplerSlot; }
+                else if request == 4 { command = Action::RouteSamplerOutput; }
+                else if request == 7 {
+                    // p plays the slot on the track's instrument, like a key of
+                    // the virtual keyboard.
+                    let live: i64 = AudioSystem::live_target(library.table);
+                    let key: i32 = sampler.audition_key(midi.output, target);
+                    if target < 1 || live < 0 || key < 0 { free(message); message = clone("Nothing to play: select an unmuted Instrument track playing Mla Sampler"); }
+                    else {
+                        let note: i32 = sampler.audition(key, live, now_ms());
+                        if note >= 0 {
+                            midi.keyboard_note(live, true, note, sampler.audition_velocity(midi.output, target));
+                            let name: str8 = piano_note_name(note);
+                            free(message); message = format!("Playing slot {} at {}", sampler.slot + 1, name); free(name);
+                        }
+                    }
+                }
+                else if request == 10 { command = Action::EditSamplerSample; }
+                else if request == 11 { command = Action::SaveSamplerSlot; }
+                else if request == 16 || request == 17 {
+                    // Cuts edited in the wave view (16), or detected again (17):
+                    // the instrument plays them with Beats; the session keeps them.
+                    let cuts: list<i64> = sampler.cuts;
+                    let now: list<i64> = midi.set_markers(target, sampler.slot, cuts, request == 17);
+                    let count: i64 = now.len();
+                    sampler.take_cuts(now, target, used, has_clip ? clip.frames : -1);
+                    free(message);
+                    message = request == 17 ? format!("Slot {}: {} cuts detected", sampler.slot + 1, count)
+                        : format!("Slot {}: {} cuts (Beats tempo sync and C slicing use them)", sampler.slot + 1, count);
+                }
+                else if request == 15 { free(message); message = clone("Slot 16 is the last: slice from an earlier slot, into the slots after it"); }
+                else if request == 14 {
+                    adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
+                    adding_pad_file = true; auto_map = true; pad_slot = target; pad_index = sampler.slot;
+                    dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
+                    dialog.title = format!("Auto-map samples from slot {} by note name (C4 = 60)", sampler.slot + 1);
+                    dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
+                    dialog.open(last_audio_dir); focus.set_menu_active(true);
+                    if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
+                }
+                else if request == 13 {
+                    // Slice k of the slot's sample goes to slot + k, a one-shot pad.
+                    let points: list<i64> = sampler.slice_points;
+                    var made: i32 = 0; var failure: str8 = "";
+                    if has_clip && points.len() > 2 {
+                        let source: AudioClip = clip;
+                        let dot: i64 = std::strbuf::rfind(source.source, ".");
+                        let slash: i64 = std::strbuf::rfind(source.source, "/");
+                        let stem: str8 = dot > slash + 1 ? std::strbuf::sub(source.source, 0, dot) : clone(source.source);
+                        let slices: i64 = points.len() - 1;
+                        for i in 0..slices {
+                            var piece: AudioClip = source.slice_frames(points[i], points[i + 1]);
+                            free(piece.source); piece.source = format!("{} slice {}.wav", stem, i + 1);
+                            let index: i32 = library.audio.add_clip(piece);
+                            if index < 0 { failure = clone(library.audio.error); break; }
+                            let added: AudioClip = library.audio.samples[index];
+                            let name: str8 = base_name(added.source);
+                            let error: str8 = midi.assign_pad(target, sampler.slot + i32(i), index, added.samples, added.channels, added.sample_rate, name);
+                            free(name);
+                            if error != "" { failure = error; break; }
+                            SamplerView::make_one_shot(midi.output, target, sampler.slot + i32(i));
+                            made = made + 1;
+                        }
+                        free(stem);
+                    }
+                    sampler.end_slicing();
+                    free(message);
+                    if failure != "" { message = format!("Sliced {} part(s), then stopped: {}", made, failure); free(failure); }
+                    else if made == 0 { message = clone("Nothing to slice: the sample is too short"); }
+                    else {
+                        let first_key: str8 = piano_note_name(i32(midi.output.instrument_sampler(target, 0)) + sampler.slot);
+                        message = format!("Sliced slot {} into slots {}-{}, pads from {} (added to Audio)", sampler.slot + 1, sampler.slot + 1, sampler.slot + made, first_key);
+                        free(first_key);
+                    }
+                }
+                else if request == 12 { command = Action::LoadSamplerSlotPreset; }
+                else if request == 9 { free(message); message = format!("Slot {} uses the instance filter envelope: set its FEnv to Own first", sampler.slot + 1); }
+                else if request == 8 { free(message); message = format!("Slot {} uses the instance envelope: set its Env to Own first", sampler.slot + 1); }
+                else if request == 6 { free(message); message = clone("No waveform: load the slot from a file or the Audio list (Enter)"); }
+                else if request == 5 { free(message); message = format!("Slot {} is a pad (one key): set its Mode to Zone first", sampler.slot + 1); }
+                dirty = true;
             }
             else if event.kind == InputKind::Quit { running = false; }
             // Exclusive input ownership: never call a widget handler from a
@@ -1935,9 +2234,16 @@ pub fn run() -> i32 {
                     focus.set_menu_active(true);
                 }
             }
-            else if command == Action::ApplyPadChoice {
-                pad_index = piano.pad();
-                if piano.result == 3 {
+            else if (command == Action::LoadSamplerSlot || command == Action::ClearSamplerSlot) && SamplerView::target(midi.output, library.table.active_instrument()) < 1 {
+                free(message); message = clone("Select an Instrument track playing Mla Sampler");
+            }
+            else if command == Action::ApplyPadChoice || command == Action::LoadSamplerSlot || command == Action::ClearSamplerSlot {
+                // The Sampler pane names its slot directly instead of the piano.
+                let from_sampler: bool = command != Action::ApplyPadChoice;
+                if from_sampler { pad_action = Action::LoadPadFromFile; pad_slot = library.table.active_instrument(); pad_index = sampler.slot; }
+                else { pad_index = piano.pad(); }
+                pad_file_zone = from_sampler && SamplerView::zone_slot(midi.output, pad_slot, pad_index);
+                if (from_sampler && command == Action::ClearSamplerSlot) || (!from_sampler && piano.result == 3) {
                     let error: str8 = midi.clear_pad(pad_slot, pad_index);
                     free(message); message = error == "" ? format!("Pad {} cleared", pad_index + 1) : error;
                 } else if pad_action == Action::SendSampleToPad {
@@ -1949,14 +2255,52 @@ pub fn run() -> i32 {
                     free(name);
                 } else {
                     adding_effect = -1; learn_action = Action::None; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
-                    adding_pad_file = true; dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
-                    dialog.title = format!("Load sample for pad {}", pad_index + 1);
+                    adding_pad_file = true; auto_map = false; dialog.save_mode = false; dialog.bundle_pattern = ""; dialog.multi_select = true;
+                    dialog.title = pad_file_zone ? format!("Load sample for pad {} (Space marks several: round-robin)", pad_index + 1)
+                        : format!("Load sample for pad {}", pad_index + 1);
                     dialog.file_pattern = ".*\\.([wW][aA][vV]|[aA][iI][fF]([fF])?)";
                     dialog.open(last_audio_dir); focus.set_menu_active(true);
                     if dialog.files.len() > 0 { dialog.status = "Ctrl+P: play/stop preview"; }
                 }
             }
+            else if command == Action::SaveSamplerSlot || command == Action::LoadSamplerSlotPreset {
+                let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
+                if target < 1 { free(message); message = clone("Select an Instrument track playing Mla Sampler"); }
+                else {
+                    learn_action = command; learn_slot = target; preset_sampler_pad = sampler.slot;
+                    adding_effect = -1; adding_audio = false; adding_plugin = false; adding_instrument = false; saving_session = false;
+                    dialog.save_mode = command == Action::SaveSamplerSlot; dialog.bundle_pattern = ""; dialog.multi_select = false;
+                    dialog.title = format!("{} slot {} (.mlaslot)", command == Action::SaveSamplerSlot ? "Save" : "Load preset into", sampler.slot + 1);
+                    dialog.file_pattern = command == Action::SaveSamplerSlot ? "" : ".*\\.[mM][lL][aA][sS][lL][oO][tT]";
+                    dialog.open(last_preset_dir);
+                    if command == Action::SaveSamplerSlot {
+                        // Suggest the slot's sample name.
+                        let used: i32 = midi.pad_sample(target, sampler.slot);
+                        if used >= 0 && used < library.audio.samples.len() {
+                            let clip: AudioClip = library.audio.samples[used];
+                            let suggested: str8 = base_name(clip.source); dialog.path_field.set_text(suggested); free(suggested);
+                        }
+                    }
+                    focus.set_menu_active(true);
+                }
+            }
+            else if command == Action::EditSamplerSample {
+                // The selected slot's sample, its loop selected: t crops to it.
+                let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
+                let used: i32 = target > 0 ? midi.pad_sample(target, sampler.slot) : -1;
+                if used < 0 || used >= library.audio.samples.len() {
+                    free(message); message = clone("Load the slot's sample from a file or the Audio list first (Enter)");
+                } else {
+                    transport.playing = false;
+                    let clip: AudioClip = library.audio.samples[used];
+                    sample_editor.open(clip, used);
+                    sample_editor.select(sampler.loop_range_start(midi.output, target, clip.frames), sampler.loop_range_end(midi.output, target, clip.frames));
+                    editing_sampler_slot = target; editing_sampler_pad = sampler.slot;
+                    free(message); message = format!("Editing slot {}'s sample, its loop selected: t crops to it, Enter saves", sampler.slot + 1);
+                }
+            }
             else if command == Action::EditSample {
+                editing_sampler_slot = -1;
                 let index: i32 = library.audio.view.selected;
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
                 else {
@@ -2069,6 +2413,58 @@ pub fn run() -> i32 {
                     }
                 }
             }
+            else if command == Action::RoutePluginOutput || command == Action::RouteSamplerOutput {
+                // An Instrument track's multi-output plugin: pick an aux bus
+                // (the Sampler pane names its slot's bus), then its channel.
+                let index: i32 = library.table.active_track();
+                let slot: i32 = library.table.active_instrument();
+                let bus_count: i64 = slot > 0 ? midi.output.instrument_outputs(wide(slot)) : -1;
+                let slot_bus: i32 = command == Action::RouteSamplerOutput ? sampler.output_bus(midi.output, slot) : 0;
+                free(message); message = clone("");
+                if slot < 1 { free(message); message = clone("Select an Instrument track playing a plugin"); }
+                else if bus_count <= 1 { free(message); message = format!("{} has a single output", midi.output.instrument_name(wide(slot))); }
+                else if command == Action::RouteSamplerOutput && slot_bus < 1 {
+                    free(message); message = format!("Slot {} plays on Main; pick Out 2-8 in its Out column first", sampler.slot + 1);
+                }
+                else if command == Action::RouteSamplerOutput {
+                    output_track = index; output_kind = 4; aux_bus = slot_bus;
+                    let choices: AuxChoices = aux_destinations(library.table);
+                    outputs.title = "Output destination";
+                    outputs.open(choices.ids, choices.labels, midi.aux_route(slot, aux_bus, library.table.track_aux_output(index, aux_bus)));
+                    focus.set_menu_active(true);
+                }
+                else {
+                    var ids: list<i32> = []; var labels: list<str8> = [];
+                    for bus in 1..bus_count {
+                        let route: str8 = aux_route_text(midi.aux_route(slot, i32(bus), library.table.track_aux_output(index, i32(bus))));
+                        ids.push(i32(bus)); labels.push(format!("  {}  > {}", midi.output.instrument_output_name(wide(slot), bus), route));
+                        free(route);
+                    }
+                    output_track = index; output_kind = 3;
+                    outputs.title = "Plugin output to route"; outputs.open(ids, labels, 1);
+                    focus.set_menu_active(true);
+                }
+            }
+            else if command == Action::ApplyOutputChannel && output_kind == 3 {
+                // Bus chosen: now where it goes.
+                aux_bus = outputs.chosen(); output_kind = 4;
+                let slot: i32 = library.table.active_instrument();
+                let choices: AuxChoices = aux_destinations(library.table);
+                outputs.title = "Output destination";
+                outputs.open(choices.ids, choices.labels, midi.aux_route(slot, aux_bus, library.table.track_aux_output(output_track, aux_bus)));
+                focus.set_menu_active(true);
+            }
+            else if command == Action::ApplyOutputChannel && output_kind == 4 {
+                let choice: i32 = outputs.chosen();
+                let slot: i32 = library.table.active_instrument();
+                free(message);
+                if !library.table.set_aux_output(output_track, aux_bus, choice) { message = clone(library.table.error); }
+                else {
+                    let route: str8 = aux_route_text(choice);
+                    message = format!("{} > {}", midi.output.instrument_output_name(wide(slot), wide(aux_bus)), route); free(route);
+                }
+                playback_dirty = true;
+            }
             else if command == Action::ApplyOutputChannel {
                 let choice: i32 = outputs.chosen();
                 let index: i32 = output_track;
@@ -2144,7 +2540,7 @@ pub fn run() -> i32 {
                 if command == Action::ToggleMetronome { play_metronome = !play_metronome; }
                 else if command == Action::ToggleExtendRecording { extend_recording = !extend_recording; }
                 else { metronome_always = command == Action::MetronomeAlways; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
             }
             else if command == Action::AddPattern || command == Action::ClonePattern { library.add(command == Action::ClonePattern); }
             else if command == Action::RenamePattern {
@@ -2157,7 +2553,7 @@ pub fn run() -> i32 {
             }
             else if command == Action::FollowMatrix {
                 follow_matrix = !follow_matrix;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                 free(message);
                 if follow_matrix {
                     if song_playing { library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id; }
@@ -2174,22 +2570,37 @@ pub fn run() -> i32 {
             else if command == Action::MeterUpdateRate { bpm_dialog.open_meter_rate(frame_rate.fps); }
             else if command == Action::ToggleSpectrum {
                 spectrum.visible = !spectrum.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
             }
             else if command == Action::ToggleVirtualKeyboard {
                 keyboard.visible = !keyboard.visible;
+                if keyboard.visible { sampler.visible = false; }
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
                 // Keys only play while the pane has focus.
                 if keyboard.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
                 message = keyboard.visible ? clone("Keyboard: z-m and q-p play the selected track; Left/Right or -/= change octave; Space plays")
                     : clone("Virtual keyboard closed");
+            }
+            else if command == Action::ToggleSampler {
+                sampler.visible = !sampler.visible;
+                // The sampler and the virtual keyboard share the pane.
+                if sampler.visible && keyboard.visible { keyboard.visible = false; }
+                // Kitty-protocol terminals then report key releases, so an
+                // audition (p) lasts exactly as long as the key is held.
+                terminal.report_key_releases(sampler.visible); input.releases = sampler.visible;
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                // Keys only reach the sampler while the pane has focus.
+                if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
+                free(message);
+                message = sampler.visible ? clone("Sampler: j/k slot, h/l column, J/K adjust, Enter loads a file, Backspace clears")
+                    : clone("Sampler closed");
             }
             else if command == Action::SpectrumDetails {
                 spectrum.detail = (spectrum.detail + 1) % 3; spectrum.levels = []; spectrum.peaks = [];

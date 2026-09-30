@@ -327,7 +327,7 @@ def main():
         track_menu(b"")
         os.write(master, b"j\r")
         assert b"[AUDIO]" in read_frame(1)
-        # Import stereo WAV and mono AIFF through Add -> Audio. No devices or
+        # Import stereo WAV and mono 24-bit AIFF through Add -> Audio. No devices or
         # third-party codecs are needed; known amplitudes verify channel colors.
         with tempfile.TemporaryDirectory(prefix="mlang-tui-audio-") as fixture_dir:
             wav_path = os.path.join(fixture_dir, "stereo.WAV")
@@ -335,8 +335,8 @@ def main():
                 wav.setparams((2, 2, 8000, 0, "NONE", "not compressed"))
                 wav.writeframes(struct.pack("<hh", 16384, -8192) * 72000)
             aif_path = os.path.join(fixture_dir, "mono.AIF")
-            comm = struct.pack(">hIh", 1, 8000, 16) + bytes.fromhex("400bfa00000000000000")
-            samples = struct.pack(">h", 16384) * 8000
+            comm = struct.pack(">hIh", 1, 8000, 24) + bytes.fromhex("400bfa00000000000000")
+            samples = bytes.fromhex("400000") * 8000  # 0.5 as a 24-bit sample
             chunks = b"COMM" + struct.pack(">I", len(comm)) + comm
             chunks += b"SSND" + struct.pack(">I", len(samples) + 8) + bytes(8) + samples
             with open(aif_path, "wb") as fixture:

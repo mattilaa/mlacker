@@ -19,7 +19,7 @@ deps_dir = "build/deps"
 mlang_root = "subprojects/mlang"
 bin_dir = "~/.local/bin"
 plugin_dir = "~/.local/plugins/VST3"
-plugins = "mla_verb mla_distortion mla_delay mla_eq mla_filter mla_drum mla_stutter mla_juno_chorus mla_gated_verb mla_limiter"
+plugins = "mla_verb mla_distortion mla_delay mla_eq mla_filter mla_drum mla_sampler mla_stutter mla_juno_chorus mla_gated_verb mla_limiter"
 
 [[task]]
 name = "prepare"

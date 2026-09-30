@@ -18,6 +18,7 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 using namespace Steinberg;
@@ -50,6 +51,10 @@ public:
     std::unique_ptr<CachedParameter[]> cached;
     int32 parameterCount = 0;
     std::string name;
+    // Output buses 1..n-1 (multi-output instruments), interleaved stereo after
+    // each process call, with their names.
+    std::vector<std::vector<float>> aux;
+    std::vector<std::string> outputNames;
     bool active = false, processing = false, instrument = false, overflow = false;
     uint32 transportState = 0;
     int32 maxFrames = 0;
@@ -83,8 +88,10 @@ public:
         }
         const int32 ins = component->getBusCount(kAudio, kInput);
         const int32 outs = component->getBusCount(kAudio, kOutput);
-        if(ins < 0 || ins > 1 || outs != 1) {
-            error = "Only zero/one audio input bus and one output bus are supported"; return false;
+        // Extra output buses (multi-output instruments such as Mla Sampler)
+        // keep their own arrangement; mlang routes each as aux_output.
+        if(ins < 0 || ins > 1 || outs < 1 || outs > 16) {
+            error = "Only zero/one audio input bus and 1-16 output buses are supported"; return false;
         }
         BusInfo outInfo{}, inInfo{};
         if(component->getBusInfo(kAudio, kOutput, 0, outInfo) != kResultOk ||
@@ -96,13 +103,22 @@ public:
             error = "VST3 input must be mono or stereo"; return false;
         }
         SpeakerArrangement input = inInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo;
-        SpeakerArrangement output = outInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo;
-        if(processor->setBusArrangements(ins ? &input : nullptr, ins, &output, 1) != kResultOk) {
+        SpeakerArrangement outputs[16] = {outInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo};
+        for(int32 bus = 1; bus < outs; ++bus)
+            if(processor->getBusArrangement(kOutput, bus, outputs[bus]) != kResultOk) outputs[bus] = SpeakerArr::kStereo;
+        if(processor->setBusArrangements(ins ? &input : nullptr, ins, outputs, outs) != kResultOk) {
             error = "VST3 processor rejected its mono/stereo bus arrangement"; return false;
         }
         if(component->activateBus(kAudio, kOutput, 0, true) != kResultOk ||
            (ins && component->activateBus(kAudio, kInput, 0, true) != kResultOk)) {
             error = "Could not activate VST3 audio buses"; return false;
+        }
+        outputNames.clear();
+        for(int32 bus = 0; bus < outs; ++bus) {
+            BusInfo info{};
+            outputNames.push_back(component->getBusInfo(kAudio, kOutput, bus, info) == kResultOk
+                ? StringConvert::convert(std::u16string(info.name)) : "Out " + std::to_string(bus + 1));
+            if(bus > 0) component->activateBus(kAudio, kOutput, bus, info.channelCount >= 1 && info.channelCount <= 2);
         }
         const int32 eventInputs = component->getBusCount(kEvent, kInput);
         if(instrumentOnly && eventInputs < 1) { error = "Instrument requires a MIDI event input"; return false; }
@@ -118,7 +134,8 @@ public:
         ProcessSetup setup{kRealtime, kSample32, frames, rate};
         if(processor->setupProcessing(setup) != kResultOk) { error = "VST3 processing setup failed"; return false; }
         if(!data.prepare(*component, frames, kSample32)) { error = "VST3 buffer allocation failed"; return false; }
-        if(data.numOutputs != 1 || data.outputs[0].numChannels < 1 || data.outputs[0].numChannels > 2 ||
+        aux.assign(outs - 1, std::vector<float>(static_cast<size_t>(frames) * 2u, 0.f));
+        if(data.numOutputs != outs || data.outputs[0].numChannels < 1 || data.outputs[0].numChannels > 2 ||
            data.numInputs != ins || (ins && (data.inputs[0].numChannels < 1 || data.inputs[0].numChannels > 2))) {
             error = "VST3 processor changed to an unsupported bus layout"; return false;
         }
@@ -267,6 +284,37 @@ public:
         return attributes->getInt(id, value) == kResultOk ? value : -1;
     }
 
+    // Control thread: a sampler pad's slice markers (mla_sampler_protocol.h).
+    // Copies up to `max` into `out`; returns how many there are, -1 if none.
+    int32_t padMarkers(int32_t pad, double *out, int32_t max) {
+        auto connection = U::cast<IConnectionPoint>(component);
+        if(!connection || pad < 0) return -1;
+        auto message = owned(new HostMessage);
+        message->setMessageID(mla_sampler::kMarkersMessage);
+        auto *attributes = message->getAttributes();
+        attributes->setInt("pad", pad);
+        try { if(connection->notify(message) != kResultOk) return -1; } catch(...) { return -1; }
+        const void *data = nullptr; uint32 size = 0;
+        if(attributes->getBinary("frames", data, size) != kResultOk || !data || size % sizeof(double)) return -1;
+        const int32_t count = static_cast<int32_t>(size / sizeof(double));
+        if(out && max > 0) std::memcpy(out, data, static_cast<size_t>(std::min(count, max)) * sizeof(double));
+        return count;
+    }
+
+    // Control thread: replace a pad's markers, or detect them again (count < 0).
+    int32_t setPadMarkers(int32_t pad, const double *frames, int32_t count) {
+        auto connection = U::cast<IConnectionPoint>(component);
+        if(!connection || pad < 0) return -1;
+        auto message = owned(new HostMessage);
+        message->setMessageID(mla_sampler::kMarkersMessage);
+        auto *attributes = message->getAttributes();
+        attributes->setInt("pad", pad);
+        attributes->setInt("set", count < 0 ? 2 : 1);
+        if(count > 0 && frames) attributes->setBinary("frames", frames, static_cast<uint32>(count * sizeof(double)));
+        else if(count == 0) attributes->setBinary("frames", "", 0);
+        try { return connection->notify(message) == kResultOk ? 0 : -1; } catch(...) { return -1; }
+    }
+
     // Audio thread, before render: the sequencer's tempo and beat position.
     void transport(double tempo, double beat, int32_t playing) noexcept {
         transportState = 0;
@@ -294,6 +342,17 @@ public:
         try {
             if(processor->process(data) != kResultOk) return -1;
         } catch(...) { return -1; }
+        for(size_t bus = 0; bus < aux.size(); ++bus) {
+            const auto &buffers = data.outputs[bus + 1];
+            float *interleaved = aux[bus].data();
+            if(!buffers.channelBuffers32 || buffers.numChannels < 1 || buffers.numChannels > 2) {
+                std::fill_n(interleaved, static_cast<size_t>(frames) * 2u, 0.f); continue;
+            }
+            for(int32 f = 0; f < frames; ++f) {
+                interleaved[2*f] = buffers.channelBuffers32[0][f];
+                interleaved[2*f+1] = buffers.channelBuffers32[buffers.numChannels == 1 ? 0 : 1][f];
+            }
+        }
         for(int32 f = 0; f < frames; ++f) {
             float l = output.channelBuffers32[0][f];
             float r = output.channelBuffers32[output.numChannels == 1 ? 0 : 1][f];
@@ -343,8 +402,23 @@ int32_t load(const char *path, double rate, int32_t frames,
             } catch(...) { why = "Pad sample load failed"; }
             std::snprintf(error, errorSize, "%s", why.c_str()); return -1;
         };
+        out->output_count = [](void *p) -> int32_t { return static_cast<int32_t>(static_cast<Processor*>(p)->outputNames.size()); };
+        out->output_name = [](void *p, int32_t bus) -> const char * {
+            auto *host = static_cast<Processor*>(p);
+            return bus >= 0 && bus < static_cast<int32_t>(host->outputNames.size()) ? host->outputNames[bus].c_str() : "";
+        };
+        out->aux_output = [](void *p, int32_t bus) -> const float * {
+            auto *host = static_cast<Processor*>(p);
+            return bus >= 1 && bus <= static_cast<int32_t>(host->aux.size()) ? host->aux[bus - 1].data() : nullptr;
+        };
         out->sampler_info = [](void *p, int32_t key) -> int64_t {
             try { return static_cast<Processor*>(p)->samplerInfo(key); } catch(...) { return -1; }
+        };
+        out->pad_markers = [](void *p, int32_t pad, double *frames, int32_t max) -> int32_t {
+            try { return static_cast<Processor*>(p)->padMarkers(pad, frames, max); } catch(...) { return -1; }
+        };
+        out->set_pad_markers = [](void *p, int32_t pad, const double *frames, int32_t count) -> int32_t {
+            try { return static_cast<Processor*>(p)->setPadMarkers(pad, frames, count); } catch(...) { return -1; }
         };
         plugin.release(); return 0;
     } catch(const std::exception &e) { std::snprintf(error, errorSize, "VST3 load failed: %s", e.what()); }
