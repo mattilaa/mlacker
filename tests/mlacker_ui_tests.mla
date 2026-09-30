@@ -58,8 +58,8 @@ use mlacker_ui::transport::TransportStatus;
 mod mlacker_ui::cpu_meter;
 use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::waveform;
-use mlacker_ui::waveform::paint_wave_channel;
-use mlacker_ui::waveform::paint_grainy_row;
+use mlacker_ui::waveform::paint_mono_wave;
+use mlacker_ui::waveform::paint_mono_grainy;
 mod mlacker_ui::sample_view;
 use mlacker_ui::sample_view::SampleView;
 use mlacker_ui::audio_clip::*;
@@ -773,7 +773,7 @@ fn tui_track_zoom_stages() {
     table.track_action(83, area); let still_saved: SequenceTrack = copy.tracks[0]; verify(still_saved.zoom_stage == 1);
     copy.create_track(true, area); let cloned: SequenceTrack = copy.tracks[3]; verify(cloned.zoom_stage == 1);
     table.create_track_kind(false, true, area); table.edit_event(decode_input("z"), area);
-    table.edit_event(decode_input("Z"), area); let audio: SequenceTrack = table.tracks[3]; verify(audio.audio && audio.wave_zoom);
+    table.edit_event(decode_input("Z"), area); let audio: SequenceTrack = table.tracks[3]; verify(audio.audio && audio.zoom_stage == 0);
     table.release(); copy.release();
 }
 
@@ -1107,6 +1107,25 @@ fn tui_pattern_length() {
 }
 
 #[test]
+fn tui_zoomed_waveform_time_slices() {
+    let area: Rect = Rect::new(0, 0, 120, 12);
+    var table: SequenceTable = SequenceTable::new(); table.zoom_tracks(2, true, area); table.create_track_kind(false, true, area);
+    // 16 frames per row: at 1/32 zoom each dot row is 2 frames. Pulses on frames 0-1 and 4-5.
+    var samples: list<f32> = [];
+    for i in 0..32 { samples.push(i < 8 && i % 4 < 2 ? 1.0f : 0.0f); }
+    let template: AudioClip = AudioClip { source: clone("zoom-test"), channels: 1, sample_rate: 48000, frames_per_row: 16 };
+    let clip: AudioClip = template.with_samples(samples);
+    verify(table.insert_audio(clip, area));
+    table.row_scale = 2;
+    let surface: Surface = Surface::new(120, 12); let theme: Theme = Theme::dark_blue();
+    table.paint(surface, area, theme); table.paint_audio_style(surface, area, theme, true, false);
+    let body: Rect = table.body(area);
+    let top: Cell = surface.cell(table.column_x(17) + 3, body.y); let below: Cell = surface.cell(table.column_x(17) + 3, body.y + 1);
+    verify(top.glyph == 0x282d && below.glyph == 32);
+    table.release(); clip.release(); surface.release();
+}
+
+#[test]
 fn tui_audio_duration_gate() {
     let area: Rect = Rect::new(0, 0, 120, 12);
     var table: SequenceTable = SequenceTable::new(); table.zoom_tracks(2, true, Rect::new(0, 0, 120, 12)); table.create_track_kind(false, true, area);
@@ -1127,8 +1146,15 @@ fn tui_audio_duration_gate() {
     verify(mixer.level(3, 100, 0, false, false) == 0);
     let surface: Surface = Surface::new(120, 12); let theme: Theme = Theme::dark_blue();
     table.paint(surface, area, theme); table.paint_audio_style(surface, area, theme, true, false);
-    let body: Rect = table.body(area); let center: Cell = surface.cell(table.column_x(17) + 6, body.y + 3);
-    verify(center.glyph == 0x2807);
+    // 3.75 rows: the last row's fourth slice is past the gate.
+    let body: Rect = table.body(area); let center: Cell = surface.cell(table.column_x(17) + 3, body.y + 3);
+    verify(center.glyph == 0x283f && center.foreground == 0x8a8a8a);
+    // At 1/32 zoom the row's second line holds only the slice before the gate.
+    table.row_scale = 2; table.paint(surface, area, theme); table.paint_audio_style(surface, area, theme, true, false);
+    let zoomed_top: Cell = surface.cell(table.column_x(17) + 3, body.y + 6);
+    let zoomed_end: Cell = surface.cell(table.column_x(17) + 3, body.y + 7);
+    verify(zoomed_top.glyph == 0x28ff && zoomed_end.glyph == 0x281b);
+    table.row_scale = 1;
     table.edit_event(decode_input("\r"), area); table.editor.set_text("4.01"); table.edit_event(decode_input("\r"), area);
     verify(table.editing && table.error == "LEN exceeds the sample duration"); table.edit_event(InputEvent { kind: InputKind::Menu, key: Key::Escape }, area);
     table.edit_event(decode_input("K"), area); let stepped: TableRow = table.rows[0]; verify(stepped.cells[16] == "3.76");
@@ -1390,14 +1416,25 @@ fn tui_loaded_audio_and_instances() {
 
 #[test]
 fn tui_grainy_waveform_time_slices() {
-    let surface: Surface = Surface::new(4, 1); let area: Rect = surface.bounds();
-    let details: list<WavePeak> = [WavePeak { right: 1000 }, WavePeak { right: 0 },
-        WavePeak { right: 1000 }, WavePeak { right: 0 }];
-    paint_grainy_row(surface, Rect::new(0, 0, 2, 1), area, details, 0, false, 3, 2, false);
+    let surface: Surface = Surface::new(7, 1); let area: Rect = surface.bounds();
+    let details: list<WavePeak> = [WavePeak { left: 1000, right: 1000 }, WavePeak {},
+        WavePeak { left: 1000, right: 1000 }, WavePeak {}];
+    paint_mono_grainy(surface, Rect::new(0, 0, 2, 1), area, details, 0, 4, 3, 2, false, 15000);
     let first: Cell = surface.cell(0, 0); let second: Cell = surface.cell(1, 0);
     verify(first.glyph == 0x282d && second.glyph == 0x282d);
-    paint_grainy_row(surface, Rect::new(2, 0, 2, 1), area, details, 0, false, 3, 2, true);
-    let edge: Cell = surface.cell(3, 0); verify(edge.glyph == 0x2828);
+    paint_mono_grainy(surface, Rect::new(2, 0, 2, 1), area, details, 0, 4, 3, 2, true, 15000);
+    let outer_left: Cell = surface.cell(2, 0); let outer_right: Cell = surface.cell(3, 0);
+    verify(outer_left.glyph == 0x2805 && outer_right.glyph == 0x2828);
+    // L and R sum to one level mirrored around the center: 1000/0 is half height.
+    let mixed: list<WavePeak> = [WavePeak { left: 1000 }, WavePeak { left: 1000 }, WavePeak { left: 1000 }, WavePeak { left: 1000 }];
+    paint_mono_grainy(surface, Rect::new(4, 0, 3, 1), area, mixed, 0, 4, 3, 2, false, 15000);
+    let edge_left: Cell = surface.cell(4, 0); let middle: Cell = surface.cell(5, 0); let edge_right: Cell = surface.cell(6, 0);
+    verify(edge_left.glyph == 0x28b8 && middle.glyph == 0x28ff && edge_right.glyph == 0x2847);
+    // Vertical zoom: a 1/32 line stretches two slices over the dot rows, a 1/64 line one.
+    paint_mono_grainy(surface, Rect::new(0, 0, 2, 1), area, details, 0, 2, 3, 2, false, 7500);
+    let half_row: Cell = surface.cell(0, 0); verify(half_row.glyph == 0x281b);
+    paint_mono_grainy(surface, Rect::new(0, 0, 2, 1), area, details, 2, 1, 3, 2, false, 3750);
+    let quarter_row: Cell = surface.cell(1, 0); verify(quarter_row.glyph == 0x28ff);
     surface.release();
 }
 
@@ -1520,19 +1557,25 @@ fn tui_audio_trim_and_slice() {
 
 #[test]
 fn tui_waveform_fractional_edges() {
-    let surface: Surface = Surface::new(8, 2); let area: Rect = surface.bounds();
+    let surface: Surface = Surface::new(13, 5); let area: Rect = surface.bounds();
     surface.fill(area, Cell { glyph: 32, foreground: 1, background: 2 });
-    paint_wave_channel(surface, Rect::new(0, 0, 4, 1), area, 300, 250, false, 3, 2);
-    let solid: Cell = surface.cell(0, 0); let edge: Cell = surface.cell(1, 0);
-    verify(solid.glyph == 0x2588 && edge.glyph == 0x258e);
-    paint_wave_channel(surface, Rect::new(0, 1, 4, 1), area, 300, 0, true, 3, 2);
-    let shade: Cell = surface.cell(3, 1); let mirrored: Cell = surface.cell(2, 1);
-    verify(shade.glyph == 0x2592 && mirrored.glyph == 0x258a);
-    verify(mirrored.foreground == 2 && mirrored.background == 3);
-    paint_wave_channel(surface, Rect::new(4, 0, 4, 1), area, 0, 0, false, 3, 2);
-    let silent: Cell = surface.cell(4, 0); verify(silent.glyph == 32);
-    paint_wave_channel(surface, Rect::new(4, 1, 4, 1), Rect::new(5, 1, 1, 1), 2000, 2000, false, 3, 2);
-    let clipped: Cell = surface.cell(4, 1); let full: Cell = surface.cell(5, 1);
+    // 300 peak over 6.5 cells per side: 16 eighths each way from the center.
+    paint_mono_wave(surface, Rect::new(0, 0, 13, 1), area, 300, 250, 3, 2, false);
+    let outside: Cell = surface.cell(3, 0); let left_edge: Cell = surface.cell(4, 0);
+    let solid: Cell = surface.cell(6, 0); let right_edge: Cell = surface.cell(8, 0);
+    verify(outside.glyph == 32 && solid.glyph == 0x2588);
+    verify(left_edge.glyph == 0x258c && left_edge.foreground == 2 && left_edge.background == 3);
+    verify(right_edge.glyph == 0x258c && right_edge.foreground == 3 && right_edge.background == 2);
+    paint_mono_wave(surface, Rect::new(0, 1, 13, 1), area, 300, 0, 3, 2, false);
+    let shade: Cell = surface.cell(6, 1); verify(shade.glyph == 0x2592);
+    // Quiet rows thicken a line in the center cell.
+    paint_mono_wave(surface, Rect::new(0, 2, 13, 1), area, 30, 0, 3, 2, false);
+    let thin: Cell = surface.cell(6, 2); let beside: Cell = surface.cell(5, 2);
+    verify(thin.glyph == 0x2503 && beside.glyph == 32);
+    paint_mono_wave(surface, Rect::new(0, 3, 13, 1), area, 0, 0, 3, 2, false);
+    let silent: Cell = surface.cell(6, 3); verify(silent.glyph == 32);
+    paint_mono_wave(surface, Rect::new(0, 4, 13, 1), Rect::new(7, 4, 6, 1), 2000, 2000, 3, 2, false);
+    let clipped: Cell = surface.cell(6, 4); let full: Cell = surface.cell(12, 4);
     verify(clipped.glyph == 32 && full.glyph == 0x2588);
     surface.release();
 }
@@ -1557,22 +1600,20 @@ fn tui_audio_import_and_waveform() {
     let wave_column: TableColumn = table.columns[17]; verify(wave_column.read_only);
     let surface: Surface = Surface::new(120, 12); let theme: Theme = Theme::dark_blue();
     table.paint(surface, area, theme); table.paint_audio(surface, area, theme);
-    let center: Cell = surface.cell(table.column_x(17) + 6, 2);
-    verify(center.glyph == 0x2502);
-    verify(table.edit_event(decode_input("z"), area));
-    let zoomed: TableColumn = table.columns[17]; verify(zoomed.width == 25);
+    // One mono waveform through the middle of the column, with no divider.
+    let center: Cell = surface.cell(table.column_x(17) + 3, 2);
+    verify(center.glyph > 0x2800 && center.glyph <= 0x28ff && center.foreground == 0x8a8a8a);
+    // The waveform column has one fixed width; z does not zoom it.
+    verify(wave_column.width == 7 && table.edit_event(decode_input("z"), area));
+    let unzoomed: TableColumn = table.columns[17]; verify(unzoomed.width == 7);
     verify(table.selected_column == 16 && table.selected_row == 0);
-    table.paint(surface, area, theme); table.paint_audio(surface, area, theme);
-    let zoom_center: Cell = surface.cell(table.column_x(17) + 12, 2); verify(zoom_center.glyph == 0x2502);
     var copy: SequenceTable = table.copy_pattern();
-    table.edit_event(decode_input("z"), area);
-    let compact: TableColumn = table.columns[17]; verify(compact.width == 13);
     table.clear_track(); verify(table.track_columns(3) == 1);
     let saved: SequenceTrack = copy.tracks[3]; let saved_audio: AudioInstance = saved.instances[0];
-    verify(saved_audio.clip.peaks.len() > 64 && saved.wave_zoom);
+    verify(saved_audio.clip.peaks.len() > 64);
     verify(saved_audio.clip.samples.len() > 0 && saved_audio.clip.samples[0] == audio.clip.samples[0]);
     copy.create_track(true, area); verify(copy.track_columns(4) == 2);
-    let duplicated: SequenceTrack = copy.tracks[4]; verify(duplicated.wave_zoom);
+    let duplicated: SequenceTrack = copy.tracks[4]; verify(duplicated.audio);
     copy.remove_track(area); verify(copy.tracks.len() == 4);
     verify(!copy.import_audio("missing-file.wav", 120, area));
     let retained: SequenceTrack = copy.tracks[3]; verify(retained.instances.len() == 1);

@@ -41,7 +41,8 @@ are accepted. Unsupported major or minor versions fail closed.
    - Next track ID; selected row/column; horizontal/vertical scroll;
      horizontal/vertical scrollbar flags; alternate-track text flag.
    - Track list. Each track: name, mute, volume, pan, audio flag, instrument flag,
-     assigned instrument slot, note-line count, waveform zoom, zoom stage;
+     assigned instrument slot, note-line count, a retired waveform-zoom flag
+     (written 0, ignored on read), zoom stage;
      automation slots; audio-instance list.
    - Automation slots: a count (0–16), then per slot its parameter string
      (`cc:N`, `pitchbend`, `aftertouch` or `name:min:max`), minimum and maximum. Each slot is
