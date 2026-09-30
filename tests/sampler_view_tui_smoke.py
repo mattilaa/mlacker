@@ -31,6 +31,16 @@ def write_wav(path, value):
         out.writeframes(struct.pack("<h", value) * 4800)
 
 
+def write_float_aifc(path, value):
+    """A mono 48 kHz float32 AIFF-C ("fl32") of 4800 frames at `value`."""
+    comm = struct.pack(">hIh", 1, 4800, 32) + bytes.fromhex("400ebb80000000000000") + b"fl32" + b"\x00\x00"
+    samples = struct.pack(">f", value) * 4800
+    chunks = b"COMM" + struct.pack(">I", len(comm)) + comm
+    chunks += b"SSND" + struct.pack(">I", len(samples) + 8) + bytes(8) + samples
+    with open(path, "wb") as out:
+        out.write(b"FORM" + struct.pack(">I", len(chunks) + 4) + b"AIFC" + chunks)
+
+
 def write_square(path):
     """4800 frames of a square wave: +0.5 for 50 frames, then -0.5, so the
     zero crossings fall on every multiple of 50."""
@@ -54,8 +64,9 @@ def main():
         write_wav(pad, 12000)
         square = root / "square.wav"
         write_square(square)
-        tone = root / "Tone_G4.wav"
-        write_wav(tone, 8000)
+        # A float32 AIFF-C: auto-map (and the plugins) decode it too.
+        tone = root / "Tone_G4.aif"
+        write_float_aifc(tone, 0.25)
         path = root / "sampler.mlack"
         tui = Terminal(cwd=directory)
         try:
@@ -359,10 +370,10 @@ def main():
             tui.send(b"j" * 7)
             expect(tui.send_until(b"A", b"Auto-map samples from slot 10"), b"Auto-map samples from slot 10")
             expect(tui.send(b"\x15" + bytes(tone) + b"\r", 0.7), b"Auto-mapped 1 sample(s) to slots 10-10")
-            expect(tui.send(b"w"), b"Slot 10 Tone_G4.wav")
+            expect(tui.send(b"w"), b"Slot 10 Tone_G4.aif")
             tui.send(b"w")
             # v shows the key map: slot 10 over every key, slots 3 and 4 as pads.
-            expect(tui.send(b"v"), b"Key map | slot 10 Tone_G4.wav", b"Lyr", b"v1-127")
+            expect(tui.send(b"v"), b"Key map | slot 10 Tone_G4.aif", b"Lyr", b"v1-127")
             expect(tui.send(b"v"), b"Mode", b"Loop")
             expect(tui.send(b"S"), b"Sampler closed")  # "q" quits again
         finally:

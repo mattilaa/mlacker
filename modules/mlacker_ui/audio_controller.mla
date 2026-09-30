@@ -668,7 +668,7 @@ impl AudioSystem {
     pub fn preview_file(self: AudioSystem, path: str8) -> str8 {
         if self.output.handle == 0 { return "No audio output to preview on (File > Settings)"; }
         let loaded: result<PcmAudio, str8> = PcmAudio::load(path);
-        if loaded.is_err() { return "Cannot decode: use mono/stereo PCM16/float32 WAV or PCM16 AIFF"; }
+        if loaded.is_err() { return "Cannot decode: use mono/stereo PCM16/float32 WAV, or 8-32-bit/float32/float64 AIFF"; }
         let audio: PcmAudio = loaded.unwrap();
         let channels: i64 = audio.channels(); let rate: i64 = audio.sample_rate();
         let samples: list<f32> = audio.samples(); audio.close();
