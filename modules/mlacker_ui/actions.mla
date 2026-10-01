@@ -22,7 +22,7 @@ pub enum Action : i32 {
     CreateAudioTrack = 28, CreateInstrumentTrack = 29, SetOutputChannel = 30, RoutePluginOutput = 168,
     SetInstrumentInput = 169,
     AddNoteLine = 80, RemoveNoteLine = 81, DuplicateNoteLine = 82,
-    CollapseNoteLines = 83, ExpandNoteLines = 84, RemoveCcColumn = 85,
+    CollapseNoteLines = 83, ExpandNoteLines = 84, RemoveCcColumn = 85, ToggleCommentColumn = 86,
     // Pattern
     AddPattern = 50, RenamePattern = 51, RemovePattern = 52, ClonePattern = 53,
     SetPatternLength = 54, FollowMatrix = 55, SetMatrixRowLength = 56,
@@ -57,5 +57,5 @@ pub fn is_track_action(action: Action) -> bool {
         action == Action::DuplicateTrack || action == Action::ClearTrack || action == Action::MuteTrack ||
         action == Action::ConfigureCcColumn || action == Action::AddCcColumn || action == Action::CreateAudioTrack ||
         action == Action::AddNoteLine || action == Action::RemoveNoteLine || action == Action::DuplicateNoteLine ||
-        action == Action::CollapseNoteLines || action == Action::ExpandNoteLines;
+        action == Action::CollapseNoteLines || action == Action::ExpandNoteLines || action == Action::ToggleCommentColumn;
 }

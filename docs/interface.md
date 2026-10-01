@@ -231,7 +231,7 @@ MIDI tracks start collapsed to NOTE/VEL for every note line. In the Pattern view
 
 1. NOTE / VEL (default)
 2. NOTE / VEL / LEN / OFF
-3. All columns, including the CC columns
+3. All columns, including the CC columns and the TEXT (comment) column
 
 The next press returns to stage 1. Shift+Z advances every MIDI track's stage
 independently. Track → Collapse all selects stage 1; Expand all selects stage 3.
@@ -314,6 +314,13 @@ mlacker's **Track** menu always targets the selected column's track:
 - Mute / unmute toggles the track flag and its `[M]` header indicator.
 - Automation → Add / Configure / Remove CC column edits the track's list of
   automation columns (up to 16 on a MIDI track, one per controller).
+- Add / remove comment column (the last entry) adds a TEXT column after the
+  CC columns of a MIDI or Instrument track, shows it (stage 3) and selects it,
+  or removes it with its texts. Enter edits a cell's free text (up to 240
+  characters), and the column widens to fit, up to 48 cells. On an Instrument
+  track playing a speech instrument (Mla Speech), the row's text is spoken
+  with the row's first note, or at C-3 when the row has no note. CC columns
+  added later go before it.
 
 Each automation slot accepts `cc:N` for MIDI CC 0–127 (values 0–127),
 `pitchbend` (signed values -8192–8191), or `name:min:max` for a custom integer

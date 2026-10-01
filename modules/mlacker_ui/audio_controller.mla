@@ -14,6 +14,7 @@ use mlacker_ui::note_playback::NotePlayback;
 use mlacker_ui::sequence::SequenceTable;
 use mlacker_ui::sequence::SequenceTrack;
 use mlacker_ui::sequence::AudioInstance;
+use tui::table::TableRow;
 use mlacker_ui::audio_clip::AudioClip;
 use mlacker_ui::audio_clip::base_name;
 use std::audio::controller::*;
@@ -75,6 +76,8 @@ pub struct AudioSystem {
     /// share a pattern's grid.
     var sample_epoch: i64; var sample_start_row: i32{-1};
     var registered_clips: list<RegisteredClip>;
+    /// Next slot of the instruments' phrase ring (TEXT cells, 0-255).
+    var next_phrase: i32;
     /// Transport last handed to `output` for tempo-synced plugins.
     var transport_output: i64; var transport_bpm: i32; var transport_playing: bool;
     /// Sequencer timing: while `scheduling`, tick `schedule_tick` sounds on
@@ -287,7 +290,7 @@ impl AudioSystem {
             if b.tick + ahead > end - 1 { ahead = end - 1 - b.tick; }
             playback.lookahead = ahead < 0 ? 0 : ahead;
             playback.update(played, b.tick < start ? start : b.tick, true);
-            self.sequencer_events(keep_tracks(playback.events, tracks));
+            self.sequencer_events(keep_tracks(playback.events, tracks), played);
             // Clips starting before the next block are stamped onto their frame.
             let next_tick: i64 = b.tick_at(b.frames + bounce_block());
             self.sample_playback(played, next_tick > end ? end : next_tick, true, b.bpm);
@@ -325,7 +328,7 @@ impl AudioSystem {
         var b: Bounce = Bounce {}; b = job;
         if !b.ok() { return []; }
         b.playback.update(source, b.tick, false);
-        self.sequencer_events(b.playback.events);
+        self.sequencer_events(b.playback.events, source);
         self.scheduling = false;
         let limit: i64 = tail_seconds * b.rate;
         // Quiet = below about -90 dBFS for half a second.
@@ -903,9 +906,13 @@ impl AudioSystem {
     }
     pub fn stop_preview(self: AudioSystem) -> void { if self.output.handle != 0 { self.output.stop_preview(); } }
     pub fn previewing(self: AudioSystem) -> bool { return self.output.handle != 0 && self.output.preview_playing(); }
-    pub fn sequencer_events(self: AudioSystem, events: list<NoteEvent>) -> void {
+    /// Post the sequencer's events. `source` is the pattern they were
+    /// scheduled from: a note-on that speaks its row's TEXT cell sends the
+    /// text to the instrument first (see `speak`).
+    pub fn sequencer_events(self: &mut Self, events: list<NoteEvent>, source: &SequenceTable) -> void {
         if self.output.handle == 0 { return; }
         for event in events {
+            if event.on == 1 && event.text > 0 && event.instrument > 0 { self.speak(event, source); }
             var kind: AudioEventKind = event.on == 1 ? AudioEventKind::NoteOn : AudioEventKind::NoteOff;
             if event.instrument != 0 { kind = event.on == 1 ? AudioEventKind::InstrumentNoteOn : AudioEventKind::InstrumentNoteOff; }
             if event.on == 2 { kind = event.instrument == 0 ? AudioEventKind::ControlChange : AudioEventKind::InstrumentControlChange; }
@@ -917,6 +924,26 @@ impl AudioSystem {
                 midi: AudioMidiEvent { channel: event.track % 16, note: event.note, velocity: event.velocity }, source: event.track,
                 frame: frame }, 2);
         }
+    }
+    /// Hand the TEXT cell of `event`'s row to its instrument as the next
+    /// phrase of the ring and post the InstrumentText event that attaches it
+    /// to the note-on posted right after. Instruments that take no text
+    /// (anything but a speech synth) just play the note.
+    fn speak(self: &mut Self, event: NoteEvent, table: &SequenceTable) -> void {
+        var source: SequenceTable = SequenceTable {}; source = table;
+        let column: i32 = source.comment_column(i32(event.track));
+        let row: i64 = event.text - 1;
+        if column < 0 || row < 0 || row >= source.rows.len() { return; }
+        let data: TableRow = source.rows[row];
+        if column >= data.cells.len() || data.cells[column] == "" { return; }
+        let phrase: i64 = wide(self.next_phrase);
+        if self.output.instrument_text(event.instrument, phrase, data.cells[column]) != 0 { return; }
+        self.next_phrase = (self.next_phrase + 1) % 256;
+        var frame: i64 = self.scheduling ? self.frame_of(event.tick) : -1;
+        if self.scheduling && frame < 0 { frame = 0; }
+        self.output.post(AudioEvent { kind: AudioEventKind::InstrumentText, sample: event.instrument,
+            midi: AudioMidiEvent { channel: event.track % 16, note: phrase, velocity: 0 }, source: event.track,
+            frame: frame }, 2);
     }
     pub fn add_insert(self: &mut Self, path: str8, id: i32) -> i32 {
         if id < 1 || id > 256 || id > self.insert_paths.len() + 1 { return -1; }
