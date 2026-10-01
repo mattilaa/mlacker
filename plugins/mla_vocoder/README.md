@@ -43,18 +43,16 @@ MIDI with no audio input.
 
 ### In mlacker
 
-mlacker loads Mla Vocoder both as an instrument and as an insert effect. Its
-host keeps the sidechain bus inactive and silent. mlacker cannot yet feed the
-vocoder a modulator and notes at the same time:
+Load Mla Vocoder on an Instrument track (**Instrument → Add instrument**, then
+**Track → Create Instrument track**, or point a MIDI track's output at it). Put
+the voice or sample on an AUDIO track. On the Instrument track, choose **Track →
+Set instrument input** and pick that AUDIO track. The Instrument track's notes
+now play the carrier, and the AUDIO track's clips are the modulator. Pull the
+AUDIO track's fader down to hear only the vocoder; its clips still feed the
+vocoder from before the fader.
 
-- An instrument slot gets notes but renders from silence, so only the Choir and
-  Synth paths sound there.
-- An insert gets its track's audio but no notes, so only *External* or
-  *Split L/R* carriers work there, and mlacker has no way to route a second
-  signal into them.
-
-Full sample + MIDI vocoding in mlacker needs track MIDI routed to inserts, or
-a track's audio routed into an instrument's input.
+mlacker leaves the sidechain bus inactive, so *External* and *Split L/R*
+carriers are for other hosts.
 
 ## Signal flow
 

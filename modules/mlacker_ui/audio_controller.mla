@@ -384,6 +384,16 @@ impl AudioSystem {
             }
             self.output.output_route(s, wide(destination));
         }
+        // Audio inputs of instruments (a vocoder's modulator) follow the
+        // track that plays the instance.
+        for slot in 1..33 {
+            var source: i32 = 0;
+            for t in 0..table.tracks.len() {
+                let track: SequenceTrack = table.tracks[t];
+                if track.instrument && wide(track.instrument_id) == slot { source = table.track_input(i32(t)); }
+            }
+            self.output.instrument_input(slot, wide(source));
+        }
         // Aux output buses of multi-output instruments (e.g. Mla Sampler's Out
         // 2-8) follow the routes of the track that plays the instance.
         for slot in 1..33 {

@@ -120,6 +120,8 @@ add_test(NAME automation_curve_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURR
 set_tests_properties(automation_curve_tui PROPERTIES TIMEOUT 60)
 add_test(NAME output_routing_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/output_routing_tui_smoke.py" "$<TARGET_FILE:mlacker>" "$<TARGET_BUNDLE_DIR:MlackerTestInstrument>")
 set_tests_properties(output_routing_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
+add_test(NAME instrument_input_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/instrument_input_tui_smoke.py" "$<TARGET_FILE:mlacker>" "$<TARGET_BUNDLE_DIR:MlackerTestInstrument>")
+set_tests_properties(instrument_input_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME spectrum_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/spectrum_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(spectrum_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
 add_test(NAME visual_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/visual_tui_smoke.py" "$<TARGET_FILE:mlacker>")

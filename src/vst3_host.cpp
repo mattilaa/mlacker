@@ -55,7 +55,7 @@ public:
     // each process call, with their names.
     std::vector<std::vector<float>> aux;
     std::vector<std::string> outputNames;
-    bool active = false, processing = false, instrument = false, overflow = false;
+    bool active = false, processing = false, instrument = false, addsOutput = false, overflow = false;
     uint32 transportState = 0;
     int32 maxFrames = 0;
 
@@ -184,6 +184,10 @@ public:
             midiParameters[ch][cc] = id;
         }
         maxFrames = frames; instrument = instrumentOnly || ins == 0;
+        // An instrument with no input renders into a silent buffer and adds
+        // to it; one with an input (e.g. a vocoder fed by a track) takes the
+        // buffer as its input and replaces it, like an effect.
+        addsOutput = ins == 0;
         if(component->setActive(true) != kResultOk) { error = "VST3 activation failed"; return false; }
         active = true;
         const auto started = processor->setProcessing(true);
@@ -373,7 +377,7 @@ public:
         for(int32 f = 0; f < frames; ++f) {
             float l = output.channelBuffers32[0][f];
             float r = output.channelBuffers32[output.numChannels == 1 ? 0 : 1][f];
-            if(instrument) { stereo[2*f] += l; stereo[2*f+1] += r; }
+            if(addsOutput) { stereo[2*f] += l; stereo[2*f+1] += r; }
             else { stereo[2*f] = l; stereo[2*f+1] = r; }
         }
         return 0;

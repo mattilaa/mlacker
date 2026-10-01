@@ -183,7 +183,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                 menu_item("Clear pattern", Action::ClearTrack, true, keymap),
                                 menu_item("Delete", Action::DeleteTrack, true, keymap),
                                 // Last, so the items above keep their positions.
-                                menu_item("Route plugin outputs", Action::RoutePluginOutput, plugins, keymap)] },
+                                menu_item("Route plugin outputs", Action::RoutePluginOutput, plugins, keymap),
+                                menu_item("Set instrument input", Action::SetInstrumentInput, plugins, keymap)] },
                     Menu {title: "Pattern", items: [
                                 menu_item("Add pattern", Action::AddPattern, true, keymap),
                                 menu_item("Clone pattern", Action::ClonePattern, true, keymap),
@@ -2444,6 +2445,40 @@ pub fn run() -> i32 {
                     outputs.title = "Plugin output to route"; outputs.open(ids, labels, 1);
                     focus.set_menu_active(true);
                 }
+            }
+            else if command == Action::SetInstrumentInput {
+                // An Instrument track's plugin with an audio input (e.g. Mla
+                // Vocoder): which AUDIO track's clips feed it.
+                let index: i32 = library.table.active_track();
+                let slot: i32 = library.table.active_instrument();
+                if slot < 1 { free(message); message = clone("Select an Instrument track playing a plugin"); }
+                else {
+                    var ids: list<i32> = [0]; var labels: list<str8> = [clone("  --   none")];
+                    let channels: list<SequenceTrack> = library.table.tracks;
+                    for t in 0..channels.len() {
+                        let other: SequenceTrack = channels[t];
+                        if !other.audio { continue; }
+                        ids.push(i32(t) + 1); labels.push(format!("  A{}   {}", t + 1, other.name));
+                    }
+                    if ids.len() == 1 {
+                        free(message); message = clone("No AUDIO track to take input from; create one with Track > Create AUDIO track");
+                        let spare: list<str8> = labels; for label in spare { free(label); }
+                    } else {
+                        output_track = index; output_kind = 5;
+                        outputs.title = "Instrument input";
+                        outputs.open(ids, labels, library.table.track_input(index));
+                        focus.set_menu_active(true);
+                    }
+                }
+            }
+            else if command == Action::ApplyOutputChannel && output_kind == 5 {
+                let choice: i32 = outputs.chosen();
+                let slot: i32 = library.table.active_instrument();
+                free(message);
+                if !library.table.set_track_input(output_track, choice) { message = clone(library.table.error); }
+                else if choice == 0 { message = format!("{} input: none", midi.output.instrument_name(wide(slot))); }
+                else { message = format!("{} input: A{}", midi.output.instrument_name(wide(slot)), choice); }
+                playback_dirty = true;
             }
             else if command == Action::ApplyOutputChannel && output_kind == 3 {
                 // Bus chosen: now where it goes.

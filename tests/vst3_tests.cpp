@@ -31,6 +31,7 @@ int64_t __mlang_std_audio_controller_instrument_sampler(int64_t, int64_t, int64_
 int64_t __mlang_std_audio_controller_instrument_outputs(int64_t, int64_t);
 const char *__mlang_std_audio_controller_instrument_output_name(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_output_route(int64_t, int64_t, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_instrument_input(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_track_peak(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_pad(int64_t, int64_t, int64_t, FloatList, int64_t, int64_t, const char*);
 int32_t __mlang_std_audio_controller_midi_target(int64_t, int64_t, int64_t);
@@ -603,15 +604,42 @@ int main(int argc, char **argv) {
     }
     // Mla Vocoder has a sidechain (aux) input bus next to its main input; the
     // host loads it as an instrument and as an effect, leaving the sidechain
-    // inactive.
+    // inactive. As an instrument it takes a PCM track's voices as its input:
+    // a sample on track 0 (fader down, so only the vocoder is heard) and a
+    // note on the vocoder vocode only while the input route is set.
     if(const char *vocoder = std::getenv("MLA_VOCODER_VST3")) {
         int64_t d = __mlang_std_audio_controller_new(48000, 128);
         CHECK(__mlang_std_audio_controller_load_instrument(d, 1, vocoder) == 0);
         CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Vocoder") == 0);
         CHECK(__mlang_std_audio_controller_load_effect(d, 0, vocoder) == 0);
-        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        CHECK(__mlang_std_audio_controller_load_effect(d, 0, "") == 0);
+        CHECK(__mlang_std_audio_controller_instrument_input(d, 1, 65) == -1);
+        CHECK(__mlang_std_audio_controller_instrument_input(d, 33, 1) == -1);
+        std::vector<float> voice(48000 * 4);
+        for(size_t i = 0; i < voice.size(); ++i) voice[i] = 0.5f * (2.f * std::fmod(150.f * i / 48000.f, 1.f) - 1.f);
+        CHECK(__mlang_std_audio_controller_sample_data(d, FloatList{(int64_t)voice.size(), voice.data()}, 1, 48000) == 0);
+        CHECK(__mlang_std_audio_controller_track_volume(d, 0, 0, 0) == 0);
+        const auto level = [&](int64_t input) -> double {
+            CHECK(__mlang_std_audio_controller_instrument_input(d, 1, input) == 0);
+            __mlang_std_audio_controller_panic(d);
+            CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+            const int64_t at = __mlang_std_audio_controller_info(d, 2);
+            CHECK(__mlang_std_audio_controller_post(d, 0, 4, 0, 0, 0, 0, at, 0, 1) == 0);
+            CHECK(__mlang_std_audio_controller_post(d, 0, 6, 0, 48, 100, 0, at, 1, 1) == 0);
+            double sum = 0; int count = 0;
+            for(int block = 0; block < 120; ++block) {
+                CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+                if(block < 40) continue;
+                for(int f = 0; f < 256; ++f) { double v = __mlang_std_audio_pcm_block_sample(b, f, 0); sum += v * v; ++count; }
+            }
+            return std::sqrt(sum / count);
+        };
+        const double unrouted = level(0), routed = level(1);
+        std::printf("vst3_host: Mla Vocoder rms without input %.6f, fed by track 1 %.6f\n", unrouted, routed);
+        CHECK(unrouted < 1.e-4);
+        CHECK(routed > 0.01);
         CHECK(__mlang_std_audio_controller_close(d) == 0);
-        std::puts("PASS: Mla Vocoder loads with its sidechain bus");
+        std::puts("PASS: Mla Vocoder loads with its sidechain bus and takes a track as input");
     }
     // Mla Sampler has ten output buses: Main, Out 2-8, Send A and Send B.
     // Its aux buses follow the main output until routed to master, a PCM

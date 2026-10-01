@@ -265,7 +265,7 @@ dialog or text field has the keyboard.
 | File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
-| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs |
+| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
 | Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
@@ -923,6 +923,23 @@ Sampler's Send A and Send B, is a send: it defaults to aux effect channel 1,
 2, and so on instead of joining the main output (choosing `MAIN` for it picks
 that default again). Routes belong to the Instrument track in each
 pattern, like its output channel, and `.mlack` saves them.
+
+#### Instrument inputs
+
+An instrument with an audio input, such as [Mla Vocoder](plugins/mla_vocoder),
+can take an AUDIO track's clips as that input. Put the voice or sample on an
+AUDIO track, load the plugin on an Instrument track, then use **Track → Set
+instrument input** on the Instrument track and pick the AUDIO track (or `none`).
+The Instrument track's notes play the plugin while the clips feed it. For
+example, Mla Vocoder vocodes the voice with the chords you write.
+
+The input is taken from the AUDIO track's clips before that track's inserts
+and fader, and the track still plays on its own channel. Pull its fader down
+(or mute it) to hear only the instrument. An instrument with an input replaces
+what it is given with its output, so the input is not heard twice. Tracks
+sharing one instance share its input. The route belongs to the Instrument
+track in each pattern, and `.mlack` saves it (the `INSTRUMENT_INPUTS`
+extension).
 
 ### Destructive sample editing
 
