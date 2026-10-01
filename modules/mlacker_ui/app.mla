@@ -35,6 +35,8 @@ use mlacker_ui::transport::TransportStatus;
 mod mlacker_ui::sample_view;
 use mlacker_ui::sample_view::SampleView;
 mod mlacker_ui::audio_clip;
+mod mlacker_ui::audio_take;
+use mlacker_ui::audio_take::AudioTake;
 mod mlacker_ui::piano_dialog;
 mod mlacker_ui::song_matrix;
 mod mlacker_ui::pattern_picker;
@@ -478,6 +480,9 @@ pub fn run() -> i32 {
     // none), whether a take is running into it, the pattern time where the
     // take began, and the track the take armed itself (-1 when it was armed).
     var matrix_armed_id: i32 = 0; var matrix_recording: bool = false;
+    // Audio take: the live input recorded onto an armed AUDIO track while the
+    // pattern plays; it becomes a sample when the transport stops.
+    var audio_take: AudioTake = AudioTake {}; var take_count: i32 = 0;
     var matrix_record_offset: i64 = 0; var matrix_auto_armed: i32 = -1;
     // The next matrix row, merged and scheduled ahead of time during a quiet
     // moment of the playing row, so the row change is a swap: merging at the
@@ -713,8 +718,18 @@ pub fn run() -> i32 {
             }
             let starting: bool = !transport.playing;
             if starting { library.table.recording_extend = extend_recording; library.table.start_recording(); }
+            if starting && !audio_take.active() {
+                let armed_audio: i32 = library.table.armed_audio_track();
+                if armed_audio >= 0 && midi.input_id == -2 {
+                    free(message); message = format!("A{} is armed: choose an audio input in File > Settings to record it", armed_audio + 1);
+                } else if armed_audio >= 0 && !midi.output.hardware_output() {
+                    free(message); message = format!("A{} is armed: recording audio needs audio enabled (File > Settings)", armed_audio + 1);
+                } else if armed_audio >= 0 {
+                    audio_take = AudioTake::begin(armed_audio, library.table.selected_row);
+                }
+            }
             transport.toggle(now_ms(), library.table.selected_row, library.table.recording_track >= 0 && extend_recording ? 2147483647 : i32(library.table.rows.len()));
-            if starting && library.table.recording_track >= 0 && play_metronome { transport.begin_count_in(); }
+            if starting && (library.table.recording_track >= 0 || audio_take.active()) && play_metronome { transport.begin_count_in(); }
             note_playback.start_row = transport.row;
             if transport.playing { midi.restart_samples(transport.row); }
             if !midi.sample_playback(library.table, transport.ticks, transport.playing && transport.count_in == 0, transport.bpm) {
@@ -1088,7 +1103,7 @@ pub fn run() -> i32 {
                 dirty = true;
             }
         }
-        transport.recording = library.table.recording_track >= 0;
+        transport.recording = library.table.recording_track >= 0 || audio_take.active();
         if song_playing {
             let previous: i32 = transport.row;
             if transport.advance(now, i32(song_table.rows.len())) { playback_dirty = true; }
@@ -1167,6 +1182,38 @@ pub fn run() -> i32 {
         // Notes go out a little ahead, stamped with the audio frame they sound
         // on, so a slow UI frame (a matrix row being merged) never delays one.
         midi.schedule_transport(transport.ticks, transport.bpm, transport.playing && transport.count_in == 0);
+        if audio_take.active() {
+            if transport.playing && !song_playing {
+                let ready: bool = transport.count_in == 0 && midi.scheduling;
+                audio_take.capture(midi.output, ready, ready ? midi.frame_of(wide(audio_take.row) * 15000) : -1);
+            } else {
+                // Stopped (or switched to the matrix): the take becomes a
+                // sample, placed where it started.
+                let track: i32 = audio_take.track; let row: i32 = audio_take.row;
+                take_count = take_count + 1;
+                let name: str8 = format!("Recording {}.wav", take_count);
+                let finished: result<AudioClip, str8> = audio_take.finish(midi.output, name, transport.bpm);
+                free(name); free(message);
+                if finished.is_err() { message = clone("Audio take cancelled: nothing recorded"); take_count = take_count - 1; }
+                else {
+                    let clip: AudioClip = finished.unwrap();
+                    let seconds: i64 = clip.frames * 10 / (clip.sample_rate > 0 ? clip.sample_rate : 1);
+                    let index: i32 = library.audio.add_clip(clip);
+                    if index < 0 { message = format!("Audio take lost: {}", library.audio.error); }
+                    else {
+                        let added: AudioClip = library.audio.samples[index];
+                        let label: str8 = base_name(added.source);
+                        if library.table.place_audio(track, row, added, terminal_bounds()) {
+                            message = format!("Recorded {}.{} s into A{} from row {}: {}", seconds / 10, seconds % 10, track + 1, row + 1, label);
+                        } else {
+                            message = format!("Recorded {} to the Audio list (not placed on A{}: {})", label, track + 1, library.table.error);
+                        }
+                        free(label);
+                    }
+                }
+                playback_dirty = true; dirty = true;
+            }
+        }
         let ahead: i64 = midi.lookahead_ticks(transport.bpm);
         note_playback.lookahead = ahead;
         // A matrix row followed by another one sends nothing past its end.

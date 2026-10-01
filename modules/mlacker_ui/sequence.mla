@@ -441,7 +441,7 @@ pub fn mixer_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
     var track: SequenceTrack = self.tracks[index];
     let arm: bool = (event.code == 82 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 114 || event.code == 82));
     if arm {
-        if track.audio { return false; }
+        // An armed AUDIO track records the audio input (Settings).
         track.record_armed = !track.record_armed; self.replace_track(index, track); return true;
     }
     let down: bool = (event.code == 74 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 106 || event.code == 74));
@@ -461,12 +461,36 @@ pub fn mixer_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
     }
     return true;
 }
-/// Arm or disarm track `index` for recording; AUDIO tracks never arm.
+/// Arm or disarm track `index` for recording: MIDI notes on a MIDI or
+/// Instrument track, the audio input on an AUDIO track.
 pub fn set_record_armed(self: &mut Self, index: i32, armed: bool) -> bool {
     if index < 0 || index >= self.tracks.len() { return false; }
     var track: SequenceTrack = self.tracks[index];
-    if track.audio { return false; }
     track.record_armed = armed; self.replace_track(index, track); return true;
+}
+/// The first armed AUDIO track, which an audio take records into; -1 when
+/// none is armed.
+pub fn armed_audio_track(self: SequenceTable) -> i32 {
+    for i in 0..self.tracks.len() { let track: SequenceTrack = self.tracks[i]; if track.audio && track.record_armed { return i32(i); } }
+    return -1;
+}
+/// Place `clip` on AUDIO track `index` at `row` (as `insert_audio` does at the
+/// cursor), leaving the cursor where it was.
+pub fn place_audio(self: &mut Self, index: i32, row: i32, source: &AudioClip, area: Rect) -> bool {
+    if index < 0 || index >= self.tracks.len() { self.error = "No such track"; return false; }
+    var clip: AudioClip = AudioClip {}; clip = source;
+    // Restore the cursor by track and column within it: placing the
+    // track's first clip adds a column.
+    let previous: i32 = self.active_track();
+    let within: i32 = previous >= 0 ? self.selected_column - self.track_start(previous) : 0;
+    let column: i32 = self.selected_column; let selected: i32 = self.selected_row;
+    self.selected_column = self.track_start(index); self.selected_row = row;
+    let placed: bool = self.insert_audio(clip, area);
+    let error: str8 = self.error;
+    self.selected_column = previous >= 0 ? self.track_start(previous) + within : column;
+    self.selected_row = selected; self.reconcile(area);
+    self.error = error;
+    return placed;
 }
 /// Track a matrix take records into: an armed MIDI track, else the MIDI track
 /// under the cursor, else the first MIDI track; -1 when there is none.

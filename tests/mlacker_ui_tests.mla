@@ -2631,7 +2631,9 @@ fn tui_matrix_take_track_and_length() {
     table.selected_column = table.track_start(2); verify(table.recording_candidate() == 2);
     verify(table.set_record_armed(1, true) && table.recording_candidate() == 1);
     verify(table.set_record_armed(1, false) && table.recording_candidate() == 2);
-    table.create_track_kind(false, true, area); verify(!table.set_record_armed(3, true) && table.recording_candidate() == 0);
+    // An armed AUDIO track records audio, never a MIDI take.
+    table.create_track_kind(false, true, area); verify(table.set_record_armed(3, true) && table.recording_candidate() == 0);
+    verify(table.armed_audio_track() == 3);
     // The take ends at the nearest bar line and never cuts off a note.
     for r in 0..64 { table.selected_row = i32(r); table.clear_row(); }
     verify(table.take_length(0, 16) == 16 && table.take_length(15000 * 23, 16) == 16);
@@ -3949,4 +3951,60 @@ fn decode_input(text: str8) -> InputEvent {
     for i in 0..bytes.len() { event = decoder.feed(bytes.get(i)); }
     bytes.close();
     return event;
+}
+
+mod mlacker_ui::audio_take;
+use mlacker_ui::audio_take::AudioTake;
+
+#[test]
+fn audio_take_records_the_live_input_onto_an_armed_audio_track() {
+    var table: SequenceTable = SequenceTable::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    table.create_track_kind(false, true, area);
+    let track: i32 = i32(table.tracks.len()) - 1;
+    verify_eq_i32(-1, table.armed_audio_track());
+    // AUDIO tracks arm now: they record the audio input.
+    verify(table.set_record_armed(track, true));
+    verify_eq_i32(track, table.armed_audio_track());
+    let opened: result<AudioController, str8> = AudioController::new(8000, 128);
+    let output: AudioController = opened.unwrap();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(1024); let block: PcmBlock = allocated.unwrap();
+    var take: AudioTake = AudioTake::begin(track, 2);
+    verify(take.active());
+    // Before the count-in ends nothing records.
+    take.capture(output, false, -1);
+    verify(!take.started);
+    let latency: i64 = output.record_latency();
+    verify(latency > 0 && latency < 1024);
+    take.capture(output, true, 0);
+    verify(take.started);
+    for _b in 0..8 {
+        var chunk: list<f32> = [];
+        for _i in 0..1024 { chunk.push(0.5f); }
+        verify(output.input_feed(chunk, 1, 8000) == 0);
+        verify(output.process(block, 1024) == 0);
+        take.capture(output, true, 0);
+    }
+    let finished: result<AudioClip, str8> = take.finish(output, "Recording 1.wav", 120);
+    verify(finished.is_ok());
+    verify(!take.active());
+    let clip: AudioClip = finished.unwrap();
+    // Recording starts `latency` frames into the stream, so it lines up with
+    // what output frame 0 played; the input reader primes on its second block.
+    verify_eq_i64(8192 - latency, clip.frames);
+    verify_eq_i64(2, clip.channels);
+    verify_eq(0.5f, clip.samples[clip.samples.len() - 1]);
+    verify_eq(0.0f, clip.samples[0]);
+    verify(table.place_audio(track, 2, clip, area));
+    let placed: SequenceTrack = table.tracks[track];
+    verify_eq_i64(1, placed.instances.len());
+    let instance: AudioInstance = placed.instances[0];
+    verify_eq_i32(2, instance.start_row);
+    // A second take over the same rows does not fit there.
+    verify(!table.place_audio(track, 3, clip, area));
+    // A take stopped before it started records nothing.
+    var empty: AudioTake = AudioTake::begin(track, 0);
+    let nothing: result<AudioClip, str8> = empty.finish(output, "Recording 2.wav", 120);
+    verify(nothing.is_err());
+    block.close(); output.close(); clip.release(); table.release();
 }

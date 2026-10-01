@@ -986,7 +986,9 @@ plugin PCM peaks, after the instrument fader and before the master chain. PCM
 meters share the meter style, update rate, and smooth decay. Tracks using the
 same loaded instance display the same cached stereo output readings.
 
-`Shift+R` in Mixer arms the selected MIDI/instrument track (red `R`). Press
+`Shift+R` in Mixer arms the selected track (red `R`). MIDI and Instrument tracks
+record MIDI, and AUDIO tracks record the audio input (see
+[Recording audio](#recording-audio)). Press
 Space to record from the selected row; press Space again to stop and enter the
 track name (Enter accepts, Esc keeps the old name). Each take targets one synth
 track, with up to 64 automatically added note lines. Notes on the same row are
@@ -1013,6 +1015,26 @@ The live MIDI path monitors the synth during recording.
 While stopped, incoming notes still provide single-cell step entry on the armed
 track. Audio tracks do not record MIDI. Opening a modal editor stops a timed take.
 Volume is saved in `.mlack`; record-arm is transient and starts off on load.
+
+#### Recording audio
+
+An armed AUDIO track (`Shift+R` in Mixer) records the audio input chosen in
+**File → Settings → Audio input**. Press Space to play the pattern from the
+selected row. After the count-in (with **Play metronome** on), the take
+starts at that row. Press Space again to stop. The take becomes a sample,
+`Recording N.wav`, in the Audio list, placed on the armed track at the row
+where it started. If it would overlap a clip already there, it stays in the
+Audio list only. Sessions save it like any other sample.
+
+The take is shifted by the latency CoreAudio reports for the output and input
+devices, plus mlacker's input buffering, so it lines up with what you heard
+while playing along. The pattern keeps looping during a long take (audio takes
+do not extend it), and the take runs on across the loops. Only the first armed
+AUDIO track records, and a MIDI take on an armed MIDI or Instrument track can
+run at the same time. mlacker does not monitor the input itself. Use your
+interface's direct monitoring, or route the input into an instrument (see
+[Instrument inputs](#instrument-inputs)) to hear it processed. If Space reports
+that the armed track needs an audio input, choose one in Settings first.
 
 ### Output channels
 

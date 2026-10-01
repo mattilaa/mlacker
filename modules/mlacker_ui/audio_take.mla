@@ -1,0 +1,69 @@
+/// \file audio_take.mla
+/// \brief Recording the live audio input onto an armed AUDIO track.
+///
+/// A take begins when the transport starts with an AUDIO track armed. Once
+/// the count-in is over and sequencer ticks map to audio frames, `capture`
+/// asks the audio runtime to record from the frame where the take's first
+/// row plays (the runtime shifts that by the devices' latency, so the take
+/// lines up with what was heard), then drains the recording each frame. When
+/// the transport stops, `finish` turns it into a clip.
+
+mod std::audio::controller;
+mod mlacker_ui::audio_clip;
+use std::audio::controller::AudioController;
+use mlacker_ui::audio_clip::AudioClip;
+use std::strbuf::clone;
+use std::strbuf::free;
+
+pub struct AudioTake {
+    /// AUDIO track the take records into; -1 when no take runs.
+    var track: i32{-1};
+    /// Pattern row the take starts on.
+    var row: i32;
+    /// True once the runtime records (after the count-in).
+    var started: bool;
+    /// Interleaved stereo frames at `rate`.
+    var samples: list<f32>;
+    var rate: i64;
+    var overruns: i64;
+};
+
+impl AudioTake {
+    pub fn active(self: AudioTake) -> bool { return self.track >= 0; }
+
+    /// Arm a take on AUDIO track `track` from pattern row `row`.
+    pub fn begin(track: i32, row: i32) -> AudioTake {
+        return AudioTake { track: track, row: row < 0 ? 0 : row, started: false, samples: [], rate: 0, overruns: 0 };
+    }
+
+    /// Start recording at output frame `frame` (where row `row` plays) once,
+    /// then drain what the runtime has recorded. Call every frame of the UI.
+    pub fn capture(self: &mut Self, output: AudioController, ready: bool, frame: i64) -> void {
+        if self.track < 0 { return; }
+        if !self.started {
+            if !ready || frame < 0 { return; }
+            if output.record_start(frame) != 0 { return; }
+            self.started = true; self.rate = output.sample_rate();
+        }
+        self.drain(output);
+    }
+
+    fn drain(self: &mut Self, output: AudioController) -> void {
+        for _round in 0..64 {
+            let part: list<f32> = output.record_read(65536);
+            if part.len() == 0 { break; }
+            self.samples.extend(part);
+        }
+        self.overruns = output.record_overruns();
+    }
+
+    /// Stop recording and return the take as a clip named `name` (rows at
+    /// `bpm`), or an error when nothing was recorded. The take is reset.
+    pub fn finish(self: &mut Self, output: AudioController, name: str8, bpm: i32) -> result<AudioClip, str8> {
+        if self.started { output.record_stop(); self.drain(output); }
+        let samples: list<f32> = self.samples; let rate: i64 = self.rate;
+        self.track = -1; self.started = false; self.samples = [];
+        if samples.len() < 2 || rate <= 0 { return Err<AudioClip, str8>("Nothing recorded"); }
+        return AudioClip::from_pcm(name, samples, 2, rate, bpm);
+    }
+}
