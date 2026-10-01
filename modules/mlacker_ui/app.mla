@@ -36,6 +36,8 @@ mod mlacker_ui::sample_view;
 use mlacker_ui::sample_view::SampleView;
 mod mlacker_ui::audio_clip;
 mod mlacker_ui::audio_take;
+mod mlacker_ui::bounce;
+use mlacker_ui::bounce::Bounce;
 use mlacker_ui::audio_take::AudioTake;
 mod mlacker_ui::piano_dialog;
 mod mlacker_ui::song_matrix;
@@ -237,7 +239,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                         menu_item(extend ? "[x] Extend pattern when playing" : "[ ] Extend pattern when playing", Action::ToggleExtendRecording, true, keymap),
                         MenuItem::submenu("Metronome", [
                             menu_item(!metronome_always ? "[x] On recording" : "[ ] On recording", Action::MetronomeOnRecording, true, keymap),
-                            menu_item(metronome_always ? "[x] Always" : "[ ] Always", Action::MetronomeAlways, true, keymap)])] }
+                            menu_item(metronome_always ? "[x] Always" : "[ ] Always", Action::MetronomeAlways, true, keymap)]),
+                        menu_item("Bounce selection to sample", Action::BounceSelection, true, keymap)] }
             ]);
     // F1 File, F2 Edit, ... F9 Record, shown before each title.
     bar.shortcuts = true;
@@ -482,7 +485,7 @@ pub fn run() -> i32 {
     var matrix_armed_id: i32 = 0; var matrix_recording: bool = false;
     // Audio take: the live input recorded onto an armed AUDIO track while the
     // pattern plays; it becomes a sample when the transport stops.
-    var audio_take: AudioTake = AudioTake {}; var take_count: i32 = 0;
+    var audio_take: AudioTake = AudioTake {}; var take_count: i32 = 0; var bounce_count: i32 = 0;
     var matrix_record_offset: i64 = 0; var matrix_auto_armed: i32 = -1;
     // The next matrix row, merged and scheduled ahead of time during a quiet
     // moment of the playing row, so the row change is a swap: merging at the
@@ -2047,6 +2050,11 @@ pub fn run() -> i32 {
                     free(message);
                     message = matrix.clipboard > 0 ? format!("Copied pattern {}", matrix.clipboard) : clone("Copied an empty cell");
                 }
+                else if action == 13 {
+                    free(message);
+                    message = matrix.mark_row >= 0 ? format!("Marking from matrix row {}: move to extend, then Record > Bounce selection (v clears)", matrix.mark_row + 1)
+                        : clone("Mark cleared");
+                }
                 else if action == 12 {
                     free(message);
                     let cover: SongCover = library.song_cover(matrix.row, matrix.lane);
@@ -2617,6 +2625,64 @@ pub fn run() -> i32 {
                 dialog.open(last_pattern_dir);
                 if command == Action::SavePattern { dialog.path_field.set_text(library.active_name()); }
                 focus.set_menu_active(true);
+            }
+            else if command == Action::BounceSelection {
+                // Offline: the matrix rows marked with v (or the cursor row)
+                // when the matrix has focus, else the pattern's visual
+                // selection (rows, and the tracks it spans) or the whole
+                // pattern. The result is a new sample in the Audio list.
+                free(message);
+                if transport.playing || song_playing { message = clone("Stop playback before bouncing"); }
+                else {
+                    let on_matrix: bool = matrix.visible && focus.selected == 1;
+                    var job: Bounce = midi.bounce_begin(transport.bpm);
+                    var what: str8 = "";
+                    if !job.ok() { message = clone(job.error); }
+                    else {
+                        if on_matrix {
+                            let first: i32 = matrix.marked_first(); let last: i32 = matrix.marked_last();
+                            for r in first..last + 1 {
+                                let merged: SequenceTable = library.merge_song_row(i32(r), terminal_bounds(), false);
+                                // Rows without patterns play nothing, as in song playback.
+                                if merged.rows.len() > 0 { midi.bounce_segment(&mut job, merged, 0, i32(merged.rows.len()), []); }
+                                merged.release();
+                            }
+                            what = first == last ? format!("matrix row {}", first + 1) : format!("matrix rows {}-{}", first + 1, last + 1);
+                        } else {
+                            var first: i32 = 0; var last: i32 = i32(library.table.rows.len()) - 1;
+                            var tracks: list<i32> = [];
+                            if library.table.visual {
+                                first = library.table.anchor_row < library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
+                                last = library.table.anchor_row > library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
+                                if !library.table.visual_rows {
+                                    let a: i32 = library.table.track_of_column(library.table.anchor_column);
+                                    let b: i32 = library.table.track_of_column(library.table.selected_column);
+                                    let low: i32 = a < b ? a : b; let high: i32 = a > b ? a : b;
+                                    if low >= 0 { for t in low..high + 1 { tracks.push(i32(t)); } }
+                                }
+                            }
+                            what = tracks.len() > 0 ? format!("rows {}-{} of tracks {}-{}", first + 1, last + 1, tracks[0] + 1, tracks[tracks.len() - 1] + 1)
+                                : format!("rows {}-{}", first + 1, last + 1);
+                            midi.bounce_segment(&mut job, library.table, first, last + 1, tracks);
+                        }
+                        let rate: i64 = job.rate;
+                        let rendered: list<f32> = midi.bounce_finish(&mut job, library.table, 10);
+                        bounce_count = bounce_count + 1;
+                        let name: str8 = format!("Bounce {}.wav", bounce_count);
+                        let made: result<AudioClip, str8> = AudioClip::from_pcm(name, rendered, 2, rate, transport.bpm);
+                        if made.is_err() { message = format!("Bounce of {} failed: {}", what, made.unwrap_err()); bounce_count = bounce_count - 1; }
+                        else {
+                            let clip: AudioClip = made.unwrap();
+                            let seconds: i64 = clip.frames * 10 / (rate > 0 ? rate : 1);
+                            let index: i32 = library.audio.add_clip(clip);
+                            message = index < 0 ? format!("Bounce lost: {}", library.audio.error)
+                                : format!("Bounced {} ({}.{} s) to the Audio list: {}", what, seconds / 10, seconds % 10, name);
+                        }
+                        free(name); free(what);
+                    }
+                    playback_dirty = true;
+                }
+                dirty = true;
             }
             else if command == Action::ToggleMetronome || command == Action::ToggleExtendRecording || command == Action::MetronomeOnRecording || command == Action::MetronomeAlways {
                 if command == Action::ToggleMetronome { play_metronome = !play_metronome; }

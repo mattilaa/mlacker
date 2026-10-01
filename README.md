@@ -270,7 +270,7 @@ dialog or text field has the keyboard.
 | Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
-| Record | Play metronome, Extend pattern when playing, Metronome ▸ |
+| Record | Play metronome, Extend pattern when playing, Metronome ▸, Bounce selection to sample |
 
 ## Song matrix
 
@@ -291,6 +291,7 @@ pattern list.
 | `r` | Loop the cell's pattern down its lane, or stop it looping |
 | `s` | Split: end a loop (or a long pattern) at this row |
 | `Shift+R` | Arm the cell's pattern for recording, or disarm it |
+| `v` | Mark rows from here to the cursor for **Record → Bounce selection**, or clear the mark |
 | `Space` / `Ctrl+P` | Play the matrix from the cursor row, or stop |
 | `Shift+M` | Close the matrix |
 
@@ -1015,6 +1016,28 @@ The live MIDI path monitors the synth during recording.
 While stopped, incoming notes still provide single-cell step entry on the armed
 track. Audio tracks do not record MIDI. Opening a modal editor stops a timed take.
 Volume is saved in `.mlack`; record-arm is transient and starts off on load.
+
+#### Bouncing
+
+**Record → Bounce selection to sample** renders part of the song offline,
+faster than real time, through the whole mix: instruments, inserts, sends,
+aux effects and the master chain. The result is added to the Audio list as
+`Bounce N.wav`, ready to place on an AUDIO track or to edit.
+
+- **In Pattern view**, a visual selection sets the rows, and a block selection
+  (`v`) also limits the bounce to the tracks it spans; whole-row selection
+  (`V`) keeps every track. Without a selection, the whole pattern is
+  bounced.
+- **In the song matrix** (when it has focus), `v` marks rows from the cursor.
+  Move to extend the mark, then bounce. Without a mark, the cursor row is
+  bounced. Each marked row plays the way song playback plays it, one after
+  another without gaps, and rows without patterns are skipped.
+
+Notes sound on their exact frames, as during playback. At the end of the
+selection, held notes are released and clips stop. The bounce then runs on
+until the mix is quiet (effect and release tails, at most 10 s), and the
+silent end is trimmed. The audio device pauses while the bounce renders and
+resumes afterwards. Stop playback before bouncing.
 
 #### Recording audio
 

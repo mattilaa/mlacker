@@ -468,6 +468,12 @@ pub fn set_record_armed(self: &mut Self, index: i32, armed: bool) -> bool {
     var track: SequenceTrack = self.tracks[index];
     track.record_armed = armed; self.replace_track(index, track); return true;
 }
+/// Mute or unmute track `index` (as Track > Mute does for the cursor track).
+pub fn set_muted(self: &mut Self, index: i32, muted: bool) -> bool {
+    if index < 0 || index >= self.tracks.len() { return false; }
+    var track: SequenceTrack = self.tracks[index];
+    track.muted = muted; self.replace_track(index, track); return true;
+}
 /// The first armed AUDIO track, which an audio take records into; -1 when
 /// none is armed.
 pub fn armed_audio_track(self: SequenceTable) -> i32 {

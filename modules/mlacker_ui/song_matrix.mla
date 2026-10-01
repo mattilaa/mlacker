@@ -33,10 +33,18 @@ pub struct SongMatrix {
     var armed_row: i32{-1}; var armed_lane: i32{-1};
     /// A take is running into the armed pattern.
     var recording: bool;
+    /// Row where `v` started marking a range (to the cursor row), -1 when
+    /// none: Record > Bounce selection renders those rows.
+    var mark_row: i32{-1};
 };
 impl SongMatrix {
     /// `lanes` already includes the spare empty lane past the last used one.
+    /// First and last matrix row of the marked range (the cursor row alone
+    /// when nothing is marked).
+    pub fn marked_first(self: SongMatrix) -> i32 { return self.mark_row >= 0 && self.mark_row < self.row ? self.mark_row : self.row; }
+    pub fn marked_last(self: SongMatrix) -> i32 { return self.mark_row > self.row ? self.mark_row : self.row; }
     fn clamp(self: &mut Self, rows: i32, lanes: i32) -> void {
+        if self.mark_row >= rows { self.mark_row = rows - 1; }
         if self.row >= rows { self.row = rows - 1; }
         if self.row < 0 { self.row = 0; }
         if self.lane >= lanes { self.lane = lanes - 1; }
@@ -69,6 +77,8 @@ impl SongMatrix {
         if (event.modifiers == 1 && event.code == 82) || (event.modifiers == 2 && (event.code == 114 || event.code == 82)) { return 12; }
         if event.modifiers == 1 && event.code == 114 { return 10; }
         if event.modifiers == 1 && event.code == 115 { return 11; }
+        // v starts or clears a marked row range for a bounce.
+        if event.modifiers == 1 && event.code == 118 { self.mark_row = self.mark_row >= 0 ? -1 : self.row; return 13; }
         return 0;
     }
     /// `playing` is the row the transport is on, or -1 when the matrix is idle.
@@ -110,7 +120,8 @@ impl SongMatrix {
             if row >= rows { break; }
             let y: i32 = body.y + 1 + i32(line);
             let number: str8 = format!("{}{}", row < 9 ? "00" : (row < 99 ? "0" : ""), row + 1);
-            let number_bg: i32 = row == playing ? lighten(theme.panel, 36) : theme.panel;
+            let marked: bool = self.mark_row >= 0 && row >= self.marked_first() && row <= self.marked_last();
+            let number_bg: i32 = row == playing ? lighten(theme.panel, 36) : (marked ? 0x2a4a6a : theme.panel);
             surface.fill(Rect::new(body.x, y, 4, 1), Cell { glyph: 32, foreground: theme.muted, background: number_bg });
             surface.text(Rect::new(body.x, y, 4, 1), number, row == playing ? theme.accent : theme.muted, number_bg); free(number);
             for column in 0..visible_lanes {
@@ -161,7 +172,7 @@ impl SongMatrix {
         }
         if body.height > 1 {
             surface.text(Rect::new(body.x, body.y + body.height - 1, body.width, 1),
-                "hjkl move  Enter pattern  y/p copy  r loop  R arm  s split  o/O row  dd delete  Space/Ctrl+P play",
+                "hjkl move  Enter pattern  y/p copy  r loop  R arm  s split  o/O row  dd delete  v mark  Space/Ctrl+P play",
                 theme.muted, theme.panel);
         }
     }

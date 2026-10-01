@@ -4008,3 +4008,59 @@ fn audio_take_records_the_live_input_onto_an_armed_audio_track() {
     verify(nothing.is_err());
     block.close(); output.close(); clip.release(); table.release();
 }
+
+mod mlacker_ui::bounce;
+use mlacker_ui::bounce::Bounce;
+
+#[test]
+fn bounce_renders_selected_rows_offline() {
+    var table: SequenceTable = SequenceTable::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    table.create_track_kind(false, true, area);
+    let track: i32 = i32(table.tracks.len()) - 1;
+    // 4 rows of a constant clip from row 1 (1000 frames per row at 8 kHz, 120 BPM).
+    var clip: AudioClip = AudioClip { source: clone("embedded.wav"), channels: 2, sample_rate: 8000, frames: 4000, frames_per_row: 1000 };
+    for _i in 0..4000 { clip.samples.push(0.5f); clip.samples.push(0.25f); }
+    for _i in 0..4 { clip.peaks.push(WavePeak { left: 500, right: 250 }); }
+    table.selected_row = 1; verify(table.insert_audio(clip, area));
+    let opened: result<AudioController, str8> = AudioController::new(8000, 128);
+    var audio: AudioSystem = AudioSystem {}; audio.output = opened.unwrap();
+    // Rows 2-3 (index 1 and 2): 2000 frames of the clip through the master
+    // gain (0.25), then a quiet tail that is trimmed.
+    var job: Bounce = audio.bounce_begin(120);
+    verify(job.ok());
+    // The demo MIDI tracks would add the preview tone: bounce only the clip's.
+    audio.bounce_segment(&mut job, table, 1, 3, [track]);
+    let rendered: list<f32> = audio.bounce_finish(&mut job, table, 2);
+    let frames: i64 = rendered.len() / 2;
+    verify(frames >= 2000 && frames <= 2000 + 128);
+    verify_eq(0.125f, rendered[1000 * 2]);
+    verify_eq(0.0625f, rendered[1000 * 2 + 1]);
+    verify(!audio.scheduling);
+    // Only the tracks listed play: leaving the clip's track out is silence.
+    var other: Bounce = audio.bounce_begin(120);
+    // (The demo MIDI tracks would play the preview tone: keep only a second,
+    // empty AUDIO track.)
+    table.create_track_kind(false, true, area);
+    var tracks: list<i32> = [i32(table.tracks.len()) - 1];
+    verify(tracks[0] != track);
+    audio.bounce_segment(&mut other, table, 1, 3, tracks);
+    let silent: list<f32> = audio.bounce_finish(&mut other, table, 2);
+    var loudest: f32 = 0.0f;
+    for v in silent { if v > loudest { loudest = v; } }
+    verify_eq(0.0f, loudest);
+    verify(silent.len() / 2 >= 2000);
+    // Two segments follow each other without a gap.
+    var joined: Bounce = audio.bounce_begin(120);
+    audio.bounce_segment(&mut joined, table, 1, 2, [track]);
+    audio.bounce_segment(&mut joined, table, 2, 3, [track]);
+    let both: list<f32> = audio.bounce_finish(&mut joined, table, 2);
+    verify(both.len() / 2 >= 2000);
+    verify_eq(0.125f, both[990 * 2]);
+    verify_eq(0.125f, both[1010 * 2]);
+    // No audio: the bounce explains instead of rendering.
+    var none: AudioSystem = AudioSystem {};
+    let refused: Bounce = none.bounce_begin(120);
+    verify(!refused.ok());
+    audio.release(); table.release(); clip.release();
+}

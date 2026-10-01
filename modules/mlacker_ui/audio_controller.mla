@@ -4,6 +4,12 @@ use std::audio::PcmAudio;
 mod mlacker_ui::midi_controller;
 mod mlacker_ui::note_playback;
 mod mlacker_ui::sequence;
+mod mlacker_ui::bounce;
+use mlacker_ui::bounce::Bounce;
+use mlacker_ui::bounce::bounce_block;
+use mlacker_ui::bounce::keep_tracks;
+use std::audio::PcmBlock;
+use mlacker_ui::note_playback::NotePlayback;
 use mlacker_ui::sequence::SequenceTable;
 use mlacker_ui::sequence::SequenceTrack;
 use mlacker_ui::sequence::AudioInstance;
@@ -196,6 +202,134 @@ impl AudioSystem {
         }
         if self.output.input_open(input_id) != 0 { self.input_id = -2; return __mlang_std_audio_last_error(); }
         self.input_id = input_id; return "";
+    }
+    // --- Offline bounce (see bounce.mla) ---------------------------------------
+    /// Stop the device and prepare to render at `bpm`. On failure `error`
+    /// says why and nothing was changed.
+    pub fn bounce_begin(self: &mut Self, bpm: i32) -> Bounce {
+        var job: Bounce = Bounce { bpm: bpm };
+        if self.output.handle == 0 { job.error = "Bouncing needs audio enabled (File > Settings)"; return job; }
+        if bpm <= 0 { job.error = "Invalid tempo"; return job; }
+        let allocated: result<PcmBlock, str8> = PcmBlock::new(bounce_block());
+        if allocated.is_err() { job.error = "Cannot allocate a render block"; return job; }
+        job.block = allocated.unwrap();
+        job.rate = self.output.sample_rate();
+        // The device and its MIDI producer pause; the render runs here.
+        job.worker = self.midi.worker.raw != 0;
+        job.restart = self.output.hardware_output();
+        self.midi.release();
+        if job.restart && self.output.stop() != 0 {
+            if job.worker { self.midi = MidiController::start_selected(self.midi_id, self.output.handle); }
+            job.block.close();
+            job.error = "Could not stop the audio device"; return job;
+        }
+        // Start from silence: no voices, notes or clips left from before.
+        self.output.panic();
+        self.output.process(job.block, bounce_block());
+        // Ticks map to frames for the whole job, so notes are frame-exact
+        // and segments follow each other seamlessly.
+        self.scheduling = true; self.schedule_tick = 0; self.schedule_frame = self.output.frame_clock();
+        self.schedule_bpm = bpm; self.schedule_rate = job.rate; self.schedule_output = self.output.handle;
+        return job;
+    }
+    fn bounce_block_render(self: &mut Self, job: &mut Bounce) -> void {
+        // Fields of a borrowed struct are reached through a local copy.
+        var b: Bounce = Bounce {}; b = job;
+        self.output.process(b.block, bounce_block());
+        let size: i64 = bounce_block();
+        for f in 0..size {
+            b.samples.push(b.block.left(f)); b.samples.push(b.block.right(f));
+        }
+        job = b;
+    }
+
+    /// Render rows `from_row` .. `to_row` (exclusive) of `source`, right after
+    /// the previous segment. `tracks` lists the track indexes that play
+    /// (empty = all); the others stay silent.
+    pub fn bounce_segment(self: &mut Self, job: &mut Bounce, source: &SequenceTable, from_row: i32, to_row: i32, tracks: list<i32>) -> void {
+        // Fields of a borrowed struct are reached through a local copy.
+        var b: Bounce = Bounce {}; b = job;
+        if !b.ok() { return; }
+        var table: SequenceTable = SequenceTable {}; table = source;
+        if to_row <= from_row || table.rows.len() == 0 { return; }
+        // Muted copies silence the tracks left out (their clips and the
+        // instruments only they play); their notes are dropped below.
+        var played: SequenceTable = table.copy_pattern();
+        if tracks.len() > 0 {
+            for t in 0..played.tracks.len() {
+                var keep: bool = false; for index in tracks { if index == i32(t) { keep = true; } }
+                if !keep { played.set_muted(i32(t), true); }
+            }
+        }
+        self.sync_volumes(played);
+        // The segment's first row falls where the previous one ended; the
+        // block in progress may already be a little past it.
+        let start: i64 = b.next_start;
+        let end: i64 = start + wide(to_row - from_row) * 15000;
+        var playback: NotePlayback = NotePlayback { start_row: from_row };
+        playback.carry_voices(b.playback);
+        self.restart_samples(from_row);
+        self.samples_running = false;
+        while b.tick < end {
+            let block_ticks: i64 = b.tick_at(b.frames + bounce_block()) - b.tick;
+            // Send ahead up to the next block, never past the segment.
+            var ahead: i64 = block_ticks + 1;
+            if b.tick + ahead > end - 1 { ahead = end - 1 - b.tick; }
+            playback.lookahead = ahead < 0 ? 0 : ahead;
+            playback.update(played, b.tick < start ? start : b.tick, true);
+            self.sequencer_events(keep_tracks(playback.events, tracks));
+            self.sample_playback(played, b.tick < start ? start : b.tick, true, b.bpm);
+            self.bounce_block_render(&mut b);
+            b.frames = b.frames + bounce_block();
+            b.tick = b.tick_at(b.frames);
+        }
+        // The segment ends: notes still held go on into the next one (or are
+        // released by `finish`); its clips stop here.
+        self.sample_playback(played, end, false, b.bpm);
+        b.playback = playback;
+        b.next_start = end;
+        played.release();
+        job = b;
+    }
+
+    /// Release held notes, render the tail until the mix is quiet (at most
+    /// `tail_seconds`), restore playback state and restart the device. Returns
+    /// the interleaved stereo frames rendered.
+    pub fn bounce_finish(self: &mut Self, job: &mut Bounce, source: &SequenceTable, tail_seconds: i64) -> list<f32> {
+        // Fields of a borrowed struct are reached through a local copy.
+        var b: Bounce = Bounce {}; b = job;
+        if !b.ok() { return []; }
+        b.playback.update(source, b.tick, false);
+        self.sequencer_events(b.playback.events);
+        self.scheduling = false;
+        let limit: i64 = tail_seconds * b.rate;
+        let quiet_needed: i64 = b.rate / 4;
+        var quiet: i64 = 0; var rendered: i64 = 0;
+        while rendered < limit && quiet < quiet_needed {
+            self.bounce_block_render(&mut b);
+            rendered = rendered + bounce_block();
+            var peak: f32 = 0.0f;
+            let size: i64 = bounce_block();
+            for f in 0..size {
+                let l: f32 = b.block.left(f); let r: f32 = b.block.right(f);
+                if l > peak { peak = l; } if 0.0f - l > peak { peak = 0.0f - l; }
+                if r > peak { peak = r; } if 0.0f - r > peak { peak = 0.0f - r; }
+            }
+            quiet = peak < 0.0001f ? quiet + bounce_block() : 0;
+        }
+        // Drop the quiet end the tail search rendered.
+        var keep: i64 = b.samples.len() - (quiet > 0 ? quiet - quiet % bounce_block() : 0) * 2;
+        if keep < 0 { keep = 0; }
+        var out: list<f32> = [];
+        for i in 0..keep { out.push(b.samples[i]); }
+        b.samples = [];
+        self.output.panic();
+        self.samples_running = false;
+        b.block.close();
+        if b.restart { self.output.start(); }
+        if b.worker { self.midi = MidiController::start_selected(self.midi_id, self.output.handle); }
+        job = b;
+        return out;
     }
     pub fn poll(self: &mut Self, now: i64) -> bool { return self.midi.poll(now); }
     /// Register embedded PCM off the audio thread, then send only bounded events.

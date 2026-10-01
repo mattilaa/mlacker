@@ -124,6 +124,8 @@ add_test(NAME instrument_input_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURR
 set_tests_properties(instrument_input_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME audio_record_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_record_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(audio_record_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
+add_test(NAME bounce_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/bounce_tui_smoke.py" "$<TARGET_FILE:mlacker>")
+set_tests_properties(bounce_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME spectrum_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/spectrum_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(spectrum_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
 add_test(NAME visual_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/visual_tui_smoke.py" "$<TARGET_FILE:mlacker>")
