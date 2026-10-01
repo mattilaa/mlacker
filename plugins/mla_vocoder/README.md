@@ -51,6 +51,10 @@ now play the carrier, and the AUDIO track's clips are the modulator. Pull the
 AUDIO track's fader down to hear only the vocoder; its clips still feed the
 vocoder from before the fader.
 
+To vocode a microphone live, choose an input device under **File → Settings →
+Audio input**, then pick `Audio input` in **Set instrument input**, and play
+the Instrument track from a MIDI keyboard.
+
 mlacker leaves the sidechain bus inactive, so *External* and *Split L/R*
 carriers are for other hosts.
 

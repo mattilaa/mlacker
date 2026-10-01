@@ -32,6 +32,8 @@ int64_t __mlang_std_audio_controller_instrument_outputs(int64_t, int64_t);
 const char *__mlang_std_audio_controller_instrument_output_name(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_output_route(int64_t, int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_input(int64_t, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_input_feed(int64_t, FloatList, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_input_peak(int64_t, int64_t);
 int32_t __mlang_std_audio_controller_track_peak(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_pad(int64_t, int64_t, int64_t, FloatList, int64_t, int64_t, const char*);
 int32_t __mlang_std_audio_controller_midi_target(int64_t, int64_t, int64_t);
@@ -613,7 +615,7 @@ int main(int argc, char **argv) {
         CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Vocoder") == 0);
         CHECK(__mlang_std_audio_controller_load_effect(d, 0, vocoder) == 0);
         CHECK(__mlang_std_audio_controller_load_effect(d, 0, "") == 0);
-        CHECK(__mlang_std_audio_controller_instrument_input(d, 1, 65) == -1);
+        CHECK(__mlang_std_audio_controller_instrument_input(d, 1, 66) == -1);
         CHECK(__mlang_std_audio_controller_instrument_input(d, 33, 1) == -1);
         std::vector<float> voice(48000 * 4);
         for(size_t i = 0; i < voice.size(); ++i) voice[i] = 0.5f * (2.f * std::fmod(150.f * i / 48000.f, 1.f) - 1.f);
@@ -638,6 +640,29 @@ int main(int argc, char **argv) {
         std::printf("vst3_host: Mla Vocoder rms without input %.6f, fed by track 1 %.6f\n", unrouted, routed);
         CHECK(unrouted < 1.e-4);
         CHECK(routed > 0.01);
+        // The live input (65), fed block by block at 44.1 kHz as a device on
+        // its own clock would, resampled to the controller's 48 kHz.
+        CHECK(__mlang_std_audio_controller_input_peak(d, 0) == 0);
+        CHECK(__mlang_std_audio_controller_instrument_input(d, 1, 65) == 0);
+        __mlang_std_audio_controller_panic(d);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        const int64_t at = __mlang_std_audio_controller_info(d, 2);
+        CHECK(__mlang_std_audio_controller_post(d, 0, 6, 0, 48, 100, 0, at, 1, 1) == 0);
+        std::vector<float> chunk(235);
+        int64_t fed = 0; double sum = 0; int count = 0;
+        for(int block = 0; block < 120; ++block) {
+            for(auto &v : chunk) { v = 0.5f * (2.f * std::fmod(150.f * fed / 44100.f, 1.f) - 1.f); ++fed; }
+            CHECK(__mlang_std_audio_controller_input_feed(d, FloatList{(int64_t)chunk.size(), chunk.data()}, 1, 44100) == 0);
+            CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+            if(block < 40) continue;
+            for(int f = 0; f < 256; ++f) { double v = __mlang_std_audio_pcm_block_sample(b, f, 0); sum += v * v; ++count; }
+        }
+        const double live = std::sqrt(sum / count);
+        std::printf("vst3_host: Mla Vocoder rms fed by the live input %.6f\n", live);
+        CHECK(live > 0.01);
+        CHECK(__mlang_std_audio_controller_input_peak(d, 0) >= 490);
+        CHECK(__mlang_std_audio_controller_input_peak(d, 0) == 0);
+        CHECK(__mlang_std_audio_controller_input_feed(d, FloatList{2, chunk.data()}, 3, 44100) == -1);
         CHECK(__mlang_std_audio_controller_close(d) == 0);
         std::puts("PASS: Mla Vocoder loads with its sidechain bus and takes a track as input");
     }

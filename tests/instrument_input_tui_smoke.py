@@ -39,8 +39,11 @@ def main():
             expect(tui.send(SET_INPUT, 0.8), b"Select an Instrument track playing a plugin")
             expect(tui.send(SET_OUTPUT, 0.8), b"MIDI output", b"I1")
             expect(tui.send(b"j\r", 0.8), b"MIDI output: Mlacker Test Instrument #1")
-            # The picker lists "none" and every AUDIO track.
-            expect(tui.send(SET_INPUT, 0.8), b"Instrument input", b"none", b"A1")
+            # The picker lists "none", the live audio input and every AUDIO track.
+            expect(tui.send(SET_INPUT, 0.8), b"Instrument input", b"none", b"Audio input", b"A1")
+            # The live input needs a device chosen in Settings first.
+            expect(tui.send(b"j\r", 0.8), b"input: audio input (enable one in Settings")
+            expect(tui.send(SET_INPUT, 0.8), b"Instrument input")
             expect(tui.send(b"j\r", 0.8), b"Mlacker Test Instrument input: A1")
             assert b"Saved:" in tui.send(b"\x13" + b"\x15" + os.fsencode(path) + b"\r", 0.8)
         finally:
@@ -54,9 +57,10 @@ def main():
             # Re-saving an unchanged session rewrites the same bytes.
             tui.send(b"\x13", 0.8)
             assert path.read_bytes() == saved
-            # The picker opens on the current input; k steps back to none.
+            # The picker opens on the current input; k steps back past the
+            # live input to none.
             expect(tui.send(SET_INPUT, 0.8), b"Instrument input")
-            expect(tui.send(b"k\r", 0.8), b"Mlacker Test Instrument input: none")
+            expect(tui.send(b"kk\r", 0.8), b"Mlacker Test Instrument input: none")
             tui.send(b"\x13", 0.8)
             assert b"INSTRUMENT_INPUTS" not in path.read_bytes()
             tui.send(b"q", 0.5)

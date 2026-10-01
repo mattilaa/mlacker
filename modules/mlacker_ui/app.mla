@@ -1236,10 +1236,13 @@ pub fn run() -> i32 {
                     // The core cap applies to running audio from its next block.
                     AudioController::set_render_threads(settings.cores.selected_id() < 0 ? 0 : settings.cores.selected_id());
                     let applied: result<i32, str8> = midi.configure_audio(settings.midi.selected_id(), settings.output.selected_id(), settings.buffer.selected_id(), settings.rate.selected_id(), library.audio.samples);
+                    let input_error: str8 = applied.is_err() ? "" : midi.set_input(settings.input.selected_id());
                     if applied.is_err() { settings.fail(applied.unwrap_err()); }
+                    else if input_error != "" { settings.fail(input_error); }
                     else {
                         free(message);
                         if !midi.output.hardware_output() { message = clone("Settings applied. Audio disabled."); }
+                        else if midi.input_id != -2 { message = format!("AUHAL: {} Hz / {} frames, audio input on. Settings applied.", midi.output.sample_rate(), midi.output.buffer_frames()); }
                         else { message = format!("AUHAL: {} Hz / {} frames. Settings applied.", midi.output.sample_rate(), midi.output.buffer_frames()); }
                     }
                 }
@@ -2065,7 +2068,7 @@ pub fn run() -> i32 {
             if command != Action::None && command != Action::LoadInsert { adding_insert_track = -1; }
             if command == Action::Quit { running = false; }
             else if command == Action::Settings {
-                transport.playing = false; settings.open_audio(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate); focus.set_menu_active(true);
+                transport.playing = false; settings.open_devices(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate, midi.input_id); focus.set_menu_active(true);
             }
             else if command == Action::NewSession {
                 question.title = "New session"; question.question = "Start a new session?";
@@ -2453,22 +2456,17 @@ pub fn run() -> i32 {
                 let slot: i32 = library.table.active_instrument();
                 if slot < 1 { free(message); message = clone("Select an Instrument track playing a plugin"); }
                 else {
-                    var ids: list<i32> = [0]; var labels: list<str8> = [clone("  --   none")];
+                    var ids: list<i32> = [0, -1]; var labels: list<str8> = [clone("  --   none"), clone("  IN   Audio input (Settings)")];
                     let channels: list<SequenceTrack> = library.table.tracks;
                     for t in 0..channels.len() {
                         let other: SequenceTrack = channels[t];
                         if !other.audio { continue; }
                         ids.push(i32(t) + 1); labels.push(format!("  A{}   {}", t + 1, other.name));
                     }
-                    if ids.len() == 1 {
-                        free(message); message = clone("No AUDIO track to take input from; create one with Track > Create AUDIO track");
-                        let spare: list<str8> = labels; for label in spare { free(label); }
-                    } else {
-                        output_track = index; output_kind = 5;
-                        outputs.title = "Instrument input";
-                        outputs.open(ids, labels, library.table.track_input(index));
-                        focus.set_menu_active(true);
-                    }
+                    output_track = index; output_kind = 5;
+                    outputs.title = "Instrument input";
+                    outputs.open(ids, labels, library.table.track_input(index));
+                    focus.set_menu_active(true);
                 }
             }
             else if command == Action::ApplyOutputChannel && output_kind == 5 {
@@ -2477,6 +2475,8 @@ pub fn run() -> i32 {
                 free(message);
                 if !library.table.set_track_input(output_track, choice) { message = clone(library.table.error); }
                 else if choice == 0 { message = format!("{} input: none", midi.output.instrument_name(wide(slot))); }
+                else if choice == -1 && midi.input_id == -2 { message = format!("{} input: audio input (enable one in Settings > Audio input)", midi.output.instrument_name(wide(slot))); }
+                else if choice == -1 { message = format!("{} input: audio input", midi.output.instrument_name(wide(slot))); }
                 else { message = format!("{} input: A{}", midi.output.instrument_name(wide(slot)), choice); }
                 playback_dirty = true;
             }

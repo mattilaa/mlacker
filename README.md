@@ -931,7 +931,9 @@ can take an AUDIO track's clips as that input. Put the voice or sample on an
 AUDIO track, load the plugin on an Instrument track, then use **Track → Set
 instrument input** on the Instrument track and pick the AUDIO track (or `none`).
 The Instrument track's notes play the plugin while the clips feed it. For
-example, Mla Vocoder vocodes the voice with the chords you write.
+example, Mla Vocoder vocodes the voice with the chords you write. Choose
+`Audio input` instead to feed it the live input from **File → Settings → Audio
+input**, for example a microphone into Mla Vocoder played from a MIDI keyboard.
 
 The input is taken from the AUDIO track's clips before that track's inserts
 and fader, and the track still plays on its own channel. Pull its fader down
@@ -1318,6 +1320,14 @@ preallocated, with sample offsets preserved by the native audio event queue.
    parallel. They are summed in slot order, so the mix sounds the same with any
    setting. The limit applies to running audio at once, without restarting the
    device.
+   **Audio input (AUHAL)** opens an input device (Disabled by default, the
+   system default, or a named device) that instruments can take as their input
+   (see [Instrument inputs](#instrument-inputs)). It runs on its own device
+   clock and is read about one buffer behind, resampled to the engine rate, so
+   it may be a different device from the output. It needs audio enabled.
+   macOS asks for microphone access for your terminal app the first time. If
+   it was denied, allow the terminal under System Settings → Privacy &
+   Security → Microphone, or the input stays silent.
 2. Choose **Effect → Master → Load master VST3**.
 3. Select a `.vst3` bundle, or type its full path into the dialog and press Enter.
    The chooser starts in `/Library/Audio/Plug-Ins/VST3`; user plugins are commonly

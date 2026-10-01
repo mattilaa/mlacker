@@ -108,12 +108,13 @@ impl SessionData {
     /// Construct a replacement without touching the running session.
     pub fn prepare_audio(self: SessionData, source: &AudioSystem) -> result<AudioSystem, str8> {
         var current: AudioSystem = AudioSystem {}; current = source;
-        var next: AudioSystem = AudioSystem { midi_id: current.midi_id, output_id: current.output_id, hardware_requested: current.hardware_requested, requested_buffer_frames: current.requested_buffer_frames, requested_sample_rate: current.requested_sample_rate };
+        var next: AudioSystem = AudioSystem { midi_id: current.midi_id, output_id: current.output_id, input_id: current.input_id, hardware_requested: current.hardware_requested, requested_buffer_frames: current.requested_buffer_frames, requested_sample_rate: current.requested_sample_rate };
         // A failed initial device open is not a request for silent/offline audio.
         let hardware: bool = current.hardware_requested;
         let opened: result<AudioController, str8> = hardware ? AudioController::open_at_rate(current.output_id, current.requested_buffer_frames, current.requested_sample_rate) : AudioController::new(current.requested_sample_rate == 0 ? 48000 : current.requested_sample_rate, current.requested_buffer_frames);
         if opened.is_err() { return Err<AudioSystem, str8>("Cannot prepare session audio output"); }
         next.output = opened.unwrap();
+        if next.input_id != -2 && next.output.input_open(next.input_id) != 0 { next.input_id = -2; }
         let plugins: list<PluginSnapshot> = self.plugins;
         for plugin in plugins {
             if plugin.slot >= 41 { next.insert_paths.push(clone(plugin.path)); }
@@ -1187,7 +1188,8 @@ impl SessionCodec {
             }
         }
         // Optional INSTRUMENT_INPUTS extension: per pattern track, the AUDIO
-        // track (index + 1) feeding its instrument's audio input, or 0.
+        // track (index + 1) feeding its instrument's audio input, -1 for the
+        // live audio input, or 0.
         let inputs_extension: bool = self.reading ? self.reader.remaining() > 0 : inputs_routed;
         if inputs_extension && !self.failed {
             let tag: str8 = self.text("INSTRUMENT_INPUTS"); if tag != "INSTRUMENT_INPUTS" { self.failed = true; } if self.reading { free(tag); }
@@ -1200,7 +1202,7 @@ impl SessionCodec {
                 var tracks: list<SequenceTrack> = [];
                 for t in 0..track_count {
                     var track: SequenceTrack = entry.data.tracks[t];
-                    let source: i32 = self.number(track.input, 0, track_count);
+                    let source: i32 = self.number(track.input, -1, track_count);
                     if source - 1 == i32(t) { self.failed = true; }
                     if self.reading { track.input = source; }
                     tracks.push(track);

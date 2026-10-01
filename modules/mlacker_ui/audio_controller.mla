@@ -46,6 +46,9 @@ pub struct AudioSystem {
     var output: AudioController; var midi: MidiController;
     var click_output: i64; var click_high: i64{-1}; var click_low: i64{-1};
     var midi_id: i64{-1}; var output_id: i64{-1};
+    /// Live audio input device: -2 disabled, -1 system default, else an
+    /// input device index (see `set_input`).
+    var input_id: i64{-2};
     var hardware_requested: bool;
     var requested_buffer_frames: i64{128};
     var requested_sample_rate: i64{0};
@@ -78,6 +81,7 @@ impl AudioSystem {
         var next: AudioSystem = AudioSystem {}; next = source;
         self.release();
         self.output = next.output; self.midi = next.midi; self.midi_id = next.midi_id; self.output_id = next.output_id;
+        self.input_id = next.input_id;
         self.hardware_requested = next.hardware_requested;
         self.requested_buffer_frames = next.requested_buffer_frames;
         self.requested_sample_rate = next.requested_sample_rate;
@@ -177,7 +181,21 @@ impl AudioSystem {
         self.requested_buffer_frames = frames;
         self.requested_sample_rate = rate;
         self.midi = MidiController::start_selected(midi_id, self.output.handle);
+        // The live input belongs to the controller: reopen it on the new one.
+        if self.input_id != -2 && self.output.handle != 0 && self.output.input_open(self.input_id) != 0 { self.input_id = -2; }
         return Ok<i32, str8>(0);
+    }
+    /// Open the live audio input on device `input_id` (-1 = system default),
+    /// or close it (-2). Returns "" or the reason it could not open; the
+    /// input then stays disabled.
+    pub fn set_input(self: &mut Self, input_id: i64) -> str8 {
+        if input_id < -2 { return "Invalid audio input"; }
+        if self.output.handle == 0 {
+            self.input_id = -2;
+            return input_id == -2 ? "" : "Audio input needs audio enabled (Settings > Master output)";
+        }
+        if self.output.input_open(input_id) != 0 { self.input_id = -2; return __mlang_std_audio_last_error(); }
+        self.input_id = input_id; return "";
     }
     pub fn poll(self: &mut Self, now: i64) -> bool { return self.midi.poll(now); }
     /// Register embedded PCM off the audio thread, then send only bounded events.
@@ -392,7 +410,8 @@ impl AudioSystem {
                 let track: SequenceTrack = table.tracks[t];
                 if track.instrument && wide(track.instrument_id) == slot { source = table.track_input(i32(t)); }
             }
-            self.output.instrument_input(slot, wide(source));
+            // The controller numbers the live input 65.
+            self.output.instrument_input(slot, source == -1 ? 65 : wide(source));
         }
         // Aux output buses of multi-output instruments (e.g. Mla Sampler's Out
         // 2-8) follow the routes of the track that plays the instance.

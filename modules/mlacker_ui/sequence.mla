@@ -189,8 +189,9 @@ pub struct SequenceTrack {
     /// output, 0 = master, otherwise the destination track index + 1.
     var aux_outputs: list<i32>;
     /// Instrument tracks: the audio input of the instrument (e.g. a vocoder's
-    /// modulator). 0 = none, otherwise the AUDIO track index + 1 whose clips
-    /// feed it, taken before that track's inserts and fader.
+    /// modulator). 0 = none, -1 = the live audio input (Settings), otherwise
+    /// the AUDIO track index + 1 whose clips feed it, taken before that
+    /// track's inserts and fader.
     var input: i32;
     var instrument: bool; var instrument_id: i32;
     var note_lines: i32{1};
@@ -692,19 +693,22 @@ pub fn set_track_output(self: &mut Self, index: i32, destination: i32) -> bool {
     }
     self.revision = self.revision + 1; self.error = ""; return true;
 }
-/// Validated audio input of the instrument track `index`: 0 = none, otherwise
-/// the AUDIO track index + 1 feeding it. A stale route reads as 0.
+/// Validated audio input of the instrument track `index`: 0 = none, -1 = the
+/// live audio input, otherwise the AUDIO track index + 1 feeding it. A stale
+/// route reads as 0.
 pub fn track_input(self: SequenceTable, index: i32) -> i32 {
     if index < 0 || index >= self.tracks.len() { return 0; }
     let track: SequenceTrack = self.tracks[index];
+    if track.instrument && track.input == -1 { return -1; }
     if !track.instrument || track.input <= 0 || track.input > self.tracks.len() || track.input - 1 == index { return 0; }
     let source: SequenceTrack = self.tracks[track.input - 1];
     return source.audio ? track.input : 0;
 }
-/// Feed an AUDIO track (index + 1) into the instrument of track `index`, or
-/// nothing (0). Tracks sharing one instrument instance share its input.
+/// Feed an AUDIO track (index + 1), the live audio input (-1) or nothing (0)
+/// into the instrument of track `index`. Tracks sharing one instrument
+/// instance share its input.
 pub fn set_track_input(self: &mut Self, index: i32, source: i32) -> bool {
-    if index < 0 || index >= self.tracks.len() || source < 0 || source > self.tracks.len() { return false; }
+    if index < 0 || index >= self.tracks.len() || source < -1 || source > self.tracks.len() { return false; }
     let selected: SequenceTrack = self.tracks[index];
     if !selected.instrument || selected.instrument_id < 1 { self.error = "Select an Instrument track playing a plugin"; return false; }
     if source > 0 {
