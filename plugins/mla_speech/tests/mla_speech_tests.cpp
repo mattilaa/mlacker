@@ -235,21 +235,23 @@ double speechLength(const std::vector<float> &x)
 double pitch(const std::vector<float> &x, size_t from, size_t to)
 {
     const int lowLag = static_cast<int>(kRate / 600.0), highLag = static_cast<int>(kRate / 60.0);
+    // The shortest lag scoring within 10 % of the best: a waveform that
+    // repeats exactly scores as high at whole multiples of its period.
+    std::vector<double> scores(highLag + 1, 0.0);
     double best = 0.0;
-    int bestLag = 0;
     for(int lag = lowLag; lag <= highLag; ++lag) {
         double sum = 0.0, energy = 0.0;
         for(size_t i = from; i + lag < to; ++i) {
             sum += static_cast<double>(x[i]) * x[i + lag];
             energy += static_cast<double>(x[i + lag]) * x[i + lag];
         }
-        const double score = energy > 0.0 ? sum / std::sqrt(energy) : 0.0;
-        if(score > best) {
-            best = score;
-            bestLag = lag;
-        }
+        scores[lag] = energy > 0.0 ? sum / std::sqrt(energy) : 0.0;
+        best = std::max(best, scores[lag]);
     }
-    return bestLag > 0 ? kRate / bestLag : 0.0;
+    for(int lag = lowLag; lag <= highLag; ++lag)
+        if(best > 0.0 && scores[lag] >= 0.9 * best && (lag == highLag || scores[lag] >= scores[lag + 1]))
+            return kRate / lag;
+    return 0.0;
 }
 
 void testLayout(const std::string &path)
