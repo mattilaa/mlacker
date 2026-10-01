@@ -40,6 +40,8 @@ use std::math::round;
 pub struct AutomationSlot { var parameter: str8; var minimum: i64; var maximum: i64; };
 /// Automation columns a track may hold.
 pub fn automation_limit() -> i32 { return 16; }
+/// Longest text a TEXT (comment) cell takes, in bytes.
+pub fn comment_limit() -> i32 { return 240; }
 /// Automation steps per row: a row is a sixteenth, a step a 1/64 note.
 pub fn automation_steps_per_row() -> i32 { return 4; }
 /// One cell holds a single value played on the row, or four space-separated
@@ -197,6 +199,10 @@ pub struct SequenceTrack {
     var note_lines: i32{1};
     var instances: list<AudioInstance>;
     var zoom_stage: i32;
+    /// MIDI and instrument tracks: a TEXT column after the CC columns. A row's
+    /// text is spoken by a text-driven instrument (Mla Speech) with the row's
+    /// first note, or on its own at C-3.
+    var comment: bool;
 };
 impl SequenceTrack {
     pub fn insert_id(self: SequenceTrack, position: i32) -> i32 {
@@ -1458,7 +1464,7 @@ pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
     var tracks: list<SequenceTrack> = []; let source_tracks: list<SequenceTrack> = self.tracks;
     for track in source_tracks {
         tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, aux_outputs: track.aux_outputs, input: track.input, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
-            automation: track.copy_automation() });
+            comment: track.comment, automation: track.copy_automation() });
     }
     var notes: array<str8, 128> = {};
     for i in 0..128 { notes.push(clone(self.notes[i])); }
@@ -1505,7 +1511,55 @@ pub fn copy_slice(self: SequenceTable, start: i32, count: i32) -> SequenceTable 
 }
 pub fn track_columns(self: SequenceTable, index: i32) -> i32 {
     let track: SequenceTrack = self.tracks[index]; let slots: i32 = i32(track.automation.len());
-    return track.audio ? slots + (track.instances.len() > 0 ? 2 : 1) : track.note_lines * 4 + slots;
+    return track.audio ? slots + (track.instances.len() > 0 ? 2 : 1) : track.note_lines * 4 + slots + (track.comment ? 1 : 0);
+}
+/// TEXT column of track `index`, or -1 when it has none.
+pub fn comment_column(self: SequenceTable, index: i32) -> i32 {
+    if index < 0 || index >= self.tracks.len() { return -1; }
+    let track: SequenceTrack = self.tracks[index];
+    if track.audio || !track.comment { return -1; }
+    return self.track_start(index) + track.note_lines * 4 + i32(track.automation.len());
+}
+pub fn is_comment(self: SequenceTable) -> bool {
+    let index: i32 = self.active_track();
+    return index >= 0 && self.selected_column == self.comment_column(index);
+}
+/// Width of track `index`'s TEXT column: its longest text, 10-48 cells.
+fn comment_width(self: SequenceTable, index: i32) -> i32 {
+    let column: i32 = self.comment_column(index);
+    var longest: i64 = 4;
+    if column < 0 { return 10; }
+    let rows: list<TableRow> = self.rows;
+    for row in rows { if column < row.cells.len() && len(row.cells[column]) > longest { longest = len(row.cells[column]); } }
+    let width: i64 = longest + 2;
+    return width < 10 ? 10 : (width > 48 ? 48 : i32(width));
+}
+/// Add a TEXT column to the active MIDI or instrument track, or remove it
+/// with its texts. Shows it (column stage 3) when added.
+pub fn toggle_comment(self: &mut Self, area: Rect) -> void {
+    let index: i32 = self.active_track();
+    if index < 0 { self.error = "Select a MIDI or Instrument track first"; return; }
+    var track: SequenceTrack = self.tracks[index];
+    if track.audio { self.error = "An AUDIO track has no TEXT column; use a MIDI or Instrument track"; return; }
+    let column: i32 = track.comment ? self.comment_column(index) : self.track_start(index) + self.track_columns(index);
+    var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
+    for row in previous {
+        var cells: list<str8> = [];
+        for c in 0..row.cells.len() {
+            if track.comment && c == column { free(row.cells[c]); continue; }
+            if !track.comment && c == column { cells.push(clone("")); }
+            cells.push(row.cells[c]);
+        }
+        if !track.comment && column >= row.cells.len() { cells.push(clone("")); }
+        rows.push(TableRow { cells: cells });
+    }
+    self.rows = rows;
+    let added: bool = !track.comment;
+    track.comment = added;
+    if added { track.zoom_stage = 2; }
+    self.replace_track(index, track); self.rebuild_columns();
+    self.selected_column = added ? self.comment_column(index) : self.track_start(index);
+    self.reconcile(area); self.revision = self.revision + 1; self.error = "";
 }
 pub fn track_start(self: SequenceTable, index: i32) -> i32 {
     var first: i32 = 1;
@@ -1606,6 +1660,9 @@ pub fn rebuild_columns(self: &mut Self) -> void {
             let title: str8 = automation_title(slot.parameter); titles.push(title);
             columns.push(TableColumn { title: title, width: 6, value_type: "str8",
                 pattern: automation_pattern(), hidden: !track.audio && track.zoom_stage < 2, nullable: true });
+        }
+        if !track.audio && track.comment {
+            columns.push(TableColumn { title: "TEXT", width: self.comment_width(i32(i)), value_type: "str8", nullable: true, hidden: track.zoom_stage < 2 });
         }
         if track.audio { columns.push(TableColumn { title: "LEN", width: 6, value_type: "str8", pattern: "[0-9]{1,5}(\\.[0-9]{1,2})?", nullable: true }); }
         if track.audio && track.instances.len() > 0 {
@@ -1741,7 +1798,7 @@ pub fn create_track_kind(self: &mut Self, duplicate: bool, audio: bool, area: Re
         let original: SequenceTrack = self.tracks[source];
         track.release_strings();
         track = SequenceTrack { name: format!("{} copy", original.name), muted: original.muted, volume: original.volume, pan: original.pan, sends: original.copy_sends(), audio: original.audio, output: original.output, aux_outputs: original.aux_outputs, instrument: original.instrument, instrument_id: original.instrument_id, note_lines: original.note_lines, instances: original.copy_audio(), zoom_stage: original.zoom_stage,
-            automation: original.copy_automation() };
+            comment: original.comment, automation: original.copy_automation() };
     }
     if duplicate && track.instrument { let original: SequenceTrack = self.tracks[source]; track.inserts = original.inserts; }
     self.tracks.push(track);
@@ -1908,7 +1965,8 @@ pub fn add_automation(self: &mut Self, index: i32, spec: str8) -> i32 {
     if self.automation_taken(index, spec, 0) { self.error = "The track already has a column for that controller"; return 0; }
     let definition: AutomationSlot = self.parse_automation(spec);
     if definition.parameter == "" { return 0; }
-    let column: i32 = self.track_start(index) + self.track_columns(index);
+    // After the last CC column, before a TEXT column.
+    let column: i32 = self.automation_column(index, i32(current.automation.len()) + 1);
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
     for row in previous {
         var cells: list<str8> = [];
@@ -2120,6 +2178,7 @@ pub fn track_action(self: &mut Self, command: Action, area: Rect) -> void {
     if command == Action::CollapseNoteLines || command == Action::ExpandNoteLines { self.zoom_tracks(command == Action::CollapseNoteLines ? 0 : 2, true, area); return; }
     if command == Action::AddNoteLine || command == Action::RemoveNoteLine || command == Action::DuplicateNoteLine { self.note_line_action(command, area); return; }
     self.delete_pending = false;
+    if command == Action::ToggleCommentColumn { self.toggle_comment(area); return; }
     if command == Action::CreateMidiTrack { self.create_track(false, area); return; }
     if command == Action::CreateAudioTrack { self.create_track_kind(false, true, area); return; }
     if command == Action::DuplicateTrack { self.create_track(true, area); return; }
@@ -2369,6 +2428,8 @@ fn commit(self: &mut Self, value: str8) -> bool {
         return self.store_automation(self.selected_row, self.selected_column, clone(value));
     }
     if !self.can_set(self.selected_row, self.selected_column, value) { self.error = "Invalid type or outside column limits"; return false; }
+    let comment: bool = self.is_comment();
+    if comment && len(value) > wide(comment_limit()) { self.error = "TEXT: up to 240 characters"; return false; }
     if self.is_offset() && offset_ticks(value) < -245760000 { self.error = "OFF: -16384.00 to 16384.00 sixteenth notes"; return false; }
     if self.is_note() && value != "" {
         if self.note_index(value) < 0 { self.error = "Expected MIDI note C--1 through G-9"; return false; }
@@ -2412,6 +2473,8 @@ fn commit(self: &mut Self, value: str8) -> bool {
     if new_note { self.write_owned_cell(self.selected_row, self.selected_column + 2, clone("1.00")); }
     if new_note { self.write_owned_cell(self.selected_row, self.selected_column + 3, clone("0.00")); }
     self.revision = self.revision + 1;
+    // The TEXT column widens to its longest text.
+    if comment { self.rebuild_columns(); }
     self.error = ""; return true;
 }
 pub fn clear_row(self: &mut Self) -> void {

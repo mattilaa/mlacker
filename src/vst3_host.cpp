@@ -55,6 +55,14 @@ public:
     // each process call, with their names.
     std::vector<std::vector<float>> aux;
     std::vector<std::string> outputNames;
+    // Phrases for text-driven instruments (mlang_audio_processor set_text):
+    // a ring of UTF-16 strings written on the control thread and read on the
+    // audio thread, which the event queue orders. Allocated on first use.
+    static constexpr int32 kPhrases = 256, kPhraseChars = 1024;
+    std::unique_ptr<char16_t[]> phrases;
+    uint32 phraseLength[kPhrases] = {};
+    // The phrase the next note-on on `pendingChannel` carries (-1 = none).
+    int32 pendingPhrase = -1, pendingChannel = 0, nextNoteId = 0;
     bool active = false, processing = false, instrument = false, addsOutput = false, overflow = false;
     uint32 transportState = 0;
     int32 maxFrames = 0;
@@ -204,6 +212,21 @@ public:
             event.type = Event::kNoteOnEvent; event.noteOn.channel = static_cast<int16>(channel);
             event.noteOn.pitch = static_cast<int16>(pitch); event.noteOn.velocity = velocity / 127.f;
             event.noteOn.noteId = -1;
+            if(pendingPhrase >= 0 && channel == pendingChannel) {
+                // The note carries its words as a note-expression text event.
+                const int32 phrase = pendingPhrase; pendingPhrase = -1;
+                nextNoteId = nextNoteId >= 0x3fffffff ? 1 : nextNoteId + 1;
+                event.noteOn.noteId = nextNoteId;
+                if(incoming.addEvent(event) != kResultOk) { overflow = true; return; }
+                Event words{}; words.busIndex = 0; words.sampleOffset = offset; words.flags = Event::kIsLive;
+                words.type = Event::kNoteExpressionTextEvent;
+                words.noteExpressionText.typeId = kTextTypeID;
+                words.noteExpressionText.noteId = nextNoteId;
+                words.noteExpressionText.textLen = phraseLength[phrase];
+                words.noteExpressionText.text = reinterpret_cast<const TChar *>(phrases.get() + phrase * kPhraseChars);
+                if(incoming.addEvent(words) != kResultOk) overflow = true;
+                return;
+            }
         } else {
             event.type = Event::kNoteOffEvent; event.noteOff.channel = static_cast<int16>(channel);
             event.noteOff.pitch = static_cast<int16>(pitch); event.noteOff.velocity = velocity / 127.f;
@@ -212,8 +235,25 @@ public:
         if(incoming.addEvent(event) != kResultOk) overflow = true;
     }
 
+    // Control thread: store phrase `index` as UTF-16, cut at kPhraseChars - 1.
+    int32_t setText(int32_t index, const char *text) {
+        if(index < 0 || index >= kPhrases || !text) return -1;
+        if(!phrases) phrases = std::make_unique<char16_t[]>(static_cast<size_t>(kPhrases) * kPhraseChars);
+        const std::u16string wide = StringConvert::convert(std::string(text));
+        const size_t length = std::min<size_t>(wide.size(), kPhraseChars - 1);
+        char16_t *slot = phrases.get() + static_cast<size_t>(index) * kPhraseChars;
+        std::copy_n(wide.data(), length, slot); slot[length] = 0;
+        phraseLength[index] = static_cast<uint32>(length);
+        return 0;
+    }
+    // Audio thread: the next note-on on `channel` in this block speaks `index`.
+    void text(int32_t channel, int32_t index) noexcept {
+        if(!phrases || index < 0 || index >= kPhrases) return;
+        pendingPhrase = index; pendingChannel = channel;
+    }
+
     void begin(bool reset) noexcept {
-        incoming.clear(); outgoing.clear(); parameters.clear();
+        incoming.clear(); outgoing.clear(); parameters.clear(); pendingPhrase = -1;
         reset = reset || overflow; overflow = false;
         // Bounded all-notes-off fallback also covers dropped note-offs.
         if(reset)
@@ -423,6 +463,10 @@ int32_t load(const char *path, double rate, int32_t frames,
             } catch(...) { why = "Pad sample load failed"; }
             std::snprintf(error, errorSize, "%s", why.c_str()); return -1;
         };
+        out->set_text = [](void *p, int32_t index, const char *text) -> int32_t {
+            try { return static_cast<Processor*>(p)->setText(index, text); } catch(...) { return -1; }
+        };
+        out->text = [](void *p, int32_t channel, int32_t index, int32_t) { static_cast<Processor*>(p)->text(channel, index); };
         out->output_count = [](void *p) -> int32_t { return static_cast<int32_t>(static_cast<Processor*>(p)->outputNames.size()); };
         out->output_name = [](void *p, int32_t bus) -> const char * {
             auto *host = static_cast<Processor*>(p);

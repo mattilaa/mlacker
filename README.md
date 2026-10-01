@@ -4,8 +4,9 @@
 Terminal tracker built with MLang, the MLang `tui` widget library, macOS AUHAL,
 and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
 (imported as `mlacker_ui::*`); the VST3 effects, the Mla Drum and Mla Sampler
-instruments and the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
-own carrier synth) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+instruments, the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
+own carrier synth) and [Mla Speech](plugins/mla_speech) (an Atari ST style
+speech synthesizer that says a pattern's comment texts) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run
@@ -1340,6 +1341,23 @@ number is highlighted. Values are sent even without a note or when the columns
 are collapsed. Instrument tracks target their assigned instance (Track → Set
 output channel chooses it); MIDI tracks target the master plugin. Muted tracks
 do not send these events. Empty cells leave the current parameter value unchanged.
+
+### Comment (TEXT) columns
+
+**Track → Add / remove comment column** adds a `TEXT` column after the
+selected MIDI or Instrument track's CC columns, or removes it with its texts.
+Press Enter on a cell to type free text (up to 240 characters). The column
+widens to its longest text, up to 48 cells, and is shown in the third column
+stage with the CC columns (`z`).
+
+On an Instrument track that plays [Mla Speech](plugins/mla_speech), a row's
+text is spoken: with the row's first note, at its pitch and velocity, or at C-3
+when the row has no note. The phrase plays to its end, however long the row
+is. The host stores the text in the instrument's phrase ring
+(`instrument_text`) and posts an `InstrumentText` event just before the
+note-on. The VST3 host sends it as a note-expression text event
+(`kTextTypeID`) of that note, so any VST3 instrument that reads note text
+receives it. On other tracks, the column is only a comment.
 
 **Curves between two values.** Put the cursor on a CC value and press
 **Ctrl+V** to mark it (amber), then mark a second value in the same column

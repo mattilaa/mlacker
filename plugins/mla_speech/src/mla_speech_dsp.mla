@@ -1,0 +1,696 @@
+/// \file mla_speech_dsp.mla
+/// \brief C-ABI bridge: an Atari ST style formant speech synthesizer.
+///
+/// One `Speech` per plug-in instance, heap-allocated with `calloc` and handed
+/// to the C++ VST3 layer as an opaque pointer. The C++ side turns text into
+/// phonemes (English letter-to-sound rules and prosody, `speech_rules.h`) and
+/// pushes them here as an utterance; this file speaks it. Every table is a
+/// `list<f32>` sized once in `new()`, so speaking never allocates. MLang
+/// cannot write list elements through an index expression on a struct field,
+/// so writes go through `set_f32`.
+///
+/// Signal flow:
+///
+/// - **Utterance.** A queue of segments: phoneme code, pitch factor and
+///   duration factor. Each phoneme has targets in `define_phonemes`: its
+///   duration, three formant frequencies at its start and end (diphthongs
+///   glide), voicing, frication (level, centre, bandwidth) and aspiration
+///   levels, and for stops a closure and a burst. Targets are followed with
+///   one-pole glides, which give the coarticulated formant transitions.
+/// - **Synthesis** runs at the "ST rate" (4-24 kHz), like the original replay
+///   routine: a glottal pulse train (Rosenberg pulse, or its derivative for
+///   the buzzy ST voice, or noise for a whisper) plus aspiration noise through
+///   a cascade of four Klatt resonators (F1-F3 and a fixed F4), and frication
+///   noise through its own band-pass.
+/// - **DAC.** The ST played speech by writing samples to the YM2149's 4-bit,
+///   3 dB-per-step logarithmic volume register. `dac` 2 quantizes to those 16
+///   levels, `dac` 1 to 1 dB steps (the three channels summed), 0 is clean.
+/// - **Output.** The ST-rate samples are held to the host rate (keeping the
+///   aliasing), then smoothed by an adjustable low-pass and DC-blocked.
+///
+/// Parameter indexes for `mlaspeech_set` are listed there; the C++ side maps
+/// normalized VST3 values to these physical units.
+
+mod dsp::detail;
+mod std::vec;
+use dsp::detail::expf;
+use dsp::detail::sinf;
+use dsp::detail::cosf;
+use dsp::detail::tanhf;
+use dsp::detail::llroundf;
+use std::vec::set_f32;
+
+extern fn calloc(count: i64, size: i64) -> ptr<Speech>;
+extern fn free(block: ptr<Speech>) -> void;
+extern fn exp2f(value: f32) -> f32;
+extern fn log2f(value: f32) -> f32;
+extern fn fabsf(value: f32) -> f32;
+extern fn floorf(value: f32) -> f32;
+
+/// Phoneme codes (keep in sync with `speech_rules.h`). 0-1 are pauses.
+fn phoneme_count() -> i64 { return 44; }
+/// Utterance capacity in segments.
+fn segment_capacity() -> i64 { return 4096; }
+
+/// Phoneme kinds (`ph_kind`).
+fn kind_pause() -> f32 { return 0.0f; }
+fn kind_vowel() -> f32 { return 1.0f; }
+fn kind_sonorant() -> f32 { return 2.0f; }
+fn kind_fricative() -> f32 { return 3.0f; }
+fn kind_stop() -> f32 { return 4.0f; }
+fn kind_affricate() -> f32 { return 5.0f; }
+fn kind_aspirate() -> f32 { return 6.0f; }
+
+/// Internal samples between resonator coefficient updates.
+fn frame_samples() -> i64 { return 16; }
+
+fn sclamp(value: f32, low: f32, high: f32) -> f32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+fn smax(a: f32, b: f32) -> f32 { return a > b ? a : b; }
+fn smin(a: f32, b: f32) -> f32 { return a < b ? a : b; }
+
+/// One-pole coefficient reaching 1 - 1/e of a step in `seconds`.
+fn one_pole(seconds: f32, rate: f32) -> f32 {
+    let samples: f32 = seconds * rate;
+    if samples < 1.0f { return 1.0f; }
+    return 1.0f - expf(-1.0f / samples);
+}
+
+/// The whole instance: phoneme table, utterance, synthesizer and output.
+struct Speech {
+    /// Host rate and the internal "ST" rate.
+    var rate: f32;
+    var st_rate: f32;
+
+    // --- Phoneme table (index = phoneme code) ------------------------------
+    var ph_kind: list<f32>;
+    /// Duration in ms (stops: closure + burst + release).
+    var ph_dur: list<f32>;
+    var ph_f1: list<f32>;
+    var ph_f2: list<f32>;
+    var ph_f3: list<f32>;
+    var ph_f1e: list<f32>;
+    var ph_f2e: list<f32>;
+    var ph_f3e: list<f32>;
+    /// Voicing, frication and aspiration levels 0..1.
+    var ph_av: list<f32>;
+    var ph_af: list<f32>;
+    var ph_ah: list<f32>;
+    /// Frication band centre and bandwidth (Hz).
+    var ph_fhz: list<f32>;
+    var ph_fbw: list<f32>;
+    /// Stops/affricates: closure and burst lengths (ms).
+    var ph_closure: list<f32>;
+    var ph_burst: list<f32>;
+    /// Formant bandwidth scale (nasals are damped).
+    var ph_bw: list<f32>;
+    /// Sine formant amplitudes F1-F3, 0..1 (the 4-bit tables of the original).
+    var ph_a1: list<f32>;
+    var ph_a2: list<f32>;
+    var ph_a3: list<f32>;
+
+    // --- Utterance ---------------------------------------------------------
+    var seg_ph: list<f32>;
+    var seg_pitch: list<f32>;
+    var seg_dur: list<f32>;
+    var count: i64;
+    /// Segment being spoken, its position and length (ST samples).
+    var seg: i64;
+    var seg_pos: f32;
+    var seg_len: f32;
+    var speaking: bool;
+    /// Fades the voice out (end of the utterance or a gated note-off).
+    var releasing: bool;
+    var release_left: f32;
+
+    // --- Settings ----------------------------------------------------------
+    var speed: f32;
+    var formant: f32;
+    var intonation: f32;
+    /// 0 buzz (ST), 1 soft, 2 whisper.
+    var voice: i32;
+    /// 0 clean, 1 YM 1 dB steps, 2 YM 4-bit (3 dB steps).
+    var dac: i32;
+    var smooth: f32;
+    var tune: f32;
+    var bend: f32;
+    var velocity_sens: f32;
+    var output_target: f32;
+
+    // --- Voice state -------------------------------------------------------
+    var note: f32;
+    var gain: f32;
+    var output_gain: f32;
+    var phase: f32;
+    var f0: f32;
+    var seed: i64;
+    /// Glided parameters and their per-sample coefficients.
+    var cf1: f32;
+    var cf2: f32;
+    var cf3: f32;
+    var cav: f32;
+    var caf: f32;
+    var cah: f32;
+    var cfhz: f32;
+    var formant_glide: f32;
+    var level_glide: f32;
+    var pitch_glide: f32;
+    /// Targets of the current frame.
+    var tf1: f32;
+    var tf2: f32;
+    var tf3: f32;
+    var tav: f32;
+    var taf: f32;
+    var tah: f32;
+    var tfhz: f32;
+    var tpitch: f32;
+    var cpitch: f32;
+    var frame_left: i64;
+    /// Formant oscillators (cycles), reset at every glottal pulse, and
+    /// their glided amplitudes.
+    var p1: f32;
+    var p2: f32;
+    var p3: f32;
+    var ca1: f32;
+    var ca2: f32;
+    var ca3: f32;
+    var ta1: f32;
+    var ta2: f32;
+    var ta3: f32;
+    /// YM2149 noise channel: 17-bit LFSR, its clock phase and output bit.
+    var lfsr: i64;
+    var noise_phase: f32;
+    var noise_bit: f32;
+
+    // --- Output ------------------------------------------------------------
+    /// Fraction of an ST sample elapsed (sample-and-hold) and the held value.
+    var hold: f32;
+    var held: f32;
+    var lp1: f32;
+    var lp2: f32;
+    var lp_coef: f32;
+    var dc_x: f32;
+    var dc_y: f32;
+};
+
+impl Speech {
+    fn new(sample_rate: f32) -> Speech {
+        let rate: f32 = sclamp(sample_rate, 8000.0f, 384000.0f);
+        let np: i64 = phoneme_count();
+        let ns: i64 = segment_capacity();
+        var s: Speech = Speech {
+            rate: rate, st_rate: smin(10000.0f, rate),
+            ph_kind: [0.0f; np], ph_dur: [0.0f; np],
+            ph_f1: [0.0f; np], ph_f2: [0.0f; np], ph_f3: [0.0f; np],
+            ph_f1e: [0.0f; np], ph_f2e: [0.0f; np], ph_f3e: [0.0f; np],
+            ph_av: [0.0f; np], ph_af: [0.0f; np], ph_ah: [0.0f; np],
+            ph_fhz: [0.0f; np], ph_fbw: [0.0f; np],
+            ph_closure: [0.0f; np], ph_burst: [0.0f; np], ph_bw: [1.0f; np],
+            ph_a1: [1.0f; np], ph_a2: [0.7f; np], ph_a3: [0.3f; np],
+            seg_ph: [0.0f; ns], seg_pitch: [1.0f; ns], seg_dur: [1.0f; ns],
+            count: 0, seg: 0, seg_pos: 0.0f, seg_len: 1.0f,
+            speaking: false, releasing: false, release_left: 0.0f,
+            speed: 1.0f, formant: 1.0f, intonation: 0.6f, voice: 0, dac: 1, smooth: 0.3f,
+            tune: 0.0f, bend: 0.0f, velocity_sens: 0.5f, output_target: 1.0f,
+            note: 48.0f, gain: 1.0f, output_gain: 1.0f, phase: 0.0f, f0: 130.0f,
+            seed: 20250419,
+            cf1: 500.0f, cf2: 1500.0f, cf3: 2500.0f, cav: 0.0f, caf: 0.0f, cah: 0.0f,
+            cfhz: 4000.0f,
+            formant_glide: 0.0f, level_glide: 0.0f, pitch_glide: 0.0f,
+            tf1: 500.0f, tf2: 1500.0f, tf3: 2500.0f, tav: 0.0f, taf: 0.0f, tah: 0.0f,
+            tfhz: 4000.0f, tpitch: 1.0f, cpitch: 1.0f,
+            frame_left: 0,
+            p1: 0.0f, p2: 0.0f, p3: 0.0f, ca1: 0.0f, ca2: 0.0f, ca3: 0.0f, ta1: 1.0f, ta2: 0.7f, ta3: 0.3f,
+            lfsr: 1, noise_phase: 0.0f, noise_bit: 1.0f,
+            hold: 1.0f, held: 0.0f, lp1: 0.0f, lp2: 0.0f, lp_coef: 1.0f, dc_x: 0.0f, dc_y: 0.0f
+        };
+        s.define_phonemes();
+        s.define_amplitudes();
+        s.configure_rate();
+        return s;
+    }
+
+    /// One phoneme's targets. Frequencies in Hz, times in ms, levels 0..1.
+    fn define(self: &mut Self, code: i64, kind: f32, dur: f32, f1: f32, f2: f32, f3: f32,
+              f1e: f32, f2e: f32, f3e: f32, av: f32, af: f32, ah: f32, fhz: f32, fbw: f32) -> void {
+        set_f32(self.ph_kind, code, kind);
+        set_f32(self.ph_dur, code, dur);
+        set_f32(self.ph_f1, code, f1); set_f32(self.ph_f2, code, f2); set_f32(self.ph_f3, code, f3);
+        set_f32(self.ph_f1e, code, f1e); set_f32(self.ph_f2e, code, f2e); set_f32(self.ph_f3e, code, f3e);
+        set_f32(self.ph_av, code, av); set_f32(self.ph_af, code, af); set_f32(self.ph_ah, code, ah);
+        set_f32(self.ph_fhz, code, fhz); set_f32(self.ph_fbw, code, fbw);
+    }
+
+    fn vowel(self: &mut Self, code: i64, dur: f32, f1: f32, f2: f32, f3: f32) -> void {
+        self.define(code, kind_vowel(), dur, f1, f2, f3, f1, f2, f3, 1.0f, 0.0f, 0.0f, 4000.0f, 2000.0f);
+    }
+
+    fn diphthong(self: &mut Self, code: i64, dur: f32, f1: f32, f2: f32, f3: f32, f1e: f32, f2e: f32, f3e: f32) -> void {
+        self.define(code, kind_vowel(), dur, f1, f2, f3, f1e, f2e, f3e, 1.0f, 0.0f, 0.0f, 4000.0f, 2000.0f);
+    }
+
+    fn sonorant(self: &mut Self, code: i64, dur: f32, f1: f32, f2: f32, f3: f32, av: f32, bw: f32) -> void {
+        self.define(code, kind_sonorant(), dur, f1, f2, f3, f1, f2, f3, av, 0.0f, 0.0f, 4000.0f, 2000.0f);
+        set_f32(self.ph_bw, code, bw);
+    }
+
+    fn fricative(self: &mut Self, code: i64, dur: f32, f1: f32, f2: f32, f3: f32, av: f32, af: f32, fhz: f32, fbw: f32) -> void {
+        self.define(code, kind_fricative(), dur, f1, f2, f3, f1, f2, f3, av, af, 0.0f, fhz, fbw);
+    }
+
+    /// Stops: formants are the place's locus; `av` is the voice bar level,
+    /// `af` the burst at `fhz`, `ah` the aspiration after it.
+    fn stop(self: &mut Self, code: i64, dur: f32, f2: f32, f3: f32, av: f32, af: f32, ah: f32, fhz: f32,
+            closure: f32, burst: f32) -> void {
+        self.define(code, kind_stop(), dur, 250.0f, f2, f3, 250.0f, f2, f3, av, af, ah, fhz, fhz * 0.6f);
+        set_f32(self.ph_closure, code, closure); set_f32(self.ph_burst, code, burst);
+    }
+
+    /// Phoneme targets: an adult voice, values after Klatt (1980) and
+    /// Peterson & Barney (1952), tuned by ear for the ST's blunt diction.
+    fn define_phonemes(self: &mut Self) -> void {
+        // 0 short pause (comma), 1 long pause (sentence end), 2 word gap.
+        self.define(0, kind_pause(), 160.0f, 500.0f, 1500.0f, 2500.0f, 500.0f, 1500.0f, 2500.0f, 0.0f, 0.0f, 0.0f, 4000.0f, 2000.0f);
+        self.define(1, kind_pause(), 340.0f, 500.0f, 1500.0f, 2500.0f, 500.0f, 1500.0f, 2500.0f, 0.0f, 0.0f, 0.0f, 4000.0f, 2000.0f);
+        self.define(2, kind_pause(), 20.0f, 500.0f, 1500.0f, 2500.0f, 500.0f, 1500.0f, 2500.0f, 0.0f, 0.0f, 0.0f, 4000.0f, 2000.0f);
+        // Vowels: 3 IY, 4 IH, 5 EY, 6 EH, 7 AE, 8 AA, 9 AO, 10 OW, 11 UH,
+        // 12 UW, 13 ER, 14 AX, 15 AH, 16 AY, 17 AW, 18 OY.
+        self.vowel(3, 130.0f, 280.0f, 2250.0f, 2950.0f);
+        self.vowel(4, 90.0f, 400.0f, 1920.0f, 2560.0f);
+        self.diphthong(5, 170.0f, 500.0f, 1850.0f, 2500.0f, 330.0f, 2200.0f, 2850.0f);
+        self.vowel(6, 100.0f, 550.0f, 1770.0f, 2490.0f);
+        self.vowel(7, 150.0f, 690.0f, 1660.0f, 2490.0f);
+        self.vowel(8, 150.0f, 720.0f, 1100.0f, 2540.0f);
+        self.vowel(9, 150.0f, 580.0f, 880.0f, 2540.0f);
+        self.diphthong(10, 170.0f, 540.0f, 1050.0f, 2400.0f, 400.0f, 860.0f, 2300.0f);
+        self.vowel(11, 90.0f, 450.0f, 1030.0f, 2380.0f);
+        self.vowel(12, 140.0f, 310.0f, 880.0f, 2250.0f);
+        self.vowel(13, 140.0f, 470.0f, 1350.0f, 1690.0f);
+        self.vowel(14, 60.0f, 520.0f, 1450.0f, 2500.0f);
+        self.vowel(15, 100.0f, 640.0f, 1200.0f, 2400.0f);
+        self.diphthong(16, 200.0f, 720.0f, 1150.0f, 2500.0f, 330.0f, 2050.0f, 2700.0f);
+        self.diphthong(17, 200.0f, 720.0f, 1200.0f, 2500.0f, 420.0f, 900.0f, 2350.0f);
+        self.diphthong(18, 200.0f, 560.0f, 880.0f, 2450.0f, 360.0f, 1950.0f, 2650.0f);
+        // Stops: 19 p, 20 b, 21 t, 22 d, 23 k, 24 g.
+        self.stop(19, 110.0f, 900.0f, 2100.0f, 0.0f, 0.5f, 0.45f, 1200.0f, 60.0f, 10.0f);
+        self.stop(20, 80.0f, 900.0f, 2100.0f, 0.18f, 0.35f, 0.0f, 1200.0f, 55.0f, 8.0f);
+        self.stop(21, 100.0f, 1700.0f, 2700.0f, 0.0f, 0.7f, 0.45f, 4200.0f, 50.0f, 12.0f);
+        self.stop(22, 75.0f, 1700.0f, 2700.0f, 0.18f, 0.45f, 0.0f, 3800.0f, 45.0f, 10.0f);
+        self.stop(23, 110.0f, 1950.0f, 2500.0f, 0.0f, 0.65f, 0.45f, 2200.0f, 60.0f, 16.0f);
+        self.stop(24, 85.0f, 1950.0f, 2500.0f, 0.18f, 0.45f, 0.0f, 2100.0f, 50.0f, 12.0f);
+        // Fricatives: 25 f, 26 v, 27 TH, 28 DH, 29 s, 30 z, 31 SH, 32 ZH.
+        self.fricative(25, 110.0f, 340.0f, 1100.0f, 2080.0f, 0.0f, 0.35f, 6000.0f, 6000.0f);
+        self.fricative(26, 70.0f, 220.0f, 1100.0f, 2080.0f, 0.55f, 0.25f, 6000.0f, 6000.0f);
+        self.fricative(27, 110.0f, 320.0f, 1290.0f, 2540.0f, 0.0f, 0.3f, 5500.0f, 6000.0f);
+        self.fricative(28, 60.0f, 270.0f, 1290.0f, 2540.0f, 0.55f, 0.2f, 5500.0f, 6000.0f);
+        self.fricative(29, 120.0f, 320.0f, 1390.0f, 2530.0f, 0.0f, 0.8f, 6500.0f, 2500.0f);
+        self.fricative(30, 90.0f, 240.0f, 1390.0f, 2530.0f, 0.5f, 0.55f, 6500.0f, 2500.0f);
+        self.fricative(31, 130.0f, 300.0f, 1840.0f, 2750.0f, 0.0f, 0.8f, 2800.0f, 1800.0f);
+        self.fricative(32, 90.0f, 300.0f, 1840.0f, 2750.0f, 0.5f, 0.55f, 2800.0f, 1800.0f);
+        // 33 h: aspiration with the next sound's formants.
+        self.define(33, kind_aspirate(), 70.0f, 500.0f, 1500.0f, 2500.0f, 500.0f, 1500.0f, 2500.0f, 0.0f, 0.0f, 0.55f, 4000.0f, 2000.0f);
+        // Nasals and liquids: 34 m, 35 n, 36 NG, 37 l, 38 w, 39 y, 40 r.
+        self.sonorant(34, 75.0f, 270.0f, 1000.0f, 2200.0f, 0.55f, 2.2f);
+        self.sonorant(35, 65.0f, 270.0f, 1600.0f, 2600.0f, 0.55f, 2.2f);
+        self.sonorant(36, 75.0f, 270.0f, 2100.0f, 2700.0f, 0.55f, 2.2f);
+        self.sonorant(37, 65.0f, 330.0f, 1050.0f, 2800.0f, 0.75f, 1.3f);
+        self.sonorant(38, 65.0f, 290.0f, 650.0f, 2150.0f, 0.75f, 1.0f);
+        self.sonorant(39, 60.0f, 260.0f, 2070.0f, 3020.0f, 0.75f, 1.0f);
+        self.sonorant(40, 70.0f, 330.0f, 1060.0f, 1400.0f, 0.75f, 1.0f);
+        // Affricates: 41 CH (t + SH), 42 j (d + ZH).
+        self.stop(41, 140.0f, 1840.0f, 2750.0f, 0.0f, 0.8f, 0.0f, 2800.0f, 50.0f, 70.0f);
+        set_f32(self.ph_kind, 41, kind_affricate());
+        self.stop(42, 110.0f, 1840.0f, 2750.0f, 0.18f, 0.55f, 0.0f, 2800.0f, 40.0f, 55.0f);
+        set_f32(self.ph_kind, 42, kind_affricate());
+        set_f32(self.ph_fbw, 41, 1800.0f); set_f32(self.ph_fbw, 42, 1800.0f);
+        // 43 WH: breathy w.
+        self.define(43, kind_aspirate(), 80.0f, 290.0f, 650.0f, 2150.0f, 290.0f, 650.0f, 2150.0f, 0.0f, 0.0f, 0.5f, 4000.0f, 2000.0f);
+    }
+
+    fn amps(self: &mut Self, code: i64, a1: f32, a2: f32, a3: f32) -> void {
+        set_f32(self.ph_a1, code, a1); set_f32(self.ph_a2, code, a2); set_f32(self.ph_a3, code, a3);
+    }
+
+    /// Formant amplitudes. Vowels with a high F2 have a weaker one; nasals
+    /// are mostly F1, the "murmur"; voice bars of stops and voiced fricatives
+    /// are F1 alone.
+    fn define_amplitudes(self: &mut Self) -> void {
+        self.amps(3, 1.0f, 0.5f, 0.35f); self.amps(4, 1.0f, 0.6f, 0.3f); self.amps(5, 1.0f, 0.6f, 0.3f);
+        self.amps(6, 1.0f, 0.65f, 0.3f); self.amps(7, 1.0f, 0.7f, 0.3f); self.amps(8, 1.0f, 0.8f, 0.25f);
+        self.amps(9, 1.0f, 0.75f, 0.2f); self.amps(10, 1.0f, 0.7f, 0.2f); self.amps(11, 1.0f, 0.6f, 0.2f);
+        self.amps(12, 1.0f, 0.45f, 0.15f); self.amps(13, 1.0f, 0.6f, 0.45f); self.amps(14, 0.9f, 0.55f, 0.25f);
+        self.amps(15, 1.0f, 0.75f, 0.25f); self.amps(16, 1.0f, 0.75f, 0.3f); self.amps(17, 1.0f, 0.75f, 0.2f);
+        self.amps(18, 1.0f, 0.7f, 0.25f);
+        for code in 19..33 { self.amps(code, 1.0f, 0.15f, 0.0f); }
+        self.amps(26, 1.0f, 0.3f, 0.1f); self.amps(28, 1.0f, 0.3f, 0.1f);
+        self.amps(34, 1.0f, 0.15f, 0.05f); self.amps(35, 1.0f, 0.2f, 0.08f); self.amps(36, 1.0f, 0.2f, 0.08f);
+        self.amps(37, 1.0f, 0.45f, 0.2f); self.amps(38, 1.0f, 0.35f, 0.08f); self.amps(39, 0.9f, 0.55f, 0.3f);
+        self.amps(40, 1.0f, 0.5f, 0.4f);
+        self.amps(41, 1.0f, 0.15f, 0.0f); self.amps(42, 1.0f, 0.15f, 0.0f);
+        self.amps(33, 0.0f, 0.0f, 0.0f); self.amps(43, 0.0f, 0.0f, 0.0f);
+    }
+
+    /// Glide and output coefficients for the current rates and smoothing.
+    fn configure_rate(self: &mut Self) -> void {
+        let st: f32 = self.st_rate;
+        self.formant_glide = one_pole(0.014f, st);
+        self.level_glide = one_pole(0.003f, st);
+        self.pitch_glide = one_pole(0.03f, st);
+        // Smooth 0 keeps the held steps (~16 kHz); 1 is a low-pass at the
+        // ST rate's band edge.
+        let edge: f32 = st * 0.45f;
+        let open: f32 = smin(16000.0f, self.rate * 0.45f);
+        let cutoff: f32 = smax(edge, open * exp2f(self.smooth * log2f(edge / open)));
+        self.lp_coef = 1.0f - expf(-2.0f * 3.14159265358979323846f * cutoff / self.rate);
+    }
+
+    fn white(self: &mut Self) -> f32 {
+        self.seed = (self.seed * 1103515245 + 12345) % 2147483648;
+        return f32(self.seed) / 1073741824.0f - 1.0f;
+    }
+
+    /// Clear all audio state; the utterance and settings stay.
+    fn reset(self: &mut Self) -> void {
+        self.speaking = false; self.releasing = false;
+        self.p1 = 0.0f; self.p2 = 0.0f; self.p3 = 0.0f;
+        self.cav = 0.0f; self.caf = 0.0f; self.cah = 0.0f;
+        self.hold = 1.0f; self.held = 0.0f; self.lp1 = 0.0f; self.lp2 = 0.0f;
+        self.dc_x = 0.0f; self.dc_y = 0.0f;
+    }
+
+    fn clear(self: &mut Self) -> void { self.count = 0; }
+
+    fn push(self: &mut Self, code: i32, pitch: f32, duration: f32) -> void {
+        if self.count >= segment_capacity() || code < 0 || code >= i32(phoneme_count()) { return; }
+        set_f32(self.seg_ph, self.count, f32(code));
+        set_f32(self.seg_pitch, self.count, sclamp(pitch, 0.25f, 4.0f));
+        set_f32(self.seg_dur, self.count, sclamp(duration, 0.1f, 8.0f));
+        self.count = self.count + 1;
+    }
+
+    fn code_at(self: Speech, index: i64) -> i64 {
+        if index < 0 || index >= self.count { return 1; }
+        return llroundf(self.seg_ph[index]);
+    }
+
+    /// Length of segment `index` in ST samples.
+    fn length_of(self: Speech, index: i64) -> f32 {
+        let code: i64 = self.code_at(index);
+        let ms: f32 = self.ph_dur[code] * self.seg_dur[index] / self.speed;
+        return smax(1.0f, ms * 0.001f * self.st_rate);
+    }
+
+    /// Start the utterance at MIDI note `note` (fractional) and velocity 0..1.
+    fn say(self: &mut Self, note: f32, velocity: f32) -> void {
+        self.note = note;
+        let vel: f32 = sclamp(velocity, 0.0f, 1.0f);
+        self.gain = 1.0f - self.velocity_sens + self.velocity_sens * vel;
+        if self.count == 0 { self.speaking = false; return; }
+        let restart: bool = self.speaking && !self.releasing;
+        self.seg = 0; self.seg_pos = 0.0f; self.seg_len = self.length_of(0);
+        self.speaking = true; self.releasing = false; self.frame_left = 0;
+        // A fresh start takes the first targets at once; a restart glides.
+        self.targets();
+        if !restart {
+            self.cf1 = self.tf1; self.cf2 = self.tf2; self.cf3 = self.tf3;
+            self.cfhz = self.tfhz; self.ca1 = self.ta1; self.ca2 = self.ta2; self.ca3 = self.ta3; self.cpitch = self.tpitch;
+            self.phase = 0.0f;
+        }
+    }
+
+    /// Fade out now (gated note-off).
+    fn stop_speaking(self: &mut Self) -> void {
+        if !self.speaking || self.releasing { return; }
+        self.releasing = true; self.release_left = 0.02f * self.st_rate;
+    }
+
+    /// Targets for the current position of the current segment.
+    fn targets(self: &mut Self) -> void {
+        let code: i64 = self.code_at(self.seg);
+        let kind: f32 = self.ph_kind[code];
+        let shift: f32 = self.formant;
+        let t: f32 = sclamp(self.seg_pos / self.seg_len, 0.0f, 1.0f);
+        var f1: f32 = self.ph_f1[code] + (self.ph_f1e[code] - self.ph_f1[code]) * t;
+        var f2: f32 = self.ph_f2[code] + (self.ph_f2e[code] - self.ph_f2[code]) * t;
+        var f3: f32 = self.ph_f3[code] + (self.ph_f3e[code] - self.ph_f3[code]) * t;
+        var av: f32 = self.ph_av[code];
+        var af: f32 = self.ph_af[code];
+        var ah: f32 = self.ph_ah[code];
+        var fhz: f32 = self.ph_fhz[code];
+        var fbw: f32 = self.ph_fbw[code];
+        if kind == kind_aspirate() || kind == kind_pause() {
+            // Breath and silence take the next voiced sound's shape, so it
+            // starts in place.
+            var next: i64 = self.seg + 1;
+            while next < self.count && self.ph_kind[self.code_at(next)] == kind_pause() { next = next + 1; }
+            if next < self.count && kind == kind_aspirate() {
+                let after: i64 = self.code_at(next);
+                if self.ph_kind[after] == kind_vowel() || self.ph_kind[after] == kind_sonorant() {
+                    f1 = self.ph_f1[after]; f2 = self.ph_f2[after]; f3 = self.ph_f3[after];
+                }
+            }
+            if kind == kind_pause() { f1 = self.cf1; f2 = self.cf2; f3 = self.cf3; }
+        }
+        if kind == kind_stop() || kind == kind_affricate() {
+            let ms: f32 = self.seg_pos / self.st_rate * 1000.0f * self.speed / self.seg_dur[self.seg];
+            let closure: f32 = self.ph_closure[code];
+            let burst: f32 = self.ph_burst[code];
+            if ms < closure { af = 0.0f; ah = 0.0f; }
+            else if ms < closure + burst { ah = 0.0f; av = kind == kind_affricate() ? av : 0.0f; }
+            else {
+                af = 0.0f;
+                // Voiced stops open into the vowel; unvoiced ones aspirate.
+                if av > 0.0f { av = 0.8f; }
+            }
+            if ms < closure + burst && kind == kind_stop() { av = smin(av, 0.18f); }
+        }
+        self.tf1 = f1 * shift; self.tf2 = f2 * shift; self.tf3 = f3 * shift;
+        self.tav = av; self.taf = af; self.tah = ah;
+        self.tfhz = fhz * shift;
+        self.ta1 = self.ph_a1[code]; self.ta2 = self.ph_a2[code]; self.ta3 = self.ph_a3[code];
+        // Prosody: the pushed pitch factor scaled by the intonation amount.
+        self.tpitch = 1.0f + (self.seg_pitch[self.seg] - 1.0f) * self.intonation;
+    }
+
+    /// Move to the next segment when this one is over; false at the end.
+    fn advance(self: &mut Self) -> bool {
+        self.seg_pos = self.seg_pos + 1.0f;
+        if self.seg_pos < self.seg_len { return true; }
+        self.seg = self.seg + 1;
+        self.seg_pos = 0.0f;
+        if self.seg >= self.count { return false; }
+        self.seg_len = self.length_of(self.seg);
+        self.frame_left = 0;
+        return true;
+    }
+
+    /// Voiced sound at the ST rate, STSPEECH/SAM style: three sine
+    /// formants (the third a square, as in SAM) summed with their amplitudes.
+    /// Every glottal pulse resets their phases, which makes the buzz at the
+    /// pitch; Soft lets each period decay instead, Whisper gives the formants
+    /// random signs (breath shaped by the mouth).
+    fn voiced(self: &mut Self) -> f32 {
+        self.cpitch = self.cpitch + (self.tpitch - self.cpitch) * self.pitch_glide;
+        let hz: f32 = 440.0f * exp2f((self.note + self.tune + self.bend - 69.0f) / 12.0f) * self.cpitch;
+        let st: f32 = self.st_rate;
+        self.phase = self.phase + sclamp(hz, 20.0f, 2000.0f) / st;
+        if self.phase >= 1.0f {
+            self.phase = self.phase - floorf(self.phase);
+            self.p1 = 0.0f; self.p2 = 0.0f; self.p3 = 0.0f;
+        }
+        let pi2: f32 = 6.28318530717958647692f;
+        let nyquist: f32 = st * 0.5f;
+        self.p1 = self.p1 + smin(self.cf1, nyquist) / st;
+        self.p2 = self.p2 + smin(self.cf2, nyquist) / st;
+        self.p3 = self.p3 + smin(self.cf3, nyquist) / st;
+        if self.p1 >= 1.0f { self.p1 = self.p1 - 1.0f; }
+        if self.p2 >= 1.0f { self.p2 = self.p2 - 1.0f; }
+        if self.p3 >= 1.0f { self.p3 = self.p3 - 1.0f; }
+        // Formants above the ST rate's band are left out, as on the ST.
+        let a2: f32 = self.cf2 < nyquist ? self.ca2 : 0.0f;
+        let a3: f32 = self.cf3 < nyquist ? self.ca3 : 0.0f;
+        var sum: f32 = self.ca1 * sinf(pi2 * self.p1) + a2 * sinf(pi2 * self.p2) + a3 * (self.p3 < 0.5f ? 0.7f : -0.7f);
+        if self.voice == 1 { sum = sum * expf(-3.5f * self.phase) * 1.6f; }
+        if self.voice == 2 { sum = sum * (self.white() > 0.0f ? 0.8f : -0.8f); }
+        return sum;
+    }
+
+    /// One ST-rate sample of the voiced channel, before the DAC. The noise
+    /// channel's level and colour (`caf`, `cah`, `cfhz`) are glided here too;
+    /// `process` plays it at the host rate, like the YM's own noise.
+    fn synthesize(self: &mut Self) -> f32 {
+        if !self.speaking { return 0.0f; }
+        if self.frame_left <= 0 {
+            if !self.releasing { self.targets(); }
+            self.frame_left = frame_samples();
+        }
+        self.frame_left = self.frame_left - 1;
+        var av: f32 = self.tav;
+        var af: f32 = self.taf;
+        var ah: f32 = self.tah;
+        if self.releasing { av = 0.0f; af = 0.0f; ah = 0.0f; }
+        let fg: f32 = self.formant_glide;
+        let lg: f32 = self.level_glide;
+        self.cf1 = self.cf1 + (self.tf1 - self.cf1) * fg;
+        self.cf2 = self.cf2 + (self.tf2 - self.cf2) * fg;
+        self.cf3 = self.cf3 + (self.tf3 - self.cf3) * fg;
+        self.ca1 = self.ca1 + (self.ta1 - self.ca1) * fg;
+        self.ca2 = self.ca2 + (self.ta2 - self.ca2) * fg;
+        self.ca3 = self.ca3 + (self.ta3 - self.ca3) * fg;
+        self.cfhz = self.cfhz + (self.tfhz - self.cfhz) * fg;
+        self.cav = self.cav + (av - self.cav) * lg;
+        self.caf = self.caf + (af - self.caf) * lg;
+        self.cah = self.cah + (ah - self.cah) * lg;
+
+        var out: f32 = self.voiced() * self.cav * 0.42f;
+        if self.releasing {
+            self.release_left = self.release_left - 1.0f;
+            if self.release_left <= 0.0f { self.speaking = false; self.releasing = false; }
+        } else if !self.advance() {
+            self.releasing = true; self.release_left = 0.02f * self.st_rate;
+        }
+        out = out * self.gain;
+        return 0.8f * tanhf(out);
+    }
+
+    /// The YM2149 noise channel at the host rate: a 17-bit LFSR clocked at
+    /// about twice the frication centre (the noise period register), at a
+    /// 4-bit volume. S is bright whatever the ST rate, as on the machine.
+    fn noise(self: &mut Self) -> f32 {
+        let level: f32 = sclamp((self.caf + self.cah * 0.7f) * self.gain, 0.0f, 1.0f);
+        if level < 0.001f { return 0.0f; }
+        self.noise_phase = self.noise_phase + smin(self.cfhz * 2.3f, 62500.0f) / self.rate;
+        while self.noise_phase >= 1.0f {
+            self.noise_phase = self.noise_phase - 1.0f;
+            let l: i64 = self.lfsr;
+            self.lfsr = (l >> 1) | (((l ^ (l >> 3)) & 1) << 16);
+            self.noise_bit = (self.lfsr & 1) == 1 ? 1.0f : -1.0f;
+        }
+        var volume: f32 = level;
+        if self.dac != 0 {
+            // Nearest of the 16 levels, 3 dB apart.
+            let index: f32 = floorf(-6.0206f * log2f(level) / 3.0f + 0.5f);
+            volume = index >= 15.0f ? 0.0f : exp2f(-index * 3.0f / 6.0206f);
+        }
+        return self.noise_bit * volume * 0.3f;
+    }
+
+    /// The YM2149 volume DAC: unipolar logarithmic steps of `step_db`.
+    fn dac_step(value: f32, step_db: f32, levels: f32) -> f32 {
+        let u: f32 = sclamp((value + 1.0f) * 0.5f, 0.0f, 1.0f);
+        if u <= 0.0f { return -1.0f; }
+        // dB below full scale, in steps.
+        let steps: f32 = -6.0206f * log2f(u) / step_db;
+        let index: f32 = floorf(steps + 0.5f);
+        if index >= levels - 1.0f { return -1.0f; }
+        let level: f32 = exp2f(-index * step_db / 6.0206f);
+        return level * 2.0f - 1.0f;
+    }
+
+    fn process(self: &mut Self, out_right: ptr<f32>) -> f32 {
+        self.output_gain = self.output_gain + (self.output_target - self.output_gain) * 0.002f;
+        // Sample and hold from the ST rate to the host rate.
+        self.hold = self.hold + self.st_rate / self.rate;
+        while self.hold >= 1.0f {
+            self.hold = self.hold - 1.0f;
+            var sample: f32 = self.synthesize();
+            // Centred so that silence stays exactly 0.
+            if self.dac == 2 { sample = Speech::dac_step(sample, 3.0f, 16.0f) - Speech::dac_step(0.0f, 3.0f, 16.0f); }
+            else if self.dac == 1 { sample = Speech::dac_step(sample, 1.0f, 48.0f) - Speech::dac_step(0.0f, 1.0f, 48.0f); }
+            self.held = sample;
+        }
+        let hiss: f32 = self.speaking ? self.noise() : 0.0f;
+        self.lp1 = self.lp1 + (self.held + hiss - self.lp1) * self.lp_coef;
+        self.lp2 = self.lp2 + (self.lp1 - self.lp2) * self.lp_coef;
+        // DC blocker (~10 Hz): the DAC's steps are not centred.
+        let y: f32 = self.lp2 - self.dc_x + 0.9987f * self.dc_y;
+        self.dc_x = self.lp2;
+        self.dc_y = y;
+        // Headroom for the DAC's coarse top steps.
+        let out: f32 = y * 0.85f * self.output_gain;
+        unsafe { *out_right = out; }
+        return out;
+    }
+}
+
+// --- C ABI -------------------------------------------------------------------
+
+/// @brief Allocate an instance for a sample rate (8 kHz .. 384 kHz).
+fn mlaspeech_create(sample_rate: f32) -> ptr<Speech> {
+    let handle: ptr<Speech> = calloc(1, size_of(Speech));
+    unsafe { *handle = Speech::new(sample_rate); }
+    return handle;
+}
+
+/// @brief Release an instance created by `mlaspeech_create`.
+fn mlaspeech_destroy(handle: ptr<Speech>) {
+    // Move the value out so its lists are dropped, then free the block.
+    unsafe { let dead: Speech = *handle; dead.clear(); }
+    free(handle);
+}
+
+/// @brief Silence and clear filters; the utterance and settings stay.
+fn mlaspeech_reset(handle: ptr<Speech>) { unsafe { (*handle).reset(); } }
+
+/// @brief Start a new utterance (drops the segments pushed so far).
+fn mlaspeech_clear(handle: ptr<Speech>) { unsafe { (*handle).clear(); } }
+
+/// @brief Append phoneme `code` (0..43) with pitch and duration factors.
+fn mlaspeech_push(handle: ptr<Speech>, code: i32, pitch: f32, duration: f32) {
+    unsafe { (*handle).push(code, pitch, duration); }
+}
+
+/// @brief Number of segments in the utterance.
+fn mlaspeech_count(handle: ptr<Speech>) -> i32 { unsafe { return i32((*handle).count); } }
+
+/// @brief Speak the utterance from its start at MIDI note `note`, velocity 0..1.
+fn mlaspeech_say(handle: ptr<Speech>, note: f32, velocity: f32) {
+    unsafe { (*handle).say(note, velocity); }
+}
+
+/// @brief Fade the voice out (a gated note-off).
+fn mlaspeech_stop(handle: ptr<Speech>) { unsafe { (*handle).stop_speaking(); } }
+
+/// @brief 1 while speaking (including the fade-out), else 0.
+fn mlaspeech_speaking(handle: ptr<Speech>) -> i32 {
+    unsafe { return (*handle).speaking ? 1 : 0; }
+}
+
+/// @brief Segment being spoken (the utterance length when done).
+fn mlaspeech_position(handle: ptr<Speech>) -> i32 {
+    unsafe { return (*handle).speaking ? i32((*handle).seg) : i32((*handle).count); }
+}
+
+/// @brief Set one parameter in physical units:
+/// 0 speed (0.25..4, 1 normal), 1 formant scale (0.5..2), 2 intonation 0..1,
+/// 3 voice (0 buzz, 1 soft, 2 whisper), 4 ST rate (Hz, 4000..24000),
+/// 5 DAC (0 clean, 1 YM 1 dB steps, 2 YM 4-bit), 6 smoothing 0..1,
+/// 7 tune (semitones), 8 velocity sensitivity 0..1, 9 output gain (linear),
+/// 10 pitch bend (semitones).
+fn mlaspeech_set(handle: ptr<Speech>, index: i32, value: f32) {
+    unsafe {
+        if index == 0 { (*handle).speed = sclamp(value, 0.25f, 4.0f); }
+        else if index == 1 { (*handle).formant = sclamp(value, 0.5f, 2.0f); }
+        else if index == 2 { (*handle).intonation = sclamp(value, 0.0f, 1.0f); }
+        else if index == 3 { (*handle).voice = i32(sclamp(value, 0.0f, 2.0f) + 0.5f); }
+        else if index == 4 {
+            (*handle).st_rate = smin(sclamp(value, 4000.0f, 24000.0f), (*handle).rate);
+            (*handle).configure_rate();
+        }
+        else if index == 5 { (*handle).dac = i32(sclamp(value, 0.0f, 2.0f) + 0.5f); }
+        else if index == 6 { (*handle).smooth = sclamp(value, 0.0f, 1.0f); (*handle).configure_rate(); }
+        else if index == 7 { (*handle).tune = sclamp(value, -48.0f, 48.0f); }
+        else if index == 8 { (*handle).velocity_sens = sclamp(value, 0.0f, 1.0f); }
+        else if index == 9 { (*handle).output_target = smax(value, 0.0f); }
+        else if index == 10 { (*handle).bend = sclamp(value, -24.0f, 24.0f); }
+    }
+}
+
+/// @brief Process one sample: stereo out (left returned, right through `out_right`).
+fn mlaspeech_process(handle: ptr<Speech>, out_right: ptr<f32>) -> f32 {
+    unsafe { return (*handle).process(out_right); }
+}

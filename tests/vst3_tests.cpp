@@ -36,6 +36,7 @@ int32_t __mlang_std_audio_controller_input_feed(int64_t, FloatList, int64_t, int
 int32_t __mlang_std_audio_controller_input_peak(int64_t, int64_t);
 int32_t __mlang_std_audio_controller_track_peak(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_pad(int64_t, int64_t, int64_t, FloatList, int64_t, int64_t, const char*);
+int32_t __mlang_std_audio_controller_instrument_text(int64_t, int64_t, int64_t, const char*);
 int32_t __mlang_std_audio_controller_midi_target(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_live_note(int64_t, int64_t, int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_live_control(int64_t, int64_t, int64_t, int64_t);
@@ -665,6 +666,53 @@ int main(int argc, char **argv) {
         CHECK(__mlang_std_audio_controller_input_feed(d, FloatList{2, chunk.data()}, 3, 44100) == -1);
         CHECK(__mlang_std_audio_controller_close(d) == 0);
         std::puts("PASS: Mla Vocoder loads with its sidechain bus and takes a track as input");
+    }
+    // Mla Speech speaks the phrase a text event attaches to the next note-on
+    // (mlacker's TEXT cells): the host stores the phrase, then sends it as a
+    // note-expression text event of that note. Longer words speak longer, and
+    // the phrase outlasts the note.
+    if(const char *speech = std::getenv("MLA_SPEECH_VST3")) {
+        int64_t d = __mlang_std_audio_controller_new(48000, 128);
+        CHECK(__mlang_std_audio_controller_load_instrument(d, 1, speech) == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Speech") == 0);
+        CHECK(__mlang_std_audio_controller_instrument_text(d, 1, 256, "x") == -1);
+        CHECK(__mlang_std_audio_controller_instrument_text(d, 2, 0, "x") == -1);
+        CHECK(__mlang_std_audio_controller_post(d, 2, 11, 0, 256, 0, 0, -1, 1, 0) == -1);
+        const auto spoken = [&](int64_t phrase, const char *words) -> double {
+            CHECK(__mlang_std_audio_controller_instrument_text(d, 1, phrase, words) == 0);
+            __mlang_std_audio_controller_panic(d);
+            CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+            const int64_t at = __mlang_std_audio_controller_info(d, 2) + 64;
+            CHECK(__mlang_std_audio_controller_post(d, 2, 11, 3, phrase, 0, 3, at, 1, 0) == 0);
+            CHECK(__mlang_std_audio_controller_post(d, 2, 6, 3, 48, 100, 3, at, 1, 1) == 0);
+            CHECK(__mlang_std_audio_controller_post(d, 2, 7, 3, 48, 0, 3, at + 256, 1, 1) == 0);
+            int last = 0;
+            for(int block = 0; block < 48000 * 8 / 256; ++block) {
+                CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+                double sum = 0;
+                for(int f = 0; f < 256; ++f) { double v = __mlang_std_audio_pcm_block_sample(b, f, 0); sum += v * v; }
+                if(std::sqrt(sum / 256) > 1e-3) last = block + 1;
+            }
+            return last * 256 / 48000.0;
+        };
+        const double hi = spoken(0, "Hi."), sentence = spoken(1, "This is the Atari speech synthesizer, talking from a tracker.");
+        std::printf("vst3_host: Mla Speech \"Hi.\" %.2f s, sentence %.2f s\n", hi, sentence);
+        CHECK(hi > 0.1 && hi < 0.9);
+        CHECK(sentence > 2.5 && sentence < 7.5);
+        // A note without words repeats the last phrase.
+        __mlang_std_audio_controller_panic(d);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        CHECK(__mlang_std_audio_controller_post(d, 2, 6, 3, 60, 100, 3, __mlang_std_audio_controller_info(d, 2), 1, 1) == 0);
+        int last = 0;
+        for(int block = 0; block < 48000 * 8 / 256; ++block) {
+            CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+            double sum = 0;
+            for(int f = 0; f < 256; ++f) { double v = __mlang_std_audio_pcm_block_sample(b, f, 0); sum += v * v; }
+            if(std::sqrt(sum / 256) > 1e-3) last = block + 1;
+        }
+        CHECK(std::fabs(last * 256 / 48000.0 - sentence) < 0.5);
+        CHECK(__mlang_std_audio_controller_close(d) == 0);
+        std::puts("PASS: Mla Speech speaks the text attached to a note");
     }
     // Mla Sampler has ten output buses: Main, Out 2-8, Send A and Send B.
     // Its aux buses follow the main output until routed to master, a PCM

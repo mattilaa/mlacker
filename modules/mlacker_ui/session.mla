@@ -688,7 +688,11 @@ impl SessionCodec {
             track.volume = self.number(track.volume, 0, 127); track.pan = self.number(track.pan, -100, 100);
             track.audio = self.flag(track.audio); track.instrument = self.flag(track.instrument);
             track.instrument_id = self.number(track.instrument_id, 0, 32);
-            track.note_lines = self.number(track.note_lines, 1, 64); self.flag(false); /* retired waveform zoom */ track.zoom_stage = self.number(track.zoom_stage, 0, 2);
+            track.note_lines = self.number(track.note_lines, 1, 64);
+            // The TEXT column flag takes the retired waveform-zoom flag's
+            // place, which older versions wrote as 0.
+            track.comment = self.flag(track.comment); if track.audio && track.comment { self.failed = true; }
+            track.zoom_stage = self.number(track.zoom_stage, 0, 2);
             // 1.0 documents always carry two slots.
             let slots: i32 = self.minor == 0 ? 2 : self.number(i32(track.automation.len()), 0, automation_limit());
             var automation: list<AutomationSlot> = [];

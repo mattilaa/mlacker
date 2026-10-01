@@ -18,9 +18,12 @@ use std::strbuf::free;
 // Uniform-width fields keep list payloads free of mixed-width struct padding.
 // on is 1 for note-on, 0 for note-off, 2 for CC (note=controller, velocity=value).
 // instrument: 0 = MIDI preview, -1 = unassigned, 1-32 = loaded slot.
-pub struct NoteEvent { var on: i64; var track: i64; var line: i64; var note: i64; var velocity: i64; var tick: i64; var instrument: i64; };
+// text: a note-on that speaks its row's TEXT cell carries that row + 1 (0 = none).
+pub struct NoteEvent { var on: i64; var track: i64; var line: i64; var note: i64; var velocity: i64; var tick: i64; var instrument: i64; var text: i64; };
 pub struct PlayingNote { var track: i64; var line: i64; var note: i64; var end: i64; var instrument: i64; };
-pub struct ScheduledNote { var track: i64; var line: i64; var note: i64; var velocity: i64; var start: i64; var length: i64; var instrument: i64; var control: i64; };
+pub struct ScheduledNote { var track: i64; var line: i64; var note: i64; var velocity: i64; var start: i64; var length: i64; var instrument: i64; var control: i64; var text: i64; };
+/// Key a TEXT cell is spoken at when its row has no note: C-3.
+pub fn speech_note() -> i64 { return 48; }
 pub struct NotePlayback {
     var active: list<PlayingNote>; var events: list<NoteEvent>;
     var running: bool; var last: i64;
@@ -97,6 +100,9 @@ impl NotePlayback {
                     }
                     free_steps(steps);
                 }
+                // A TEXT cell goes to the instrument with the row's first note.
+                let comment: i32 = table.comment_column(i32(t));
+                var text: i64 = comment >= 0 && track.instrument && track.instrument_id > 0 && data.cells[comment] != "" ? r + 1 : 0;
                 for line in 0..track.note_lines {
                     let column: i32 = table.track_start(i32(t)) + i32(line) * 4;
                     if data.cells[column] == "" { continue; }
@@ -110,7 +116,15 @@ impl NotePlayback {
                     if start < from { start = start + (from - start + period - 1) / period * period; }
                     let length: i64 = table.note_length(i32(r), column);
                     self.score.push(ScheduledNote { track: t, line: line, note: wide(note), velocity: value, start: start, length: length,
-                        instrument: track.instrument ? (track.instrument_id > 0 ? wide(track.instrument_id) : -1) : 0 });
+                        instrument: track.instrument ? (track.instrument_id > 0 ? wide(track.instrument_id) : -1) : 0, text: text });
+                    text = 0;
+                }
+                // Text on a row without a note is spoken on its own.
+                if text > 0 {
+                    var start: i64 = self.epoch + r * 15000;
+                    if start < from { start = start + (from - start + period - 1) / period * period; }
+                    self.score.push(ScheduledNote { track: t, line: 0, note: speech_note(), velocity: 100, start: start, length: 15000,
+                        instrument: wide(track.instrument_id), text: text });
                 }
             }
         }
@@ -182,14 +196,14 @@ impl NotePlayback {
             for note in score {
                 var next: i64 = note.start;
                 if next == event_tick {
-                    self.events.push(NoteEvent { on: note.control == 1 ? 2 : 1, track: note.track, line: note.line, note: note.note, velocity: note.velocity, tick: next, instrument: note.instrument });
+                    self.events.push(NoteEvent { on: note.control == 1 ? 2 : 1, track: note.track, line: note.line, note: note.note, velocity: note.velocity, tick: next, instrument: note.instrument, text: note.text });
                     if note.control == 0 {
                         let end: i64 = next + note.length;
                         self.active.push(PlayingNote { track: note.track, line: note.line, note: note.note, end: end, instrument: note.instrument });
                     }
                     next = next + period;
                 }
-                updated.push(ScheduledNote { track: note.track, line: note.line, note: note.note, velocity: note.velocity, start: next, length: note.length, instrument: note.instrument, control: note.control });
+                updated.push(ScheduledNote { track: note.track, line: note.line, note: note.note, velocity: note.velocity, start: next, length: note.length, instrument: note.instrument, control: note.control, text: note.text });
             }
             self.score = updated;
         }
