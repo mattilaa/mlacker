@@ -3,8 +3,9 @@
 
 Terminal tracker built with MLang, the MLang `tui` widget library, macOS AUHAL,
 and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
-(imported as `mlacker_ui::*`); the VST3 effects and the Mla Drum and Mla Sampler
-instruments are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+(imported as `mlacker_ui::*`); the VST3 effects, the Mla Drum and Mla Sampler
+instruments and the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
+own carrier synth) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run

@@ -90,8 +90,16 @@ public:
         const int32 outs = component->getBusCount(kAudio, kOutput);
         // Extra output buses (multi-output instruments such as Mla Sampler)
         // keep their own arrangement; mlang routes each as aux_output.
-        if(ins < 0 || ins > 1 || outs < 1 || outs > 16) {
-            error = "Only zero/one audio input bus and 1-16 output buses are supported"; return false;
+        // Input buses after the first must be auxiliary (sidechains such as
+        // Mla Vocoder's carrier input); mlacker leaves them inactive and silent.
+        if(ins < 0 || ins > 16 || outs < 1 || outs > 16) {
+            error = "Only 0-16 audio input buses and 1-16 output buses are supported"; return false;
+        }
+        for(int32 bus = 1; bus < ins; ++bus) {
+            BusInfo info{};
+            if(component->getBusInfo(kAudio, kInput, bus, info) != kResultOk || info.busType != kAux) {
+                error = "Only one main audio input bus is supported"; return false;
+            }
         }
         BusInfo outInfo{}, inInfo{};
         if(component->getBusInfo(kAudio, kOutput, 0, outInfo) != kResultOk ||
@@ -102,17 +110,20 @@ public:
                    inInfo.channelCount < 1 || inInfo.channelCount > 2)) {
             error = "VST3 input must be mono or stereo"; return false;
         }
-        SpeakerArrangement input = inInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo;
+        SpeakerArrangement inputs[16] = {inInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo};
+        for(int32 bus = 1; bus < ins; ++bus)
+            if(processor->getBusArrangement(kInput, bus, inputs[bus]) != kResultOk) inputs[bus] = SpeakerArr::kStereo;
         SpeakerArrangement outputs[16] = {outInfo.channelCount == 1 ? SpeakerArr::kMono : SpeakerArr::kStereo};
         for(int32 bus = 1; bus < outs; ++bus)
             if(processor->getBusArrangement(kOutput, bus, outputs[bus]) != kResultOk) outputs[bus] = SpeakerArr::kStereo;
-        if(processor->setBusArrangements(ins ? &input : nullptr, ins, outputs, outs) != kResultOk) {
+        if(processor->setBusArrangements(ins ? inputs : nullptr, ins, outputs, outs) != kResultOk) {
             error = "VST3 processor rejected its mono/stereo bus arrangement"; return false;
         }
         if(component->activateBus(kAudio, kOutput, 0, true) != kResultOk ||
            (ins && component->activateBus(kAudio, kInput, 0, true) != kResultOk)) {
             error = "Could not activate VST3 audio buses"; return false;
         }
+        for(int32 bus = 1; bus < ins; ++bus) component->activateBus(kAudio, kInput, bus, false);
         outputNames.clear();
         for(int32 bus = 0; bus < outs; ++bus) {
             BusInfo info{};
@@ -330,6 +341,12 @@ public:
         data.numSamples = frames; context.projectTimeSamples = static_cast<TSamples>(clock);
         context.continousTimeSamples = static_cast<TSamples>(clock);
         context.state = ProcessContext::kContTimeValid | transportState;
+        for(int32 aux = 1; aux < data.numInputs; ++aux) {
+            auto &bus = data.inputs[aux];
+            for(int32 ch = 0; ch < bus.numChannels; ++ch)
+                if(bus.channelBuffers32) std::fill_n(bus.channelBuffers32[ch], frames, 0.f);
+            bus.silenceFlags = (uint64)-1;
+        }
         if(data.numInputs) {
             auto &bus = data.inputs[0]; bus.silenceFlags = 0;
             for(int32 f = 0; f < frames; ++f) {

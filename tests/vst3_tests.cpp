@@ -601,6 +601,18 @@ int main(int argc, char **argv) {
         CHECK(std::llabs(slow - 24000) <= 2 && std::llabs(fast - 12000) <= 2);
         std::puts("PASS: Mla Delay follows the host tempo");
     }
+    // Mla Vocoder has a sidechain (aux) input bus next to its main input; the
+    // host loads it as an instrument and as an effect, leaving the sidechain
+    // inactive.
+    if(const char *vocoder = std::getenv("MLA_VOCODER_VST3")) {
+        int64_t d = __mlang_std_audio_controller_new(48000, 128);
+        CHECK(__mlang_std_audio_controller_load_instrument(d, 1, vocoder) == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Vocoder") == 0);
+        CHECK(__mlang_std_audio_controller_load_effect(d, 0, vocoder) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        CHECK(__mlang_std_audio_controller_close(d) == 0);
+        std::puts("PASS: Mla Vocoder loads with its sidechain bus");
+    }
     // Mla Sampler has ten output buses: Main, Out 2-8, Send A and Send B.
     // Its aux buses follow the main output until routed to master, a PCM
     // track's channel, an aux effect channel's input or nowhere.
