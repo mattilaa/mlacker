@@ -32,6 +32,18 @@ def main():
         assert b"Bounce: tail up to 20 s, second pass" in frame, frame[-4000:]
         frame = tui.send(audio + b"j" * 4 + b"\r", 0.6)
         assert b"Bounce: no tail, second pass" in frame, frame[-4000:]
+        # Space toggles an option and keeps the menu open (Enter closes it).
+        frame = tui.send(audio + b"j" * 4 + b" ", 0.6)
+        assert b"[x] Bounce tail" in frame and b"Bounce: tail up to 20 s, second pass" in frame, frame[-4000:]
+        frame = tui.send(b"jj ", 0.6)
+        assert b"[ ] Bounce second pass (seamless loop)" in frame and b"Add audio" in frame, frame[-4000:]
+        # From a submenu too: pick 5 s and stay in the submenu.
+        frame = tui.send(b"kl ", 0.6)
+        assert b"[x] 5 s" in frame and b"[ ] 20 s" in frame and b"Bounce: tail up to 5 s" in frame, frame[-4000:]
+        # Space on a plain item does nothing; the menu stays open.
+        frame = tui.send(b"h" + b"k" * 5 + b" ", 0.6)
+        assert b"Add audio" in frame and b"Bounce tail" in frame, frame[-4000:]
+        tui.send(b"\x1b")
         tui.send(b"\x1b[108;6u")  # focus the pattern editor
         # No visual selection: the whole pattern.
         frame = tui.send(BOUNCE, 3.0)

@@ -380,6 +380,9 @@ pub fn run() -> i32 {
     var mixer_table: SequenceTable = SequenceTable {};
     var play_metronome: bool = true; var extend_recording: bool = true; var metronome_always: bool = false;
     var bounce_options: BounceOptions = BounceOptions {};
+    // Space on a menu option toggles it and keeps the menu open: where it
+    // was, so the rebuilt (relabelled) bar can reopen there.
+    var menu_kept: bool = false; var kept_active: i32 = -1; var kept_selected: i32 = -1; var kept_path: list<i32> = [];
     // Spectrum analyzer and master bus (Ctrl+Shift+M), shown in the mixer's
     // pane. `spectrum_area` is where it was last painted, for the analysis.
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
@@ -1859,7 +1862,15 @@ pub fn run() -> i32 {
             // boolean guard. The compiler may evaluate every operand.
             else if menus.active >= 0 {
                 if event.kind != InputKind::None { dirty = true; }
-                if event.kind == InputKind::Menu {
+                if event.code == 32 && event.modifiers == 1 && event.kind != InputKind::Menu {
+                    let toggled: i32 = menus.toggle_selected();
+                    if toggled > 0 {
+                        command = toggled;
+                        menu_kept = true; kept_active = menus.active; kept_selected = menus.selected;
+                        kept_path = []; let path: list<i32> = menus.path; for index in path { kept_path.push(index); }
+                    }
+                }
+                else if event.kind == InputKind::Menu {
                     // A function key switches to its menu, or closes it when already open.
                     if event.modifiers != 1 || !menus.on_function_key(event.key) { command = menus.on_key(event.key); }
                     focus.set_menu_active(menus.active >= 0);
@@ -2924,6 +2935,13 @@ pub fn run() -> i32 {
                     dirty = true;
                 }
             }
+        }
+        if menu_kept {
+            // The toggle's command rebuilt the bar to relabel the option.
+            menu_kept = false;
+            menus.keep_open(MenuBar { menus: [], active: kept_active, selected: kept_selected, path: kept_path });
+            kept_path = [];
+            focus.set_menu_active(menus.active >= 0); dirty = true;
         }
         midi.route_selected(library.table);
         sleep_ms(frame_rate.sleep_ms(now_ms()));

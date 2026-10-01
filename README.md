@@ -234,6 +234,11 @@ function key switches to that menu and the open menu's own key closes it. Each
 menu starts with what it creates, then what it changes, then what it removes;
 related entries live in submenus.
 
+Enter runs the highlighted entry and closes the menu. On an option, an entry
+shown as `[x]` or `[ ]` (such as **Record → Play metronome** or **Audio →
+Bounce tail**), **Space** toggles it and keeps the menu open, so you can set
+several options in a row. Space does nothing on other entries.
+
 Items that have a keyboard shortcut show it right-aligned in the menu, in the
 same color as the function keys, written like Vim key notation: `<C-s>` is
 Ctrl+S, `<S-m>` Shift+M, `<C-S-m>` Ctrl+Shift+M and `<C-S-F1>` Ctrl+Shift+F1. A
