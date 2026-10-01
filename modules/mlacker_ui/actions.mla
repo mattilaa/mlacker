@@ -41,7 +41,8 @@ pub enum Action : i32 {
     LoadEffectPreset = 140, SaveEffectPreset = 141,
     // Record
     ToggleMetronome = 150, ToggleExtendRecording = 151, MetronomeOnRecording = 152, MetronomeAlways = 153,
-    BounceSelection = 170,
+    BounceSelection = 170, ToggleBounceTail = 171, BounceTail5 = 172, BounceTail10 = 173, BounceTail20 = 174,
+    ToggleBounceSecondPass = 175,
     // Follow-ups, not in a menu: an insert slot's Enter / Backspace, a chosen
     // output channel, drum key, matrix pattern, pasting a matrix cell, and the
     // Sampler pane's Enter / Backspace / o / E / W / R on a slot.

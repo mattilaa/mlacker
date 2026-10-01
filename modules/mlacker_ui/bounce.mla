@@ -22,6 +22,17 @@ use mlacker_ui::note_playback::NoteEvent;
 /// within about a millisecond.
 pub fn bounce_block() -> i64 { return 64; }
 
+/// Record menu choices for a bounce.
+pub struct BounceOptions {
+    /// Keep rendering past the selection until the mix is quiet.
+    var tail: bool{true};
+    /// Longest tail in seconds.
+    var tail_seconds: i64{10};
+    /// Render the area twice without a reset and keep only the second pass,
+    /// so its start carries the first pass's tail (a seamless loop).
+    var second_pass: bool;
+};
+
 pub struct Bounce {
     /// Interleaved stereo output at `rate`.
     var samples: list<f32>;
@@ -31,6 +42,12 @@ pub struct Bounce {
     var tick: i64; var frames: i64;
     /// Tick the next segment's first row falls on: where the last one ended.
     var next_start: i64;
+    /// The pass being rendered: the tick it started on, and the area tick
+    /// (row * 15000) of its first segment's first row, -1 until it has one.
+    /// Each pass restarts the plugins' transport beat at the area's start.
+    var pass_start: i64; var pass_base: i64{-1};
+    /// Index in `samples` where the kept audio begins (the second pass).
+    var capture_from: i64;
     var playback: NotePlayback;
     var block: PcmBlock;
     var restart: bool; var worker: bool;

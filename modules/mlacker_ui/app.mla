@@ -38,6 +38,7 @@ mod mlacker_ui::audio_clip;
 mod mlacker_ui::audio_take;
 mod mlacker_ui::bounce;
 use mlacker_ui::bounce::Bounce;
+use mlacker_ui::bounce::BounceOptions;
 use mlacker_ui::audio_take::AudioTake;
 mod mlacker_ui::piano_dialog;
 mod mlacker_ui::song_matrix;
@@ -113,7 +114,7 @@ fn menu_item(label: str8, action: Action, enabled: bool, keymap: &Keymap) -> Men
     return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: keys.shortcut_for(action) };
 }
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, keymap: &Keymap) -> MenuBar {
+fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, bounce: BounceOptions, keymap: &Keymap) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
@@ -208,7 +209,14 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item("Trim to selection", Action::TrimClip, true, keymap),
                                                 menu_item("Slice selection", Action::SliceClip, true, keymap),
                                                 menu_item("Reverse clip", Action::ReverseClip, true, keymap)]),
-                                menu_item("Remove audio", Action::RemoveAudio, true, keymap)] },
+                                menu_item("Remove audio", Action::RemoveAudio, true, keymap),
+                                // Bounce (Record > Bounce selection to sample) choices.
+                                menu_item(bounce.tail ? "[x] Bounce tail" : "[ ] Bounce tail", Action::ToggleBounceTail, true, keymap),
+                                MenuItem::submenu("Bounce tail length", [
+                                                menu_item(bounce.tail_seconds == 5 ? "[x] 5 s" : "[ ] 5 s", Action::BounceTail5, true, keymap),
+                                                menu_item(bounce.tail_seconds == 10 ? "[x] 10 s" : "[ ] 10 s", Action::BounceTail10, true, keymap),
+                                                menu_item(bounce.tail_seconds == 20 ? "[x] 20 s" : "[ ] 20 s", Action::BounceTail20, true, keymap)]),
+                                menu_item(bounce.second_pass ? "[x] Bounce second pass (seamless loop)" : "[ ] Bounce second pass (seamless loop)", Action::ToggleBounceSecondPass, true, keymap)] },
                     Menu {title: "Instrument", items: [
                                 menu_item("Add instrument", Action::AddInstrument, plugins, keymap),
                                 menu_item("Open VST3 editor", Action::OpenPluginEditor, plugins, keymap),
@@ -371,6 +379,7 @@ pub fn run() -> i32 {
     // parallel patterns share it. Only the mixer reads it.
     var mixer_table: SequenceTable = SequenceTable {};
     var play_metronome: bool = true; var extend_recording: bool = true; var metronome_always: bool = false;
+    var bounce_options: BounceOptions = BounceOptions {};
     // Spectrum analyzer and master bus (Ctrl+Shift+M), shown in the mixer's
     // pane. `spectrum_area` is where it was last painted, for the analysis.
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
@@ -380,7 +389,7 @@ pub fn run() -> i32 {
     var sampler: SamplerView = SamplerView {};
     // Shortcuts for menu actions; the menus label their items from it.
     var keymap: Keymap = Keymap::new(default_keymap());
-    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
     var input: InputDecoder = InputDecoder::new();
@@ -575,7 +584,7 @@ pub fn run() -> i32 {
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
-                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                             frame_rate.set(v.meter_fps, now_ms()); note_playback = NotePlayback {}; play_pattern = library.active_id;
                             instrument_editor.release();
                             instrument_editor.slot = v.editor_slot;
@@ -2639,34 +2648,41 @@ pub fn run() -> i32 {
                     var what: str8 = "";
                     if !job.ok() { message = clone(job.error); }
                     else {
-                        if on_matrix {
-                            let first: i32 = matrix.marked_first(); let last: i32 = matrix.marked_last();
-                            for r in first..last + 1 {
-                                let merged: SequenceTable = library.merge_song_row(i32(r), terminal_bounds(), false);
-                                // Rows without patterns play nothing, as in song playback.
-                                if merged.rows.len() > 0 { midi.bounce_segment(&mut job, merged, 0, i32(merged.rows.len()), []); }
-                                merged.release();
-                            }
-                            what = first == last ? format!("matrix row {}", first + 1) : format!("matrix rows {}-{}", first + 1, last + 1);
-                        } else {
-                            var first: i32 = 0; var last: i32 = i32(library.table.rows.len()) - 1;
-                            var tracks: list<i32> = [];
-                            if library.table.visual {
-                                first = library.table.anchor_row < library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
-                                last = library.table.anchor_row > library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
-                                if !library.table.visual_rows {
-                                    let a: i32 = library.table.track_of_column(library.table.anchor_column);
-                                    let b: i32 = library.table.track_of_column(library.table.selected_column);
-                                    let low: i32 = a < b ? a : b; let high: i32 = a > b ? a : b;
-                                    if low >= 0 { for t in low..high + 1 { tracks.push(i32(t)); } }
+                        // A second pass renders the area again with nothing
+                        // reset and keeps only that pass: its start then
+                        // carries the first pass's tail, like a loop.
+                        let passes: i32 = bounce_options.second_pass ? 2 : 1;
+                        for pass in 0..passes {
+                            if pass == 1 { midi.bounce_next_pass(&mut job); free(what); }
+                            if on_matrix {
+                                let first: i32 = matrix.marked_first(); let last: i32 = matrix.marked_last();
+                                for r in first..last + 1 {
+                                    let merged: SequenceTable = library.merge_song_row(i32(r), terminal_bounds(), false);
+                                    // Rows without patterns play nothing, as in song playback.
+                                    if merged.rows.len() > 0 { midi.bounce_segment(&mut job, merged, 0, i32(merged.rows.len()), []); }
+                                    merged.release();
                                 }
+                                what = first == last ? format!("matrix row {}", first + 1) : format!("matrix rows {}-{}", first + 1, last + 1);
+                            } else {
+                                var first: i32 = 0; var last: i32 = i32(library.table.rows.len()) - 1;
+                                var tracks: list<i32> = [];
+                                if library.table.visual {
+                                    first = library.table.anchor_row < library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
+                                    last = library.table.anchor_row > library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
+                                    if !library.table.visual_rows {
+                                        let a: i32 = library.table.track_of_column(library.table.anchor_column);
+                                        let b: i32 = library.table.track_of_column(library.table.selected_column);
+                                        let low: i32 = a < b ? a : b; let high: i32 = a > b ? a : b;
+                                        if low >= 0 { for t in low..high + 1 { tracks.push(i32(t)); } }
+                                    }
+                                }
+                                what = tracks.len() > 0 ? format!("rows {}-{} of tracks {}-{}", first + 1, last + 1, tracks[0] + 1, tracks[tracks.len() - 1] + 1)
+                                    : format!("rows {}-{}", first + 1, last + 1);
+                                midi.bounce_segment(&mut job, library.table, first, last + 1, tracks);
                             }
-                            what = tracks.len() > 0 ? format!("rows {}-{} of tracks {}-{}", first + 1, last + 1, tracks[0] + 1, tracks[tracks.len() - 1] + 1)
-                                : format!("rows {}-{}", first + 1, last + 1);
-                            midi.bounce_segment(&mut job, library.table, first, last + 1, tracks);
                         }
                         let rate: i64 = job.rate;
-                        let rendered: list<f32> = midi.bounce_finish(&mut job, library.table, 10);
+                        let rendered: list<f32> = midi.bounce_finish(&mut job, library.table, bounce_options.tail ? bounce_options.tail_seconds : 0);
                         bounce_count = bounce_count + 1;
                         let name: str8 = format!("Bounce {}.wav", bounce_count);
                         let made: result<AudioClip, str8> = AudioClip::from_pcm(name, rendered, 2, rate, transport.bpm);
@@ -2684,11 +2700,25 @@ pub fn run() -> i32 {
                 }
                 dirty = true;
             }
+            else if command == Action::ToggleBounceTail || command == Action::ToggleBounceSecondPass ||
+                command == Action::BounceTail5 || command == Action::BounceTail10 || command == Action::BounceTail20 {
+                if command == Action::ToggleBounceTail { bounce_options.tail = !bounce_options.tail; }
+                else if command == Action::ToggleBounceSecondPass { bounce_options.second_pass = !bounce_options.second_pass; }
+                else {
+                    bounce_options.tail = true;
+                    bounce_options.tail_seconds = command == Action::BounceTail5 ? 5 : (command == Action::BounceTail10 ? 10 : 20);
+                }
+                free(message);
+                message = !bounce_options.tail ? clone(bounce_options.second_pass ? "Bounce: no tail, second pass" : "Bounce: no tail")
+                    : format!("Bounce: tail up to {} s{}", bounce_options.tail_seconds, bounce_options.second_pass ? ", second pass" : "");
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
+                dirty = true;
+            }
             else if command == Action::ToggleMetronome || command == Action::ToggleExtendRecording || command == Action::MetronomeOnRecording || command == Action::MetronomeAlways {
                 if command == Action::ToggleMetronome { play_metronome = !play_metronome; }
                 else if command == Action::ToggleExtendRecording { extend_recording = !extend_recording; }
                 else { metronome_always = command == Action::MetronomeAlways; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
             }
             else if command == Action::AddPattern || command == Action::ClonePattern { library.add(command == Action::ClonePattern); }
             else if command == Action::RenamePattern {
@@ -2701,7 +2731,7 @@ pub fn run() -> i32 {
             }
             else if command == Action::FollowMatrix {
                 follow_matrix = !follow_matrix;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 free(message);
                 if follow_matrix {
                     if song_playing { library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id; }
@@ -2718,7 +2748,7 @@ pub fn run() -> i32 {
             else if command == Action::MeterUpdateRate { bpm_dialog.open_meter_rate(frame_rate.fps); }
             else if command == Action::ToggleSpectrum {
                 spectrum.visible = !spectrum.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
@@ -2729,7 +2759,7 @@ pub fn run() -> i32 {
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 // Keys only play while the pane has focus.
                 if keyboard.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
@@ -2743,7 +2773,7 @@ pub fn run() -> i32 {
                 // Kitty-protocol terminals then report key releases, so an
                 // audition (p) lasts exactly as long as the key is held.
                 terminal.report_key_releases(sampler.visible); input.releases = sampler.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 // Keys only reach the sampler while the pane has focus.
                 if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);

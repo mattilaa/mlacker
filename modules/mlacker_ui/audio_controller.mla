@@ -6,6 +6,7 @@ mod mlacker_ui::note_playback;
 mod mlacker_ui::sequence;
 mod mlacker_ui::bounce;
 use mlacker_ui::bounce::Bounce;
+use mlacker_ui::bounce::BounceOptions;
 use mlacker_ui::bounce::bounce_block;
 use mlacker_ui::bounce::keep_tracks;
 use std::audio::PcmBlock;
@@ -81,6 +82,10 @@ pub struct AudioSystem {
     /// exact frame they belong to however late the UI posts them.
     var scheduling: bool; var schedule_output: i64; var schedule_tick: i64;
     var schedule_frame: i64; var schedule_bpm: i32; var schedule_rate: i64;
+    /// Offline bounce: `sample_playback` is called with the tick the next
+    /// block starts on and stamps each clip with the exact frame it starts
+    /// on, from its first sample, instead of starting it late on a block.
+    var stamp_samples: bool;
 };
 impl AudioSystem {
     pub fn adopt(self: &mut Self, source: &AudioSystem) -> void {
@@ -228,6 +233,7 @@ impl AudioSystem {
         self.output.process(job.block, bounce_block());
         // Ticks map to frames for the whole job, so notes are frame-exact
         // and segments follow each other seamlessly.
+        self.stamp_samples = true;
         self.scheduling = true; self.schedule_tick = 0; self.schedule_frame = self.output.frame_clock();
         self.schedule_bpm = bpm; self.schedule_rate = job.rate; self.schedule_output = self.output.handle;
         return job;
@@ -268,6 +274,10 @@ impl AudioSystem {
         let end: i64 = start + wide(to_row - from_row) * 15000;
         var playback: NotePlayback = NotePlayback { start_row: from_row };
         playback.carry_voices(b.playback);
+        // Tempo-synced plugins follow the beat of the area, from its start
+        // on each pass (60000 ticks per beat).
+        if b.pass_base < 0 { b.pass_base = wide(from_row) * 15000; }
+        self.output.transport(f64(b.bpm), f64(b.pass_base + start - b.pass_start) / 60000.0, true);
         self.restart_samples(from_row);
         self.samples_running = false;
         while b.tick < end {
@@ -278,7 +288,9 @@ impl AudioSystem {
             playback.lookahead = ahead < 0 ? 0 : ahead;
             playback.update(played, b.tick < start ? start : b.tick, true);
             self.sequencer_events(keep_tracks(playback.events, tracks));
-            self.sample_playback(played, b.tick < start ? start : b.tick, true, b.bpm);
+            // Clips starting before the next block are stamped onto their frame.
+            let next_tick: i64 = b.tick_at(b.frames + bounce_block());
+            self.sample_playback(played, next_tick > end ? end : next_tick, true, b.bpm);
             self.bounce_block_render(&mut b);
             b.frames = b.frames + bounce_block();
             b.tick = b.tick_at(b.frames);
@@ -293,8 +305,21 @@ impl AudioSystem {
     }
 
     /// Release held notes, render the tail until the mix is quiet (at most
-    /// `tail_seconds`), restore playback state and restart the device. Returns
-    /// the interleaved stereo frames rendered.
+    /// `tail_seconds`; 0 = no tail), restore playback state and restart the
+    /// device. Returns the interleaved stereo frames kept (from the last pass
+    /// started with `bounce_next_pass`, or all of them).
+    /// Start another pass over the same area: plugins, held notes and tails
+    /// carry on from the last one (nothing is reset), the transport beat
+    /// restarts at the area's start, and only audio from here on is kept.
+    pub fn bounce_next_pass(self: &mut Self, job: &mut Bounce) -> void {
+        var b: Bounce = Bounce {}; b = job;
+        b.pass_start = b.next_start; b.pass_base = -1;
+        // Keep from the frame the area restarts on (frame 0 is tick 0); the
+        // block in progress may already have run a little past it.
+        let frame: i64 = b.next_start * b.rate / (wide(b.bpm) * 1000);
+        b.capture_from = frame * 2 < b.samples.len() ? frame * 2 : b.samples.len();
+        job = b;
+    }
     pub fn bounce_finish(self: &mut Self, job: &mut Bounce, source: &SequenceTable, tail_seconds: i64) -> list<f32> {
         // Fields of a borrowed struct are reached through a local copy.
         var b: Bounce = Bounce {}; b = job;
@@ -303,7 +328,8 @@ impl AudioSystem {
         self.sequencer_events(b.playback.events);
         self.scheduling = false;
         let limit: i64 = tail_seconds * b.rate;
-        let quiet_needed: i64 = b.rate / 4;
+        // Quiet = below about -90 dBFS for half a second.
+        let quiet_needed: i64 = b.rate / 2;
         var quiet: i64 = 0; var rendered: i64 = 0;
         while rendered < limit && quiet < quiet_needed {
             self.bounce_block_render(&mut b);
@@ -315,16 +341,20 @@ impl AudioSystem {
                 if l > peak { peak = l; } if 0.0f - l > peak { peak = 0.0f - l; }
                 if r > peak { peak = r; } if 0.0f - r > peak { peak = 0.0f - r; }
             }
-            quiet = peak < 0.0001f ? quiet + bounce_block() : 0;
+            quiet = peak < 0.0000316f ? quiet + bounce_block() : 0;
         }
         // Drop the quiet end the tail search rendered.
         var keep: i64 = b.samples.len() - (quiet > 0 ? quiet - quiet % bounce_block() : 0) * 2;
         if keep < 0 { keep = 0; }
         var out: list<f32> = [];
-        for i in 0..keep { out.push(b.samples[i]); }
+        let first: i64 = b.capture_from < keep ? b.capture_from : keep;
+        for i in first..keep { out.push(b.samples[i]); }
+        // The next sync_transport resends the sequencer's own position.
+        self.output.transport(f64(b.bpm), 0.0, false);
+        self.transport_output = 0;
         b.samples = [];
         self.output.panic();
-        self.samples_running = false;
+        self.samples_running = false; self.stamp_samples = false;
         b.block.close();
         if b.restart { self.output.start(); }
         if b.worker { self.midi = MidiController::start_selected(self.midi_id, self.output.handle); }
@@ -398,9 +428,26 @@ impl AudioSystem {
         }
         let previous: list<SamplePlacement> = self.sample_placements;
         var updated: list<SamplePlacement> = [];
+        // Stamped starts are posted in frame order (one lane, nondecreasing).
+        var stamped: list<SamplePlacement> = []; var frames: list<i64> = [];
         for item in previous {
             var placement: SamplePlacement = item;
-            if placement.next <= tick {
+            if self.stamp_samples && self.scheduling && placement.next < tick {
+                if tick - placement.next < placement.duration {
+                    let at: i64 = self.frame_of(placement.next);
+                    var index: i64 = 0;
+                    while index < frames.len() && frames[index] <= at { index = index + 1; }
+                    var kept: list<SamplePlacement> = []; var kept_frames: list<i64> = [];
+                    for i in 0..stamped.len() {
+                        if i == index { kept.push(placement); kept_frames.push(at); }
+                        kept.push(stamped[i]); kept_frames.push(frames[i]);
+                    }
+                    if index == stamped.len() { kept.push(placement); kept_frames.push(at); }
+                    stamped = kept; frames = kept_frames;
+                }
+                placement.next = placement.next + period;
+            }
+            else if !self.stamp_samples && placement.next <= tick {
                 if tick - placement.next >= period { placement.next = placement.next + (tick - placement.next) / period * period; }
                 let elapsed: i64 = tick - placement.next;
                 if elapsed < placement.duration {
@@ -411,6 +458,14 @@ impl AudioSystem {
                 placement.next = placement.next + period;
             }
             updated.push(placement);
+        }
+        for i in 0..stamped.len() {
+            let placement: SamplePlacement = stamped[i];
+            let length: i64 = placement.duration * placement.rate / (wide(bpm) * 1000);
+            if length > 0 {
+                self.output.post(AudioEvent { kind: AudioEventKind::PlaySample, sample: placement.sample, source: placement.track,
+                    midi: AudioMidiEvent { note: placement.head, velocity: length }, frame: frames[i] }, 0);
+            }
         }
         self.sample_placements = updated; self.sample_last = tick; return true;
     }

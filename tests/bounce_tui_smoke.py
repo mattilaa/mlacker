@@ -1,4 +1,5 @@
-"""Record > Bounce selection to sample, from the pattern and the song matrix.
+"""Record > Bounce selection to sample, from the pattern and the song matrix,
+and the Audio menu's bounce options (tail, its length, second pass).
 
 Usage: bounce_tui_smoke.py <mlacker>. With audio hardware the bounce renders
 and adds "Bounce N.wav" to the Audio list; without it the status line says
@@ -18,6 +19,19 @@ def main():
     tui = Terminal()
     try:
         tui.read(0.8)
+        # Audio menu: the bounce options (tail on, 10 s, no second pass).
+        audio = F1 + b"l" * 5
+        frame = tui.send(audio, 0.6)
+        assert b"[x] Bounce tail" in frame and b"[ ] Bounce second pass (seamless loop)" in frame, frame[-4000:]
+        tui.send(b"\x1b")
+        frame = tui.send(audio + b"j" * 6 + b"\r", 0.6)
+        assert b"Bounce: tail up to 10 s, second pass" in frame, frame[-4000:]
+        frame = tui.send(audio + b"j" * 5 + b"l", 0.6)
+        assert b"[x] 10 s" in frame and b"[ ] 20 s" in frame, frame[-4000:]
+        frame = tui.send(b"jj\r", 0.6)
+        assert b"Bounce: tail up to 20 s, second pass" in frame, frame[-4000:]
+        frame = tui.send(audio + b"j" * 4 + b"\r", 0.6)
+        assert b"Bounce: no tail, second pass" in frame, frame[-4000:]
         tui.send(b"\x1b[108;6u")  # focus the pattern editor
         # No visual selection: the whole pattern.
         frame = tui.send(BOUNCE, 3.0)

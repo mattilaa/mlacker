@@ -4064,3 +4064,44 @@ fn bounce_renders_selected_rows_offline() {
     verify(!refused.ok());
     audio.release(); table.release(); clip.release();
 }
+
+#[test]
+fn bounce_tail_and_second_pass() {
+    var table: SequenceTable = SequenceTable::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    table.create_track_kind(false, true, area);
+    let track: i32 = i32(table.tracks.len()) - 1;
+    // A clip on rows 2-5: rows 1-4 of the area hold silence, then the clip.
+    var clip: AudioClip = AudioClip { source: clone("embedded.wav"), channels: 2, sample_rate: 8000, frames: 4000, frames_per_row: 1000 };
+    for i in 0..4000 { clip.samples.push(0.5f * f32(i % 100) / 100.0f); clip.samples.push(0.25f); }
+    for _i in 0..4 { clip.peaks.push(WavePeak { left: 500, right: 250 }); }
+    table.selected_row = 2; verify(table.insert_audio(clip, area));
+    let opened: result<AudioController, str8> = AudioController::new(8000, 128);
+    var audio: AudioSystem = AudioSystem {}; audio.output = opened.unwrap();
+    // No tail: exactly the area (rows 1-4 = 4000 frames, rounded up to a block).
+    var single: Bounce = audio.bounce_begin(120);
+    audio.bounce_segment(&mut single, table, 0, 4, [track]);
+    let one: list<f32> = audio.bounce_finish(&mut single, table, 0);
+    verify(one.len() / 2 >= 4000 && one.len() / 2 < 4000 + 64);
+    // The clip starts on its exact frame (row 2 = frame 2000), from its first
+    // sample, not on a block boundary: past its 3 ms (24-frame) fade-in,
+    // frame 2030 carries ramp value 30 (0.15 through the 0.25 master gain).
+    verify_eq(0.0f, one[1999 * 2]);
+    verify(one[2001 * 2] > 0.0f);
+    verify_eq(0.0375f, one[2030 * 2]);
+    verify_eq(0.0625f, one[2030 * 2 + 1]);
+    // Second pass: the same area again with nothing reset; only pass two is
+    // kept, aligned to the area's start like a single pass.
+    var twice: Bounce = audio.bounce_begin(120);
+    audio.bounce_segment(&mut twice, table, 0, 4, [track]);
+    audio.bounce_next_pass(&mut twice);
+    audio.bounce_segment(&mut twice, table, 0, 4, [track]);
+    let two: list<f32> = audio.bounce_finish(&mut twice, table, 0);
+    verify(two.len() / 2 >= 4000 && two.len() / 2 < 4000 + 128);
+    // The clip is stateless, so pass two sounds like pass one.
+    for f in 1990..2100 { verify_eq(one[f * 2], two[f * 2]); }
+    verify_eq(0.0f, two[1000 * 2]);
+    verify(two[2050 * 2] > 0.0f);
+    verify(!audio.scheduling);
+    audio.release(); table.release(); clip.release();
+}

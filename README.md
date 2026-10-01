@@ -267,7 +267,7 @@ dialog or text field has the keyboard.
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
-| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio |
+| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
 | Record | Play metronome, Extend pattern when playing, Metronome ▸, Bounce selection to sample |
@@ -1033,11 +1033,27 @@ aux effects and the master chain. The result is added to the Audio list as
   bounced. Each marked row plays the way song playback plays it, one after
   another without gaps, and rows without patterns are skipped.
 
-Notes sound on their exact frames, as during playback. At the end of the
-selection, held notes are released and clips stop. The bounce then runs on
-until the mix is quiet (effect and release tails, at most 10 s), and the
-silent end is trimmed. The audio device pauses while the bounce renders and
-resumes afterwards. Stop playback before bouncing.
+Notes and clips start on their exact frames. At the end of the selection,
+held notes are released and clips stop. The audio device pauses while the
+bounce renders and resumes afterwards. Stop playback before bouncing.
+
+The **Audio** menu sets how a bounce ends and starts:
+
+- **Bounce tail** (on by default): keep rendering after the selection, with
+  no new notes or clips, until the mix stays below about −90 dBFS for half a
+  second, or for at most **Bounce tail length** (5, 10 or 20 s). Release,
+  delay and reverb tails ring out into the clip, past the selection's last
+  row, and the silent end is trimmed. Turned off, the clip ends exactly at
+  the selection's end.
+- **Bounce second pass (seamless loop)** (off by default): render the
+  selection once to warm up delays, reverbs, choruses, vocoder envelopes and
+  so on, then render it again without resetting anything, and keep only the
+  second pass. Its start then carries the first pass's tail, so the clip
+  loops (or sits mid-song) without effects starting from silence. Each pass
+  restarts the plugins' transport beat at the selection's start, so
+  tempo-synced effects line up. For matrix rows, the warm-up is the same
+  rows, not what comes before them in the song. With **Bounce tail** on as
+  well, the clip also gets a tail at the end.
 
 #### Recording audio
 
