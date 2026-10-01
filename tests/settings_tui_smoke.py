@@ -66,6 +66,9 @@ def main():
         frame = send(b"\t\r")  # CPU cores choices come from the OS
         assert b"1 core (no worker threads)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
         send(b"j\r")  # All cores -> 1 core
+        frame = send(b"\t\r")  # Audio input: Disabled, System default, then the devices
+        assert b"AUHAL - System default" in frame
+        send(b"\x1b")
         frame = send(b"\t\r")
         assert b"Settings applied. Audio disabled." in frame
         frame = send(F1 + b"jjjj\r")

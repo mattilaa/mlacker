@@ -223,7 +223,7 @@ impl Mixer {
             let title: str8 = format!("{}{}", track.audio ? "A" : (track.instrument ? "I" : "M"), index + 1);
             surface.text(Rect::new(x, area.y, strip.width, 1), title, index == selected ? theme.accent : theme.foreground, bg);
             let pan: str8 = format!("P{}", track.pan);
-            if strip.width > 3 && !track.audio {
+            if strip.width > 3 {
                 surface.text(Rect::new(x + strip.width - 1, area.y, 1, 1), "R", track.record_armed ? 0xFFFFFF : theme.muted, track.record_armed ? 0xC02030 : bg);
             }
             if area.height > 1 { surface.text(Rect::new(x, area.y + 1, strip.width, 1), track.muted ? "MUTED" : "VOL", theme.foreground, bg); }

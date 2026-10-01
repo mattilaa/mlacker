@@ -2631,7 +2631,9 @@ fn tui_matrix_take_track_and_length() {
     table.selected_column = table.track_start(2); verify(table.recording_candidate() == 2);
     verify(table.set_record_armed(1, true) && table.recording_candidate() == 1);
     verify(table.set_record_armed(1, false) && table.recording_candidate() == 2);
-    table.create_track_kind(false, true, area); verify(!table.set_record_armed(3, true) && table.recording_candidate() == 0);
+    // An armed AUDIO track records audio, never a MIDI take.
+    table.create_track_kind(false, true, area); verify(table.set_record_armed(3, true) && table.recording_candidate() == 0);
+    verify(table.armed_audio_track() == 3);
     // The take ends at the nearest bar line and never cuts off a note.
     for r in 0..64 { table.selected_row = i32(r); table.clear_row(); }
     verify(table.take_length(0, 16) == 16 && table.take_length(15000 * 23, 16) == 16);
@@ -3949,4 +3951,157 @@ fn decode_input(text: str8) -> InputEvent {
     for i in 0..bytes.len() { event = decoder.feed(bytes.get(i)); }
     bytes.close();
     return event;
+}
+
+mod mlacker_ui::audio_take;
+use mlacker_ui::audio_take::AudioTake;
+
+#[test]
+fn audio_take_records_the_live_input_onto_an_armed_audio_track() {
+    var table: SequenceTable = SequenceTable::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    table.create_track_kind(false, true, area);
+    let track: i32 = i32(table.tracks.len()) - 1;
+    verify_eq_i32(-1, table.armed_audio_track());
+    // AUDIO tracks arm now: they record the audio input.
+    verify(table.set_record_armed(track, true));
+    verify_eq_i32(track, table.armed_audio_track());
+    let opened: result<AudioController, str8> = AudioController::new(8000, 128);
+    let output: AudioController = opened.unwrap();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(1024); let block: PcmBlock = allocated.unwrap();
+    var take: AudioTake = AudioTake::begin(track, 2);
+    verify(take.active());
+    // Before the count-in ends nothing records.
+    take.capture(output, false, -1);
+    verify(!take.started);
+    let latency: i64 = output.record_latency();
+    verify(latency > 0 && latency < 1024);
+    take.capture(output, true, 0);
+    verify(take.started);
+    for _b in 0..8 {
+        var chunk: list<f32> = [];
+        for _i in 0..1024 { chunk.push(0.5f); }
+        verify(output.input_feed(chunk, 1, 8000) == 0);
+        verify(output.process(block, 1024) == 0);
+        take.capture(output, true, 0);
+    }
+    let finished: result<AudioClip, str8> = take.finish(output, "Recording 1.wav", 120);
+    verify(finished.is_ok());
+    verify(!take.active());
+    let clip: AudioClip = finished.unwrap();
+    // Recording starts `latency` frames into the stream, so it lines up with
+    // what output frame 0 played; the input reader primes on its second block.
+    verify_eq_i64(8192 - latency, clip.frames);
+    verify_eq_i64(2, clip.channels);
+    verify_eq(0.5f, clip.samples[clip.samples.len() - 1]);
+    verify_eq(0.0f, clip.samples[0]);
+    verify(table.place_audio(track, 2, clip, area));
+    let placed: SequenceTrack = table.tracks[track];
+    verify_eq_i64(1, placed.instances.len());
+    let instance: AudioInstance = placed.instances[0];
+    verify_eq_i32(2, instance.start_row);
+    // A second take over the same rows does not fit there.
+    verify(!table.place_audio(track, 3, clip, area));
+    // A take stopped before it started records nothing.
+    var empty: AudioTake = AudioTake::begin(track, 0);
+    let nothing: result<AudioClip, str8> = empty.finish(output, "Recording 2.wav", 120);
+    verify(nothing.is_err());
+    block.close(); output.close(); clip.release(); table.release();
+}
+
+mod mlacker_ui::bounce;
+use mlacker_ui::bounce::Bounce;
+
+#[test]
+fn bounce_renders_selected_rows_offline() {
+    var table: SequenceTable = SequenceTable::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    table.create_track_kind(false, true, area);
+    let track: i32 = i32(table.tracks.len()) - 1;
+    // 4 rows of a constant clip from row 1 (1000 frames per row at 8 kHz, 120 BPM).
+    var clip: AudioClip = AudioClip { source: clone("embedded.wav"), channels: 2, sample_rate: 8000, frames: 4000, frames_per_row: 1000 };
+    for _i in 0..4000 { clip.samples.push(0.5f); clip.samples.push(0.25f); }
+    for _i in 0..4 { clip.peaks.push(WavePeak { left: 500, right: 250 }); }
+    table.selected_row = 1; verify(table.insert_audio(clip, area));
+    let opened: result<AudioController, str8> = AudioController::new(8000, 128);
+    var audio: AudioSystem = AudioSystem {}; audio.output = opened.unwrap();
+    // Rows 2-3 (index 1 and 2): 2000 frames of the clip through the master
+    // gain (0.25), then a quiet tail that is trimmed.
+    var job: Bounce = audio.bounce_begin(120);
+    verify(job.ok());
+    // The demo MIDI tracks would add the preview tone: bounce only the clip's.
+    audio.bounce_segment(&mut job, table, 1, 3, [track]);
+    let rendered: list<f32> = audio.bounce_finish(&mut job, table, 2);
+    let frames: i64 = rendered.len() / 2;
+    verify(frames >= 2000 && frames <= 2000 + 128);
+    verify_eq(0.125f, rendered[1000 * 2]);
+    verify_eq(0.0625f, rendered[1000 * 2 + 1]);
+    verify(!audio.scheduling);
+    // Only the tracks listed play: leaving the clip's track out is silence.
+    var other: Bounce = audio.bounce_begin(120);
+    // (The demo MIDI tracks would play the preview tone: keep only a second,
+    // empty AUDIO track.)
+    table.create_track_kind(false, true, area);
+    var tracks: list<i32> = [i32(table.tracks.len()) - 1];
+    verify(tracks[0] != track);
+    audio.bounce_segment(&mut other, table, 1, 3, tracks);
+    let silent: list<f32> = audio.bounce_finish(&mut other, table, 2);
+    var loudest: f32 = 0.0f;
+    for v in silent { if v > loudest { loudest = v; } }
+    verify_eq(0.0f, loudest);
+    verify(silent.len() / 2 >= 2000);
+    // Two segments follow each other without a gap.
+    var joined: Bounce = audio.bounce_begin(120);
+    audio.bounce_segment(&mut joined, table, 1, 2, [track]);
+    audio.bounce_segment(&mut joined, table, 2, 3, [track]);
+    let both: list<f32> = audio.bounce_finish(&mut joined, table, 2);
+    verify(both.len() / 2 >= 2000);
+    verify_eq(0.125f, both[990 * 2]);
+    verify_eq(0.125f, both[1010 * 2]);
+    // No audio: the bounce explains instead of rendering.
+    var none: AudioSystem = AudioSystem {};
+    let refused: Bounce = none.bounce_begin(120);
+    verify(!refused.ok());
+    audio.release(); table.release(); clip.release();
+}
+
+#[test]
+fn bounce_tail_and_second_pass() {
+    var table: SequenceTable = SequenceTable::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    table.create_track_kind(false, true, area);
+    let track: i32 = i32(table.tracks.len()) - 1;
+    // A clip on rows 2-5: rows 1-4 of the area hold silence, then the clip.
+    var clip: AudioClip = AudioClip { source: clone("embedded.wav"), channels: 2, sample_rate: 8000, frames: 4000, frames_per_row: 1000 };
+    for i in 0..4000 { clip.samples.push(0.5f * f32(i % 100) / 100.0f); clip.samples.push(0.25f); }
+    for _i in 0..4 { clip.peaks.push(WavePeak { left: 500, right: 250 }); }
+    table.selected_row = 2; verify(table.insert_audio(clip, area));
+    let opened: result<AudioController, str8> = AudioController::new(8000, 128);
+    var audio: AudioSystem = AudioSystem {}; audio.output = opened.unwrap();
+    // No tail: exactly the area (rows 1-4 = 4000 frames, rounded up to a block).
+    var single: Bounce = audio.bounce_begin(120);
+    audio.bounce_segment(&mut single, table, 0, 4, [track]);
+    let one: list<f32> = audio.bounce_finish(&mut single, table, 0);
+    verify(one.len() / 2 >= 4000 && one.len() / 2 < 4000 + 64);
+    // The clip starts on its exact frame (row 2 = frame 2000), from its first
+    // sample, not on a block boundary: past its 3 ms (24-frame) fade-in,
+    // frame 2030 carries ramp value 30 (0.15 through the 0.25 master gain).
+    verify_eq(0.0f, one[1999 * 2]);
+    verify(one[2001 * 2] > 0.0f);
+    verify_eq(0.0375f, one[2030 * 2]);
+    verify_eq(0.0625f, one[2030 * 2 + 1]);
+    // Second pass: the same area again with nothing reset; only pass two is
+    // kept, aligned to the area's start like a single pass.
+    var twice: Bounce = audio.bounce_begin(120);
+    audio.bounce_segment(&mut twice, table, 0, 4, [track]);
+    audio.bounce_next_pass(&mut twice);
+    audio.bounce_segment(&mut twice, table, 0, 4, [track]);
+    let two: list<f32> = audio.bounce_finish(&mut twice, table, 0);
+    verify(two.len() / 2 >= 4000 && two.len() / 2 < 4000 + 128);
+    // The clip is stateless, so pass two sounds like pass one.
+    for f in 1990..2100 { verify_eq(one[f * 2], two[f * 2]); }
+    verify_eq(0.0f, two[1000 * 2]);
+    verify(two[2050 * 2] > 0.0f);
+    verify(!audio.scheduling);
+    audio.release(); table.release(); clip.release();
 }

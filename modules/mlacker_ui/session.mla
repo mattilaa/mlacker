@@ -108,12 +108,13 @@ impl SessionData {
     /// Construct a replacement without touching the running session.
     pub fn prepare_audio(self: SessionData, source: &AudioSystem) -> result<AudioSystem, str8> {
         var current: AudioSystem = AudioSystem {}; current = source;
-        var next: AudioSystem = AudioSystem { midi_id: current.midi_id, output_id: current.output_id, hardware_requested: current.hardware_requested, requested_buffer_frames: current.requested_buffer_frames, requested_sample_rate: current.requested_sample_rate };
+        var next: AudioSystem = AudioSystem { midi_id: current.midi_id, output_id: current.output_id, input_id: current.input_id, hardware_requested: current.hardware_requested, requested_buffer_frames: current.requested_buffer_frames, requested_sample_rate: current.requested_sample_rate };
         // A failed initial device open is not a request for silent/offline audio.
         let hardware: bool = current.hardware_requested;
         let opened: result<AudioController, str8> = hardware ? AudioController::open_at_rate(current.output_id, current.requested_buffer_frames, current.requested_sample_rate) : AudioController::new(current.requested_sample_rate == 0 ? 48000 : current.requested_sample_rate, current.requested_buffer_frames);
         if opened.is_err() { return Err<AudioSystem, str8>("Cannot prepare session audio output"); }
         next.output = opened.unwrap();
+        if next.input_id != -2 && next.output.input_open(next.input_id) != 0 { next.input_id = -2; }
         let plugins: list<PluginSnapshot> = self.plugins;
         for plugin in plugins {
             if plugin.slot >= 41 { next.insert_paths.push(clone(plugin.path)); }
@@ -768,13 +769,17 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
-        // Hand-set slice markers of sampler pads.
-        let marked: bool = !self.reading && audio.pad_markers.len() > 0;
+        // Instrument tracks taking an AUDIO track as their plugin's input.
+        let inputs_routed: bool = !self.reading && library.has_input_routes();
+        // Hand-set slice markers of sampler pads (written, perhaps empty,
+        // whenever INSTRUMENT_INPUTS follows).
+        let marked: bool = !self.reading && (audio.pad_markers.len() > 0 || inputs_routed);
         // Plugin aux outputs routed away from their instrument's main output.
         let aux_routed: bool = !self.reading && (library.has_aux_routes() || marked);
         // Every extension is written when a later one is, so the chain stays
         // in order; MASTER_BUS precedes MATRIX_LOOPS, which precedes
-        // AUX_OUTPUTS, which precedes PAD_MARKERS.
+        // AUX_OUTPUTS, which precedes PAD_MARKERS, which precedes
+        // INSTRUMENT_INPUTS.
         let mastered: bool = mastered_view || looped || aux_routed;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
         // A project session (1.2) keeps samples and plugin state in files.
@@ -1180,6 +1185,34 @@ impl SessionCodec {
                     previous = frame; frames.push(frame);
                 }
                 markers.push(PadMarkers { slot: marker_slot, pad: marker_pad, frames: frames });
+            }
+        }
+        // Optional INSTRUMENT_INPUTS extension: per pattern track, the AUDIO
+        // track (index + 1) feeding its instrument's audio input, -1 for the
+        // live audio input, or 0.
+        let inputs_extension: bool = self.reading ? self.reader.remaining() > 0 : inputs_routed;
+        if inputs_extension && !self.failed {
+            let tag: str8 = self.text("INSTRUMENT_INPUTS"); if tag != "INSTRUMENT_INPUTS" { self.failed = true; } if self.reading { free(tag); }
+            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
+            for p in 0..patterns.len() {
+                if self.failed { break; }
+                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
+                let track_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
+                if track_count != entry.data.tracks.len() { self.failed = true; break; }
+                var tracks: list<SequenceTrack> = [];
+                for t in 0..track_count {
+                    var track: SequenceTrack = entry.data.tracks[t];
+                    let source: i32 = self.number(track.input, -1, track_count);
+                    if source - 1 == i32(t) { self.failed = true; }
+                    if self.reading { track.input = source; }
+                    tracks.push(track);
+                }
+                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
+            }
+            if self.reading && !self.failed {
+                library.patterns = updated;
+                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
+                library.table.release(); library.table = entry.data.copy_pattern();
             }
         }
         if state.editor_slot > 32 {

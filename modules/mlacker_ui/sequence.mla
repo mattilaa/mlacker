@@ -188,6 +188,11 @@ pub struct SequenceTrack {
     /// bus - 1 (Out 2 first). -1 (and a missing entry) = with the main
     /// output, 0 = master, otherwise the destination track index + 1.
     var aux_outputs: list<i32>;
+    /// Instrument tracks: the audio input of the instrument (e.g. a vocoder's
+    /// modulator). 0 = none, -1 = the live audio input (Settings), otherwise
+    /// the AUDIO track index + 1 whose clips feed it, taken before that
+    /// track's inserts and fader.
+    var input: i32;
     var instrument: bool; var instrument_id: i32;
     var note_lines: i32{1};
     var instances: list<AudioInstance>;
@@ -436,7 +441,7 @@ pub fn mixer_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
     var track: SequenceTrack = self.tracks[index];
     let arm: bool = (event.code == 82 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 114 || event.code == 82));
     if arm {
-        if track.audio { return false; }
+        // An armed AUDIO track records the audio input (Settings).
         track.record_armed = !track.record_armed; self.replace_track(index, track); return true;
     }
     let down: bool = (event.code == 74 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 106 || event.code == 74));
@@ -456,12 +461,42 @@ pub fn mixer_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
     }
     return true;
 }
-/// Arm or disarm track `index` for recording; AUDIO tracks never arm.
+/// Arm or disarm track `index` for recording: MIDI notes on a MIDI or
+/// Instrument track, the audio input on an AUDIO track.
 pub fn set_record_armed(self: &mut Self, index: i32, armed: bool) -> bool {
     if index < 0 || index >= self.tracks.len() { return false; }
     var track: SequenceTrack = self.tracks[index];
-    if track.audio { return false; }
     track.record_armed = armed; self.replace_track(index, track); return true;
+}
+/// Mute or unmute track `index` (as Track > Mute does for the cursor track).
+pub fn set_muted(self: &mut Self, index: i32, muted: bool) -> bool {
+    if index < 0 || index >= self.tracks.len() { return false; }
+    var track: SequenceTrack = self.tracks[index];
+    track.muted = muted; self.replace_track(index, track); return true;
+}
+/// The first armed AUDIO track, which an audio take records into; -1 when
+/// none is armed.
+pub fn armed_audio_track(self: SequenceTable) -> i32 {
+    for i in 0..self.tracks.len() { let track: SequenceTrack = self.tracks[i]; if track.audio && track.record_armed { return i32(i); } }
+    return -1;
+}
+/// Place `clip` on AUDIO track `index` at `row` (as `insert_audio` does at the
+/// cursor), leaving the cursor where it was.
+pub fn place_audio(self: &mut Self, index: i32, row: i32, source: &AudioClip, area: Rect) -> bool {
+    if index < 0 || index >= self.tracks.len() { self.error = "No such track"; return false; }
+    var clip: AudioClip = AudioClip {}; clip = source;
+    // Restore the cursor by track and column within it: placing the
+    // track's first clip adds a column.
+    let previous: i32 = self.active_track();
+    let within: i32 = previous >= 0 ? self.selected_column - self.track_start(previous) : 0;
+    let column: i32 = self.selected_column; let selected: i32 = self.selected_row;
+    self.selected_column = self.track_start(index); self.selected_row = row;
+    let placed: bool = self.insert_audio(clip, area);
+    let error: str8 = self.error;
+    self.selected_column = previous >= 0 ? self.track_start(previous) + within : column;
+    self.selected_row = selected; self.reconcile(area);
+    self.error = error;
+    return placed;
 }
 /// Track a matrix take records into: an armed MIDI track, else the MIDI track
 /// under the cursor, else the first MIDI track; -1 when there is none.
@@ -688,6 +723,35 @@ pub fn set_track_output(self: &mut Self, index: i32, destination: i32) -> bool {
     }
     self.revision = self.revision + 1; self.error = ""; return true;
 }
+/// Validated audio input of the instrument track `index`: 0 = none, -1 = the
+/// live audio input, otherwise the AUDIO track index + 1 feeding it. A stale
+/// route reads as 0.
+pub fn track_input(self: SequenceTable, index: i32) -> i32 {
+    if index < 0 || index >= self.tracks.len() { return 0; }
+    let track: SequenceTrack = self.tracks[index];
+    if track.instrument && track.input == -1 { return -1; }
+    if !track.instrument || track.input <= 0 || track.input > self.tracks.len() || track.input - 1 == index { return 0; }
+    let source: SequenceTrack = self.tracks[track.input - 1];
+    return source.audio ? track.input : 0;
+}
+/// Feed an AUDIO track (index + 1), the live audio input (-1) or nothing (0)
+/// into the instrument of track `index`. Tracks sharing one instrument
+/// instance share its input.
+pub fn set_track_input(self: &mut Self, index: i32, source: i32) -> bool {
+    if index < 0 || index >= self.tracks.len() || source < -1 || source > self.tracks.len() { return false; }
+    let selected: SequenceTrack = self.tracks[index];
+    if !selected.instrument || selected.instrument_id < 1 { self.error = "Select an Instrument track playing a plugin"; return false; }
+    if source > 0 {
+        let feeder: SequenceTrack = self.tracks[source - 1];
+        if !feeder.audio { self.error = "Only an AUDIO track can feed an instrument"; return false; }
+    }
+    let old: list<SequenceTrack> = self.tracks;
+    for i in 0..old.len() {
+        var track: SequenceTrack = old[i];
+        if track.instrument && track.instrument_id == selected.instrument_id { track.input = source; self.replace_track(i32(i), track); }
+    }
+    self.revision = self.revision + 1; self.error = ""; return true;
+}
 /// Validated route of aux bus `bus` of the instrument track `index` (see
 /// `set_aux_output`). A route to a missing or non-audio track reads as -1.
 pub fn track_aux_output(self: SequenceTable, index: i32, bus: i32) -> i32 {
@@ -738,7 +802,7 @@ pub fn set_instrument_output(self: &mut Self, index: i32, id: i32) -> bool {
     for i in 0..self.tracks.len() {
         let other: SequenceTrack = self.tracks[i];
         if i != index && id > 0 && other.instrument && other.instrument_id == id {
-            track.inserts = other.inserts; track.sends = other.copy_sends(); track.output = other.output; track.aux_outputs = other.aux_outputs;
+            track.inserts = other.inserts; track.sends = other.copy_sends(); track.output = other.output; track.aux_outputs = other.aux_outputs; track.input = other.input;
         }
     }
     self.replace_track(index, track); self.rebuild_columns();
@@ -751,6 +815,8 @@ fn remap_outputs(self: &mut Self, removed: i32) -> void {
         var track: SequenceTrack = old[i];
         if track.output == removed + 1 { track.output = 0; }
         else if track.output > removed + 1 { track.output = track.output - 1; }
+        if track.input == removed + 1 { track.input = 0; }
+        else if track.input > removed + 1 { track.input = track.input - 1; }
         var aux: list<i32> = [];
         for i in 0..track.aux_outputs.len() {
             let destination: i32 = track.aux_outputs[i];
@@ -1391,7 +1457,7 @@ pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
     }
     var tracks: list<SequenceTrack> = []; let source_tracks: list<SequenceTrack> = self.tracks;
     for track in source_tracks {
-        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, aux_outputs: track.aux_outputs, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
+        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, aux_outputs: track.aux_outputs, input: track.input, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
             automation: track.copy_automation() });
     }
     var notes: array<str8, 128> = {};
@@ -1963,7 +2029,7 @@ pub fn append_tracks_from(self: &mut Self, source: &SequenceTable, area: Rect, s
         free(copy.name); copy.name = clone(track.name);
         copy.muted = track.muted; copy.volume = track.volume; copy.pan = track.pan;
         copy.instrument = track.instrument; copy.instrument_id = track.instrument_id;
-        copy.sends = track.copy_sends(); copy.inserts = track.inserts; copy.output = track.output; copy.aux_outputs = track.aux_outputs;
+        copy.sends = track.copy_sends(); copy.inserts = track.inserts; copy.output = track.output; copy.aux_outputs = track.aux_outputs; copy.input = track.input;
         // Clips live in the track, not in its cells: a merged lane plays its
         // audio, not just its LEN column.
         copy.instances = track.copy_audio();

@@ -20,6 +20,7 @@ pub enum Action : i32 {
     RenameTrack = 20, CreateMidiTrack = 21, DeleteTrack = 22, DuplicateTrack = 23,
     ClearTrack = 24, MuteTrack = 25, ConfigureCcColumn = 26, AddCcColumn = 27,
     CreateAudioTrack = 28, CreateInstrumentTrack = 29, SetOutputChannel = 30, RoutePluginOutput = 168,
+    SetInstrumentInput = 169,
     AddNoteLine = 80, RemoveNoteLine = 81, DuplicateNoteLine = 82,
     CollapseNoteLines = 83, ExpandNoteLines = 84, RemoveCcColumn = 85,
     // Pattern
@@ -40,6 +41,8 @@ pub enum Action : i32 {
     LoadEffectPreset = 140, SaveEffectPreset = 141,
     // Record
     ToggleMetronome = 150, ToggleExtendRecording = 151, MetronomeOnRecording = 152, MetronomeAlways = 153,
+    BounceSelection = 170, ToggleBounceTail = 171, BounceTail5 = 172, BounceTail10 = 173, BounceTail20 = 174,
+    ToggleBounceSecondPass = 175,
     // Follow-ups, not in a menu: an insert slot's Enter / Backspace, a chosen
     // output channel, drum key, matrix pattern, pasting a matrix cell, and the
     // Sampler pane's Enter / Backspace / o / E / W / R on a slot.

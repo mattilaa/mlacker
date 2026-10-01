@@ -1,0 +1,73 @@
+/// \file bounce.mla
+/// \brief Offline bounce: render rows of patterns through the whole mix.
+///
+/// A bounce stops the audio device and renders the sequencer itself, faster
+/// than real time: each segment is a table (a pattern, or a merged song matrix
+/// row) played from one row to another. Notes go out stamped with the frame
+/// they sound on, exactly as during playback, and the master output is
+/// collected block by block. `finish` lets the mix ring out (effect and
+/// release tails), then restarts the device. Every plugin, insert, send, aux
+/// effect and the master chain run as they do live.
+
+mod std::audio;
+mod mlacker_ui::note_playback;
+use std::audio::PcmBlock;
+use mlacker_ui::note_playback::NotePlayback;
+use mlacker_ui::note_playback::NoteEvent;
+
+/// The rendering itself is `AudioSystem::bounce_begin`, `bounce_segment`
+/// and `bounce_finish` (audio_controller.mla); this holds a bounce's state.
+
+/// Frames per rendered block: small, so clips started between blocks land
+/// within about a millisecond.
+pub fn bounce_block() -> i64 { return 64; }
+
+/// Record menu choices for a bounce.
+pub struct BounceOptions {
+    /// Keep rendering past the selection until the mix is quiet.
+    var tail: bool{true};
+    /// Longest tail in seconds.
+    var tail_seconds: i64{10};
+    /// Render the area twice without a reset and keep only the second pass,
+    /// so its start carries the first pass's tail (a seamless loop).
+    var second_pass: bool;
+};
+
+pub struct Bounce {
+    /// Interleaved stereo output at `rate`.
+    var samples: list<f32>;
+    var rate: i64; var bpm: i32;
+    /// Sequencer tick the next block starts on, and frames rendered since
+    /// `begin`: one continuous timeline, frame 0 at tick 0.
+    var tick: i64; var frames: i64;
+    /// Tick the next segment's first row falls on: where the last one ended.
+    var next_start: i64;
+    /// The pass being rendered: the tick it started on, and the area tick
+    /// (row * 15000) of its first segment's first row, -1 until it has one.
+    /// Each pass restarts the plugins' transport beat at the area's start.
+    var pass_start: i64; var pass_base: i64{-1};
+    /// Index in `samples` where the kept audio begins (the second pass).
+    var capture_from: i64;
+    var playback: NotePlayback;
+    var block: PcmBlock;
+    var restart: bool; var worker: bool;
+    var error: str8{""};
+};
+
+impl Bounce {
+    pub fn ok(self: Bounce) -> bool { return self.error == ""; }
+    /// Sequencer tick at `frames` into the bounce (60000 ticks per beat).
+    pub fn tick_at(self: Bounce, frames: i64) -> i64 { return frames * wide(self.bpm) * 1000 / self.rate; }
+}
+
+/// The events of the tracks in `tracks` (all when it is empty).
+pub fn keep_tracks(events: list<NoteEvent>, tracks: list<i32>) -> list<NoteEvent> {
+    if tracks.len() == 0 { return events; }
+    var kept: list<NoteEvent> = [];
+    for event in events {
+        var keep: bool = false;
+        for index in tracks { if wide(index) == event.track { keep = true; } }
+        if keep { kept.push(event); }
+    }
+    return kept;
+}

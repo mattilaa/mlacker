@@ -67,6 +67,17 @@ impl PatternLibrary {
         }
         return routed;
     }
+    /// True when any instrument track in any pattern takes an audio input;
+    /// the session then writes INSTRUMENT_INPUTS.
+    pub fn has_input_routes(self: PatternLibrary) -> bool {
+        var routed: bool = false; let patterns: list<PatternEntry> = self.patterns;
+        for entry in patterns {
+            var data: SequenceTable = SequenceTable {}; data = entry.id == self.active_id ? self.table : entry.data;
+            let tracks: list<SequenceTrack> = data.tracks;
+            for track in tracks { if track.input != 0 { routed = true; } }
+        }
+        return routed;
+    }
     /// True when any instrument track in any pattern routes an aux output bus
     /// away from its main output; the session then writes AUX_OUTPUTS.
     pub fn has_aux_routes(self: PatternLibrary) -> bool {

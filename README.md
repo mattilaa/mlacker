@@ -3,8 +3,9 @@
 
 Terminal tracker built with MLang, the MLang `tui` widget library, macOS AUHAL,
 and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
-(imported as `mlacker_ui::*`); the VST3 effects and the Mla Drum and Mla Sampler
-instruments are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+(imported as `mlacker_ui::*`); the VST3 effects, the Mla Drum and Mla Sampler
+instruments and the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
+own carrier synth) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run
@@ -264,12 +265,12 @@ dialog or text field has the keyboard.
 | File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
-| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs |
+| Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
-| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio |
+| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
-| Record | Play metronome, Extend pattern when playing, Metronome ▸ |
+| Record | Play metronome, Extend pattern when playing, Metronome ▸, Bounce selection to sample |
 
 ## Song matrix
 
@@ -290,6 +291,7 @@ pattern list.
 | `r` | Loop the cell's pattern down its lane, or stop it looping |
 | `s` | Split: end a loop (or a long pattern) at this row |
 | `Shift+R` | Arm the cell's pattern for recording, or disarm it |
+| `v` | Mark rows from here to the cursor for **Record → Bounce selection**, or clear the mark |
 | `Space` / `Ctrl+P` | Play the matrix from the cursor row, or stop |
 | `Shift+M` | Close the matrix |
 
@@ -923,6 +925,25 @@ Sampler's Send A and Send B, is a send: it defaults to aux effect channel 1,
 that default again). Routes belong to the Instrument track in each
 pattern, like its output channel, and `.mlack` saves them.
 
+#### Instrument inputs
+
+An instrument with an audio input, such as [Mla Vocoder](plugins/mla_vocoder),
+can take an AUDIO track's clips as that input. Put the voice or sample on an
+AUDIO track, load the plugin on an Instrument track, then use **Track → Set
+instrument input** on the Instrument track and pick the AUDIO track (or `none`).
+The Instrument track's notes play the plugin while the clips feed it. For
+example, Mla Vocoder vocodes the voice with the chords you write. Choose
+`Audio input` instead to feed it the live input from **File → Settings → Audio
+input**, for example a microphone into Mla Vocoder played from a MIDI keyboard.
+
+The input is taken from the AUDIO track's clips before that track's inserts
+and fader, and the track still plays on its own channel. Pull its fader down
+(or mute it) to hear only the instrument. An instrument with an input replaces
+what it is given with its output, so the input is not heard twice. Tracks
+sharing one instance share its input. The route belongs to the Instrument
+track in each pattern, and `.mlack` saves it (the `INSTRUMENT_INPUTS`
+extension).
+
 ### Destructive sample editing
 
 **Audio → Edit sample (destructive)**, or `e` in the Audio list, opens the selected
@@ -966,7 +987,9 @@ plugin PCM peaks, after the instrument fader and before the master chain. PCM
 meters share the meter style, update rate, and smooth decay. Tracks using the
 same loaded instance display the same cached stereo output readings.
 
-`Shift+R` in Mixer arms the selected MIDI/instrument track (red `R`). Press
+`Shift+R` in Mixer arms the selected track (red `R`). MIDI and Instrument tracks
+record MIDI, and AUDIO tracks record the audio input (see
+[Recording audio](#recording-audio)). Press
 Space to record from the selected row; press Space again to stop and enter the
 track name (Enter accepts, Esc keeps the old name). Each take targets one synth
 track, with up to 64 automatically added note lines. Notes on the same row are
@@ -993,6 +1016,64 @@ The live MIDI path monitors the synth during recording.
 While stopped, incoming notes still provide single-cell step entry on the armed
 track. Audio tracks do not record MIDI. Opening a modal editor stops a timed take.
 Volume is saved in `.mlack`; record-arm is transient and starts off on load.
+
+#### Bouncing
+
+**Record → Bounce selection to sample** renders part of the song offline,
+faster than real time, through the whole mix: instruments, inserts, sends,
+aux effects and the master chain. The result is added to the Audio list as
+`Bounce N.wav`, ready to place on an AUDIO track or to edit.
+
+- **In Pattern view**, a visual selection sets the rows, and a block selection
+  (`v`) also limits the bounce to the tracks it spans; whole-row selection
+  (`V`) keeps every track. Without a selection, the whole pattern is
+  bounced.
+- **In the song matrix** (when it has focus), `v` marks rows from the cursor.
+  Move to extend the mark, then bounce. Without a mark, the cursor row is
+  bounced. Each marked row plays the way song playback plays it, one after
+  another without gaps, and rows without patterns are skipped.
+
+Notes and clips start on their exact frames. At the end of the selection,
+held notes are released and clips stop. The audio device pauses while the
+bounce renders and resumes afterwards. Stop playback before bouncing.
+
+The **Audio** menu sets how a bounce ends and starts:
+
+- **Bounce tail** (on by default): keep rendering after the selection, with
+  no new notes or clips, until the mix stays below about −90 dBFS for half a
+  second, or for at most **Bounce tail length** (5, 10 or 20 s). Release,
+  delay and reverb tails ring out into the clip, past the selection's last
+  row, and the silent end is trimmed. Turned off, the clip ends exactly at
+  the selection's end.
+- **Bounce second pass (seamless loop)** (off by default): render the
+  selection once to warm up delays, reverbs, choruses, vocoder envelopes and
+  so on, then render it again without resetting anything, and keep only the
+  second pass. Its start then carries the first pass's tail, so the clip
+  loops (or sits mid-song) without effects starting from silence. Each pass
+  restarts the plugins' transport beat at the selection's start, so
+  tempo-synced effects line up. For matrix rows, the warm-up is the same
+  rows, not what comes before them in the song. With **Bounce tail** on as
+  well, the clip also gets a tail at the end.
+
+#### Recording audio
+
+An armed AUDIO track (`Shift+R` in Mixer) records the audio input chosen in
+**File → Settings → Audio input**. Press Space to play the pattern from the
+selected row. After the count-in (with **Play metronome** on), the take
+starts at that row. Press Space again to stop. The take becomes a sample,
+`Recording N.wav`, in the Audio list, placed on the armed track at the row
+where it started. If it would overlap a clip already there, it stays in the
+Audio list only. Sessions save it like any other sample.
+
+The take is shifted by the latency CoreAudio reports for the output and input
+devices, plus mlacker's input buffering, so it lines up with what you heard
+while playing along. The pattern keeps looping during a long take (audio takes
+do not extend it), and the take runs on across the loops. Only the first armed
+AUDIO track records, and a MIDI take on an armed MIDI or Instrument track can
+run at the same time. mlacker does not monitor the input itself. Use your
+interface's direct monitoring, or route the input into an instrument (see
+[Instrument inputs](#instrument-inputs)) to hear it processed. If Space reports
+that the armed track needs an audio input, choose one in Settings first.
 
 ### Output channels
 
@@ -1300,6 +1381,14 @@ preallocated, with sample offsets preserved by the native audio event queue.
    parallel. They are summed in slot order, so the mix sounds the same with any
    setting. The limit applies to running audio at once, without restarting the
    device.
+   **Audio input (AUHAL)** opens an input device (Disabled by default, the
+   system default, or a named device) that instruments can take as their input
+   (see [Instrument inputs](#instrument-inputs)). It runs on its own device
+   clock and is read about one buffer behind, resampled to the engine rate, so
+   it may be a different device from the output. It needs audio enabled.
+   macOS asks for microphone access for your terminal app the first time. If
+   it was denied, allow the terminal under System Settings → Privacy &
+   Security → Microphone, or the input stays silent.
 2. Choose **Effect → Master → Load master VST3**.
 3. Select a `.vst3` bundle, or type its full path into the dialog and press Enter.
    The chooser starts in `/Library/Audio/Plug-Ins/VST3`; user plugins are commonly

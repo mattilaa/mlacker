@@ -35,6 +35,11 @@ use mlacker_ui::transport::TransportStatus;
 mod mlacker_ui::sample_view;
 use mlacker_ui::sample_view::SampleView;
 mod mlacker_ui::audio_clip;
+mod mlacker_ui::audio_take;
+mod mlacker_ui::bounce;
+use mlacker_ui::bounce::Bounce;
+use mlacker_ui::bounce::BounceOptions;
+use mlacker_ui::audio_take::AudioTake;
 mod mlacker_ui::piano_dialog;
 mod mlacker_ui::song_matrix;
 mod mlacker_ui::pattern_picker;
@@ -109,7 +114,7 @@ fn menu_item(label: str8, action: Action, enabled: bool, keymap: &Keymap) -> Men
     return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: keys.shortcut_for(action) };
 }
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, keymap: &Keymap) -> MenuBar {
+fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, bounce: BounceOptions, keymap: &Keymap) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
@@ -183,7 +188,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                 menu_item("Clear pattern", Action::ClearTrack, true, keymap),
                                 menu_item("Delete", Action::DeleteTrack, true, keymap),
                                 // Last, so the items above keep their positions.
-                                menu_item("Route plugin outputs", Action::RoutePluginOutput, plugins, keymap)] },
+                                menu_item("Route plugin outputs", Action::RoutePluginOutput, plugins, keymap),
+                                menu_item("Set instrument input", Action::SetInstrumentInput, plugins, keymap)] },
                     Menu {title: "Pattern", items: [
                                 menu_item("Add pattern", Action::AddPattern, true, keymap),
                                 menu_item("Clone pattern", Action::ClonePattern, true, keymap),
@@ -203,7 +209,14 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item("Trim to selection", Action::TrimClip, true, keymap),
                                                 menu_item("Slice selection", Action::SliceClip, true, keymap),
                                                 menu_item("Reverse clip", Action::ReverseClip, true, keymap)]),
-                                menu_item("Remove audio", Action::RemoveAudio, true, keymap)] },
+                                menu_item("Remove audio", Action::RemoveAudio, true, keymap),
+                                // Bounce (Record > Bounce selection to sample) choices.
+                                menu_item(bounce.tail ? "[x] Bounce tail" : "[ ] Bounce tail", Action::ToggleBounceTail, true, keymap),
+                                MenuItem::submenu("Bounce tail length", [
+                                                menu_item(bounce.tail_seconds == 5 ? "[x] 5 s" : "[ ] 5 s", Action::BounceTail5, true, keymap),
+                                                menu_item(bounce.tail_seconds == 10 ? "[x] 10 s" : "[ ] 10 s", Action::BounceTail10, true, keymap),
+                                                menu_item(bounce.tail_seconds == 20 ? "[x] 20 s" : "[ ] 20 s", Action::BounceTail20, true, keymap)]),
+                                menu_item(bounce.second_pass ? "[x] Bounce second pass (seamless loop)" : "[ ] Bounce second pass (seamless loop)", Action::ToggleBounceSecondPass, true, keymap)] },
                     Menu {title: "Instrument", items: [
                                 menu_item("Add instrument", Action::AddInstrument, plugins, keymap),
                                 menu_item("Open VST3 editor", Action::OpenPluginEditor, plugins, keymap),
@@ -234,7 +247,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                         menu_item(extend ? "[x] Extend pattern when playing" : "[ ] Extend pattern when playing", Action::ToggleExtendRecording, true, keymap),
                         MenuItem::submenu("Metronome", [
                             menu_item(!metronome_always ? "[x] On recording" : "[ ] On recording", Action::MetronomeOnRecording, true, keymap),
-                            menu_item(metronome_always ? "[x] Always" : "[ ] Always", Action::MetronomeAlways, true, keymap)])] }
+                            menu_item(metronome_always ? "[x] Always" : "[ ] Always", Action::MetronomeAlways, true, keymap)]),
+                        menu_item("Bounce selection to sample", Action::BounceSelection, true, keymap)] }
             ]);
     // F1 File, F2 Edit, ... F9 Record, shown before each title.
     bar.shortcuts = true;
@@ -365,6 +379,7 @@ pub fn run() -> i32 {
     // parallel patterns share it. Only the mixer reads it.
     var mixer_table: SequenceTable = SequenceTable {};
     var play_metronome: bool = true; var extend_recording: bool = true; var metronome_always: bool = false;
+    var bounce_options: BounceOptions = BounceOptions {};
     // Spectrum analyzer and master bus (Ctrl+Shift+M), shown in the mixer's
     // pane. `spectrum_area` is where it was last painted, for the analysis.
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
@@ -374,7 +389,7 @@ pub fn run() -> i32 {
     var sampler: SamplerView = SamplerView {};
     // Shortcuts for menu actions; the menus label their items from it.
     var keymap: Keymap = Keymap::new(default_keymap());
-    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
     var input: InputDecoder = InputDecoder::new();
@@ -477,6 +492,9 @@ pub fn run() -> i32 {
     // none), whether a take is running into it, the pattern time where the
     // take began, and the track the take armed itself (-1 when it was armed).
     var matrix_armed_id: i32 = 0; var matrix_recording: bool = false;
+    // Audio take: the live input recorded onto an armed AUDIO track while the
+    // pattern plays; it becomes a sample when the transport stops.
+    var audio_take: AudioTake = AudioTake {}; var take_count: i32 = 0; var bounce_count: i32 = 0;
     var matrix_record_offset: i64 = 0; var matrix_auto_armed: i32 = -1;
     // The next matrix row, merged and scheduled ahead of time during a quiet
     // moment of the playing row, so the row change is a swap: merging at the
@@ -566,7 +584,7 @@ pub fn run() -> i32 {
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
-                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                             frame_rate.set(v.meter_fps, now_ms()); note_playback = NotePlayback {}; play_pattern = library.active_id;
                             instrument_editor.release();
                             instrument_editor.slot = v.editor_slot;
@@ -712,8 +730,18 @@ pub fn run() -> i32 {
             }
             let starting: bool = !transport.playing;
             if starting { library.table.recording_extend = extend_recording; library.table.start_recording(); }
+            if starting && !audio_take.active() {
+                let armed_audio: i32 = library.table.armed_audio_track();
+                if armed_audio >= 0 && midi.input_id == -2 {
+                    free(message); message = format!("A{} is armed: choose an audio input in File > Settings to record it", armed_audio + 1);
+                } else if armed_audio >= 0 && !midi.output.hardware_output() {
+                    free(message); message = format!("A{} is armed: recording audio needs audio enabled (File > Settings)", armed_audio + 1);
+                } else if armed_audio >= 0 {
+                    audio_take = AudioTake::begin(armed_audio, library.table.selected_row);
+                }
+            }
             transport.toggle(now_ms(), library.table.selected_row, library.table.recording_track >= 0 && extend_recording ? 2147483647 : i32(library.table.rows.len()));
-            if starting && library.table.recording_track >= 0 && play_metronome { transport.begin_count_in(); }
+            if starting && (library.table.recording_track >= 0 || audio_take.active()) && play_metronome { transport.begin_count_in(); }
             note_playback.start_row = transport.row;
             if transport.playing { midi.restart_samples(transport.row); }
             if !midi.sample_playback(library.table, transport.ticks, transport.playing && transport.count_in == 0, transport.bpm) {
@@ -1087,7 +1115,7 @@ pub fn run() -> i32 {
                 dirty = true;
             }
         }
-        transport.recording = library.table.recording_track >= 0;
+        transport.recording = library.table.recording_track >= 0 || audio_take.active();
         if song_playing {
             let previous: i32 = transport.row;
             if transport.advance(now, i32(song_table.rows.len())) { playback_dirty = true; }
@@ -1166,6 +1194,38 @@ pub fn run() -> i32 {
         // Notes go out a little ahead, stamped with the audio frame they sound
         // on, so a slow UI frame (a matrix row being merged) never delays one.
         midi.schedule_transport(transport.ticks, transport.bpm, transport.playing && transport.count_in == 0);
+        if audio_take.active() {
+            if transport.playing && !song_playing {
+                let ready: bool = transport.count_in == 0 && midi.scheduling;
+                audio_take.capture(midi.output, ready, ready ? midi.frame_of(wide(audio_take.row) * 15000) : -1);
+            } else {
+                // Stopped (or switched to the matrix): the take becomes a
+                // sample, placed where it started.
+                let track: i32 = audio_take.track; let row: i32 = audio_take.row;
+                take_count = take_count + 1;
+                let name: str8 = format!("Recording {}.wav", take_count);
+                let finished: result<AudioClip, str8> = audio_take.finish(midi.output, name, transport.bpm);
+                free(name); free(message);
+                if finished.is_err() { message = clone("Audio take cancelled: nothing recorded"); take_count = take_count - 1; }
+                else {
+                    let clip: AudioClip = finished.unwrap();
+                    let seconds: i64 = clip.frames * 10 / (clip.sample_rate > 0 ? clip.sample_rate : 1);
+                    let index: i32 = library.audio.add_clip(clip);
+                    if index < 0 { message = format!("Audio take lost: {}", library.audio.error); }
+                    else {
+                        let added: AudioClip = library.audio.samples[index];
+                        let label: str8 = base_name(added.source);
+                        if library.table.place_audio(track, row, added, terminal_bounds()) {
+                            message = format!("Recorded {}.{} s into A{} from row {}: {}", seconds / 10, seconds % 10, track + 1, row + 1, label);
+                        } else {
+                            message = format!("Recorded {} to the Audio list (not placed on A{}: {})", label, track + 1, library.table.error);
+                        }
+                        free(label);
+                    }
+                }
+                playback_dirty = true; dirty = true;
+            }
+        }
         let ahead: i64 = midi.lookahead_ticks(transport.bpm);
         note_playback.lookahead = ahead;
         // A matrix row followed by another one sends nothing past its end.
@@ -1235,10 +1295,13 @@ pub fn run() -> i32 {
                     // The core cap applies to running audio from its next block.
                     AudioController::set_render_threads(settings.cores.selected_id() < 0 ? 0 : settings.cores.selected_id());
                     let applied: result<i32, str8> = midi.configure_audio(settings.midi.selected_id(), settings.output.selected_id(), settings.buffer.selected_id(), settings.rate.selected_id(), library.audio.samples);
+                    let input_error: str8 = applied.is_err() ? "" : midi.set_input(settings.input.selected_id());
                     if applied.is_err() { settings.fail(applied.unwrap_err()); }
+                    else if input_error != "" { settings.fail(input_error); }
                     else {
                         free(message);
                         if !midi.output.hardware_output() { message = clone("Settings applied. Audio disabled."); }
+                        else if midi.input_id != -2 { message = format!("AUHAL: {} Hz / {} frames, audio input on. Settings applied.", midi.output.sample_rate(), midi.output.buffer_frames()); }
                         else { message = format!("AUHAL: {} Hz / {} frames. Settings applied.", midi.output.sample_rate(), midi.output.buffer_frames()); }
                     }
                 }
@@ -1996,6 +2059,11 @@ pub fn run() -> i32 {
                     free(message);
                     message = matrix.clipboard > 0 ? format!("Copied pattern {}", matrix.clipboard) : clone("Copied an empty cell");
                 }
+                else if action == 13 {
+                    free(message);
+                    message = matrix.mark_row >= 0 ? format!("Marking from matrix row {}: move to extend, then Record > Bounce selection (v clears)", matrix.mark_row + 1)
+                        : clone("Mark cleared");
+                }
                 else if action == 12 {
                     free(message);
                     let cover: SongCover = library.song_cover(matrix.row, matrix.lane);
@@ -2064,7 +2132,7 @@ pub fn run() -> i32 {
             if command != Action::None && command != Action::LoadInsert { adding_insert_track = -1; }
             if command == Action::Quit { running = false; }
             else if command == Action::Settings {
-                transport.playing = false; settings.open_audio(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate); focus.set_menu_active(true);
+                transport.playing = false; settings.open_devices(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate, midi.input_id); focus.set_menu_active(true);
             }
             else if command == Action::NewSession {
                 question.title = "New session"; question.question = "Start a new session?";
@@ -2445,6 +2513,37 @@ pub fn run() -> i32 {
                     focus.set_menu_active(true);
                 }
             }
+            else if command == Action::SetInstrumentInput {
+                // An Instrument track's plugin with an audio input (e.g. Mla
+                // Vocoder): which AUDIO track's clips feed it.
+                let index: i32 = library.table.active_track();
+                let slot: i32 = library.table.active_instrument();
+                if slot < 1 { free(message); message = clone("Select an Instrument track playing a plugin"); }
+                else {
+                    var ids: list<i32> = [0, -1]; var labels: list<str8> = [clone("  --   none"), clone("  IN   Audio input (Settings)")];
+                    let channels: list<SequenceTrack> = library.table.tracks;
+                    for t in 0..channels.len() {
+                        let other: SequenceTrack = channels[t];
+                        if !other.audio { continue; }
+                        ids.push(i32(t) + 1); labels.push(format!("  A{}   {}", t + 1, other.name));
+                    }
+                    output_track = index; output_kind = 5;
+                    outputs.title = "Instrument input";
+                    outputs.open(ids, labels, library.table.track_input(index));
+                    focus.set_menu_active(true);
+                }
+            }
+            else if command == Action::ApplyOutputChannel && output_kind == 5 {
+                let choice: i32 = outputs.chosen();
+                let slot: i32 = library.table.active_instrument();
+                free(message);
+                if !library.table.set_track_input(output_track, choice) { message = clone(library.table.error); }
+                else if choice == 0 { message = format!("{} input: none", midi.output.instrument_name(wide(slot))); }
+                else if choice == -1 && midi.input_id == -2 { message = format!("{} input: audio input (enable one in Settings > Audio input)", midi.output.instrument_name(wide(slot))); }
+                else if choice == -1 { message = format!("{} input: audio input", midi.output.instrument_name(wide(slot))); }
+                else { message = format!("{} input: A{}", midi.output.instrument_name(wide(slot)), choice); }
+                playback_dirty = true;
+            }
             else if command == Action::ApplyOutputChannel && output_kind == 3 {
                 // Bus chosen: now where it goes.
                 aux_bus = outputs.chosen(); output_kind = 4;
@@ -2536,11 +2635,90 @@ pub fn run() -> i32 {
                 if command == Action::SavePattern { dialog.path_field.set_text(library.active_name()); }
                 focus.set_menu_active(true);
             }
+            else if command == Action::BounceSelection {
+                // Offline: the matrix rows marked with v (or the cursor row)
+                // when the matrix has focus, else the pattern's visual
+                // selection (rows, and the tracks it spans) or the whole
+                // pattern. The result is a new sample in the Audio list.
+                free(message);
+                if transport.playing || song_playing { message = clone("Stop playback before bouncing"); }
+                else {
+                    let on_matrix: bool = matrix.visible && focus.selected == 1;
+                    var job: Bounce = midi.bounce_begin(transport.bpm);
+                    var what: str8 = "";
+                    if !job.ok() { message = clone(job.error); }
+                    else {
+                        // A second pass renders the area again with nothing
+                        // reset and keeps only that pass: its start then
+                        // carries the first pass's tail, like a loop.
+                        let passes: i32 = bounce_options.second_pass ? 2 : 1;
+                        for pass in 0..passes {
+                            if pass == 1 { midi.bounce_next_pass(&mut job); free(what); }
+                            if on_matrix {
+                                let first: i32 = matrix.marked_first(); let last: i32 = matrix.marked_last();
+                                for r in first..last + 1 {
+                                    let merged: SequenceTable = library.merge_song_row(i32(r), terminal_bounds(), false);
+                                    // Rows without patterns play nothing, as in song playback.
+                                    if merged.rows.len() > 0 { midi.bounce_segment(&mut job, merged, 0, i32(merged.rows.len()), []); }
+                                    merged.release();
+                                }
+                                what = first == last ? format!("matrix row {}", first + 1) : format!("matrix rows {}-{}", first + 1, last + 1);
+                            } else {
+                                var first: i32 = 0; var last: i32 = i32(library.table.rows.len()) - 1;
+                                var tracks: list<i32> = [];
+                                if library.table.visual {
+                                    first = library.table.anchor_row < library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
+                                    last = library.table.anchor_row > library.table.selected_row ? library.table.anchor_row : library.table.selected_row;
+                                    if !library.table.visual_rows {
+                                        let a: i32 = library.table.track_of_column(library.table.anchor_column);
+                                        let b: i32 = library.table.track_of_column(library.table.selected_column);
+                                        let low: i32 = a < b ? a : b; let high: i32 = a > b ? a : b;
+                                        if low >= 0 { for t in low..high + 1 { tracks.push(i32(t)); } }
+                                    }
+                                }
+                                what = tracks.len() > 0 ? format!("rows {}-{} of tracks {}-{}", first + 1, last + 1, tracks[0] + 1, tracks[tracks.len() - 1] + 1)
+                                    : format!("rows {}-{}", first + 1, last + 1);
+                                midi.bounce_segment(&mut job, library.table, first, last + 1, tracks);
+                            }
+                        }
+                        let rate: i64 = job.rate;
+                        let rendered: list<f32> = midi.bounce_finish(&mut job, library.table, bounce_options.tail ? bounce_options.tail_seconds : 0);
+                        bounce_count = bounce_count + 1;
+                        let name: str8 = format!("Bounce {}.wav", bounce_count);
+                        let made: result<AudioClip, str8> = AudioClip::from_pcm(name, rendered, 2, rate, transport.bpm);
+                        if made.is_err() { message = format!("Bounce of {} failed: {}", what, made.unwrap_err()); bounce_count = bounce_count - 1; }
+                        else {
+                            let clip: AudioClip = made.unwrap();
+                            let seconds: i64 = clip.frames * 10 / (rate > 0 ? rate : 1);
+                            let index: i32 = library.audio.add_clip(clip);
+                            message = index < 0 ? format!("Bounce lost: {}", library.audio.error)
+                                : format!("Bounced {} ({}.{} s) to the Audio list: {}", what, seconds / 10, seconds % 10, name);
+                        }
+                        free(name); free(what);
+                    }
+                    playback_dirty = true;
+                }
+                dirty = true;
+            }
+            else if command == Action::ToggleBounceTail || command == Action::ToggleBounceSecondPass ||
+                command == Action::BounceTail5 || command == Action::BounceTail10 || command == Action::BounceTail20 {
+                if command == Action::ToggleBounceTail { bounce_options.tail = !bounce_options.tail; }
+                else if command == Action::ToggleBounceSecondPass { bounce_options.second_pass = !bounce_options.second_pass; }
+                else {
+                    bounce_options.tail = true;
+                    bounce_options.tail_seconds = command == Action::BounceTail5 ? 5 : (command == Action::BounceTail10 ? 10 : 20);
+                }
+                free(message);
+                message = !bounce_options.tail ? clone(bounce_options.second_pass ? "Bounce: no tail, second pass" : "Bounce: no tail")
+                    : format!("Bounce: tail up to {} s{}", bounce_options.tail_seconds, bounce_options.second_pass ? ", second pass" : "");
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
+                dirty = true;
+            }
             else if command == Action::ToggleMetronome || command == Action::ToggleExtendRecording || command == Action::MetronomeOnRecording || command == Action::MetronomeAlways {
                 if command == Action::ToggleMetronome { play_metronome = !play_metronome; }
                 else if command == Action::ToggleExtendRecording { extend_recording = !extend_recording; }
                 else { metronome_always = command == Action::MetronomeAlways; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
             }
             else if command == Action::AddPattern || command == Action::ClonePattern { library.add(command == Action::ClonePattern); }
             else if command == Action::RenamePattern {
@@ -2553,7 +2731,7 @@ pub fn run() -> i32 {
             }
             else if command == Action::FollowMatrix {
                 follow_matrix = !follow_matrix;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 free(message);
                 if follow_matrix {
                     if song_playing { library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id; }
@@ -2570,7 +2748,7 @@ pub fn run() -> i32 {
             else if command == Action::MeterUpdateRate { bpm_dialog.open_meter_rate(frame_rate.fps); }
             else if command == Action::ToggleSpectrum {
                 spectrum.visible = !spectrum.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
@@ -2581,7 +2759,7 @@ pub fn run() -> i32 {
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 // Keys only play while the pane has focus.
                 if keyboard.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
@@ -2595,7 +2773,7 @@ pub fn run() -> i32 {
                 // Kitty-protocol terminals then report key releases, so an
                 // audition (p) lasts exactly as long as the key is held.
                 terminal.report_key_releases(sampler.visible); input.releases = sampler.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
                 // Keys only reach the sampler while the pane has focus.
                 if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);

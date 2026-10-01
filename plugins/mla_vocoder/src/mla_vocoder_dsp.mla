@@ -1,0 +1,776 @@
+/// \file mla_vocoder_dsp.mla
+/// \brief C-ABI bridge: a VP-330 style channel vocoder with its own carrier.
+///
+/// One `Vocoder` per plug-in instance, heap-allocated with `calloc` and handed
+/// to the C++ VST3 layer as an opaque pointer. Its band and voice tables are
+/// `list<f32>` fields sized once in `new()`, so processing, notes and
+/// parameter changes never allocate. MLang cannot write list elements through
+/// an index expression on a struct field, so writes go through `set_f32`.
+///
+/// Signal flow, per sample (`mlavocoder_process`):
+///
+/// - **Carrier.** The internal "Human Voice" synth: 16 voices, each a
+///   band-limited (PolyBLEP) saw, pulse or saw+pulse at 8' (Male) and 4'
+///   (Female, slightly detuned), with its own ADSR; delayed vibrato on all of
+///   them; the sum through one resonant 24 dB ladder VCF with key tracking and
+///   envelope depth. The external carrier (the plug-in's sidechain, or the
+///   right input channel in split mode) is mixed in or replaces it. Noise can
+///   be added to the carrier so consonants come through; it follows the notes
+///   (internal) or the external carrier's level.
+/// - **Vocoder.** 10, 16 or 20 bands, log-spaced 160 Hz .. 5.6 kHz. Each band
+///   is a 4th-order band-pass (two TPT state-variable sections) on the
+///   modulator, a peak follower with attack/release, and the matching band-pass
+///   on the carrier scaled by that envelope. Formant shift moves the carrier
+///   bands against the analysis bands. Odd and even bands spread left/right
+///   with Width.
+/// - **Sibilance.** The modulator above ~5 kHz, which the band filters do not
+///   cover, passes straight through, so "s" and "t" stay intelligible.
+/// - **Choir.** The internal carrier through three formant band-passes ("aah",
+///   moving from male to female formants with the 8'/4' balance): the
+///   VP-330's Human Voice section, playable without a modulator.
+/// - **Ensemble.** A three-phase BBD-style chorus (one line, taps 120 degrees
+///   apart, each swept by a slow and a fast LFO) like the string-machine
+///   ensemble that gives the VP-330 its width.
+///
+/// Parameter indexes for `mlavocoder_set` are listed there; the C++ side maps
+/// normalized VST3 values to these physical units.
+
+mod dsp::detail;
+mod dsp::filter;
+mod std::vec;
+use dsp::detail::expf;
+use dsp::detail::tanf;
+use dsp::detail::sinf;
+use dsp::detail::llroundf;
+use dsp::filter::MoogLadder;
+use std::vec::set_f32;
+
+extern fn calloc(count: i64, size: i64) -> ptr<Vocoder>;
+extern fn free(block: ptr<Vocoder>) -> void;
+extern fn exp2f(value: f32) -> f32;
+extern fn log2f(value: f32) -> f32;
+extern fn fabsf(value: f32) -> f32;
+extern fn floorf(value: f32) -> f32;
+
+/// Table sizes: the largest band count and the voice count.
+fn max_bands() -> i64 { return 20; }
+fn voice_count() -> i64 { return 16; }
+
+/// Analysis band range in Hz (band centres, log-spaced).
+fn band_low_hz() -> f32 { return 160.0f; }
+fn band_high_hz() -> f32 { return 5600.0f; }
+
+/// Envelope stages of a voice (stored as f32 in `voice_stage`).
+fn stage_idle() -> f32 { return 0.0f; }
+fn stage_attack() -> f32 { return 1.0f; }
+fn stage_decay() -> f32 { return 2.0f; }
+fn stage_sustain() -> f32 { return 3.0f; }
+fn stage_release() -> f32 { return 4.0f; }
+
+fn vclamp(value: f32, low: f32, high: f32) -> f32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+fn vmax(a: f32, b: f32) -> f32 { return a > b ? a : b; }
+
+/// One-pole coefficient reaching 1 - 1/e of a step in `seconds`.
+fn one_pole(seconds: f32, rate: f32) -> f32 {
+    let samples: f32 = seconds * rate;
+    if samples < 1.0f { return 1.0f; }
+    return 1.0f - expf(-1.0f / samples);
+}
+
+/// PolyBLEP residual for a unit step at phase 0 (phase `t`, increment `dt`).
+fn blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x: f32 = t / dt;
+        return x + x - x * x - 1.0f;
+    }
+    if t > 1.0f - dt {
+        let x: f32 = (t - 1.0f) / dt;
+        return x * x + x + x + 1.0f;
+    }
+    return 0.0f;
+}
+
+/// Band-limited oscillator: `wave` 0 saw, 1 pulse (width `pw`), 2 saw+pulse.
+fn oscillator(wave: i32, t: f32, dt: f32, pw: f32) -> f32 {
+    let saw: f32 = 2.0f * t - 1.0f - blep(t, dt);
+    if wave == 0 { return saw; }
+    var shifted: f32 = t + 1.0f - pw;
+    if shifted >= 1.0f { shifted = shifted - 1.0f; }
+    // +1 for t < pw; the DC of an uneven pulse is removed.
+    var pulse: f32 = t < pw ? 1.0f : -1.0f;
+    pulse = pulse + blep(t, dt) - blep(shifted, dt) - (2.0f * pw - 1.0f);
+    if wave == 1 { return pulse; }
+    return 0.5f * (saw + pulse);
+}
+
+/// Topology-preserving state-variable filter (Cytomic), one channel.
+struct Svf { var ic1: f32; var ic2: f32; var a1: f32; var a2: f32; var a3: f32; var k: f32; };
+
+impl Svf {
+    fn new() -> Svf { return Svf { ic1: 0.0f, ic2: 0.0f, a1: 0.0f, a2: 0.0f, a3: 0.0f, k: 1.0f }; }
+    fn reset(self: &mut Self) -> void { self.ic1 = 0.0f; self.ic2 = 0.0f; }
+    fn configure(self: &mut Self, cutoff_hz: f32, q: f32, rate: f32) -> void {
+        let g: f32 = tanf(3.14159265358979323846f * vclamp(cutoff_hz, 10.0f, rate * 0.45f) / rate);
+        self.k = 1.0f / q;
+        self.a1 = 1.0f / (1.0f + g * (g + self.k));
+        self.a2 = g * self.a1;
+        self.a3 = g * self.a2;
+    }
+    /// Band-pass with unity gain at the centre.
+    fn bandpass(self: &mut Self, input: f32) -> f32 {
+        let v3: f32 = input - self.ic2;
+        let v1: f32 = self.a1 * self.ic1 + self.a2 * v3;
+        let v2: f32 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+        self.ic1 = 2.0f * v1 - self.ic1;
+        self.ic2 = 2.0f * v2 - self.ic2;
+        return v1 * self.k;
+    }
+    fn highpass(self: &mut Self, input: f32) -> f32 {
+        let v3: f32 = input - self.ic2;
+        let v1: f32 = self.a1 * self.ic1 + self.a2 * v3;
+        let v2: f32 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+        self.ic1 = 2.0f * v1 - self.ic1;
+        self.ic2 = 2.0f * v2 - self.ic2;
+        return input - self.k * v1 - v2;
+    }
+}
+
+/// One stereo sample.
+struct Frame { var left: f32; var right: f32; };
+
+/// The whole instance: band tables, voices, VCF, choir and ensemble.
+struct Vocoder {
+    var rate: f32;
+
+    // --- Vocoder bands (index b, 0 .. max_bands) ---------------------------
+    var bands: i64;
+    /// Formant shift as a frequency ratio for the carrier bands.
+    var shift: f32;
+    /// Analysis coefficients (a1, a2, a3, k) and two sections of state.
+    var an_a1: list<f32>;
+    var an_a2: list<f32>;
+    var an_a3: list<f32>;
+    var an_k: list<f32>;
+    var an1_ic1: list<f32>;
+    var an1_ic2: list<f32>;
+    var an2_ic1: list<f32>;
+    var an2_ic2: list<f32>;
+    /// Synthesis (carrier) coefficients and state.
+    var sy_a1: list<f32>;
+    var sy_a2: list<f32>;
+    var sy_a3: list<f32>;
+    var sy_k: list<f32>;
+    var sy1_ic1: list<f32>;
+    var sy1_ic2: list<f32>;
+    var sy2_ic1: list<f32>;
+    var sy2_ic2: list<f32>;
+    /// Band envelopes and their left/right gains.
+    var env: list<f32>;
+    var gain_left: list<f32>;
+    var gain_right: list<f32>;
+    var env_attack: f32;
+    var env_release: f32;
+    var width: f32;
+    /// Make-up gain for the band count.
+    var band_makeup: f32;
+    /// Modulator rumble filter and the sibilance high-pass pair.
+    var mod_highpass: Svf;
+    var sib1: Svf;
+    var sib2: Svf;
+    var sibilance: f32;
+
+    // --- Carrier -------------------------------------------------------------
+    /// 0 internal, 1 external, 2 both.
+    var carrier_mode: i32;
+    var noise_amount: f32;
+    var seed: i64;
+    /// Peak follower of the external carrier (gates its noise).
+    var ext_level: f32;
+    var ext_attack: f32;
+    var ext_release: f32;
+
+    // --- Voices (index v, 0 .. voice_count) ----------------------------------
+    var voice_note: list<f32>;
+    /// Base phase increment of the 8' oscillator (cycles per sample).
+    var voice_inc: list<f32>;
+    var voice_phase8: list<f32>;
+    var voice_phase4: list<f32>;
+    var voice_env: list<f32>;
+    var voice_stage: list<f32>;
+    var voice_gain: list<f32>;
+    var voice_age: list<f32>;
+    var age: f32;
+    var wave: i32;
+    var pulse_width: f32;
+    var level8: f32;
+    var level4: f32;
+    /// 4' frequency ratio: 2 times the detune.
+    var ratio4: f32;
+    var attack_step: f32;
+    var decay_coef: f32;
+    var sustain: f32;
+    var release_coef: f32;
+    var velocity_sens: f32;
+    /// Pitch offsets in semitones.
+    var tune: f32;
+    var bend: f32;
+    /// Vibrato: rate, depth (semitones), delay (samples), mod wheel 0..1.
+    var vib_phase: f32;
+    var vib_inc: f32;
+    var vib_depth: f32;
+    var vib_delay: f32;
+    var vib_timer: f32;
+    var mod_wheel: f32;
+    /// Loudest voice envelope, for the VCF and the noise gate.
+    var env_peak: f32;
+
+    // --- VCF -----------------------------------------------------------------
+    var vcf: MoogLadder;
+    var cutoff: f32;
+    var resonance_db: f32;
+    var key_track: f32;
+    var env_amount: f32;
+    var last_note: f32;
+    var vcf_countdown: i32;
+
+    // --- Choir formants --------------------------------------------------------
+    var formant1: Svf;
+    var formant2: Svf;
+    var formant3: Svf;
+
+    // --- Levels (targets and smoothed) -------------------------------------------
+    var vocoder_target: f32;
+    var choir_target: f32;
+    var synth_target: f32;
+    var dry_target: f32;
+    var output_target: f32;
+    var vocoder_gain: f32;
+    var choir_gain: f32;
+    var synth_gain: f32;
+    var dry_gain: f32;
+    var output_gain: f32;
+    var glide: f32;
+
+    // --- Ensemble ------------------------------------------------------------
+    var line: list<f32>;
+    var write_index: i64;
+    var ens_slow: f32;
+    var ens_fast: f32;
+    var ens_mix: f32;
+    var ens_depth: f32;
+};
+
+impl Vocoder {
+    fn new(sample_rate: f32) -> Vocoder {
+        let rate: f32 = vclamp(sample_rate, 8000.0f, 384000.0f);
+        let nb: i64 = max_bands();
+        let nv: i64 = voice_count();
+        // The deepest ensemble tap is under 10 ms; keep 24 ms.
+        let capacity: i64 = llroundf(rate * 0.024f) + 8;
+        var v: Vocoder = Vocoder {
+            rate: rate,
+            bands: 10, shift: 1.0f,
+            an_a1: [0.0f; nb], an_a2: [0.0f; nb], an_a3: [0.0f; nb], an_k: [0.0f; nb],
+            an1_ic1: [0.0f; nb], an1_ic2: [0.0f; nb], an2_ic1: [0.0f; nb], an2_ic2: [0.0f; nb],
+            sy_a1: [0.0f; nb], sy_a2: [0.0f; nb], sy_a3: [0.0f; nb], sy_k: [0.0f; nb],
+            sy1_ic1: [0.0f; nb], sy1_ic2: [0.0f; nb], sy2_ic1: [0.0f; nb], sy2_ic2: [0.0f; nb],
+            env: [0.0f; nb], gain_left: [1.0f; nb], gain_right: [1.0f; nb],
+            env_attack: one_pole(0.003f, rate), env_release: one_pole(0.06f, rate),
+            width: 0.5f, band_makeup: 1.0f,
+            mod_highpass: Svf::new(), sib1: Svf::new(), sib2: Svf::new(), sibilance: 0.3f,
+            carrier_mode: 0, noise_amount: 0.1f, seed: 31337,
+            ext_level: 0.0f, ext_attack: one_pole(0.002f, rate), ext_release: one_pole(0.08f, rate),
+            voice_note: [0.0f; nv], voice_inc: [0.0f; nv], voice_phase8: [0.0f; nv], voice_phase4: [0.0f; nv],
+            voice_env: [0.0f; nv], voice_stage: [0.0f; nv], voice_gain: [0.0f; nv], voice_age: [0.0f; nv],
+            age: 0.0f, wave: 0, pulse_width: 0.35f, level8: 1.0f, level4: 0.5f, ratio4: 2.0f,
+            attack_step: 1.0f, decay_coef: 0.0f, sustain: 1.0f, release_coef: 0.0f, velocity_sens: 0.3f,
+            tune: 0.0f, bend: 0.0f,
+            vib_phase: 0.0f, vib_inc: 5.5f / rate, vib_depth: 0.15f, vib_delay: 0.5f * rate, vib_timer: 0.0f,
+            mod_wheel: 0.0f, env_peak: 0.0f,
+            vcf: MoogLadder::new(), cutoff: 8000.0f, resonance_db: 3.6f, key_track: 0.5f, env_amount: 0.0f,
+            last_note: 60.0f, vcf_countdown: 0,
+            formant1: Svf::new(), formant2: Svf::new(), formant3: Svf::new(),
+            vocoder_target: 1.0f, choir_target: 0.0f, synth_target: 0.0f, dry_target: 0.0f, output_target: 1.0f,
+            vocoder_gain: 1.0f, choir_gain: 0.0f, synth_gain: 0.0f, dry_gain: 0.0f, output_gain: 1.0f,
+            glide: one_pole(0.01f, rate),
+            line: [0.0f; capacity], write_index: 0,
+            ens_slow: 0.0f, ens_fast: 0.0f, ens_mix: 0.6f, ens_depth: 0.7f
+        };
+        // Spread the free-running oscillators so chords do not start in phase.
+        for i in 0..nv {
+            set_f32(v.voice_phase8, i, f32(i) * 0.618034f - floorf(f32(i) * 0.618034f));
+            set_f32(v.voice_phase4, i, f32(i) * 0.414214f - floorf(f32(i) * 0.414214f));
+        }
+        v.mod_highpass.configure(80.0f, 0.7071f, rate);
+        v.sib1.configure(5000.0f, 0.5412f, rate);
+        v.sib2.configure(5000.0f, 1.3066f, rate);
+        v.set_envelope(0.01f, 1.0f, 1.0f, 0.3f);
+        v.configure_bands();
+        v.configure_formants();
+        return v;
+    }
+
+    /// Band centres, Q and gains for the current count, shift and width.
+    fn configure_bands(self: &mut Self) -> void {
+        let n: i64 = self.bands;
+        let octaves: f32 = log2f(band_high_hz() / band_low_hz());
+        let spacing: f32 = octaves / f32(n - 1);
+        // Bandwidth of one band = its spacing; two equal sections in series
+        // narrow the -3 dB width by 0.6436, so each section is that much wider.
+        let edge: f32 = exp2f(spacing);
+        let q: f32 = 0.6436f * exp2f(0.5f * spacing) / (edge - 1.0f);
+        for b in 0..n {
+            let centre: f32 = band_low_hz() * exp2f(spacing * f32(b));
+            var an: Svf = Svf::new();
+            an.configure(centre, q, self.rate);
+            set_f32(self.an_a1, b, an.a1); set_f32(self.an_a2, b, an.a2);
+            set_f32(self.an_a3, b, an.a3); set_f32(self.an_k, b, an.k);
+            var sy: Svf = Svf::new();
+            sy.configure(centre * self.shift, q, self.rate);
+            set_f32(self.sy_a1, b, sy.a1); set_f32(self.sy_a2, b, sy.a2);
+            set_f32(self.sy_a3, b, sy.a3); set_f32(self.sy_k, b, sy.k);
+            // Odd bands lean right, even bands left.
+            let odd: bool = b % 2 == 1;
+            set_f32(self.gain_left, b, odd ? 1.0f - self.width : 1.0f);
+            set_f32(self.gain_right, b, odd ? 1.0f : 1.0f - self.width);
+        }
+        // More, narrower bands each pass less of a broadband carrier.
+        self.band_makeup = 12.8f * expf(0.5f * logf_safe(10.0f / f32(n)));
+    }
+
+    /// "Aah" formants, male (8') to female (4') by the register balance,
+    /// moved with the formant shift.
+    fn configure_formants(self: &mut Self) -> void {
+        let total: f32 = self.level8 + self.level4;
+        let female: f32 = total > 0.0001f ? self.level4 / total : 0.0f;
+        let f1: f32 = (700.0f + 150.0f * female) * self.shift;
+        let f2: f32 = (1220.0f + 180.0f * female) * self.shift;
+        let f3: f32 = (2600.0f + 300.0f * female) * self.shift;
+        self.formant1.configure(f1, 5.0f, self.rate);
+        self.formant2.configure(f2, 7.0f, self.rate);
+        self.formant3.configure(f3, 9.0f, self.rate);
+    }
+
+    fn set_envelope(self: &mut Self, attack: f32, decay: f32, sustain: f32, release: f32) -> void {
+        let attack_samples: f32 = attack * self.rate;
+        self.attack_step = attack_samples < 1.0f ? 1.0f : 1.0f / attack_samples;
+        // Decay and release are measured to a 60 dB fall.
+        self.decay_coef = expf(-6.9078f / vmax(decay * self.rate, 1.0f));
+        self.sustain = vclamp(sustain, 0.0f, 1.0f);
+        self.release_coef = expf(-6.9078f / vmax(release * self.rate, 1.0f));
+    }
+
+    fn white(self: &mut Self) -> f32 {
+        self.seed = (self.seed * 1103515245 + 12345) % 2147483648;
+        return f32(self.seed) / 1073741824.0f - 1.0f;
+    }
+
+    /// Clear all audio state; settings and held notes are dropped.
+    fn reset(self: &mut Self) -> void {
+        let nb: i64 = max_bands();
+        for b in 0..nb {
+            set_f32(self.an1_ic1, b, 0.0f); set_f32(self.an1_ic2, b, 0.0f);
+            set_f32(self.an2_ic1, b, 0.0f); set_f32(self.an2_ic2, b, 0.0f);
+            set_f32(self.sy1_ic1, b, 0.0f); set_f32(self.sy1_ic2, b, 0.0f);
+            set_f32(self.sy2_ic1, b, 0.0f); set_f32(self.sy2_ic2, b, 0.0f);
+            set_f32(self.env, b, 0.0f);
+        }
+        let nv: i64 = voice_count();
+        for v in 0..nv {
+            set_f32(self.voice_stage, v, stage_idle());
+            set_f32(self.voice_env, v, 0.0f);
+        }
+        let size: i64 = self.line.len();
+        for i in 0..size { set_f32(self.line, i, 0.0f); }
+        self.write_index = 0;
+        self.mod_highpass.reset(); self.sib1.reset(); self.sib2.reset();
+        self.formant1.reset(); self.formant2.reset(); self.formant3.reset();
+        self.vcf.reset();
+        self.ext_level = 0.0f; self.env_peak = 0.0f; self.vib_timer = 0.0f;
+    }
+
+    fn any_voice_held(self: Vocoder) -> bool {
+        let nv: i64 = voice_count();
+        for v in 0..nv {
+            let stage: f32 = self.voice_stage[v];
+            if stage != stage_idle() && stage != stage_release() { return true; }
+        }
+        return false;
+    }
+
+    fn note_on(self: &mut Self, note: i32, velocity: f32) -> void {
+        if !self.any_voice_held() { self.vib_timer = 0.0f; }
+        let key: f32 = f32(note);
+        // Same key again: retrigger that voice. Else a free voice, else the
+        // quietest releasing one, else the oldest.
+        var target: i64 = -1;
+        let nv: i64 = voice_count();
+        for v in 0..nv {
+            if self.voice_stage[v] != stage_idle() && self.voice_note[v] == key { target = v; }
+        }
+        if target < 0 {
+            for v in 0..nv {
+                if target < 0 && self.voice_stage[v] == stage_idle() { target = v; }
+            }
+        }
+        if target < 0 {
+            var quietest: f32 = 2.0f;
+            for v in 0..nv {
+                if self.voice_stage[v] == stage_release() && self.voice_env[v] < quietest {
+                    quietest = self.voice_env[v];
+                    target = v;
+                }
+            }
+        }
+        if target < 0 {
+            var oldest: f32 = self.age + 1.0f;
+            for v in 0..nv {
+                if self.voice_age[v] < oldest { oldest = self.voice_age[v]; target = v; }
+            }
+        }
+        let vel: f32 = vclamp(velocity, 0.0f, 1.0f);
+        set_f32(self.voice_note, target, key);
+        set_f32(self.voice_inc, target, 440.0f * exp2f((key - 69.0f) / 12.0f) / self.rate);
+        set_f32(self.voice_gain, target, 1.0f - self.velocity_sens + self.velocity_sens * vel);
+        set_f32(self.voice_stage, target, stage_attack());
+        self.age = self.age + 1.0f;
+        set_f32(self.voice_age, target, self.age);
+        self.last_note = key;
+    }
+
+    fn note_off(self: &mut Self, note: i32) -> void {
+        let key: f32 = f32(note);
+        let nv: i64 = voice_count();
+        for v in 0..nv {
+            let stage: f32 = self.voice_stage[v];
+            if self.voice_note[v] == key && stage != stage_idle() && stage != stage_release() {
+                set_f32(self.voice_stage, v, stage_release());
+            }
+        }
+    }
+
+    fn release_all(self: &mut Self) -> void {
+        let nv: i64 = voice_count();
+        for v in 0..nv {
+            if self.voice_stage[v] != stage_idle() { set_f32(self.voice_stage, v, stage_release()); }
+        }
+    }
+
+    /// Sum of the voices (before the VCF); updates `env_peak`.
+    fn render_voices(self: &mut Self) -> f32 {
+        // Delayed vibrato: depth fades in over the delay after the first key.
+        self.vib_phase = self.vib_phase + self.vib_inc;
+        if self.vib_phase >= 1.0f { self.vib_phase = self.vib_phase - 1.0f; }
+        self.vib_timer = self.vib_timer + 1.0f;
+        var fade: f32 = 1.0f;
+        if self.vib_delay > 1.0f {
+            fade = vclamp(self.vib_timer / self.vib_delay, 0.0f, 1.0f);
+            fade = fade * fade;
+        }
+        let depth: f32 = self.vib_depth * fade + 0.5f * self.mod_wheel;
+        let vibrato: f32 = depth * sinf(6.28318530717958647692f * self.vib_phase);
+        let pitch: f32 = exp2f((self.tune + self.bend + vibrato) / 12.0f);
+
+        var sum: f32 = 0.0f;
+        var peak: f32 = 0.0f;
+        let nv: i64 = voice_count();
+        for v in 0..nv {
+            let stage: f32 = self.voice_stage[v];
+            if stage == stage_idle() { continue; }
+            var level: f32 = self.voice_env[v];
+            var next_stage: f32 = stage;
+            if stage == stage_attack() {
+                level = level + self.attack_step;
+                if level >= 1.0f { level = 1.0f; next_stage = stage_decay(); }
+            } else if stage == stage_decay() {
+                level = self.sustain + (level - self.sustain) * self.decay_coef;
+                if level - self.sustain < 0.0001f { level = self.sustain; next_stage = stage_sustain(); }
+            } else if stage == stage_sustain() {
+                level = self.sustain;
+            } else {
+                level = level * self.release_coef;
+            }
+            if level < 0.0001f && next_stage != stage_attack() {
+                level = 0.0f;
+                next_stage = stage_idle();
+            }
+            set_f32(self.voice_env, v, level);
+            if next_stage != stage { set_f32(self.voice_stage, v, next_stage); }
+            if level > peak { peak = level; }
+
+            let inc8: f32 = vclamp(self.voice_inc[v] * pitch, 0.0f, 0.45f);
+            let inc4: f32 = vclamp(inc8 * self.ratio4, 0.0f, 0.45f);
+            var p8: f32 = self.voice_phase8[v] + inc8;
+            if p8 >= 1.0f { p8 = p8 - 1.0f; }
+            var p4: f32 = self.voice_phase4[v] + inc4;
+            if p4 >= 1.0f { p4 = p4 - 1.0f; }
+            set_f32(self.voice_phase8, v, p8);
+            set_f32(self.voice_phase4, v, p4);
+            let osc: f32 = self.level8 * oscillator(self.wave, p8, inc8, self.pulse_width)
+                + self.level4 * oscillator(self.wave, p4, inc4, self.pulse_width);
+            sum = sum + osc * level * self.voice_gain[v];
+        }
+        self.env_peak = peak;
+        return sum;
+    }
+
+    /// The VCF on the voice sum; coefficients follow every 16 samples.
+    fn filter(self: &mut Self, input: f32) -> f32 {
+        if self.vcf_countdown <= 0 {
+            self.vcf_countdown = 16;
+            let octaves: f32 = self.key_track * (self.last_note - 60.0f) / 12.0f + 6.0f * self.env_amount * self.env_peak;
+            let hz: f32 = vclamp(self.cutoff * exp2f(octaves), 20.0f, self.rate * 0.45f);
+            self.vcf.set_lowpass(hz, self.resonance_db, self.rate);
+        }
+        self.vcf_countdown = self.vcf_countdown - 1;
+        return self.vcf.process_24db(input);
+    }
+
+    /// The vocoder bands on one modulator/carrier sample; writes left/right.
+    fn vocode(self: &mut Self, modulator: f32, carrier: f32) -> Frame {
+        var left: f32 = 0.0f;
+        var right: f32 = 0.0f;
+        for b in 0..self.bands {
+            // Analysis: two band-pass sections, then a peak follower.
+            let ak: f32 = self.an_k[b];
+            let aa1: f32 = self.an_a1[b];
+            let aa2: f32 = self.an_a2[b];
+            let aa3: f32 = self.an_a3[b];
+            var ic1: f32 = self.an1_ic1[b];
+            var ic2: f32 = self.an1_ic2[b];
+            var v3: f32 = modulator - ic2;
+            var v1: f32 = aa1 * ic1 + aa2 * v3;
+            var v2: f32 = ic2 + aa2 * ic1 + aa3 * v3;
+            set_f32(self.an1_ic1, b, 2.0f * v1 - ic1);
+            set_f32(self.an1_ic2, b, 2.0f * v2 - ic2);
+            let first: f32 = v1 * ak;
+            ic1 = self.an2_ic1[b];
+            ic2 = self.an2_ic2[b];
+            v3 = first - ic2;
+            v1 = aa1 * ic1 + aa2 * v3;
+            v2 = ic2 + aa2 * ic1 + aa3 * v3;
+            set_f32(self.an2_ic1, b, 2.0f * v1 - ic1);
+            set_f32(self.an2_ic2, b, 2.0f * v2 - ic2);
+            let rectified: f32 = fabsf(v1 * ak);
+            var level: f32 = self.env[b];
+            level = level + (rectified - level) * (rectified > level ? self.env_attack : self.env_release);
+            if level < 0.000000001f { level = 0.0f; }
+            set_f32(self.env, b, level);
+
+            // Synthesis: the same filter at the shifted centre on the carrier.
+            let sk: f32 = self.sy_k[b];
+            let sa1: f32 = self.sy_a1[b];
+            let sa2: f32 = self.sy_a2[b];
+            let sa3: f32 = self.sy_a3[b];
+            ic1 = self.sy1_ic1[b];
+            ic2 = self.sy1_ic2[b];
+            v3 = carrier - ic2;
+            v1 = sa1 * ic1 + sa2 * v3;
+            v2 = ic2 + sa2 * ic1 + sa3 * v3;
+            set_f32(self.sy1_ic1, b, 2.0f * v1 - ic1);
+            set_f32(self.sy1_ic2, b, 2.0f * v2 - ic2);
+            let shaped: f32 = v1 * sk;
+            ic1 = self.sy2_ic1[b];
+            ic2 = self.sy2_ic2[b];
+            v3 = shaped - ic2;
+            v1 = sa1 * ic1 + sa2 * v3;
+            v2 = ic2 + sa2 * ic1 + sa3 * v3;
+            set_f32(self.sy2_ic1, b, 2.0f * v1 - ic1);
+            set_f32(self.sy2_ic2, b, 2.0f * v2 - ic2);
+            let band: f32 = v1 * sk * level;
+            left = left + band * self.gain_left[b];
+            right = right + band * self.gain_right[b];
+        }
+        return Frame { left: left * self.band_makeup, right: right * self.band_makeup };
+    }
+
+    /// Linear read `delay` samples behind the newest ensemble sample.
+    fn tap(self: Vocoder, delay: f32) -> f32 {
+        let whole: f32 = floorf(delay);
+        let fraction: f32 = delay - whole;
+        let size: i64 = self.line.len();
+        var index: i64 = self.write_index - 1 - llroundf(whole);
+        while index < 1 { index = index + size; }
+        let newer: f32 = self.line[index % size];
+        let older: f32 = self.line[(index - 1) % size];
+        return newer + (older - newer) * fraction;
+    }
+
+    /// Three taps 120 degrees apart, each swept by a slow and a fast LFO.
+    fn ensemble(self: &mut Self, left: f32, right: f32) -> Frame {
+        set_f32(self.line, self.write_index, 0.5f * (left + right));
+        self.write_index = self.write_index + 1;
+        if self.write_index >= self.line.len() { self.write_index = 0; }
+        self.ens_slow = self.ens_slow + 0.63f / self.rate;
+        if self.ens_slow >= 1.0f { self.ens_slow = self.ens_slow - 1.0f; }
+        self.ens_fast = self.ens_fast + 5.9f / self.rate;
+        if self.ens_fast >= 1.0f { self.ens_fast = self.ens_fast - 1.0f; }
+        let two_pi: f32 = 6.28318530717958647692f;
+        let third: f32 = 2.09439510239319549231f;
+        let ms: f32 = self.rate * 0.001f;
+        let slow: f32 = two_pi * self.ens_slow;
+        let fast: f32 = two_pi * self.ens_fast;
+        let d: f32 = self.ens_depth;
+        let t1: f32 = self.tap((5.5f + d * (2.0f * sinf(slow) + 0.35f * sinf(fast))) * ms);
+        let t2: f32 = self.tap((5.5f + d * (2.0f * sinf(slow + third) + 0.35f * sinf(fast + third))) * ms);
+        let t3: f32 = self.tap((5.5f + d * (2.0f * sinf(slow - third) + 0.35f * sinf(fast - third))) * ms);
+        let wet_left: f32 = 0.6667f * t1 + 0.3333f * t2;
+        let wet_right: f32 = 0.6667f * t3 + 0.3333f * t2;
+        let m: f32 = self.ens_mix;
+        return Frame { left: left * (1.0f - m) + wet_left * m, right: right * (1.0f - m) + wet_right * m };
+    }
+
+    fn process(self: &mut Self, modulator: f32, external: f32, out_right: ptr<f32>) -> f32 {
+        self.vocoder_gain = self.vocoder_gain + (self.vocoder_target - self.vocoder_gain) * self.glide;
+        self.choir_gain = self.choir_gain + (self.choir_target - self.choir_gain) * self.glide;
+        self.synth_gain = self.synth_gain + (self.synth_target - self.synth_gain) * self.glide;
+        self.dry_gain = self.dry_gain + (self.dry_target - self.dry_gain) * self.glide;
+        self.output_gain = self.output_gain + (self.output_target - self.output_gain) * self.glide;
+
+        // Internal carrier: voices (scaled for a chord's headroom) and VCF.
+        let synth: f32 = self.filter(0.25f * self.render_voices());
+        let use_internal: bool = self.carrier_mode != 1;
+        let use_external: bool = self.carrier_mode != 0;
+        let ext_abs: f32 = fabsf(external);
+        self.ext_level = self.ext_level + (ext_abs - self.ext_level) * (ext_abs > self.ext_level ? self.ext_attack : self.ext_release);
+        let noise: f32 = self.white() * self.noise_amount;
+        var carrier: f32 = 0.0f;
+        if use_internal { carrier = carrier + synth + noise * self.env_peak; }
+        if use_external { carrier = carrier + external + noise * vclamp(2.0f * self.ext_level, 0.0f, 1.0f); }
+
+        let modulator_clean: f32 = self.mod_highpass.highpass(modulator);
+        let bands: Frame = self.vocode(modulator_clean, carrier);
+        var left: f32 = bands.left * self.vocoder_gain;
+        var right: f32 = bands.right * self.vocoder_gain;
+
+        let sibilant: f32 = self.sib2.highpass(self.sib1.highpass(modulator_clean)) * self.sibilance;
+        let choir: f32 = (self.formant1.bandpass(synth) + 0.6f * self.formant2.bandpass(synth) + 0.35f * self.formant3.bandpass(synth)) * 1.6f * self.choir_gain;
+        let direct: f32 = synth * self.synth_gain + modulator * self.dry_gain + sibilant + choir;
+        left = left + direct;
+        right = right + direct;
+
+        let wet: Frame = self.ensemble(left, right);
+        unsafe { *out_right = wet.right * self.output_gain; }
+        return wet.left * self.output_gain;
+    }
+}
+
+fn logf_safe(value: f32) -> f32 {
+    // ln via log2: keeps the module's imports to what dsp::detail provides.
+    return log2f(vmax(value, 0.000001f)) * 0.69314718055994530942f;
+}
+
+// --- C ABI -------------------------------------------------------------------
+
+/// @brief Allocate an instance for a sample rate (8 kHz .. 384 kHz).
+fn mlavocoder_create(sample_rate: f32) -> ptr<Vocoder> {
+    let handle: ptr<Vocoder> = calloc(1, size_of(Vocoder));
+    unsafe { *handle = Vocoder::new(sample_rate); }
+    return handle;
+}
+
+/// @brief Release an instance created by `mlavocoder_create`.
+fn mlavocoder_destroy(handle: ptr<Vocoder>) {
+    // Move the value out so its lists are dropped, then free the block.
+    unsafe { let dead: Vocoder = *handle; dead.release_all(); }
+    free(handle);
+}
+
+/// @brief Silence: clear filters, envelopes, voices and the ensemble line.
+fn mlavocoder_reset(handle: ptr<Vocoder>) { unsafe { (*handle).reset(); } }
+
+/// @brief Start a note (0..127) with velocity 0..1.
+fn mlavocoder_note_on(handle: ptr<Vocoder>, note: i32, velocity: f32) {
+    unsafe { (*handle).note_on(note, velocity); }
+}
+
+/// @brief Release every voice playing `note`.
+fn mlavocoder_note_off(handle: ptr<Vocoder>, note: i32) { unsafe { (*handle).note_off(note); } }
+
+/// @brief Release every voice (all notes off).
+fn mlavocoder_release_all(handle: ptr<Vocoder>) { unsafe { (*handle).release_all(); } }
+
+/// @brief Number of voices still sounding (attack .. release).
+fn mlavocoder_active_voices(handle: ptr<Vocoder>) -> i32 {
+    var count: i32 = 0;
+    unsafe {
+        let nv: i64 = voice_count();
+        for v in 0..nv {
+            if (*handle).voice_stage[v] != stage_idle() { count = count + 1; }
+        }
+    }
+    return count;
+}
+
+/// @brief Set one parameter in physical units:
+/// 0 carrier (0 internal, 1 external, 2 both), 1 bands (10/16/20),
+/// 2 formant shift (semitones), 3 envelope attack (s), 4 envelope release (s),
+/// 5 sibilance 0..1, 6 noise 0..1, 7 width 0..1, 8 vocoder gain, 9 choir gain,
+/// 10 synth gain, 11 dry gain (linear), 12 ensemble mix 0..1, 13 ensemble
+/// depth 0..1, 14 output gain (linear), 15 wave (0 saw, 1 pulse, 2 both),
+/// 16 pulse width 0.05..0.5, 17 8' level, 18 4' level, 19 4' detune (cents),
+/// 20 cutoff (Hz), 21 resonance (dB 0..36), 22 key track 0..1, 23 envelope
+/// amount 0..1, 28 vibrato rate (Hz), 29 vibrato depth (semitones),
+/// 30 vibrato delay (s), 31 tune (semitones), 32 velocity sensitivity 0..1,
+/// 33 pitch bend (semitones), 34 mod wheel 0..1. 24-27 are reserved: the
+/// voice ADSR is set as a whole through `mlavocoder_set_envelope`.
+fn mlavocoder_set(handle: ptr<Vocoder>, index: i32, value: f32) {
+    unsafe {
+        let rate: f32 = (*handle).rate;
+        if index == 0 { (*handle).carrier_mode = i32(vclamp(value, 0.0f, 2.0f) + 0.5f); }
+        else if index == 1 {
+            var count: i64 = 10;
+            if value >= 18.0f { count = 20; } else if value >= 13.0f { count = 16; }
+            if count != (*handle).bands { (*handle).bands = count; (*handle).configure_bands(); }
+        }
+        else if index == 2 {
+            (*handle).shift = exp2f(vclamp(value, -12.0f, 12.0f) / 12.0f);
+            (*handle).configure_bands();
+            (*handle).configure_formants();
+        }
+        else if index == 3 { (*handle).env_attack = one_pole(vclamp(value, 0.0002f, 0.2f), rate); }
+        else if index == 4 { (*handle).env_release = one_pole(vclamp(value, 0.002f, 2.0f), rate); }
+        else if index == 5 { (*handle).sibilance = vclamp(value, 0.0f, 1.0f); }
+        else if index == 6 { (*handle).noise_amount = vclamp(value, 0.0f, 1.0f); }
+        else if index == 7 { (*handle).width = vclamp(value, 0.0f, 1.0f); (*handle).configure_bands(); }
+        else if index == 8 { (*handle).vocoder_target = vmax(value, 0.0f); }
+        else if index == 9 { (*handle).choir_target = vmax(value, 0.0f); }
+        else if index == 10 { (*handle).synth_target = vmax(value, 0.0f); }
+        else if index == 11 { (*handle).dry_target = vmax(value, 0.0f); }
+        else if index == 12 { (*handle).ens_mix = vclamp(value, 0.0f, 1.0f); }
+        else if index == 13 { (*handle).ens_depth = vclamp(value, 0.0f, 1.0f); }
+        else if index == 14 { (*handle).output_target = vmax(value, 0.0f); }
+        else if index == 15 { (*handle).wave = i32(vclamp(value, 0.0f, 2.0f) + 0.5f); }
+        else if index == 16 { (*handle).pulse_width = vclamp(value, 0.05f, 0.5f); }
+        else if index == 17 { (*handle).level8 = vclamp(value, 0.0f, 1.0f); (*handle).configure_formants(); }
+        else if index == 18 { (*handle).level4 = vclamp(value, 0.0f, 1.0f); (*handle).configure_formants(); }
+        else if index == 19 { (*handle).ratio4 = 2.0f * exp2f(vclamp(value, -100.0f, 100.0f) / 1200.0f); }
+        else if index == 20 { (*handle).cutoff = vclamp(value, 20.0f, 20000.0f); (*handle).vcf_countdown = 0; }
+        else if index == 21 { (*handle).resonance_db = vclamp(value, 0.0f, 36.0f); (*handle).vcf_countdown = 0; }
+        else if index == 22 { (*handle).key_track = vclamp(value, 0.0f, 1.0f); }
+        else if index == 23 { (*handle).env_amount = vclamp(value, 0.0f, 1.0f); }
+        else if index == 28 { (*handle).vib_inc = vclamp(value, 0.0f, 20.0f) / rate; }
+        else if index == 29 { (*handle).vib_depth = vclamp(value, 0.0f, 2.0f); }
+        else if index == 30 { (*handle).vib_delay = vclamp(value, 0.0f, 10.0f) * rate; }
+        else if index == 31 { (*handle).tune = vclamp(value, -24.0f, 24.0f); }
+        else if index == 32 { (*handle).velocity_sens = vclamp(value, 0.0f, 1.0f); }
+        else if index == 33 { (*handle).bend = vclamp(value, -24.0f, 24.0f); }
+        else if index == 34 { (*handle).mod_wheel = vclamp(value, 0.0f, 1.0f); }
+    }
+}
+
+/// @brief Voice ADSR: attack, decay, release in seconds, sustain 0..1.
+fn mlavocoder_set_envelope(handle: ptr<Vocoder>, attack: f32, decay: f32, sustain: f32, release: f32) {
+    unsafe { (*handle).set_envelope(attack, decay, sustain, release); }
+}
+
+/// @brief Process one sample: mono modulator and mono external carrier in,
+/// stereo out (left returned, right through `out_right`).
+fn mlavocoder_process(handle: ptr<Vocoder>, modulator: f32, external: f32, out_right: ptr<f32>) -> f32 {
+    unsafe { return (*handle).process(modulator, external, out_right); }
+}
