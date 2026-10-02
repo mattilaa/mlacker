@@ -250,6 +250,8 @@ shortcut of several presses in a row is written `<C-a><C-m>`.
 |----------|--------|
 | `<C-S-F1>` / `<C-S-F2>` / `<C-S-F3>` | Left view: Patterns / Audio / Instruments |
 | `<C-s>` | Save the session or project |
+| `<C-f>` | Toggle the focused content pane fullscreen |
+| `<C-g>` | Show or hide the View sidebar |
 | `<S-m>` | Show or hide the song matrix |
 | `<C-S-m>` | Show or hide the spectrum analyzer |
 | `<S-p>` | Show or hide the virtual keyboard |
@@ -478,6 +480,12 @@ VST3 editor (while it is open). The pattern pane is skipped while the VST3 edito
 covers it, and the editor keeps its own keys only while it holds focus, so Tab
 moves out of it without closing it. `Ctrl+Shift+H/J/K/L` still moves between
 panes by direction.
+
+**Ctrl+F** toggles the focused Pattern or lower pane fullscreen. The View
+sidebar remains at the left when it is shown, and an open virtual piano remains
+at the bottom. **Ctrl+G** shows or hides the View sidebar; hiding it moves focus
+to the Pattern pane, and showing it focuses the sidebar. **View → Reset layout**
+restores the normal split and the sidebar.
 
 **Space** starts and stops the sequencer from every pane, including the mixer,
 the FX bus and the VST3 editor. Text entry, modal dialogs and an open menu keep
