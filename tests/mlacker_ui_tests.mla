@@ -103,8 +103,10 @@ mod mlacker_ui::output_picker;
 mod mlacker_ui::dialog_buttons;
 mod mlacker_ui::actions;
 mod mlacker_ui::keymap;
+mod mlacker_ui::pane_layout;
 use mlacker_ui::actions::Action;
 use mlacker_ui::keymap::*;
+use mlacker_ui::pane_layout::main_panes;
 use mlacker_ui::pattern_picker::PatternPicker;
 use mlacker_ui::output_picker::OutputPicker;
 use mlacker_ui::dialog_buttons::TextPrompt;
@@ -2221,6 +2223,8 @@ fn tui_keymap_matches_every_terminal_spelling_and_labels_menus() {
     // <C-s>: legacy control byte and kitty/CSI-u; global over dialogs.
     let save: KeyMatch = keymap.feed(decode_input("\x13")); verify(save.action == Action::SaveSession && save.global);
     let kitty: KeyMatch = keymap.feed(decode_input("\x1b[115;5u")); verify(kitty.action == Action::SaveSession);
+    let fullscreen: KeyMatch = keymap.feed(decode_input("\x06")); verify(fullscreen.action == Action::TogglePaneFullscreen);
+    let view: KeyMatch = keymap.feed(decode_input("\x07")); verify(view.action == Action::ToggleViewPane);
     // <S-m>: legacy uppercase and CSI-u shifted letter; not global.
     let matrix: KeyMatch = keymap.feed(decode_input("M")); verify(matrix.action == Action::ViewSongMatrix && !matrix.global);
     let shifted: KeyMatch = keymap.feed(decode_input("\x1b[109;2u")); verify(shifted.action == Action::ViewSongMatrix);
@@ -2236,6 +2240,8 @@ fn tui_keymap_matches_every_terminal_spelling_and_labels_menus() {
     let f1: KeyMatch = keymap.feed(decode_input("\x1bOP")); verify(f1.action == Action::None && !f1.waiting);
     let m: KeyMatch = keymap.feed(decode_input("m")); verify(m.action == Action::None);
     let save_label: str8 = keymap.shortcut_for(Action::SaveSession); verify(save_label == "<C-s>");
+    let fullscreen_label: str8 = keymap.shortcut_for(Action::TogglePaneFullscreen); verify(fullscreen_label == "<C-f>");
+    let view_label: str8 = keymap.shortcut_for(Action::ToggleViewPane); verify(view_label == "<C-g>");
     let matrix_label: str8 = keymap.shortcut_for(Action::ViewSongMatrix); verify(matrix_label == "<S-m>");
     let spectrum_label: str8 = keymap.shortcut_for(Action::ToggleSpectrum); verify(spectrum_label == "<C-S-m>");
     let piano_label: str8 = keymap.shortcut_for(Action::ToggleVirtualKeyboard); verify(piano_label == "<S-p>");
@@ -2253,6 +2259,25 @@ fn tui_keymap_matches_every_terminal_spelling_and_labels_menus() {
     let broken: KeyMatch = custom.feed(decode_input("x")); verify(broken.action == Action::None && !broken.waiting);
     let alone: KeyMatch = custom.feed(decode_input("\x1b[109;5u")); verify(alone.action == Action::Undo);
     let plain: KeyBinding = bind(Action::EditSample, [key(101, false, false)], false); verify(plain.label == "<e>");
+}
+
+#[test]
+fn tui_main_panes_fullscreen_preserves_view_and_piano() {
+    let area: Rect = Rect::new(0, 1, 100, 40);
+    let normal: list<Pane> = main_panes(area, true, -1, false);
+    verify(normal[0].bounds.width == 22 && normal[1].visible() && normal[2].visible());
+    let editor: list<Pane> = main_panes(area, true, 1, false);
+    verify(editor[0].bounds.x == normal[0].bounds.x && editor[0].bounds.y == normal[0].bounds.y &&
+        editor[0].bounds.width == normal[0].bounds.width && editor[0].bounds.height == normal[0].bounds.height &&
+        editor[1].bounds.height > normal[1].bounds.height && !editor[2].visible());
+    let without_view: list<Pane> = main_panes(area, false, 1, false);
+    verify(!without_view[0].visible() && without_view[1].bounds.width == area.width);
+    let piano: list<Pane> = main_panes(area, true, 1, true);
+    verify(piano[0].bounds.width == normal[0].bounds.width && piano[0].bounds.height == normal[0].bounds.height &&
+        piano[2].bounds.x == normal[2].bounds.x && piano[2].bounds.y == normal[2].bounds.y &&
+        piano[2].bounds.width == normal[2].bounds.width && piano[2].bounds.height == normal[2].bounds.height && piano[2].visible());
+    let details: list<Pane> = main_panes(area, true, 2, false);
+    verify(!details[1].visible() && details[2].bounds.height > normal[2].bounds.height);
 }
 
 fn test_ids(first: i32, second: i32) -> list<i32> { var ids: list<i32> = []; ids.push(first); ids.push(second); return ids; }

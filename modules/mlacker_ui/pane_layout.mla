@@ -1,0 +1,36 @@
+mod tui::geometry;
+mod tui::layout;
+mod tui::focus;
+use tui::geometry::*;
+use tui::layout::*;
+use tui::focus::Pane;
+
+/// The main view keeps the transport row outside the panes. The View sidebar
+/// and the virtual piano are protected panes: a fullscreen content pane uses
+/// all remaining space without covering either one.
+pub fn main_panes(content: Rect, view_visible: bool, fullscreen: i32, piano_visible: bool) -> list<Pane> {
+    let outer: Layout = Layout { axis: Axis::Vertical, gap: 0,
+        sizes: [Size::flex(1), Size::fixed(1)] };
+    let rows: list<Rect> = outer.split(content);
+    var view: Rect = Rect::new(rows[0].x, rows[0].y, 0, rows[0].height);
+    var right: Rect = rows[0];
+    if view_visible {
+        let horizontal: Layout = Layout { axis: Axis::Horizontal, gap: 1,
+            sizes: [Size::fixed(22), Size::flex(1)] };
+        let columns: list<Rect> = horizontal.split(rows[0]);
+        view = columns[0]; right = columns[1];
+    }
+
+    var editor: Rect = Rect::new(right.x, right.y, 0, right.height);
+    var details: Rect = Rect::new(right.x, right.y, 0, right.height);
+    if fullscreen == 1 && !piano_visible { editor = right; }
+    else if fullscreen == 2 && !piano_visible { details = right; }
+    else {
+        let vertical: Layout = Layout { axis: Axis::Vertical, gap: 1,
+            sizes: [Size::flex(2), Size::flex(1)] };
+        let split: list<Rect> = vertical.split(right);
+        editor = split[0]; details = split[1];
+    }
+    return [Pane { id: 0, bounds: view }, Pane { id: 1, bounds: editor },
+            Pane { id: 2, bounds: details }];
+}

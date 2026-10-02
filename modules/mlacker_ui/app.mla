@@ -90,6 +90,8 @@ use mlacker_ui::dialog_buttons::button_key;
 use mlacker_ui::curve_dialog::CurveDialog;
 mod mlacker_ui::frame_rate;
 use mlacker_ui::frame_rate::FrameRate;
+mod mlacker_ui::pane_layout;
+use mlacker_ui::pane_layout::main_panes;
 mod mlacker_ui::session;
 use mlacker_ui::session::SessionCodec;
 use mlacker_ui::session::SessionData;
@@ -163,6 +165,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item("Update rate", Action::SpectrumUpdateRate, true, keymap)]),
                                 menu_item(keyboard ? "[x] Show virtual keyboard" : "[ ] Show virtual keyboard", Action::ToggleVirtualKeyboard, true, keymap),
                                 menu_item(sampler ? "[x] Show sampler" : "[ ] Show sampler", Action::ToggleSampler, true, keymap),
+                                menu_item("Fullscreen focused pane", Action::TogglePaneFullscreen, true, keymap),
+                                menu_item("Show / hide View pane", Action::ToggleViewPane, true, keymap),
                                 menu_item("Reset layout", Action::ResetLayout, true, keymap),
                                 menu_item("Show details", Action::ShowDetails, true, keymap)] },
                     Menu {title: "Track", items: [
@@ -254,20 +258,6 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
     // F1 File, F2 Edit, ... F9 Record, shown before each title.
     bar.shortcuts = true;
     return bar;
-}
-
-fn demo_panes(content: Rect) -> list<Pane> {
-    let vertical: Layout = Layout {axis: Axis::Vertical, gap: 0,
-        sizes: [Size::flex(1), Size::fixed(1)]};
-    let rows: list<Rect> = vertical.split(content);
-    let horizontal: Layout = Layout {axis: Axis::Horizontal, gap: 1,
-        sizes: [Size::fixed(22), Size::flex(1)]};
-    let columns: list<Rect> = horizontal.split(rows[0]);
-    let right_layout: Layout = Layout {axis: Axis::Vertical, gap: 1,
-        sizes: [Size::flex(2), Size::flex(1)]};
-    let right: list<Rect> = right_layout.split(columns[1]);
-    return [Pane { id: 0, bounds: columns[0] }, Pane { id: 1, bounds: right[0] },
-            Pane { id: 2, bounds: right[1] }];
 }
 
 /// Picker rows for where an instrument's aux bus goes: with the main output
@@ -396,6 +386,9 @@ pub fn run() -> i32 {
     var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
+    // -1 is the normal split; 1 and 2 expand that pane around the protected
+    // View sidebar and virtual piano.
+    var fullscreen_pane: i32 = -1; var view_pane_visible: bool = true;
     var input: InputDecoder = InputDecoder::new();
     var dialog: OpenSessionDialog = OpenSessionDialog::new();
     var adding_audio: bool = false;
@@ -1404,7 +1397,7 @@ pub fn run() -> i32 {
         if paste_error.active && paste_error.pressed_button >= 0 { paste_error.tick(); dirty = true; }
         let area: Rect = terminal_bounds();
         let viewport: Viewport = menus.viewport(area);
-        let panes: list<Pane> = demo_panes(viewport.content());
+        let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
         focus.reconcile(panes);
         focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
         if curve_pending {
@@ -1600,16 +1593,19 @@ pub fn run() -> i32 {
             // pattern, inspector/mixer, the FX bus, and the VST3 editor.
             else if event.kind == InputKind::Menu && event.key == Key::Toggle && menus.active < 0 &&
                     !sample_editor.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
-                let has_bus: bool = mixer.visible && !keyboard.visible && !sampler.visible && midi.effects.len() > 0;
-                let has_editor: bool = instrument_editor.active;
+                let has_bus: bool = panes[2].visible() && mixer.visible && !keyboard.visible && !sampler.visible && midi.effects.len() > 0;
+                let has_editor: bool = panes[1].visible() && instrument_editor.active;
                 var stop: i32 = focus.selected == 0 ? 0 : (focus.selected == 1 ? 1 : (mixer.bus_focus && has_bus ? 3 : 2));
                 if has_editor && instrument_editor.focused { stop = 4; }
                 let back: bool = event.modifiers == 2;
                 var next: i32 = stop;
                 for _i in 0..5 {
                     next = back ? (next + 4) % 5 : (next + 1) % 5;
+                    if next == 0 && !panes[0].visible() { continue; }
                     // The editor covers the pattern pane, so skip it while open.
                     if next == 1 && has_editor { continue; }
+                    if next == 1 && !panes[1].visible() { continue; }
+                    if next == 2 && !panes[2].visible() { continue; }
                     if next == 3 && !has_bus { continue; }
                     if next == 4 && !has_editor { continue; }
                     break;
@@ -1622,7 +1618,7 @@ pub fn run() -> i32 {
                 }
                 dirty = true;
             }
-            else if instrument_editor.active && instrument_editor.focused && !dialog.active {
+            else if instrument_editor.active && instrument_editor.focused && !dialog.active && key.action == Action::None && !key.waiting {
                 instrument_editor.on_event(event, midi.output, panes[1].bounds); dirty = true;
             }
             else if sample_editor.active {
@@ -2614,6 +2610,27 @@ pub fn run() -> i32 {
             else if command == Action::ViewPatterns {
                 matrix.visible = false; library.show_patterns();
             }
+            else if command == Action::TogglePaneFullscreen {
+                free(message);
+                if focus.selected == 0 {
+                    message = clone("The View pane stays visible; Ctrl+G hides it");
+                } else if focus.selected == 2 && keyboard.visible {
+                    message = clone("The virtual piano stays visible beside fullscreen panes");
+                } else {
+                    fullscreen_pane = fullscreen_pane == focus.selected ? -1 : focus.selected;
+                    message = clone(fullscreen_pane < 0 ? "Normal pane layout" : "Focused pane fullscreen; Ctrl+F restores the layout");
+                }
+            }
+            else if command == Action::ToggleViewPane {
+                view_pane_visible = !view_pane_visible;
+                if view_pane_visible { focus.selected = 0; }
+                else if focus.selected == 0 { focus.selected = fullscreen_pane == 2 ? 2 : 1; }
+                free(message); message = clone(view_pane_visible ? "View pane shown" : "View pane hidden; Ctrl+G shows it");
+            }
+            else if command == Action::ResetLayout {
+                fullscreen_pane = -1; view_pane_visible = true;
+                free(message); message = clone("Pane layout reset");
+            }
             else if command == Action::ViewSongMatrix {
                 matrix.visible = !matrix.visible;
                 // A session with no song yet opens on one empty row to edit.
@@ -2768,6 +2785,7 @@ pub fn run() -> i32 {
             else if command == Action::ToggleVirtualKeyboard {
                 keyboard.visible = !keyboard.visible;
                 if keyboard.visible { sampler.visible = false; }
+                if keyboard.visible && fullscreen_pane == 2 { fullscreen_pane = -1; }
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;

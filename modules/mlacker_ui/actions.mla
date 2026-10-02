@@ -16,6 +16,7 @@ pub enum Action : i32 {
     MeterSolid = 40, MeterGrainy = 41, MeterUpdateRate = 74,
     ToggleSpectrum = 160, SpectrumDetails = 161, SpectrumUpdateRate = 162,
     ToggleVirtualKeyboard = 163, ToggleSampler = 167, ResetLayout = 6, ShowDetails = 7,
+    TogglePaneFullscreen = 176, ToggleViewPane = 177,
     // Track
     RenameTrack = 20, CreateMidiTrack = 21, DeleteTrack = 22, DuplicateTrack = 23,
     ClearTrack = 24, MuteTrack = 25, ConfigureCcColumn = 26, AddCcColumn = 27,
