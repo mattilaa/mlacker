@@ -1,0 +1,73 @@
+mod std::testing;
+mod std::math;
+mod mlacker_ui::time_stretch;
+use std::testing::verify;
+use std::testing::verify_eq;
+mod tui::geometry;
+use tui::geometry::wide;
+use mlacker_ui::time_stretch::*;
+
+/// Mono sine of `hz` at 44.1 kHz.
+fn sine(hz: f32, frames: i64) -> list<f32> {
+    var out: list<f32> = [];
+    for f in 0..frames { out.push(0.5f * std::math::sin(6.283185307179586f * hz * f32(f) / 44100.0f)); }
+    return out;
+}
+/// Upward zero crossings of channel 0.
+fn crossings(samples: &list<f32>, channels: i64) -> i64 {
+    var count: i64 = 0; let frames: i64 = samples.len() / channels;
+    for f in 1..frames { if samples[(f - 1) * channels] < 0.0f && samples[f * channels] >= 0.0f { count = count + 1; } }
+    return count;
+}
+
+#[test]
+fn repitch_plays_the_range_in_the_new_length() {
+    // A stereo ramp: half the frames play it twice as fast.
+    var ramp: list<f32> = [];
+    for f in 0..1000 { ramp.push(f32(f)); ramp.push(-f32(f)); }
+    let out: list<f32> = repitch(ramp, 2, 100, 900, 400);
+    verify_eq(out.len(), 800);
+    verify(out[0] == 100.0f && out[1] == -100.0f);
+    verify(out[200 * 2] > 499.9f && out[200 * 2] < 500.1f);
+    // Pitch follows speed: 440 Hz played 127/120 faster.
+    let tone: list<f32> = sine(440.0f, 44100);
+    let fast: list<f32> = repitch(tone, 1, 0, 44100, 44100 * 120 / 127);
+    let cycles: i64 = crossings(fast, 1);
+    verify(cycles >= 437 && cycles <= 441);
+}
+
+#[test]
+fn stretch_keeps_the_pitch() {
+    let tone: list<f32> = sine(440.0f, 44100);
+    // 127 BPM material at 120 BPM: longer, same frequency.
+    let frames: i64 = 44100 * 127 / 120;
+    let out: list<f32> = stretch(tone, 1, 44100, 0, 44100, frames);
+    verify_eq(out.len(), frames);
+    let cycles: i64 = crossings(out, 1);
+    verify(cycles >= 460 && cycles <= 470);
+    // Level stays steady through the overlaps (no window ripple or fade-in).
+    var low: f32 = 1.0f; var high: f32 = 0.0f;
+    for block in 0..20 {
+        var peak: f32 = 0.0f; let first: i64 = block * 2000; let stop: i64 = first + 2000;
+        for f in first..stop { let v: f32 = out[f] < 0.0f ? -out[f] : out[f]; if v > peak { peak = v; } }
+        if peak < low { low = peak; } if peak > high { high = peak; }
+    }
+    verify(low > 0.4f && high < 0.6f);
+}
+
+#[test]
+fn beats_moves_each_hit_to_its_stretched_time() {
+    // Four clicks a beat (120 BPM, 22050 frames) apart, then played at 60 BPM.
+    var clicks: list<f32> = [];
+    for f in 0..88200 { let phase: i64 = f % 22050; clicks.push(phase >= 1000 && phase < 1400 ? 0.8f : 0.0f); }
+    let points: list<i64> = onsets(clicks, 44100);
+    verify_eq(points.len(), 5);
+    verify(points[1] > 900 && points[1] <= 1000 && points[2] > 22950 && points[2] <= 23050);
+    let out: list<f32> = beats(clicks, 1, 44100, 0, 88200, 176400);
+    verify_eq(out.len(), 176400);
+    // Each click keeps its length and starts at twice its source time.
+    for hit in 1..4 {
+        let at: i64 = 2 * (wide(hit) * 22050 + 1000);
+        verify(out[at + 200] > 0.7f && out[at - 300] == 0.0f && out[at + 600] == 0.0f);
+    }
+}

@@ -1,0 +1,231 @@
+mod std::math;
+
+// Offline tempo sync of an audio placement (Sample properties Repitch,
+// Stretch and Beats, the same modes as Mla Sampler's tempo sync). Each takes
+// the interleaved source frames [from, to) and returns `frames` interleaved
+// output frames that play them at the new tempo.
+
+/// Render with sync mode `algorithm` (AudioInstance::stretch_algorithm:
+/// 1 Repitch, 2 Stretch, 3 Beats); anything else resamples like Repitch.
+pub fn render_synced(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, algorithm: i32) -> list<f32> {
+    if algorithm == 2 { return stretch(samples, channels, rate, from, to, frames); }
+    if algorithm == 3 { return beats(samples, channels, rate, from, to, frames); }
+    return repitch(samples, channels, from, to, frames);
+}
+
+/// Channel `c` of frame `f`, clamped into [from, to).
+fn frame_value(samples: &list<f32>, ch: i64, from: i64, to: i64, f: i64, c: i64) -> f32 {
+    let at: i64 = f < from ? from : (f >= to ? to - 1 : f);
+    return samples[at * ch + c];
+}
+
+/// Mono (channel average) of frames [from, to).
+fn mono(samples: &list<f32>, ch: i64, from: i64, to: i64) -> list<f32> {
+    var out: list<f32> = [];
+    for f in from..to {
+        var sum: f32 = 0.0f;
+        for c in 0..ch { sum = sum + samples[f * ch + c]; }
+        out.push(sum / f32(ch));
+    }
+    return out;
+}
+
+/// Speed and pitch change together: 4-point Hermite resampling.
+pub fn repitch(samples: &list<f32>, channels: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+    let ch: i64 = channels < 1 ? 1 : channels;
+    var out: list<f32> = [];
+    if frames <= 0 || to <= from { return out; }
+    let step: f64 = f64(to - from) / f64(frames);
+    for o in 0..frames {
+        let pos: f64 = f64(from) + f64(o) * step;
+        let i: i64 = pos; let t: f32 = f32(pos - f64(i));
+        for c in 0..ch {
+            let x0: f32 = frame_value(samples, ch, from, to, i - 1, c); let x1: f32 = frame_value(samples, ch, from, to, i, c);
+            let x2: f32 = frame_value(samples, ch, from, to, i + 1, c); let x3: f32 = frame_value(samples, ch, from, to, i + 2, c);
+            let a: f32 = (x3 - x0) * 0.5f + (x1 - x2) * 1.5f;
+            let b: f32 = x0 - x1 * 2.5f + x2 * 2.0f - x3 * 0.5f;
+            let d: f32 = (x2 - x0) * 0.5f;
+            out.push(((a * t + b) * t + d) * t + x1);
+        }
+    }
+    return out;
+}
+
+/// Tempo changes at the original pitch: WSOLA. Hann grains of 40 ms overlap
+/// by half; each is taken near its nominal source position (within 10 ms)
+/// where it best continues the grain before it, so the overlaps stay in phase.
+pub fn stretch(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+    let ch: i64 = channels < 1 ? 1 : channels;
+    var out: list<f32> = [];
+    if frames <= 0 || to <= from { return out; }
+    let input: i64 = to - from;
+    var grain: i64 = rate * 40 / 1000; if grain < 64 { grain = 64; } grain = grain - grain % 2;
+    let hop: i64 = grain / 2;
+    let tolerance: i64 = rate * 10 / 1000;
+    let step: f64 = f64(input) / f64(frames);
+    var window: list<f32> = [];
+    for n in 0..grain { window.push(0.5f - 0.5f * std::math::cos(6.283185307179586f * f32(n) / f32(grain))); }
+    let level: list<f32> = mono(samples, ch, from, to);
+    // Grain k starts at output frame k * hop and source frame positions[k].
+    let last: i64 = input - grain > 0 ? input - grain : 0;
+    var positions: list<i64> = [];
+    var k: i64 = 0;
+    while k * hop < frames {
+        var nominal: i64 = f64(k * hop) * step;
+        if nominal > last { nominal = last; }
+        var position: i64 = nominal;
+        if k > 0 {
+            // Best match for the previous grain's natural continuation over
+            // the overlap: coarse search every 4 frames, then refine.
+            let target: i64 = positions[k - 1] + hop;
+            let lo: i64 = nominal - tolerance < 0 ? 0 : nominal - tolerance;
+            let hi: i64 = nominal + tolerance > last ? last : nominal + tolerance;
+            var best: f32 = -1000000000.0f; var coarse: i64 = nominal;
+            var candidate: i64 = lo;
+            while candidate <= hi {
+                let score: f32 = similarity(level, candidate, target, hop, input, 4);
+                if score > best { best = score; coarse = candidate; }
+                candidate = candidate + 4;
+            }
+            best = -1000000000.0f;
+            let fine_lo: i64 = coarse - 3 < lo ? lo : coarse - 3; let fine_hi: i64 = coarse + 3 > hi ? hi : coarse + 3;
+            for c in fine_lo..fine_hi + 1 {
+                let score: f32 = similarity(level, c, target, hop, input, 2);
+                if score > best { best = score; position = c; }
+            }
+        }
+        positions.push(position); k = k + 1;
+    }
+    // Each output frame sums the two grains over it; the first grain starts
+    // at full level instead of fading in.
+    for o in 0..frames {
+        let current: i64 = o / hop; let n: i64 = o - current * hop;
+        let s1: i64 = positions[current] + n;
+        let w1: f32 = current == 0 ? 1.0f : window[n];
+        let has_previous: bool = current > 0;
+        let s0: i64 = has_previous ? positions[current - 1] + n + hop : 0;
+        let w0: f32 = has_previous ? window[n + hop] : 0.0f;
+        for c in 0..ch {
+            var value: f32 = s1 < input ? samples[(from + s1) * ch + c] * w1 : 0.0f;
+            if has_previous && s0 < input { value = value + samples[(from + s0) * ch + c] * w0; }
+            out.push(value);
+        }
+    }
+    return out;
+}
+
+/// Normalized correlation of `length` mono frames at `a` and at `b`, every
+/// `stride`-th frame; frames past `input` count as silence.
+fn similarity(level: &list<f32>, a: i64, b: i64, length: i64, input: i64, stride: i64) -> f32 {
+    var dot: f32 = 0.0f; var energy: f32 = 0.0f;
+    var n: i64 = 0;
+    while n < length {
+        if a + n >= input || b + n >= input { break; }
+        let x: f32 = level[a + n];
+        dot = dot + x * level[b + n]; energy = energy + x * x;
+        n = n + stride;
+    }
+    return dot / std::math::sqrt(energy + 0.000000001f);
+}
+
+/// Each hit (see `onsets`) plays whole at its original speed and pitch from
+/// its stretched time up to the next hit, fading out just before it; when
+/// the tempo is faster, the next hit cuts it with a 5 ms fade.
+pub fn beats(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+    let ch: i64 = channels < 1 ? 1 : channels;
+    var out: list<f32> = [];
+    if frames <= 0 || to <= from { return out; }
+    let input: i64 = to - from;
+    let level: list<f32> = mono(samples, ch, from, to);
+    let points: list<i64> = onsets(level, rate);
+    let seam: i64 = rate * 5 / 1000 < 16 ? 16 : rate * 5 / 1000;
+    // Hit i plays source frames starts[i].. for lengths[i] output frames from
+    // output frame placed[i], fading out over the last fades[i].
+    var starts: list<i64> = []; var placed: list<i64> = []; var lengths: list<i64> = []; var fades: list<i64> = [];
+    for i in 0..points.len() {
+        let start: i64 = points[i];
+        let end: i64 = i + 1 < points.len() ? points[i + 1] : input;
+        let at: i64 = start * frames / input;
+        let next: i64 = i + 1 < points.len() ? end * frames / input : frames;
+        var length: i64 = end - start; var fade: i64 = 64;
+        if length > next - at { length = next - at + seam; fade = seam; }
+        if fade > length / 2 { fade = length / 2; }
+        starts.push(start); placed.push(at); lengths.push(length); fades.push(fade);
+    }
+    var hit: i64 = 0;
+    for o in 0..frames {
+        while hit + 1 < placed.len() && placed[hit + 1] <= o { hit = hit + 1; }
+        for c in 0..ch {
+            // The hit under the frame, and earlier ones still fading out.
+            var value: f32 = 0.0f;
+            var j: i64 = hit;
+            while j >= 0 && hit - j < 8 {
+                let n: i64 = o - placed[j]; let s: i64 = starts[j] + n;
+                if n >= 0 && n < lengths[j] && s < input {
+                    var gain: f32 = 1.0f;
+                    if n < 16 && j > 0 { gain = f32(n + 1) / 16.0f; }
+                    if n >= lengths[j] - fades[j] { gain = gain * f32(lengths[j] - n) / f32(fades[j] + 1); }
+                    value = value + samples[(from + s) * ch + c] * gain;
+                }
+                j = j - 1;
+            }
+            out.push(value);
+        }
+    }
+    return out;
+}
+
+/// Where the hits start, as Mla Sampler finds them: RMS per 256-frame hop and
+/// the strongest rises in it (at least 15 % of the strongest, local peaks),
+/// taken strongest first at least 50 ms apart. Each moves to its onset, the
+/// first frame around the rise at 30 % of the peak there, then back to the
+/// quietest of the 64 frames before. Frame 0 always starts the first hit.
+pub fn onsets(level: &list<f32>, rate: i64) -> list<i64> {
+    var points: list<i64> = [0];
+    let frames: i64 = level.len();
+    let hop: i64 = 256; let hops: i64 = frames / hop;
+    if hops < 3 { return points; }
+    var rms: list<f32> = [];
+    for h in 0..hops {
+        var sum: f32 = 0.0f;
+        let first: i64 = h * hop; let stop: i64 = first + hop;
+        for f in first..stop { let v: f32 = level[f]; sum = sum + v * v; }
+        rms.push(std::math::sqrt(sum / f32(hop)));
+    }
+    var rise: list<f32> = [0.0f]; var strongest: f32 = 0.0f;
+    for h in 1..hops {
+        let r: f32 = rms[h] - rms[h - 1] > 0.0f ? rms[h] - rms[h - 1] : 0.0f;
+        rise.push(r); if r > strongest { strongest = r; }
+    }
+    if strongest <= 0.0001f { return points; }
+    // Strongest first: rise in the high bits, hop in the low 24.
+    var candidates: list<i64> = [];
+    for h in 1..hops {
+        if rise[h] >= strongest * 0.15f && rise[h] >= rise[h - 1] && (h + 1 >= hops || rise[h] > rise[h + 1]) {
+            let strength: i64 = rise[h] / strongest * 1000000.0f;
+            candidates.push(strength * 16777216 + h);
+        }
+    }
+    candidates.sort_desc();
+    var spacing: i64 = rate * 5 / 100 / hop; if spacing < 1 { spacing = 1; }
+    var taken: list<i64> = []; var cuts: list<i64> = [];
+    for key in candidates {
+        let h: i64 = key % 16777216;
+        var near: bool = false;
+        for t in taken { if (t > h ? t - h : h - t) < spacing { near = true; break; } }
+        if near { continue; }
+        taken.push(h);
+        let lo: i64 = (h - 1) * hop; let hi: i64 = (h + 2) * hop < frames ? (h + 2) * hop : frames;
+        var peak: f32 = 0.0f;
+        for f in lo..hi { let v: f32 = level[f] < 0.0f ? -level[f] : level[f]; if v > peak { peak = v; } }
+        var onset: i64 = h * hop;
+        for f in lo..hi { let v: f32 = level[f] < 0.0f ? -level[f] : level[f]; if v >= peak * 0.3f { onset = f; break; } }
+        let back: i64 = onset - 64 < lo ? lo : onset - 64;
+        var quiet: i64 = onset; var lowest: f32 = 2.0f;
+        for f in back..onset + 1 { let v: f32 = level[f] < 0.0f ? -level[f] : level[f]; if v <= lowest { lowest = v; quiet = f; } }
+        if quiet >= 64 { cuts.push(quiet); }
+    }
+    cuts.sort();
+    for c in cuts { if c > points[points.len() - 1] { points.push(c); } }
+    return points;
+}

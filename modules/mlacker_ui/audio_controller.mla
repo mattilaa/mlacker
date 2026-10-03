@@ -17,6 +17,8 @@ use mlacker_ui::sequence::AudioInstance;
 use tui::table::TableRow;
 use mlacker_ui::audio_clip::AudioClip;
 use mlacker_ui::audio_clip::base_name;
+mod mlacker_ui::time_stretch;
+use mlacker_ui::time_stretch::render_synced;
 use std::audio::controller::*;
 use std::audio::detail::__mlang_std_audio_last_error;
 use std::midi::input_count;
@@ -37,6 +39,13 @@ pub struct SamplePlacement { var sample: i64; var track: i64; var start: i64; va
 /// so re-arming a pattern reuses the registration instead of stopping the
 /// device to upload the same audio again.
 pub struct RegisteredClip { var id: i64; var frames: i64; var channels: i64; var rate: i64; var fingerprint: i64; };
+/// A tempo-synced placement rendered at `bpm` (see AudioInstance::synced) and
+/// registered as `id` with `frames` frames; the rest is what it was made from.
+pub struct SyncedClip {
+    var id: i64; var frames: i64;
+    var fingerprint: i64; var source_frames: i64; var from: i64; var to: i64;
+    var original_bpm: i32; var algorithm: i32; var bpm: i32;
+};
 /// Cheap content key: enough spread to separate two clips of equal geometry,
 /// including one a destructive edit rewrote in place.
 pub fn clip_fingerprint(samples: list<f32>) -> i64 {
@@ -76,6 +85,8 @@ pub struct AudioSystem {
     /// share a pattern's grid.
     var sample_epoch: i64; var sample_start_row: i32{-1};
     var registered_clips: list<RegisteredClip>;
+    /// Renders of the registered clips' synced placements.
+    var synced_clips: list<SyncedClip>;
     /// Next slot of the instruments' phrase ring (TEXT cells, 0-255).
     var next_phrase: i32;
     /// Transport last handed to `output` for tempo-synced plugins.
@@ -106,7 +117,7 @@ impl AudioSystem {
         self.pads = next.pads;
         self.pad_markers = next.pad_markers;
         self.samples_running = false; self.sample_placements = []; self.sample_output = 0;
-        self.sample_epoch = 0; self.sample_start_row = -1; self.registered_clips = [];
+        self.sample_epoch = 0; self.sample_start_row = -1; self.registered_clips = []; self.synced_clips = [];
         self.click_output = 0; self.click_high = -1; self.click_low = -1;
     }
     pub fn start(hardware: bool) -> AudioSystem {
@@ -390,7 +401,7 @@ impl AudioSystem {
             // Arming a pattern never stops the device: registration appends
             // while it renders, so effect tails and instrument voices survive a
             // matrix row change. Only a full cache (256 clips) reloads.
-            if self.sample_output != self.output.handle { self.registered_clips = []; }
+            if self.sample_output != self.output.handle { self.registered_clips = []; self.synced_clips = []; }
             var valid: bool = false;
             for attempt in 0..2 {
                 if valid { break; }
@@ -404,7 +415,7 @@ impl AudioSystem {
                         if worker { self.midi = MidiController::start_selected(self.midi_id, self.output.handle); }
                         return false;
                     }
-                    self.output.clear_samples(); self.registered_clips = []; self.click_high = -1; self.click_low = -1;
+                    self.output.clear_samples(); self.registered_clips = []; self.synced_clips = []; self.click_high = -1; self.click_low = -1;
                     if restart { if self.output.start() != 0 { return false; } }
                     if worker { self.midi = MidiController::start_selected(self.midi_id, self.output.handle); }
                 }
@@ -415,14 +426,19 @@ impl AudioSystem {
                     let instances: list<AudioInstance> = track.instances;
                     for instance in instances {
                         let rc: AudioClip = instance.render_clip();
-                        let id: i64 = self.register_clip(instance.clip);
+                        // A synced placement plays its own render from frame 0.
+                        var id: i64 = -1; var head: i64 = rc.offset; var frames: i64 = rc.frames;
+                        if instance.synced() && rc.frames > 0 {
+                            let synced: SyncedClip = self.register_synced(instance, rc, bpm);
+                            id = synced.id; head = 0; frames = synced.frames;
+                        } else { id = self.register_clip(instance.clip); }
                         if id < 0 { valid = false; continue; }
                         let start: i64 = wide(instance.start_row) * 15000 + table.audio_timing_offset(i32(t), instance.start_row);
-                        let duration: i64 = rc.frames * wide(bpm) * 1000 / instance.clip.sample_rate;
+                        let duration: i64 = frames * wide(bpm) * 1000 / instance.clip.sample_rate;
                         var next: i64 = self.sample_epoch + (tick - self.sample_epoch) / period * period + start;
                         if next + duration <= tick { next = next + period; }
                         self.sample_placements.push(SamplePlacement { sample: id, track: t, start: start, duration: duration,
-                            rate: instance.clip.sample_rate, next: next, head: rc.offset });
+                            rate: instance.clip.sample_rate, next: next, head: head });
                     }
                 }
             }
@@ -540,6 +556,28 @@ impl AudioSystem {
         self.registered_clips.push(RegisteredClip { id: id, frames: clip.frames, channels: clip.channels,
             rate: clip.sample_rate, fingerprint: fingerprint });
         return id;
+    }
+    /// Render placement `instance` (window `rc`) at `bpm` with its sync mode
+    /// and register it, or reuse an earlier render. `id` is -1 on failure.
+    fn register_synced(self: &mut Self, placement: &AudioInstance, rc: AudioClip, bpm: i32) -> SyncedClip {
+        var instance: AudioInstance = AudioInstance {}; instance = placement;
+        let fingerprint: i64 = clip_fingerprint(instance.clip.samples);
+        let from: i64 = rc.offset; let to: i64 = rc.offset + rc.frames;
+        let known: list<SyncedClip> = self.synced_clips;
+        for entry in known {
+            if entry.fingerprint == fingerprint && entry.source_frames == instance.clip.frames && entry.from == from && entry.to == to &&
+                entry.original_bpm == instance.original_bpm && entry.algorithm == instance.stretch_algorithm && entry.bpm == bpm { return entry; }
+        }
+        // The window's length at `bpm` instead of at the original tempo.
+        let frames: i64 = (rc.frames * wide(instance.original_bpm) + wide(bpm) - 1) / wide(bpm);
+        var rendered: AudioClip = AudioClip {};
+        rendered.channels = instance.clip.channels; rendered.sample_rate = instance.clip.sample_rate; rendered.frames = frames;
+        rendered.samples = render_synced(instance.clip.samples, instance.clip.channels, instance.clip.sample_rate, from, to, frames, instance.stretch_algorithm);
+        let entry: SyncedClip = SyncedClip { id: self.register_clip(rendered), frames: frames, fingerprint: fingerprint,
+            source_frames: instance.clip.frames, from: from, to: to, original_bpm: instance.original_bpm,
+            algorithm: instance.stretch_algorithm, bpm: bpm };
+        if entry.id >= 0 { self.synced_clips.push(entry); }
+        return entry;
     }
     /// The playing pattern changed: silence its clips and re-arm the next
     /// pattern's placements on the next `sample_playback`.

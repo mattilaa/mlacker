@@ -158,10 +158,46 @@ pub struct AudioInstance {
     var frame_end: i64; var original_bpm: i32; var stretch_algorithm: i32;
 };
 impl AudioInstance {
+    /// Repitch, Stretch or Beats with an original BPM: the sample keeps that
+    /// tempo's beats on the pattern rows whatever the project BPM, and is
+    /// rendered to the project tempo when played.
+    pub fn synced(self: AudioInstance) -> bool {
+        return self.stretch_algorithm > 0 && self.original_bpm > 0 && self.clip.sample_rate > 0;
+    }
+    /// Pattern ticks (15000 per row) that `frames` sample frames cover, rounded down.
+    pub fn ticks_of(self: AudioInstance, frames: i64) -> i64 {
+        if self.synced() { return frames * wide(self.original_bpm) * 1000 / self.clip.sample_rate; }
+        let fpr: i64 = self.clip.frames_per_row > 0 ? self.clip.frames_per_row : 1;
+        return frames * 15000 / fpr;
+    }
+    /// Pattern ticks that `frames` sample frames cover, rounded up.
+    pub fn ticks_covering(self: AudioInstance, frames: i64) -> i64 {
+        if self.synced() { return (frames * wide(self.original_bpm) * 1000 + self.clip.sample_rate - 1) / self.clip.sample_rate; }
+        let fpr: i64 = self.clip.frames_per_row > 0 ? self.clip.frames_per_row : 1;
+        return (frames * 15000 + fpr - 1) / fpr;
+    }
+    /// Sample frames that `ticks` pattern ticks cover, rounded up.
+    pub fn frames_of(self: AudioInstance, ticks: i64) -> i64 {
+        if self.synced() {
+            let per: i64 = wide(self.original_bpm) * 1000;
+            return (ticks * self.clip.sample_rate + per - 1) / per;
+        }
+        return (ticks * self.clip.frames_per_row + 14999) / 15000;
+    }
+    /// Sample frames in one pattern row (approximate when synced).
+    pub fn row_frames(self: AudioInstance) -> i64 {
+        if self.synced() { return self.clip.sample_rate * 15 / wide(self.original_bpm); }
+        return self.clip.frames_per_row;
+    }
+    /// Owned clip for the clipboard: the sample from `rows` rows into the placement.
+    pub fn clipboard_tail(self: AudioInstance, rows: i64) -> AudioClip {
+        if !self.synced() { return self.clip.slice_tail(rows); }
+        return self.clip.slice_frames(self.offset_frames + self.frames_of(rows * 15000), self.render_end());
+    }
     pub fn render_end(self: AudioInstance) -> i64 {
         var end: i64 = self.clip.frames;
         if self.length_ticks > 0 {
-            let durf: i64 = (wide(self.length_ticks) * self.clip.frames_per_row + 14999) / 15000;
+            let durf: i64 = self.frames_of(wide(self.length_ticks));
             if self.offset_frames + durf < end { end = self.offset_frames + durf; }
         }
         if self.frame_end > self.offset_frames && self.frame_end < end { end = self.frame_end; }
@@ -169,12 +205,14 @@ impl AudioInstance {
     }
     /// Borrowed render view: metadata is gated by LEN and the non-destructive
     /// start trim; shares the full sample buffer. Never release this view.
+    /// A synced placement's view has its pattern row size.
     pub fn render_clip(self: AudioInstance) -> AudioClip {
         var clip: AudioClip = AudioClip {}; clip = self.clip;
         var off: i64 = self.offset_frames; if off < 0 { off = 0; } if off > self.clip.frames { off = self.clip.frames; }
         clip.offset = off;
         var window: i64 = self.render_end() - off; if window < 0 { window = 0; }
         clip.frames = window;
+        if self.synced() && self.row_frames() > 0 { clip.frames_per_row = self.row_frames(); }
         return clip;
     }
     pub fn duration(self: AudioInstance) -> i64 {
@@ -182,7 +220,7 @@ impl AudioInstance {
         var end: i64 = self.clip.frames;
         if self.frame_end > self.offset_frames && self.frame_end < end { end = self.frame_end; }
         let frames: i64 = end > self.offset_frames ? end - self.offset_frames : 0;
-        if self.clip.frames_per_row > 0 && self.clip.frames > 0 { return frames * 15000 / self.clip.frames_per_row; }
+        if self.clip.frames_per_row > 0 && self.clip.frames > 0 { return self.ticks_of(frames); }
         let offset_rows: i64 = self.clip.frames_per_row > 0 ? self.offset_frames / self.clip.frames_per_row : 0;
         let rows: i64 = self.clip.peaks.len() > offset_rows ? self.clip.peaks.len() - offset_rows : 0;
         return rows * 15000;
@@ -948,7 +986,7 @@ pub fn copy_audio(self: &mut Self) -> bool {
     if hit < 0 { self.error = "No audio under the cursor to copy"; return false; }
     let instance: AudioInstance = track.instances[hit];
     let offset: i64 = wide(self.selected_row - instance.start_row);
-    let tail: AudioClip = instance.clip.slice_tail(offset);
+    let tail: AudioClip = instance.clipboard_tail(offset);
     self.audio_clipboard.release(); self.audio_clipboard = tail;
     self.audio_clipboard_offset = 0; self.audio_clipboard_length = 0;
     self.error = ""; return true;
@@ -964,7 +1002,7 @@ pub fn cut_audio(self: &mut Self, area: Rect) -> bool {
     if hit < 0 { self.error = "No audio under the cursor to cut"; return false; }
     let instance: AudioInstance = track.instances[hit];
     let offset: i64 = wide(self.selected_row - instance.start_row);
-    let tail: AudioClip = instance.clip.slice_tail(offset);
+    let tail: AudioClip = instance.clipboard_tail(offset);
     self.audio_clipboard.release(); self.audio_clipboard = tail;
     self.audio_clipboard_offset = 0; self.audio_clipboard_length = 0;
     if offset <= 0 { self.remove_audio_under_cursor(); self.reconcile(area); self.error = ""; return true; }
@@ -972,7 +1010,8 @@ pub fn cut_audio(self: &mut Self, area: Rect) -> bool {
     var kept: list<AudioInstance> = [];
     for i in 0..track.instances.len() {
         var next: AudioInstance = AudioInstance {}; next = track.instances[i];
-        if i == hit {
+        if i == hit && next.synced() { next.length_ticks = i32(offset * 15000); }
+        else if i == hit {
             next.length_ticks = i32(offset * 15000);
             var peaks: list<WavePeak> = []; var details: list<WavePeak> = [];
             let src_peaks: list<WavePeak> = next.clip.peaks;
@@ -1018,8 +1057,8 @@ pub fn visual_audio_copy(self: &mut Self, cut: bool, area: Rect) -> bool {
         let last: i32 = b < instance_last ? b : instance_last;
         let fpr: i64 = instance.clip.frames_per_row > 0 ? instance.clip.frames_per_row : 1;
         let rendered: AudioClip = instance.render_clip();
-        let from: i64 = rendered.offset + wide(first - instance.start_row) * fpr;
-        var to: i64 = rendered.offset + wide(last - instance.start_row + 1) * fpr;
+        let from: i64 = rendered.offset + instance.frames_of(wide(first - instance.start_row) * 15000);
+        var to: i64 = rendered.offset + instance.frames_of(wide(last - instance.start_row + 1) * 15000);
         let render_end: i64 = rendered.offset + rendered.frames; if to > render_end { to = render_end; }
         if to <= from { self.visual = false; self.visual_rows = false; self.error = "Audio selection is empty"; return false; }
         let ticks: i64 = ((to - from) * 15000 + fpr - 1) / fpr;
@@ -1098,13 +1137,12 @@ pub fn trim_audio(self: &mut Self, from: i64, to: i64, area: Rect) -> bool {
     let hit: i32 = track.instance_at(self.selected_row);
     if hit < 0 { self.error = "No audio under the cursor to trim"; return false; }
     let instance: AudioInstance = track.instances[hit];
-    let fpr: i64 = instance.clip.frames_per_row > 0 ? instance.clip.frames_per_row : 1;
     let rc: AudioClip = instance.render_clip();
     var lo: i64 = from < 0 ? 0 : from; var hi: i64 = to > rc.frames ? rc.frames : to;
     if hi <= lo { self.error = "Trim selection is empty"; return false; }
     let new_offset: i64 = rc.offset + lo;
     let window: i64 = hi - lo;
-    let ticks: i64 = (window * 15000 + fpr - 1) / fpr;
+    let ticks: i64 = instance.ticks_covering(window);
     if ticks < 1 { self.error = "Trim selection is too short"; return false; }
     var updated: list<AudioInstance> = [];
     for i in 0..track.instances.len() {
@@ -1133,7 +1171,6 @@ pub fn slice_audio(self: &mut Self, area: Rect) -> bool {
         if instance.start_row <= a && instance.start_row + span - 1 >= b { hit = i32(i); break; }
     }
     if hit < 0 { self.visual = false; self.visual_rows = false; self.error = "Select rows inside one audio instance"; return false; }
-    let fpr: i64 = track.instances[hit].clip.frames_per_row > 0 ? track.instances[hit].clip.frames_per_row : 1;
     let span: i32 = i32((track.instances[hit].duration() + 14999) / 15000);
     let start: i32 = track.instances[hit].start_row;
     let base_offset: i64 = track.instances[hit].offset_frames;
@@ -1147,10 +1184,10 @@ pub fn slice_audio(self: &mut Self, area: Rect) -> bool {
         pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: start, length_ticks: head_rows * 15000, offset_frames: base_offset,
             original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm });
     }
-    pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: a, length_ticks: mid_rows * 15000, offset_frames: base_offset + wide(a - start) * fpr,
+    pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: a, length_ticks: mid_rows * 15000, offset_frames: base_offset + track.instances[hit].frames_of(wide(a - start) * 15000),
         original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm });
     if tail_rows > 0 {
-        pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: b + 1, length_ticks: tail_rows * 15000, offset_frames: base_offset + wide(b + 1 - start) * fpr,
+        pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: b + 1, length_ticks: tail_rows * 15000, offset_frames: base_offset + track.instances[hit].frames_of(wide(b + 1 - start) * 15000),
             frame_end: track.instances[hit].frame_end, original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm });
     }
     track.instances[hit].clip.release();
@@ -1464,8 +1501,10 @@ pub fn set_audio_properties(self: &mut Self, from: i64, to: i64, bpm: i32, algor
     if from < 0 || from >= to || to > current.clip.frames || bpm < 20 || bpm > 400 || algorithm < 0 || algorithm > 3 {
         self.error = "Invalid sample properties"; return false;
     }
-    let fpr: i64 = current.clip.frames_per_row > 0 ? current.clip.frames_per_row : 1;
-    let ticks: i64 = ((to - from) * 15000 + fpr - 1) / fpr;
+    // LEN covers the frames at the new settings.
+    var timing: AudioInstance = AudioInstance {}; timing = track.instances[hit];
+    timing.original_bpm = bpm; timing.stretch_algorithm = algorithm;
+    let ticks: i64 = timing.ticks_covering(to - from);
     var updated: list<AudioInstance> = [];
     for i in 0..track.instances.len() {
         var next: AudioInstance = AudioInstance {}; next = track.instances[i];
@@ -1509,7 +1548,22 @@ pub fn paint_audio_style(self: SequenceTable, surface: Surface, area: Rect, them
                     let slices: i32 = 4 / spacing; let first: i32 = peak_row * 4 + sub * slices;
                     let span: i64 = 15000 / wide(spacing);
                     let remaining: i64 = instance.duration() - wide(local) * 15000 - wide(sub) * span;
-                    if has_peak && remaining > 0 {
+                    if instance.synced() && remaining > 0 && instance.clip.samples.len() > 0 {
+                        // Synced rows follow the original tempo, not the stored
+                        // row peaks: measure the line's frames from the samples.
+                        let begin: i64 = instance.offset_frames + instance.frames_of(wide(local) * 15000 + wide(sub) * span);
+                        let whole: i64 = instance.frames_of(span); let end: i64 = instance.render_end();
+                        let length: i64 = begin + whole > end ? end - begin : whole;
+                        if length > 0 && (grainy || remaining < span) {
+                            // Slices past `remaining` stay empty.
+                            let quarter: i64 = whole / 4 > 0 ? whole / 4 : 1;
+                            let fine: list<WavePeak> = instance.clip.slice_peaks(begin, quarter, 4);
+                            paint_mono_grainy(surface, line, clip, fine, 0, 4, color, bg, wave, remaining * wide(spacing));
+                        } else if length > 0 {
+                            let level: WavePeak = instance.clip.range_peak(begin, length);
+                            paint_mono_wave(surface, line, clip, mono_level(level.left, level.right), mono_level(level.left_body, level.right_body), color, bg, wave);
+                        }
+                    } else if has_peak && remaining > 0 {
                         let step: i64 = instance.clip.frames_per_row / wide(spacing * 4);
                         if (grainy || remaining < span) && spacing > 1 && step > 0 && instance.clip.samples.len() > 0 {
                             // Zoomed lines keep four time slices per cell, one per dot row,
@@ -2572,7 +2626,7 @@ fn commit(self: &mut Self, value: str8) -> bool {
             if instance.frame_end > instance.offset_frames && instance.frame_end < source_end { source_end = instance.frame_end; }
             let available_frames: i64 = source_end > instance.offset_frames ? source_end - instance.offset_frames : 0;
             let natural: i64 = instance.clip.frames_per_row > 0 && instance.clip.frames > 0
-                ? available_frames * 15000 / instance.clip.frames_per_row
+                ? instance.ticks_of(available_frames)
                 : wide(i32(instance.clip.peaks.len())) * 15000;
             let duration: i64 = value == "" ? natural : ticks;
             if duration > natural + 149 { self.error = "LEN exceeds the sample duration"; return false; }
@@ -2662,7 +2716,7 @@ pub fn set_length(self: &mut Self, count: i32, area: Rect) -> bool {
             var clipped: AudioInstance = AudioInstance {}; clipped = instance;
             let length: i32 = count - clipped.start_row;
             if clipped.duration() > wide(length) * 15000 { clipped.length_ticks = length * 15000; }
-            if length < clipped.clip.peaks.len() {
+            if length < clipped.clip.peaks.len() && !clipped.synced() {
                 var peaks: list<WavePeak> = []; var details: list<WavePeak> = [];
                 for r in 0..length { peaks.push(clipped.clip.peaks[r]); }
                 for r in 0..clipped.clip.detail_peaks.len() {

@@ -1435,6 +1435,36 @@ fn tui_sample_properties_dialog_and_frame_window() {
 }
 
 #[test]
+fn tui_synced_sample_rows_follow_original_bpm() {
+    // 8 rows of audio at 120 BPM (1000 frames a row at 8 kHz).
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var table: SequenceTable = SequenceTable::new(); table.create_track_kind(false, true, area);
+    var clip: AudioClip = AudioClip { source: clone("synced.wav"), channels: 1, sample_rate: 8000, frames: 8000, frames_per_row: 1000 };
+    for _i in 0..8000 { clip.samples.push(0.25f); }
+    for _i in 0..8 { clip.peaks.push(WavePeak { left: 250, right: 250 }); }
+    for _i in 0..32 { clip.detail_peaks.push(WavePeak { left: 250, right: 250 }); }
+    table.selected_row = 0; verify(table.insert_audio(clip, area));
+    var instance: AudioInstance = table.audio_at_cursor();
+    verify(instance.duration() == 8 * 15000);
+    // Recorded at 60 BPM: its 8000 frames are 4 rows of the pattern.
+    verify(table.set_audio_properties(0, 8000, 60, 2, area));
+    instance = table.audio_at_cursor();
+    verify(instance.synced() && instance.duration() == 4 * 15000 && instance.render_end() == 8000);
+    var view: AudioClip = instance.render_clip();
+    verify(instance.frames_of(15000) == 2000 && instance.ticks_of(2000) == 15000 && view.frames_per_row == 2000);
+    // Recorded at 240 BPM: 16 rows; a frame window keeps its tempo.
+    verify(table.set_audio_properties(1000, 7000, 240, 1, area));
+    instance = table.audio_at_cursor();
+    view = instance.render_clip();
+    verify(instance.duration() == 12 * 15000 && instance.render_end() == 7000 && view.frames == 6000);
+    // Off: back to the clip's own rows.
+    verify(table.set_audio_properties(0, 8000, 240, 0, area));
+    instance = table.audio_at_cursor();
+    verify(!instance.synced() && instance.duration() == 8 * 15000);
+    table.release(); clip.release();
+}
+
+#[test]
 fn tui_sequenced_meter_sources_and_ramps() {
     var table: SequenceTable = SequenceTable::new(); table.zoom_tracks(2, true, Rect::new(0, 0, 120, 12)); var mixer: Mixer = Mixer {};
     mixer.update(table, 0, 0, false, 10); verify(mixer.level(0, 100, 0, false, false) == 0);
