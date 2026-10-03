@@ -4,18 +4,118 @@ use mlacker_ui::audio_clip::AudioClip;
 use mlacker_ui::audio_clip::base_name;
 use tui::listview::*;
 use std::strbuf::free;
+use std::strbuf::clone;
+use std::strbuf::len;
+use std::strbuf::rfind;
+use std::strbuf::sub;
+
+/// Owned group name encoded by a generated slice path. Before its first
+/// project save the path is `group/name`; after loading it is
+/// `.../Audio/group/name.wav`. Other sample paths are ungrouped.
+pub fn audio_group(source: str8) -> str8 {
+    let slash: i64 = rfind(source, "/");
+    if slash <= 0 { return clone(""); }
+    let child: str8 = sub(source, slash + 1, len(source) - slash - 1);
+    let parent_path: str8 = sub(source, 0, slash);
+    let previous: i64 = rfind(parent_path, "/");
+    let parent: str8 = previous < 0 ? clone(parent_path) : sub(parent_path, previous + 1, len(parent_path) - previous - 1);
+    var generated: bool = false;
+    let prefix: str8 = format!("{} - ", parent);
+    if std::strbuf::find(child, prefix) == 0 {
+        generated = previous < 0;
+        if previous >= 0 {
+            let grand_path: str8 = sub(parent_path, 0, previous);
+            let grand_slash: i64 = rfind(grand_path, "/");
+            let grand: str8 = grand_slash < 0 ? clone(grand_path) : sub(grand_path, grand_slash + 1, len(grand_path) - grand_slash - 1);
+            generated = grand == "Audio"; free(grand); free(grand_path);
+        }
+    }
+    free(prefix); free(child); free(parent_path);
+    if generated { return parent; }
+    free(parent); return clone("");
+}
+
+/// Owned label shown for a sample. Project WAV storage is hidden for generated
+/// slices, whose requested name is `Original.ext - N`.
+pub fn audio_label(source: str8) -> str8 {
+    let group: str8 = audio_group(source);
+    let grouped: bool = group != ""; free(group);
+    let name: str8 = base_name(source);
+    if grouped && len(name) > 4 {
+        let suffix: str8 = sub(name, len(name) - 4, 4);
+        let wav: bool = suffix == ".wav" || suffix == ".WAV"; free(suffix);
+        if wav { let label: str8 = sub(name, 0, len(name) - 4); free(name); return label; }
+    }
+    return name;
+}
 
 /// Session-wide loaded samples; independent from removable pattern instances.
-pub struct AudioLibrary { var samples: list<AudioClip>; var view: ListView; var error: str8{""}; };
+pub struct AudioLibrary {
+    var samples: list<AudioClip>; var view: ListView; var error: str8{""};
+    /// Owned names of groups currently opened in the Audio pane.
+    var expanded: list<str8>;
+};
 impl AudioLibrary {
+    pub fn group_open(self: AudioLibrary, name: str8) -> bool {
+        let groups: list<str8> = self.expanded; for group in groups { if group == name { return true; } } return false;
+    }
+    fn item_index(self: AudioLibrary, id: i32) -> i32 {
+        let items: list<ListItem> = self.view.items;
+        for i in 0..items.len() { if items[i].id == id { return i32(i); } }
+        return -1;
+    }
+    /// Rebuild group headers and visible sample rows. Positive IDs remain
+    /// sample index + 1; a group's negative ID is based on its first sample.
+    pub fn rebuild(self: &mut Self) -> void {
+        var selected_id: i32 = 0;
+        if self.view.selected >= 0 && self.view.selected < self.view.items.len() { selected_id = self.view.items[self.view.selected].id; }
+        let old: list<ListItem> = self.view.items; for item in old { free(item.label); }
+        var items: list<ListItem> = []; var seen: list<str8> = [];
+        for i in 0..self.samples.len() {
+            let clip: AudioClip = self.samples[i]; let group: str8 = audio_group(clip.source);
+            if group == "" {
+                let label: str8 = audio_label(clip.source);
+                items.push(ListItem { id: i32(i) + 1, label: format!("{} {}", i + 1, label) }); free(label); free(group); continue;
+            }
+            var first: bool = true; for known in seen { if known == group { first = false; } }
+            if first {
+                seen.push(clone(group));
+                items.push(ListItem { id: -i32(i) - 1, label: format!("{} {}", self.group_open(group) ? "v" : ">", group) });
+            }
+            if self.group_open(group) {
+                let label: str8 = audio_label(clip.source);
+                items.push(ListItem { id: i32(i) + 1, label: format!("  {} {}", i + 1, label) }); free(label);
+            }
+            free(group);
+        }
+        for group in seen { free(group); }
+        let item_count: i64 = items.len(); self.view.items = items; self.view.marks = [];
+        let restored: i32 = self.item_index(selected_id);
+        self.view.selected = restored >= 0 ? restored : (item_count > 0 ? 0 : -1);
+        self.view.cancel_pending();
+    }
+    pub fn selected_sample(self: AudioLibrary) -> i32 {
+        if self.view.selected < 0 || self.view.selected >= self.view.items.len() { return -1; }
+        let id: i32 = self.view.items[self.view.selected].id; return id > 0 ? id - 1 : -1;
+    }
+    pub fn select_sample(self: &mut Self, index: i32) -> void {
+        let position: i32 = self.item_index(index + 1); if position >= 0 { self.view.selected = position; }
+    }
+    /// Toggle the selected group. Returns true only for a group header.
+    pub fn toggle_group(self: &mut Self) -> bool {
+        if self.view.selected < 0 || self.view.selected >= self.view.items.len() { return false; }
+        let item: ListItem = self.view.items[self.view.selected]; if item.id >= 0 { return false; }
+        let sample: i32 = -item.id - 1; if sample < 0 || sample >= self.samples.len() { return false; }
+        let name: str8 = audio_group(self.samples[sample].source); var next: list<str8> = []; var found: bool = false;
+        let groups: list<str8> = self.expanded;
+        for group in groups { if group == name { found = true; free(group); } else { next.push(group); } }
+        if !found { next.push(clone(name)); }
+        self.expanded = next; self.rebuild(); self.view.selected = self.item_index(-sample - 1); free(name); return true;
+    }
     pub fn load(self: &mut Self, path: str8, bpm: i32) -> bool {
         let loaded: result<AudioClip, str8> = AudioClip::load(path, bpm);
         if loaded.is_err() { self.error = loaded.unwrap_err(); return false; }
-        self.samples.push(loaded.unwrap());
-        // Basename without changing the source path used by the sample.
-        let name: str8 = base_name(path);
-        self.view.items.push(ListItem { id: i32(self.samples.len()), label: format!("{} {}", self.samples.len(), name) });
-        free(name); self.view.selected = i32(self.samples.len()) - 1;
+        self.samples.push(loaded.unwrap()); self.rebuild(); self.select_sample(i32(self.samples.len()) - 1);
         self.view.cancel_pending(); self.error = ""; return true;
     }
     /// Index of a sample with identical format and PCM, or -1.
@@ -38,14 +138,12 @@ impl AudioLibrary {
         let existing: i32 = self.find_clip(clip);
         if existing >= 0 { clip.release(); return existing; }
         if self.samples.len() >= 256 { clip.release(); self.error = "Maximum 256 samples"; return -1; }
-        self.samples.push(clip);
-        let name: str8 = base_name(clip.source);
-        self.view.items.push(ListItem { id: i32(self.samples.len()), label: format!("{} {}", self.samples.len(), name) });
-        free(name); self.view.cancel_pending(); self.error = "";
+        self.samples.push(clip); self.rebuild(); self.select_sample(i32(self.samples.len()) - 1); self.error = "";
         return i32(self.samples.len()) - 1;
     }
     pub fn release(self: AudioLibrary) -> void {
         let samples: list<AudioClip> = self.samples; for sample in samples { sample.release(); }
         let items: list<ListItem> = self.view.items; for item in items { free(item.label); }
+        let groups: list<str8> = self.expanded; for group in groups { free(group); }
     }
 }

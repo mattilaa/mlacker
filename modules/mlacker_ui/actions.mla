@@ -31,6 +31,7 @@ pub enum Action : i32 {
     // Audio
     AddAudio = 60, ReverseClip = 102, MoveClipUp = 103, MoveClipDown = 104,
     TrimClip = 105, SliceClip = 106, EditSample = 107, RemoveAudio = 120,
+    MakeAudioDestructive = 178,
     // Instrument
     LoadMasterPlugin = 91, UnloadMasterPlugin = 92, AddInstrument = 93,
     OpenPluginEditor = 94, RemoveInstrument = 95, SaveMidiLearn = 97, LoadMidiLearn = 98,

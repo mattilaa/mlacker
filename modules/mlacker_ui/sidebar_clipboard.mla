@@ -112,7 +112,7 @@ impl SidebarClipboard {
                 free(directory); free(stem);
                 if !entry.clip.write_wav(path) { free(path); self.error = "Cannot create audio copy beside the original"; break; }
                 var duplicate: AudioClip = entry.clip.copy(); free(duplicate.source); duplicate.source = path;
-                let index: i32 = library.audio.add_clip(duplicate); library.audio.view.selected = index;
+                let index: i32 = library.audio.add_clip(duplicate); library.audio.select_sample(index);
             } else {
                 let start: i64 = duplicate_start(entry.name); let stem: str8 = duplicate_stem(entry.name); var name: str8 = clone("");
                 for n in start..100000 { free(name); name = format!("{} - {}", stem, n); if self.name_available(library, name) { break; } }

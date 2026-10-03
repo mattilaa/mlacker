@@ -21,6 +21,16 @@ into the selected AUDIO track at the Pattern cursor row. Without an audio track
 selected, importing only adds the sample to the Audio list and opens that view;
 it does not create a track or put audio on a MIDI track.
 
+**Audio → Make track clips destructive** crops every placement in the selected
+AUDIO track to its current source-frame window and replaces it with that
+independent sample. The new samples are named `SampleAudio.aif - 1`,
+`SampleAudio.aif - 2`, and so on. They appear under a `SampleAudio.aif` group in
+**View → Audio**; Enter on the group expands or collapses it, while Enter on a
+child still inserts that sample. Saving a project writes the slices as float
+WAV files below `Audio/SampleAudio.aif/`, preserving the group when the project
+is reopened or moved. Tracks containing more than one original source produce
+one group per source.
+
 Importing with an AUDIO track selected also inserts an instance at the selected
 row. A track can contain multiple independent, non-overlapping instances.
 Overlapping insertions are rejected, while the loaded sample remains available.
