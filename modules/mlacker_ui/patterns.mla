@@ -797,6 +797,7 @@ impl PatternLibrary {
         self.patterns = next;
         var kept: list<AudioClip> = [];
         for i in 0..self.audio.samples.len() { if i32(i) != index { kept.push(self.audio.samples[i]); } }
+        self.audio.forget_sample(index);
         self.audio.samples = kept; self.audio.view.marks = [];
         sample.release();
         self.audio.rebuild();
@@ -804,6 +805,20 @@ impl PatternLibrary {
         self.audio.view.cancel_pending(); self.audio.view.reconcile(area);
         self.table.reconcile(area);
         return removed;
+    }
+    /// Remove Audio-list group `path`, the groups inside it and every sample
+    /// in them (with their placements). Returns the number of samples removed.
+    pub fn remove_group(self: &mut Self, path: str8, area: Rect) -> i32 {
+        let owned: str8 = clone(path);
+        let doomed: list<i32> = self.audio.samples_in_group(owned);
+        // From the last, so the earlier indexes stay valid.
+        var n: i64 = doomed.len();
+        while n > 0 { n = n - 1; self.remove_sample(doomed[n], area); }
+        self.audio.drop_group(owned); free(owned);
+        self.audio.rebuild();
+        if self.audio.view.selected >= self.audio.view.items.len() { self.audio.view.selected = i32(self.audio.view.items.len()) - 1; }
+        self.audio.view.reconcile(area);
+        return i32(doomed.len());
     }
     /// Tracks assigned to instrument instance `id` across every pattern.
     pub fn instrument_usage(self: PatternLibrary, id: i32) -> i32 {
@@ -876,34 +891,45 @@ impl PatternLibrary {
         var updated: list<AudioInstance> = []; var made: i32 = 0; var last_sample: i32 = -1;
         let instances: list<AudioInstance> = track.instances;
         for instance in instances {
-            var group: str8 = audio_group(instance.clip.source);
-            if group == "" { free(group); group = base_name(instance.clip.source); }
+            // Named after the clip (a slice keeps its original's name), the
+            // new group goes inside the group of the clip's sample.
+            var name: str8 = audio_group(instance.clip.source);
+            if name == "" { free(name); name = base_name(instance.clip.source); }
+            var parent: str8 = clone("");
+            for i in 0..self.audio.samples.len() {
+                let sample: AudioClip = self.audio.samples[i];
+                if sample.source == instance.clip.source && sample.frames == instance.clip.frames { free(parent); parent = clone(self.audio.group_of(i32(i))); }
+            }
+            let last: str8 = group_name(parent);
+            var group: str8 = parent == "" ? clone(name) : (last == name ? clone(parent) : format!("{}/{}", parent, name));
+            free(last); free(parent);
             var known: bool = false; for existing in groups { if existing == group { known = true; } }
             if !known { groups.push(clone(group)); }
-            var number: i32 = 1; let samples: list<AudioClip> = self.audio.samples;
-            for sample in samples {
-                let sample_group: str8 = audio_group(sample.source);
-                if sample_group == group { number = number + 1; }
-                free(sample_group);
-            }
-            let label: str8 = format!("{} - {}", group, number);
-            let source: str8 = format!("{}/{}", group, label);
+            var number: i32 = 1;
+            for i in 0..self.audio.samples.len() { let member: str8 = self.audio.group_of(i32(i)); if member == group { number = number + 1; } }
+            let label: str8 = format!("{} - {}", name, number);
+            let source: str8 = format!("{}/{}", name, label);
             let end: i64 = instance.render_end(); var clip: AudioClip = instance.clip.slice_frames(instance.offset_frames, end);
             free(clip.source); clip.source = source;
-            last_sample = self.audio.add_clip(clip.copy());
+            last_sample = self.audio.add_clip_in(clip.copy(), group);
             instance.clip.release();
             updated.push(AudioInstance { clip: clip, start_row: instance.start_row, length_ticks: instance.length_ticks,
                 original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample, loop_mode: instance.loop_mode });
-            free(label); free(group); made = made + 1;
+            free(label); free(group); free(name); made = made + 1;
         }
         track.instances = updated;
         var tracks: list<SequenceTrack> = [];
         for t in 0..self.table.tracks.len() { tracks.push(i32(t) == index ? track : self.table.tracks[t]); }
         self.table.tracks = tracks; self.table.rebuild_columns(); self.table.reconcile(area); self.table.error = "";
-        // Open every affected group, then leave the final generated clip selected.
+        // Open every affected group and its parents, then leave the final
+        // generated clip selected.
         for group in groups {
-            if !self.audio.group_open(group) { self.audio.expanded.push(clone(group)); }
-            free(group);
+            var open: str8 = clone(group);
+            while open != "" {
+                if !self.audio.group_open(open) { self.audio.expanded.push(clone(open)); }
+                let up: str8 = group_parent(open); free(open); open = up;
+            }
+            free(open); free(group);
         }
         self.audio.rebuild(); if last_sample >= 0 { self.audio.select_sample(last_sample); }
         self.error = ""; return made;

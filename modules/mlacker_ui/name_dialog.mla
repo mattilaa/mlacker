@@ -1,0 +1,59 @@
+mod tui::dialog;
+use tui::dialog::Dialog;
+use tui::textfield::TextField;
+use tui::button::PushButton;
+use tui::focus::PaneFocus;
+use tui::layout::Alignment;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use tui::menu::Key;
+
+/// Asks for one name (e.g. Audio > Add group). Focus: 0 the name,
+/// 3 the OK/Cancel buttons.
+pub struct NameDialog : Dialog { var name: TextField; var label: str8; var error: str8; };
+impl NameDialog {
+    pub fn new() -> NameDialog {
+        return NameDialog { title: "", width: 60, height: 11, name: TextField::new(""), label: "", error: "",
+            focus: PaneFocus::new(0), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
+    }
+    /// Open with `title`, the prompt `label` (static or kept alive by the
+    /// caller) and the starting text.
+    pub fn open(self: &mut Self, title: str8, label: str8, text: str8) -> void {
+        self.title = title; self.label = label; self.name.set_text(text); self.error = "";
+        self.reset_buttons(); self.focus.selected = 0; self.active = true; self.result = 0;
+    }
+    /// Show `error` and keep the dialog open, e.g. when the name is taken.
+    pub fn reject(self: &mut Self, error: str8) -> void {
+        self.error = error; self.reset_buttons(); self.focus.selected = 0; self.active = true; self.result = 0;
+    }
+    /// 0 while open, 1 accepted (the name is in `name.text`), 2 cancelled.
+    pub fn on_event(self: &mut Self, event: InputEvent) -> i32 {
+        if self.pressed_button >= 0 { return 0; }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 { self.active = false; self.result = 2; return 2; }
+        if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
+            self.focus.selected = self.focus.selected == 0 ? 3 : 0; return 0;
+        }
+        if self.focus.selected == 3 { self.on_button_event(event); return 0; }
+        if event.kind == InputKind::Menu && event.key == Key::Enter { self.active = false; self.result = 1; return 1; }
+        self.name.on_event(event);
+        return 0;
+    }
+    /// Call once per 10ms UI tick; returns a completed button press for the
+    /// caller to replay as Enter (OK) or Escape (Cancel).
+    pub fn tick(self: &mut Self) -> i32 {
+        let action: i32 = self.tick_buttons();
+        if action != 0 { self.focus.selected = 0; }
+        return action;
+    }
+    pub fn paint(self: NameDialog, surface: Surface, viewport: Rect, theme: Theme) -> void {
+        if !self.active { return; }
+        let body: Rect = self.paint_frame(surface, viewport, theme);
+        surface.text(body, self.label, theme.foreground, theme.panel);
+        self.name.paint(surface, Rect::new(body.x, body.y + 1, body.width, 1), theme.foreground, theme.selection, self.focus.selected == 0);
+        surface.text(Rect::new(body.x, body.y + 3, body.width, 1), self.error, theme.accent, theme.panel);
+    }
+    pub fn release(self: &mut Self) -> void { self.name.release(); }
+}

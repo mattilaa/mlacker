@@ -277,7 +277,7 @@ dialog or text field has the keyboard.
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
-| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass, Make track clips destructive |
+| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass, Make track clips destructive, Add group, Remove group |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
 | Record | Play metronome, Extend pattern when playing, Metronome ▸, Bounce selection to sample |
@@ -993,7 +993,9 @@ cursor, and the selection then follows the cursor until `Esc` unselects.
 
 **Ctrl+S** always saves the result as a new clip in the Audio list, named
 `SampleName - Trim 1.wav` (the first free number; a trim of a trim numbers on
-from the original name). The dialog lets you change the name and pick a mode:
+from the original name). The dialog lets you change the name, choose the
+Audio-list group it goes in (the original's group to start with; see Audio
+groups in docs/interface.md), and pick a mode:
 
 - **Non-destructive** adds the new clip and leaves the original sample, its
   pattern placements and drum pads as they were.

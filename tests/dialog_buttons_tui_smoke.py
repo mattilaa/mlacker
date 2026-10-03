@@ -44,11 +44,11 @@ def main():
             assert b"Save clip" in frame and b"Save" in frame and b"Cancel" in frame, frame[-5000:]
             assert b"stereo_tone - Trim 1.wav" in frame, frame[-5000:]
             assert not any(hint in frame for hint in HINTS), frame[-5000:]
-            # Tab Tab reaches the buttons; Right selects Cancel.
-            frame = tui.send(b"\t\t" + RIGHT + b"\r", 0.6)
+            # Tab past the name, mode and group reaches the buttons; Right selects Cancel.
+            frame = tui.send(b"\t\t\t" + RIGHT + b"\r", 0.6)
             assert b"Sample 2" not in frame and b"[modified]" in frame, frame[-5000:]
             tui.send(b"\x13", 0.6)
-            frame = tui.send(b"\t\t\r", 0.8)
+            frame = tui.send(b"\t\t\t\r", 0.8)
             assert b"Saved stereo_tone - Trim 1.wav as sample 2; sample 1 is unchanged" in frame, frame[-5000:]
         finally:
             tui.close()

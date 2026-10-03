@@ -1623,9 +1623,12 @@ fn tui_audio_track_destructive_groups_and_project_files() {
         if instance.clip.source == "SampleAudio.aif/SampleAudio.aif - 3" { three = true; verify(instance.clip.frames == 10); }
     }
     verify(one && two && three);
-    // Original row, open group header, and its three children.
+    // The open group (first), its three children, then the original row.
     verify(library.audio.view.items.len() == 5);
-    library.audio.view.selected = 1; verify(library.audio.selected_sample() == -1);
+    let header: ListItem = library.audio.view.items[0]; verify(header.label == "v SampleAudio.aif");
+    let last: ListItem = library.audio.view.items[4]; verify(last.label == "1 SampleAudio.aif");
+    library.audio.view.selected = 0; verify(library.audio.selected_sample() == -1);
+    verify(same(library.audio.selected_group(), "SampleAudio.aif"));
     verify(library.audio.toggle_group() && library.audio.view.items.len() == 2);
     verify(library.audio.toggle_group() && library.audio.view.items.len() == 5);
 
@@ -1634,18 +1637,168 @@ fn tui_audio_track_destructive_groups_and_project_files() {
     var codec: SessionCodec = SessionCodec {}; var audio: AudioSystem = AudioSystem {};
     let saved: result<str8, str8> = codec.save_project(target, library, SessionView {}, audio); verify(saved.is_ok());
     let folder: str8 = saved.unwrap();
-    let first: str8 = format!("{}/Audio/SampleAudio.aif/SampleAudio.aif - 1.wav", folder);
-    let second: str8 = format!("{}/Audio/SampleAudio.aif/SampleAudio.aif - 2.wav", folder);
-    let third: str8 = format!("{}/Audio/SampleAudio.aif/SampleAudio.aif - 3.wav", folder);
+    let first: str8 = format!("{}/Audio/SampleAudio/SampleAudio.aif - 1.wav", folder);
+    let second: str8 = format!("{}/Audio/SampleAudio/SampleAudio.aif - 2.wav", folder);
+    let third: str8 = format!("{}/Audio/SampleAudio/SampleAudio.aif - 3.wav", folder);
     verify(std::fs::file_exists(first) == 1 && std::fs::file_exists(second) == 1 && std::fs::file_exists(third) == 1);
     let loaded: result<SessionData, str8> = SessionCodec::load_project(folder); verify(loaded.is_ok());
     var restored: SessionData = loaded.unwrap();
     verify(restored.library.audio.samples.len() == 4 && restored.library.audio.view.items.len() == 2);
-    restored.library.audio.view.selected = 1;
+    restored.library.audio.view.selected = 0;
     verify(restored.library.audio.toggle_group() && restored.library.audio.view.items.len() == 5);
-    let child: ListItem = restored.library.audio.view.items[2]; verify(child.label == "  2 SampleAudio.aif - 1");
+    let child: ListItem = restored.library.audio.view.items[1]; verify(child.label == "  2 SampleAudio.aif - 1");
     restored.release(); library.release(); source.release(); std::fs::remove_tree(directory);
     free(third); free(second); free(first); free(folder); free(target); free(directory);
+}
+
+/// String equality for values the comparison operator does not take
+/// directly (call results, list elements of fields).
+fn same(a: str8, b: str8) -> bool { return a == b; }
+
+#[test]
+fn tui_audio_groups_tree_nesting_and_removal() {
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var library: PatternLibrary = PatternLibrary::new();
+    library.table.create_track_kind(false, true, area);
+    // Groups nest; names are checked.
+    verify(library.audio.add_group("", "Drums"));
+    verify(library.audio.add_group("Drums", "Kicks"));
+    verify(!library.audio.add_group("Drums", "Kicks") && library.audio.error == "That group already exists");
+    verify(!library.audio.add_group("", "a/b") && !library.audio.add_group("", "  "));
+    verify(library.audio.add_group("", "Bass"));
+    verify(library.audio.groups.len() == 3 && library.audio.subgroup_count("Drums") == 1);
+    let kick: AudioClip = test_clip("/s/kick.wav", 1, 40);
+    let snare: AudioClip = test_clip("/s/snare.wav", 1, 30);
+    let loose: AudioClip = test_clip("/s/loose.wav", 1, 20);
+    verify(library.audio.add_clip_in(kick.copy(), "Drums/Kicks") == 0);
+    verify(library.audio.add_clip_in(snare.copy(), "Drums") == 1);
+    verify(library.audio.add_clip(loose.copy()) == 2);
+    verify(same(library.audio.group_of(0), "Drums/Kicks") && same(library.audio.group_of(2), ""));
+    // Groups in name order, a group's subgroups before its samples, then the
+    // samples in no group.
+    library.audio.expanded = [clone("Drums"), clone("Drums/Kicks")]; library.audio.rebuild();
+    var labels: list<str8> = [];
+    let items: list<ListItem> = library.audio.view.items; for item in items { labels.push(item.label); }
+    verify(labels.len() == 6);
+    verify(labels[0] == "> Bass" && labels[1] == "v Drums" && labels[2] == "  v Kicks" && labels[3] == "    1 kick.wav");
+    verify(labels[4] == "  2 snare.wav" && labels[5] == "3 loose.wav");
+    // A new item goes in the selected group, or the selected sample's group.
+    library.audio.view.selected = 2; verify(same(library.audio.selected_group(), "Drums/Kicks") && same(library.audio.current_group(), "Drums/Kicks"));
+    library.audio.view.selected = 4; verify(same(library.audio.selected_group(), "") && same(library.audio.current_group(), "Drums"));
+    library.audio.view.selected = 5; verify(same(library.audio.current_group(), ""));
+    // Removing Drums takes Kicks, both samples and their placements along.
+    library.table.selected_row = 0; verify(library.table.insert_audio(kick, area));
+    let gone: list<i32> = library.audio.samples_in_group("Drums"); verify(gone.len() == 2);
+    var n: i64 = gone.len(); while n > 0 { n = n - 1; library.remove_sample(gone[n], area); }
+    verify(library.remove_group("Drums", area) == 0);
+    verify(library.audio.samples.len() == 1 && library.audio.groups.len() == 1 && same(library.audio.groups[0], "Bass"));
+    verify(same(library.audio.group_of(0), "") && library.audio.sample_groups.len() == 1);
+    let track: SequenceTrack = library.table.tracks[library.table.active_track()]; verify(track.instances.len() == 0);
+    // Removing a group with samples left in it removes them too.
+    verify(library.audio.add_clip_in(snare.copy(), "Bass") == 1);
+    verify(library.remove_group("Bass", area) == 1 && library.audio.samples.len() == 1 && library.audio.groups.len() == 0);
+    library.release(); kick.release(); snare.release(); loose.release();
+}
+
+#[test]
+fn tui_audio_groups_saved_in_sessions_and_projects() {
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var library: PatternLibrary = PatternLibrary::new();
+    library.table.create_track_kind(false, true, area);
+    verify(library.audio.add_group("", "Drums") && library.audio.add_group("Drums", "Kicks") && library.audio.add_group("", "Empty"));
+    let kick: AudioClip = test_clip("/s/kick.wav", 1, 40);
+    let pad: AudioClip = test_clip("/s/pad.wav", 1, 30);
+    verify(library.audio.add_clip_in(kick.copy(), "Drums/Kicks") == 0);
+    verify(library.audio.add_clip(pad.copy()) == 1);
+    let directory: str8 = clone("/private/tmp/mlacker-groups-test-XXXXXX"); mkdtemp(directory);
+    var codec: SessionCodec = SessionCodec {}; var audio: AudioSystem = AudioSystem {};
+    // A plain session keeps the groups, empty ones too, in AUDIO_GROUPS.
+    let path: str8 = format!("{}/groups.mlack", directory);
+    verify(codec.save(path, library, SessionView {}, audio));
+    let loaded: result<SessionData, str8> = SessionCodec::load(path); verify(loaded.is_ok());
+    var restored: SessionData = loaded.unwrap();
+    verify(restored.library.audio.groups.len() == 3 && restored.library.audio.has_group("Empty"));
+    verify(same(restored.library.audio.group_of(0), "Drums/Kicks") && same(restored.library.audio.group_of(1), ""));
+    restored.release();
+    // A project keeps each group as a folder below Audio/.
+    let target: str8 = format!("{}/Grouped", directory);
+    let saved: result<str8, str8> = codec.save_project(target, library, SessionView {}, audio); verify(saved.is_ok());
+    let folder: str8 = saved.unwrap();
+    let kick_file: str8 = format!("{}/Audio/Drums/Kicks/kick.wav", folder);
+    let pad_file: str8 = format!("{}/Audio/pad.wav", folder);
+    let empty_folder: str8 = format!("{}/Audio/Empty", folder);
+    verify(std::fs::file_exists(kick_file) == 1 && std::fs::file_exists(pad_file) == 1 && std::fs::is_dir(empty_folder) == 1);
+    let opened: result<SessionData, str8> = SessionCodec::load_project(folder); verify(opened.is_ok());
+    var project: SessionData = opened.unwrap();
+    verify(project.library.audio.groups.len() == 3 && same(project.library.audio.group_of(0), "Drums/Kicks"));
+    verify(same(project.library.audio.group_of(1), "") && project.library.audio.has_group("Empty"));
+    project.release();
+    library.release(); kick.release(); pad.release(); std::fs::remove_tree(directory);
+    free(empty_folder); free(pad_file); free(kick_file); free(folder); free(target); free(path); free(directory);
+}
+
+#[test]
+fn tui_audio_group_folders_do_not_clash_with_samples() {
+    // A .wav sample made destructive: its group, illusion.wav, would want the
+    // folder Audio/illusion.wav, where the sample's own file is. The group's
+    // folder drops the extension, so the project still saves.
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var library: PatternLibrary = PatternLibrary::new();
+    library.table.create_track_kind(false, true, area);
+    let source: AudioClip = test_clip("/samples/illusion.wav", 1, 40);
+    verify(library.audio.add_clip(source.copy()) == 0);
+    library.table.selected_row = 0; verify(library.table.insert_audio(source, area));
+    verify(library.make_audio_track_destructive(area) == 1);
+    verify(same(library.audio.group_of(1), "illusion.wav"));
+    let directory: str8 = clone("/private/tmp/mlacker-clash-test-XXXXXX"); mkdtemp(directory);
+    let target: str8 = format!("{}/audiotest4", directory);
+    var codec: SessionCodec = SessionCodec {}; var audio: AudioSystem = AudioSystem {};
+    let saved: result<str8, str8> = codec.save_project(target, library, SessionView {}, audio);
+    if saved.is_err() { println!("{}", saved.unwrap_err()); }
+    verify(saved.is_ok());
+    let folder: str8 = saved.unwrap();
+    let original: str8 = format!("{}/Audio/illusion.wav", folder);
+    let slice: str8 = format!("{}/Audio/illusion/illusion.wav - 1.wav", folder);
+    verify(std::fs::file_exists(original) == 1 && std::fs::is_dir(original) == 0 && std::fs::file_exists(slice) == 1);
+    // Reopened, the group keeps its name.
+    let opened: result<SessionData, str8> = SessionCodec::load_project(folder); verify(opened.is_ok());
+    var project: SessionData = opened.unwrap();
+    verify(project.library.audio.samples.len() == 2 && same(project.library.audio.group_of(1), "illusion.wav"));
+    verify(project.library.audio.groups.len() == 1 && project.library.audio.has_group("illusion.wav"));
+    project.release(); library.release(); source.release(); std::fs::remove_tree(directory);
+    free(slice); free(original); free(folder); free(target); free(directory);
+}
+
+#[test]
+fn tui_audio_destructive_clips_nest_in_their_group() {
+    // A sample in group Drums: its track clips go to Drums/<clip name>.
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var library: PatternLibrary = PatternLibrary::new();
+    library.table.create_track_kind(false, true, area);
+    verify(library.audio.add_group("", "Drums"));
+    let source: AudioClip = test_clip("/samples/loop.wav", 1, 40);
+    verify(library.audio.add_clip_in(source.copy(), "Drums") == 0);
+    library.table.selected_row = 0; verify(library.table.insert_audio(source, area));
+    verify(library.make_audio_track_destructive(area) == 1);
+    verify(library.audio.has_group("Drums/loop.wav") && same(library.audio.group_of(1), "Drums/loop.wav"));
+    let header: ListItem = library.audio.view.items[0]; verify(header.label == "v Drums");
+    let inner: ListItem = library.audio.view.items[1]; verify(inner.label == "  v loop.wav");
+    library.release(); source.release();
+}
+
+#[test]
+fn tui_save_dialog_chooses_a_group() {
+    var dialog: TrimSaveDialog = TrimSaveDialog::new();
+    let groups: list<str8> = ["Drums", "Drums/Kicks"];
+    dialog.open("kick - Trim 1.wav", groups, "Drums");
+    verify(same(dialog.chosen_group(), "Drums"));
+    dialog.on_event(decode_input("\t")); dialog.on_event(decode_input("\t"));
+    verify(dialog.focus.selected == 2);
+    dialog.on_event(decode_input("l")); verify(same(dialog.chosen_group(), "Drums/Kicks"));
+    dialog.on_event(decode_input("l")); verify(same(dialog.chosen_group(), ""));
+    dialog.on_event(decode_input("h")); verify(same(dialog.chosen_group(), "Drums/Kicks"));
+    dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 3);
+    dialog.release();
 }
 
 #[test]
@@ -2360,7 +2513,8 @@ fn tui_sample_editor_keys_select_trim_and_undo() {
     // Ctrl+P plays, Ctrl+S asks for the clip's name and mode.
     verify(editor.on_event(decode_input("\x10"), width) == 3);
     verify(editor.on_event(decode_input("\x13"), width) == 4);
-    editor.open_save("edit-test - Trim 1.wav");
+    let no_groups: list<str8> = [];
+    editor.open_save("edit-test - Trim 1.wav", no_groups, "");
     verify(editor.save.active && !editor.save.destructive);
     editor.on_event(decode_input("\t"), width);
     editor.on_event(decode_input(" "), width);
