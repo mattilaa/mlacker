@@ -19,18 +19,18 @@ use std::strbuf::free;
 
 /// Properties of one audio placement. Frame bounds are absolute positions in
 /// the loaded sample and use the usual half-open range [start, end).
-/// Focus: 0 start, 1 end, 2 BPM, 4 algorithm, 5 pitch, 6 resampling, 3 buttons.
+/// Focus: 0 start, 1 end, 2 BPM, 4 algorithm, 5 pitch, 6 resampling, 7 loop, 3 buttons.
 pub struct SampleDialog : Dialog {
     var start: TextField; var end: TextField; var bpm: TextField; var transpose: TextField;
-    var algorithm: DropDown; var resample: DropDown; var frames: i64; var error: str8;
+    var algorithm: DropDown; var resample: DropDown; var looping: DropDown; var frames: i64; var error: str8;
     var frame_start: i64; var frame_end: i64; var original_bpm: i32; var pitch: i32;
 };
 /// Tab order of the focus indexes.
 fn focus_after(selected: i32, back: bool) -> i32 {
-    let order: array<i32, 7> = {0, 1, 2, 4, 5, 6, 3};
+    let order: array<i32, 8> = {0, 1, 2, 4, 5, 6, 7, 3};
     var at: i32 = 0;
-    for i in 0..7 { if order[i] == selected { at = i32(i); } }
-    return order[back ? (at + 6) % 7 : (at + 1) % 7];
+    for i in 0..8 { if order[i] == selected { at = i32(i); } }
+    return order[back ? (at + 7) % 8 : (at + 1) % 8];
 }
 impl SampleDialog {
     pub fn new() -> SampleDialog {
@@ -58,6 +58,10 @@ impl SampleDialog {
             DropDownItem { id: 0, label: "Cubic + low-pass" }, DropDownItem { id: 1, label: "Cubic" },
             DropDownItem { id: 2, label: "Linear + low-pass" }, DropDownItem { id: 3, label: "Linear" }
         ], source.resample);
+        self.looping.set_items([
+            DropDownItem { id: 0, label: "Forward" }, DropDownItem { id: 1, label: "Back-and-forth" },
+            DropDownItem { id: 2, label: "Off" }
+        ], source.loop_mode);
         self.error = ""; self.reset_buttons(); self.focus.selected = 0; self.active = true; self.result = 0;
     }
     fn accept(self: &mut Self) -> void {
@@ -80,13 +84,14 @@ impl SampleDialog {
     pub fn on_event(self: &mut Self, event: InputEvent) -> void {
         if self.pressed_button >= 0 { return; }
         if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
-            self.algorithm.cancel(); self.resample.cancel();
+            self.algorithm.cancel(); self.resample.cancel(); self.looping.cancel();
             let back: bool = event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left);
             self.focus.selected = focus_after(self.focus.selected, back);
             return;
         }
         if self.focus.selected == 4 && self.algorithm.on_event(event) { return; }
         if self.focus.selected == 6 && self.resample.on_event(event) { return; }
+        if self.focus.selected == 7 && self.looping.on_event(event) { return; }
         if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
             self.active = false; self.result = 2; self.pressed_button = -1; return;
         }
@@ -116,14 +121,18 @@ impl SampleDialog {
         let row: Rect = Rect::new(body.x, body.y + 10, left, 1);
         self.algorithm.paint(surface, row, theme, self.focus.selected == 4);
         self.transpose.paint(surface, Rect::new(right_x, body.y + 10, right, 1), theme.foreground, theme.selection, self.focus.selected == 5);
-        surface.text(Rect::new(body.x, body.y + 12, body.width, 1), "Resampling (Repitch and pitch)", theme.foreground, theme.panel);
-        let quality: Rect = Rect::new(body.x, body.y + 13, body.width, 1);
+        surface.text(Rect::new(body.x, body.y + 12, left, 1), "Resampling", theme.foreground, theme.panel);
+        surface.text(Rect::new(right_x, body.y + 12, right, 1), "Loop (Transients 2)", theme.foreground, theme.panel);
+        let quality: Rect = Rect::new(body.x, body.y + 13, left, 1);
+        let fill: Rect = Rect::new(right_x, body.y + 13, right, 1);
         self.resample.paint(surface, quality, theme, self.focus.selected == 6);
+        self.looping.paint(surface, fill, theme, self.focus.selected == 7);
         surface.text(Rect::new(body.x, body.y + 15, body.width, 1), self.error, theme.accent, theme.panel);
         self.algorithm.paint_popup(surface, row, viewport, theme);
         self.resample.paint_popup(surface, quality, viewport, theme);
+        self.looping.paint_popup(surface, fill, viewport, theme);
     }
     pub fn release(self: &mut Self) -> void {
-        self.start.release(); self.end.release(); self.bpm.release(); self.transpose.release(); self.algorithm.release(); self.resample.release();
+        self.start.release(); self.end.release(); self.bpm.release(); self.transpose.release(); self.algorithm.release(); self.resample.release(); self.looping.release();
     }
 }

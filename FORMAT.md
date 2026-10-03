@@ -165,6 +165,26 @@ are accepted. Unsupported major or minor versions fail closed.
     a track that is not an AUDIO track plays as -1. It is written only when
     some Instrument track routes an aux bus, and it requires the preceding
     tags.
+19. Optional `INSTRUMENT_INPUTS` extension follows `PAD_MARKERS`: per
+    pattern, a track count matching that pattern followed by one input per
+    track: 0 for none, -1 for the live audio input, otherwise the AUDIO track
+    index + 1 feeding the track's instrument (not the track itself). It is
+    written when some track takes an input or a later extension follows, and
+    it requires the preceding tags.
+20. Optional `AUDIO_PROPERTIES` extension follows `INSTRUMENT_INPUTS`: the
+    Sample properties of audio placements. Per pattern, a track count matching
+    that pattern, then per track a count matching its audio-instance list and
+    per instance, in list order: exclusive frame end (0 for none, otherwise
+    above the instance's start offset and at most the sample's frame count),
+    original BPM (0 for none, otherwise 20–400), sync mode (0 Off, 1 Repitch,
+    2 Stretch, 3 Beats, 4 Transients, 5 Transients 2), pitch in semitones
+    (−24–24, 0 unless the mode is 2 or above), resampling (0 cubic with
+    low-pass, 1 cubic, 2 linear with low-pass, 3 linear) and Transients 2 loop
+    mode (0 forward, 1 back-and-forth, 2 off). It is written only when some
+    placement has a property set, and it requires the preceding tags. A
+    `.mlapatt` pattern file may end with the same tag and that one pattern's
+    record; files without properties omit it, so older readers still open
+    them.
 
 The active pattern is serialized from the live editor, not its older library
 snapshot. Audio placements reference the embedded sample list; plugin assignments

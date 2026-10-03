@@ -91,16 +91,20 @@ together, **Stretch** keeps the pitch (overlapping grains), **Beats** plays
 each detected hit at its original speed from its stretched time (leaving gaps
 when slower), and **Transients** keeps each hit's attack untouched on its
 stretched time while stretching the rest of the hit to the next one, for a
-smooth result without gaps. **Transients 2** is smoother still: each attack
-stays untouched for as long as it actually lasts, the rest is stretched with
-longer grains, each hit runs on and crossfades under the next one instead of
-fading out before it, and a peak guard keeps the result from clipping. **Pitch** transposes Stretch, Beats and
+smooth result without gaps. **Transients 2** works like Ableton's
+Beats mode: every hit plays at its original speed with no stretching, and
+when the tempo is slower the time left before the next hit is filled by
+looping the hit's second half, as set by **Loop (Transients 2)**: **Forward**
+(from the point near the middle that best matches the hit's end, with a
+crossfade at the seam), **Back-and-forth**, or **Off** (a short fade, then
+silence, like Beats). At a faster tempo each hit crossfades into the next. **Pitch** transposes Stretch, Beats and
 Transients by -24 to +24 semitones without changing their length.
 **Resampling** sets how Repitch and a transposition read between samples:
 cubic or linear, each optionally with a low-pass that removes aliasing when
 the audio is read faster than it was recorded (the default is cubic with the
 low-pass). The render is made when playback starts and reused until a
-setting or the tempo changes.
+setting or the tempo changes. Sample properties are saved with sessions,
+projects and pattern files.
 A selectable, read-only waveform column beside the LEN and OFF columns draws
 time downward as one gray, 7-cell-wide waveform:
 left and right are summed to mono for display only (playback and meters stay

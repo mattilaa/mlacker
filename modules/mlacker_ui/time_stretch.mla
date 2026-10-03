@@ -8,24 +8,25 @@ mod std::math;
 /// Render with sync mode `algorithm` (AudioInstance::stretch_algorithm:
 /// 1 Repitch, 2 Stretch, 3 Beats, 4 Transients, 5 Transients 2), transposed by `pitch`
 /// semitones (not Repitch, whose pitch follows its speed). `quality` is the
-/// resampling of Repitch and of a transposition (see `resample`).
+/// resampling of Repitch and of a transposition (see `resample`);
+/// `loop_mode` how Transients 2 fills time (see `transients_smooth`).
 pub fn render_synced(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64,
-    algorithm: i32, pitch: i32, quality: i32) -> list<f32> {
+    algorithm: i32, pitch: i32, quality: i32, loop_mode: i32) -> list<f32> {
     if algorithm < 2 || algorithm > 5 { return resample(samples, channels, from, to, frames, quality); }
-    if pitch == 0 { return retime(samples, channels, rate, from, to, frames, algorithm); }
+    if pitch == 0 { return retime(samples, channels, rate, from, to, frames, algorithm, loop_mode); }
     // Transposed: retime to the length that, resampled to `frames`, sounds
     // `pitch` semitones away.
     let ratio: f64 = std::math::pow(2.0, f64(pitch) / 12.0);
     var longer: i64 = f64(frames) * ratio + 0.5; if longer < 1 { longer = 1; }
-    let body: list<f32> = retime(samples, channels, rate, from, to, longer, algorithm);
+    let body: list<f32> = retime(samples, channels, rate, from, to, longer, algorithm, loop_mode);
     return resample(body, channels, 0, longer, frames, quality);
 }
 
 /// Tempo only, at the original pitch.
-fn retime(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, algorithm: i32) -> list<f32> {
+fn retime(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, algorithm: i32, loop_mode: i32) -> list<f32> {
     if algorithm == 3 { return beats(samples, channels, rate, from, to, frames); }
     if algorithm == 4 { return transients(samples, channels, rate, from, to, frames); }
-    if algorithm == 5 { return transients_smooth(samples, channels, rate, from, to, frames); }
+    if algorithm == 5 { return transients_smooth(samples, channels, rate, from, to, frames, loop_mode); }
     return stretch(samples, channels, rate, from, to, frames);
 }
 
@@ -294,20 +295,23 @@ pub fn transients(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: 
     return out;
 }
 
-/// Transients 2: `transients` made smoother. Each hit keeps its attack
-/// untouched for as long as it lasts (until the level 1 ms windows fall to
-/// half their peak, 8-40 ms) and stretches the rest with longer grains
-/// (WSOLA, 30 ms). Instead of fading out before the next hit, it runs on 10 ms
-/// past it and fades out under it (raised cosine) while the next attack
-/// starts at full level, so the seams neither dip nor click. Last, a
-/// look-ahead peak guard keeps the result within the source's own peak.
-pub fn transients_smooth(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+/// Transients 2, like Ableton's Beats mode: every hit (found as in
+/// `transients`) plays at its original speed from its stretched time, with
+/// no grain processing at all. A hit that ends before the next one starts (a
+/// slower tempo) fills the time by looping its second half: `loop_mode` 0
+/// forward, from the point near the middle that best matches the hit's end,
+/// crossfading 10 ms at the loop seam; 1 back and forth; 2 not at
+/// all, fading out over 5 ms like Beats. A hit still sounding when the next
+/// one starts (a faster tempo) fades out under it over 5 ms while the next
+/// attack starts at full level. A look-ahead peak guard keeps those overlaps
+/// within the source's own peak.
+pub fn transients_smooth(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, loop_mode: i32) -> list<f32> {
     let ch: i64 = channels < 1 ? 1 : channels;
     if frames <= 0 || to <= from { return []; }
     let input: i64 = to - from;
     let level: list<f32> = mono(samples, ch, from, to);
     let points: list<i64> = find_onsets(emphasized(level), rate, 0.1f, 30);
-    let overlap: i64 = rate * 10 / 1000; let ramp: i64 = 24;
+    let overlap: i64 = rate * 5 / 1000; let seam: i64 = rate * 10 / 1000; let ramp: i64 = 24;
     // Every hit's output, run on into the next one, back to back in `hits`:
     // hit i starts at output frame placed[i] and is lengths[i] frames long.
     var hits: list<f32> = []; var placed: list<i64> = []; var offsets: list<i64> = []; var lengths: list<i64> = [];
@@ -320,18 +324,53 @@ pub fn transients_smooth(samples: &list<f32>, channels: i64, rate: i64, from: i6
         if span <= 0 { continue; }
         let tail: i64 = i + 1 < points.len() ? overlap : 0;
         let length: i64 = span + tail;
-        var keep: i64 = attack_length(level, rate, start, end); if keep > length { keep = length; }
+        let natural: i64 = end - start;
         offsets.push(hits.len() / ch); placed.push(at); lengths.push(length);
-        let rest: i64 = length - keep;
-        var body: list<f32> = [];
-        if rest > 0 && end - start - keep >= 16 { body = wsola(samples, ch, rate, from + start + keep, from + end, rest, 30); }
+        // The loop: the hit's second half, from where it best continues the
+        // hit's end (within 10 ms of the middle), crossfading `blend` frames
+        // at its seam; a hit too short to loop plays once.
+        let fill: bool = length > natural;
+        var middle: i64 = natural / 2;
+        var blend: i64 = seam; if blend > middle / 2 { blend = middle / 2; }
+        if fill && loop_mode == 0 && blend >= 8 {
+            let reach: i64 = seam < middle / 4 ? seam : middle / 4;
+            var best: f32 = -2.0f; var chosen: i64 = middle;
+            var candidate: i64 = middle - reach;
+            while candidate <= middle + reach {
+                let score: f32 = match_score(level, start + natural - blend, start + candidate - blend, blend);
+                if score > best { best = score; chosen = candidate; }
+                candidate = candidate + 2;
+            }
+            middle = chosen;
+        }
+        var mode: i32 = loop_mode;
+        if fill && (natural - middle < 4 || (mode == 0 && blend < 8)) { mode = 2; }
+        let fade: i64 = overlap < natural / 2 ? overlap : natural / 2;
         for n in 0..length {
             var gain: f32 = 1.0f;
             if i > 0 && n < ramp { gain = 0.5f - 0.5f * std::math::cos(3.141592653589793f * f32(n + 1) / f32(ramp + 1)); }
             if tail > 0 && n >= span { gain = gain * (0.5f + 0.5f * std::math::cos(3.141592653589793f * f32(n - span + 1) / f32(tail + 1))); }
+            // Source frame(s) for output frame n: `a` alone, or `a` crossfading to `b` by `w`.
+            var a: i64 = n; var b: i64 = -1; var w: f32 = 0.0f;
+            if fill && mode == 0 && n >= natural - blend {
+                let cycle: i64 = natural - middle;
+                let c: i64 = (n - (natural - blend)) % cycle;
+                if c < blend {
+                    a = natural - blend + c; b = middle - blend + c;
+                    w = f32(c + 1) / f32(blend + 1);
+                } else { a = middle - blend + c; }
+            } else if fill && mode == 1 && n >= natural {
+                let back: i64 = natural - 1 - middle;
+                let d: i64 = (n - natural) % (2 * back);
+                a = d < back ? natural - 2 - d : middle + 1 + (d - back);
+            } else if fill && mode == 2 && n >= natural - fade {
+                if n >= natural { gain = 0.0f; a = natural - 1; }
+                else { gain = gain * f32(natural - n) / f32(fade + 1); }
+            }
             for c in 0..ch {
-                let k: i64 = (n - keep) * ch + c;
-                let v: f32 = n < keep ? samples[(from + start + n) * ch + c] : (k < body.len() ? body[k] : 0.0f);
+                var v: f32 = samples[(from + start + a) * ch + c];
+                // Constant gain: the matched sides are in phase.
+                if b >= 0 { v = v * (1.0f - w) + samples[(from + start + b) * ch + c] * w; }
                 hits.push(v * gain);
             }
         }
@@ -355,36 +394,16 @@ pub fn transients_smooth(samples: &list<f32>, channels: i64, rate: i64, from: i6
     return peak_guard(out, ch, rate, ceiling);
 }
 
-/// Frames from `start` (before `end`) a hit's attack lasts: past its loudest
-/// 1 ms window in the first 30 ms, until a window falls under half of it;
-/// 8 to 40 ms.
-fn attack_length(level: &list<f32>, rate: i64, start: i64, end: i64) -> i64 {
-    let window: i64 = rate / 1000 < 8 ? 8 : rate / 1000;
-    let shortest: i64 = rate * 8 / 1000; let longest: i64 = rate * 40 / 1000;
-    let limit: i64 = end - start;
-    var loudest: f32 = 0.0f; var peak_at: i64 = 0;
-    var at: i64 = 0;
-    while at + window <= limit && at < rate * 30 / 1000 {
-        let energy: f32 = window_energy(level, start + at, window);
-        if energy > loudest { loudest = energy; peak_at = at; }
-        at = at + window;
+/// Normalized correlation (-1..1) of `length` mono frames at `a` and at `b`.
+fn match_score(level: &list<f32>, a: i64, b: i64, length: i64) -> f32 {
+    var dot: f32 = 0.0f; var ea: f32 = 0.0f; var eb: f32 = 0.0f;
+    var n: i64 = 0;
+    while n < length {
+        let x: f32 = level[a + n]; let y: f32 = level[b + n];
+        dot = dot + x * y; ea = ea + x * x; eb = eb + y * y;
+        n = n + 2;
     }
-    var length: i64 = longest;
-    at = peak_at + window;
-    while at + window <= limit && at < longest {
-        if window_energy(level, start + at, window) < loudest * 0.25f { length = at; break; }
-        at = at + window;
-    }
-    if length < shortest { length = shortest; }
-    return length > limit ? limit : length;
-}
-
-/// Mean square of `length` mono frames from `start`.
-fn window_energy(level: &list<f32>, start: i64, length: i64) -> f32 {
-    var sum: f32 = 0.0f;
-    let stop: i64 = start + length;
-    for f in start..stop { sum = sum + level[f] * level[f]; }
-    return sum / f32(length);
+    return dot / std::math::sqrt(ea * eb + 0.000000001f);
 }
 
 /// `samples` with no frame above `ceiling`: the gain falls in a straight line

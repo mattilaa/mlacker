@@ -1326,7 +1326,7 @@ pub fn run() -> i32 {
                 sample_dialog.tick(); dirty = true;
                 if !sample_dialog.active && sample_dialog.result == 1 {
                     let changed: bool = library.table.set_audio_properties(sample_dialog.frame_start, sample_dialog.frame_end,
-                        sample_dialog.original_bpm, i32(sample_dialog.algorithm.selected_id()), sample_dialog.pitch, i32(sample_dialog.resample.selected_id()), terminal_bounds());
+                        sample_dialog.original_bpm, i32(sample_dialog.algorithm.selected_id()), sample_dialog.pitch, i32(sample_dialog.resample.selected_id()), i32(sample_dialog.looping.selected_id()), terminal_bounds());
                     free(message); message = changed ? clone("Sample properties updated") : clone(library.table.error);
                     playback_dirty = changed;
                 }
@@ -1662,7 +1662,7 @@ pub fn run() -> i32 {
                     sample_dialog.on_event(event); dirty = true;
                     if !sample_dialog.active && sample_dialog.result == 1 {
                         let changed: bool = library.table.set_audio_properties(sample_dialog.frame_start, sample_dialog.frame_end,
-                            sample_dialog.original_bpm, i32(sample_dialog.algorithm.selected_id()), sample_dialog.pitch, i32(sample_dialog.resample.selected_id()), panes[1].bounds.inset(1));
+                            sample_dialog.original_bpm, i32(sample_dialog.algorithm.selected_id()), sample_dialog.pitch, i32(sample_dialog.resample.selected_id()), i32(sample_dialog.looping.selected_id()), panes[1].bounds.inset(1));
                         free(message); message = changed ? clone("Sample properties updated") : clone(library.table.error);
                         playback_dirty = changed;
                     }

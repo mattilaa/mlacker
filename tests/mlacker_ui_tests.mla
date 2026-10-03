@@ -1427,7 +1427,7 @@ fn tui_sample_properties_dialog_and_frame_window() {
     dialog.start.set_text("12"); dialog.end.set_text("78"); dialog.bpm.set_text("128"); dialog.algorithm.selected = 2;
     dialog.on_event(decode_input("\r"));
     verify(!dialog.active && dialog.result == 1 && dialog.frame_start == 12 && dialog.frame_end == 78);
-    verify(table.set_audio_properties(dialog.frame_start, dialog.frame_end, dialog.original_bpm, i32(dialog.algorithm.selected_id()), dialog.pitch, i32(dialog.resample.selected_id()), area));
+    verify(table.set_audio_properties(dialog.frame_start, dialog.frame_end, dialog.original_bpm, i32(dialog.algorithm.selected_id()), dialog.pitch, i32(dialog.resample.selected_id()), i32(dialog.looping.selected_id()), area));
     let instance: AudioInstance = table.audio_at_cursor(); let rendered: AudioClip = instance.render_clip();
     verify(instance.offset_frames == 12 && instance.frame_end == 78 && instance.original_bpm == 128 && instance.stretch_algorithm == 2);
     verify(rendered.offset == 12 && rendered.frames == 66 && table.has_audio_properties());
@@ -1438,6 +1438,7 @@ fn tui_sample_properties_dialog_and_frame_window() {
     verify(dialog.focus.selected == 4);
     dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 5);
     dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 6);
+    dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 7 && dialog.looping.selected_id() == 0);
     dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 3);
     dialog.algorithm.selected = 0; dialog.transpose.set_text("5"); dialog.focus.selected = 5; dialog.on_event(decode_input("\r"));
     verify(dialog.active && dialog.error == "Pitch needs Stretch, Beats or Transients");
@@ -1445,6 +1446,53 @@ fn tui_sample_properties_dialog_and_frame_window() {
     dialog.transpose.set_text("-24"); dialog.resample.selected = 3; dialog.on_event(decode_input("\r"));
     verify(!dialog.active && dialog.result == 1 && dialog.pitch == -24 && dialog.algorithm.selected_id() == 4 && dialog.resample.selected_id() == 3);
     dialog.release(); table.release(); clip.release();
+}
+
+#[test]
+fn tui_sample_properties_persist() {
+    let directory: str8 = clone("/private/tmp/mlacker-properties-test-XXXXXX"); mkdtemp(directory);
+    var library: PatternLibrary = PatternLibrary::new();
+    var audio: AudioSystem = AudioSystem {}; var codec: SessionCodec = SessionCodec {};
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    library.table.create_track_kind(false, true, area);
+    let clip: AudioClip = test_clip("/elsewhere/loop.wav", 2, 80);
+    library.audio.samples.push(clip);
+    library.table.selected_row = 2; verify(library.table.insert_audio(clip, area));
+    let index: i32 = i32(library.table.tracks.len()) - 1;
+    verify(library.table.set_audio_properties(4, 60, 127, 5, -3, 2, 1, area));
+    verify(library.has_audio_properties());
+    // Session, project and pattern file each keep every property.
+    let path: str8 = format!("{}/song.mlack", directory);
+    verify(codec.save(path, library, SessionView { bpm: 120 }, audio));
+    let loaded: result<SessionData, str8> = SessionCodec::load(path); verify(loaded.is_ok());
+    var restored: SessionData = loaded.unwrap();
+    var track: SequenceTrack = restored.library.table.tracks[index];
+    var placement: AudioInstance = track.instances[0];
+    verify(placement.offset_frames == 4 && placement.frame_end == 60 && placement.original_bpm == 127);
+    verify(placement.stretch_algorithm == 5 && placement.pitch == -3 && placement.resample == 2 && placement.loop_mode == 1);
+    restored.release();
+    let target: str8 = format!("{}/Song", directory);
+    let saved: result<str8, str8> = codec.save_project(target, library, SessionView { bpm: 120 }, audio); verify(saved.is_ok());
+    let folder: str8 = saved.unwrap();
+    let opened: result<SessionData, str8> = SessionCodec::load_project(folder); verify(opened.is_ok());
+    var project: SessionData = opened.unwrap();
+    track = project.library.table.tracks[index]; placement = track.instances[0];
+    verify(placement.frame_end == 60 && placement.stretch_algorithm == 5 && placement.pitch == -3 && placement.loop_mode == 1);
+    project.release();
+    let pattern_path: str8 = format!("{}/part.mlapatt", directory);
+    verify(SessionCodec::save_pattern(pattern_path, "part", library.table));
+    let read: result<PatternData, str8> = SessionCodec::load_pattern(pattern_path); verify(read.is_ok());
+    var pattern: PatternData = read.unwrap();
+    track = pattern.table.tracks[index]; placement = track.instances[0];
+    verify(placement.original_bpm == 127 && placement.resample == 2 && placement.loop_mode == 1);
+    pattern.release();
+    // A placement without properties writes no AUDIO_PROPERTIES, so such
+    // files stay readable by older versions.
+    var plain: PatternLibrary = PatternLibrary::new(); plain.table.create_track_kind(false, true, area);
+    plain.table.selected_row = 0; verify(plain.table.insert_audio(clip, area) && !plain.has_audio_properties());
+    plain.release(); library.release();
+    let removed: result<i32, str8> = std::fs::remove_tree(directory); verify(removed.is_ok());
+    free(path); free(target); free(folder); free(pattern_path); free(directory);
 }
 
 #[test]
@@ -1460,23 +1508,23 @@ fn tui_synced_sample_rows_follow_original_bpm() {
     var instance: AudioInstance = table.audio_at_cursor();
     verify(instance.duration() == 8 * 15000);
     // Recorded at 60 BPM: its 8000 frames are 4 rows of the pattern.
-    verify(table.set_audio_properties(0, 8000, 60, 2, 0, 0, area));
+    verify(table.set_audio_properties(0, 8000, 60, 2, 0, 0, 0, area));
     instance = table.audio_at_cursor();
     verify(instance.synced() && instance.duration() == 4 * 15000 && instance.render_end() == 8000);
     var view: AudioClip = instance.render_clip();
     verify(instance.frames_of(15000) == 2000 && instance.ticks_of(2000) == 15000 && view.frames_per_row == 2000);
     // Recorded at 240 BPM: 16 rows; a frame window keeps its tempo.
-    verify(table.set_audio_properties(1000, 7000, 240, 1, 0, 0, area));
+    verify(table.set_audio_properties(1000, 7000, 240, 1, 0, 0, 0, area));
     instance = table.audio_at_cursor();
     view = instance.render_clip();
     verify(instance.duration() == 12 * 15000 && instance.render_end() == 7000 && view.frames == 6000);
     // Off: back to the clip's own rows.
-    verify(table.set_audio_properties(0, 8000, 240, 0, 0, 0, area));
+    verify(table.set_audio_properties(0, 8000, 240, 0, 0, 0, 0, area));
     instance = table.audio_at_cursor();
     verify(!instance.synced() && instance.duration() == 8 * 15000);
     // Pitch needs a mode that keeps time apart from pitch; it leaves LEN alone.
-    verify(!table.set_audio_properties(0, 8000, 60, 1, 7, 0, area) && table.error == "Pitch needs Stretch, Beats or Transients");
-    verify(table.set_audio_properties(0, 8000, 60, 4, -12, 2, area));
+    verify(!table.set_audio_properties(0, 8000, 60, 1, 7, 0, 0, area) && table.error == "Pitch needs Stretch, Beats or Transients");
+    verify(table.set_audio_properties(0, 8000, 60, 4, -12, 2, 0, area));
     instance = table.audio_at_cursor();
     verify(instance.stretch_algorithm == 4 && instance.pitch == -12 && instance.resample == 2 && instance.duration() == 4 * 15000);
     table.release(); clip.release();

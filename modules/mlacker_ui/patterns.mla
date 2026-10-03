@@ -70,6 +70,17 @@ impl PatternLibrary {
     }
     /// True when any instrument track in any pattern takes an audio input;
     /// the session then writes INSTRUMENT_INPUTS.
+    /// True when any audio placement in any pattern has Sample properties
+    /// (frame end, original BPM, sync mode, pitch, resampling, loop); the
+    /// session then writes AUDIO_PROPERTIES.
+    pub fn has_audio_properties(self: PatternLibrary) -> bool {
+        var found: bool = false; let patterns: list<PatternEntry> = self.patterns;
+        for entry in patterns {
+            var data: SequenceTable = SequenceTable {}; data = entry.id == self.active_id ? self.table : entry.data;
+            if data.has_audio_properties() { found = true; }
+        }
+        return found;
+    }
     pub fn has_input_routes(self: PatternLibrary) -> bool {
         var routed: bool = false; let patterns: list<PatternEntry> = self.patterns;
         for entry in patterns {
@@ -882,7 +893,7 @@ impl PatternLibrary {
             last_sample = self.audio.add_clip(clip.copy());
             instance.clip.release();
             updated.push(AudioInstance { clip: clip, start_row: instance.start_row, length_ticks: instance.length_ticks,
-                original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample });
+                original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample, loop_mode: instance.loop_mode });
             free(label); free(group); made = made + 1;
         }
         track.instances = updated;

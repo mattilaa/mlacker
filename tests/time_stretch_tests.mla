@@ -99,22 +99,22 @@ fn pitch_transposes_without_changing_length() {
     let tone: list<f32> = sine(440.0f, 44100);
     // An octave up and a fifth down at the same tempo.
     for algorithm in [2, 4, 5] {
-        let up: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 44100, i32(algorithm), 12, 0);
+        let up: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 44100, i32(algorithm), 12, 0, 0);
         verify_eq(up.len(), 44100);
         let cycles: i64 = crossings(up, 1);
         verify(cycles >= 870 && cycles <= 890);
     }
     // Beats: the steady tone is one hit; transposed up it plays at the
     // octave for half the time, then leaves the gap Beats leaves.
-    let beat: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 44100, 3, 12, 0);
+    let beat: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 44100, 3, 12, 0, 0);
     verify_eq(beat.len(), 44100);
     let half: i64 = crossings(beat, 1);
     verify(half >= 430 && half <= 460 && peak(beat, 23000, 44100) < 0.01f);
-    let down: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 44100, 2, -7, 1);
+    let down: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 44100, 2, -7, 1, 0);
     let cycles: i64 = crossings(down, 1);
     verify(cycles >= 288 && cycles <= 300);
     // Repitch ignores pitch: its pitch follows the tempo.
-    let repitched: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 22050, 1, 12, 1);
+    let repitched: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 22050, 1, 12, 1, 0);
     let repitched_cycles: i64 = crossings(repitched, 1); verify(repitched_cycles >= 438 && repitched_cycles <= 441);
 }
 
@@ -152,7 +152,7 @@ fn transients_2_join_hits_without_dips_or_overs() {
         let v: f32 = 0.45f * std::math::sin(6.283185307179586f * 110.0f * f32(f) / 44100.0f) + tick;
         mix.push(v); let a: f32 = v < 0.0f ? -v : v; if a > source_peak { source_peak = a; }
     }
-    let smooth: list<f32> = render_synced(mix, 1, 44100, 0, 88200, 176400, 5, 0, 0);
+    let smooth: list<f32> = render_synced(mix, 1, 44100, 0, 88200, 176400, 5, 0, 0, 0);
     verify_eq(smooth.len(), 176400);
     verify(peak(smooth, 0, 176400) <= source_peak + 0.0001f);
     for hit in 1..4 {
@@ -175,4 +175,49 @@ fn transients_2_join_hits_without_dips_or_overs() {
         for f in lo..hi { let d: f32 = smooth[f] - smooth[f - 1]; let a: f32 = d < 0.0f ? -d : d; if a > step { step = a; } }
         verify(step < 0.012f);
     }
+}
+
+/// Decaying 220 Hz hits a beat (22050 frames) apart, lasting `ring` frames.
+fn ringing_hits(ring: i64) -> list<f32> {
+    var out: list<f32> = [];
+    for f in 0..88200 {
+        let phase: i64 = f % 22050;
+        let body: i64 = phase - 1000;
+        let v: f32 = body < 0 || body >= ring ? 0.0f : 0.8f * f32(ring - body) / f32(ring) * std::math::sin(6.283185307179586f * 220.0f * f32(body) / 44100.0f);
+        out.push(v);
+    }
+    return out;
+}
+
+#[test]
+fn transients_2_loops_fill_slowed_hits() {
+    // Hits ringing the whole beat, at half the tempo: each hit plays its
+    // beat at its own speed, then the loop fills the second beat.
+    let hits: list<f32> = ringing_hits(21050);
+    let forward: list<f32> = render_synced(hits, 1, 44100, 0, 88200, 176400, 5, 0, 0, 0);
+    let bounce: list<f32> = render_synced(hits, 1, 44100, 0, 88200, 176400, 5, 0, 0, 1);
+    let off: list<f32> = render_synced(hits, 1, 44100, 0, 88200, 176400, 5, 0, 0, 2);
+    verify_eq(forward.len(), 176400); verify_eq(bounce.len(), 176400); verify_eq(off.len(), 176400);
+    for hit in 1..4 {
+        let at: i64 = 2 * (wide(hit) * 22050 + 1000);
+        // The attack at the original speed (220 Hz: 200 frames a cycle) and on time.
+        verify(peak(forward, at + 20, at + 300) > 0.7f && peak(off, at + 20, at + 300) > 0.7f);
+        // Late in the stretched beat: looped sound, or silence without the loop.
+        verify(peak(forward, at + 30000, at + 34000) > 0.05f && peak(bounce, at + 30000, at + 34000) > 0.05f);
+        verify(peak(off, at + 30000, at + 34000) == 0.0f);
+    }
+    // No clicks at the forward loop's seams: between the hits the steps
+    // between frames stay those of the decaying 220 Hz tone (at most
+    // 0.8 * 2 pi * 220 / 44100 = 0.025).
+    var later: f32 = 0.0f;
+    for hit in 1..4 {
+        let at: i64 = 2 * (wide(hit) * 22050 + 1000);
+        let lo: i64 = at + 23000; let hi: i64 = at + 43000 < 176400 ? at + 43000 : 176400;
+        for f in lo..hi { let d: f32 = forward[f] - forward[f - 1]; let a: f32 = d < 0.0f ? -d : d; if a > later { later = a; } }
+    }
+    verify(later < 0.03f);
+    // Faster (double tempo): each hit is cut by the next, still on time.
+    let fast: list<f32> = render_synced(hits, 1, 44100, 0, 88200, 44100, 5, 0, 0, 0);
+    verify_eq(fast.len(), 44100);
+    for hit in 1..4 { let at: i64 = (wide(hit) * 22050 + 1000) / 2; verify(peak(fast, at + 20, at + 300) > 0.5f); }
 }

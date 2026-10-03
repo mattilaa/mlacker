@@ -686,6 +686,39 @@ impl SessionCodec {
         if codec.failed { return Err<PluginSnapshot, str8>("Invalid or incompatible preset file"); }
         return Ok<PluginSnapshot, str8>(plugin);
     }
+    /// AUDIO_PROPERTIES of one pattern: a track count matching it, then per
+    /// track a count matching its audio placements and per placement its
+    /// exclusive frame end (0 = none), original BPM (0 or 20-400), sync mode
+    /// (0-5), pitch (-24..24, 0 below Stretch), resampling (0-3) and
+    /// Transients 2 loop mode (0-2). Returns the pattern with them applied.
+    fn audio_properties(self: &mut Self, source: &SequenceTable) -> SequenceTable {
+        var table: SequenceTable = SequenceTable {}; table = source;
+        let track_count: i32 = self.number(i32(table.tracks.len()), 0, 64);
+        if track_count != table.tracks.len() { self.failed = true; return table; }
+        var tracks: list<SequenceTrack> = [];
+        for t in 0..track_count {
+            var track: SequenceTrack = table.tracks[t];
+            let count: i32 = self.number(i32(track.instances.len()), 0, 16384);
+            if count != track.instances.len() { self.failed = true; return table; }
+            var placements: list<AudioInstance> = [];
+            for j in 0..count {
+                var instance: AudioInstance = AudioInstance {}; instance = track.instances[j];
+                instance.frame_end = self.integer(instance.frame_end, 0, 16777216);
+                if instance.frame_end != 0 && (instance.frame_end <= instance.offset_frames || instance.frame_end > instance.clip.frames) { self.failed = true; }
+                instance.original_bpm = self.number(instance.original_bpm, 0, 400);
+                if instance.original_bpm > 0 && instance.original_bpm < 20 { self.failed = true; }
+                instance.stretch_algorithm = self.number(instance.stretch_algorithm, 0, 5);
+                instance.pitch = self.number(instance.pitch, -24, 24);
+                if instance.pitch != 0 && instance.stretch_algorithm < 2 { self.failed = true; }
+                instance.resample = self.number(instance.resample, 0, 3);
+                instance.loop_mode = self.number(instance.loop_mode, 0, 2);
+                placements.push(instance);
+            }
+            track.instances = placements; tracks.push(track);
+        }
+        if self.reading { table.tracks = tracks; }
+        return table;
+    }
     fn sequence_data(self: &mut Self, source: &SequenceTable, samples: list<AudioClip>) -> SequenceTable {
         var table: SequenceTable = SequenceTable {}; table = source;
         if self.reading {
@@ -800,8 +833,11 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
-        // Instrument tracks taking an AUDIO track as their plugin's input.
-        let inputs_routed: bool = !self.reading && library.has_input_routes();
+        // Sample properties of audio placements (frame end, tempo sync).
+        let propertied: bool = !self.reading && library.has_audio_properties();
+        // Instrument tracks taking an AUDIO track as their plugin's input
+        // (written, perhaps without routes, whenever AUDIO_PROPERTIES follows).
+        let inputs_routed: bool = !self.reading && (library.has_input_routes() || propertied);
         // Hand-set slice markers of sampler pads (written, perhaps empty,
         // whenever INSTRUMENT_INPUTS follows).
         let marked: bool = !self.reading && (audio.pad_markers.len() > 0 || inputs_routed);
@@ -810,7 +846,7 @@ impl SessionCodec {
         // Every extension is written when a later one is, so the chain stays
         // in order; MASTER_BUS precedes MATRIX_LOOPS, which precedes
         // AUX_OUTPUTS, which precedes PAD_MARKERS, which precedes
-        // INSTRUMENT_INPUTS.
+        // INSTRUMENT_INPUTS, which precedes AUDIO_PROPERTIES.
         let mastered: bool = mastered_view || looped || aux_routed;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
         // A project session (1.4) also permits Audio/group/sample.wav.
@@ -1248,6 +1284,24 @@ impl SessionCodec {
                 library.table.release(); library.table = entry.data.copy_pattern();
             }
         }
+        // Optional AUDIO_PROPERTIES extension: per pattern, the Sample
+        // properties of every audio placement.
+        let properties_extension: bool = self.reading ? self.reader.remaining() > 0 : propertied;
+        if properties_extension && !self.failed {
+            let tag: str8 = self.text("AUDIO_PROPERTIES"); if tag != "AUDIO_PROPERTIES" { self.failed = true; } if self.reading { free(tag); }
+            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
+            for p in 0..patterns.len() {
+                if self.failed { break; }
+                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
+                let restored: SequenceTable = self.audio_properties(entry.data);
+                if self.reading { entry.data = restored; updated.push(entry); }
+            }
+            if self.reading && !self.failed {
+                library.patterns = updated;
+                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
+                library.table.release(); library.table = entry.data.copy_pattern();
+            }
+        }
         if state.editor_slot > 32 {
             var found: bool = false; for plugin in plugins { if plugin.slot == state.editor_slot { found = true; } }
             if !found { self.failed = true; }
@@ -1275,6 +1329,8 @@ impl SessionCodec {
         codec.number(i32(clips.len()), 0, 256);
         for clip in clips { codec.clip(clip); }
         codec.sequence_data(table, clips);
+        // Optional trailing AUDIO_PROPERTIES of the pattern.
+        if table.has_audio_properties() { codec.text("AUDIO_PROPERTIES"); codec.audio_properties(table); }
         let actual: str8 = tui::table::table_matches(".*\\.[mM][lL][aA][pP][aA][tT][tT]", path) ? clone(path) : format!("{}.mlapatt", path);
         if !codec.failed { let written: result<i32, str8> = codec.binary.write_atomic(actual); if written.is_err() { codec.failed = true; } }
         free(actual); codec.binary.close(); return !codec.failed;
@@ -1294,6 +1350,10 @@ impl SessionCodec {
         let count: i32 = codec.number(0, 0, 256);
         for i in 0..count { if codec.failed { break; } data.clips.push(codec.clip(AudioClip {})); }
         data.table = codec.sequence_data(data.table, data.clips);
+        if codec.reader.remaining() > 0 && !codec.failed {
+            let tag: str8 = codec.text(""); if tag != "AUDIO_PROPERTIES" { codec.failed = true; } free(tag);
+            if !codec.failed { data.table = codec.audio_properties(data.table); }
+        }
         if codec.reader.remaining() != 0 { codec.failed = true; } codec.reader.close();
         if codec.failed { data.release(); return Err<PatternData, str8>("Invalid, truncated or unsupported .mlapatt pattern"); }
         // Instance IDs and effect buses belong to the originating session.

@@ -157,9 +157,11 @@ pub struct AudioInstance {
     /// plus the placement's time-stretch controls: the sync mode (0 Off,
     /// 1 Repitch, 2 Stretch, 3 Beats, 4 Transients, 5 Transients 2;
     /// append-only), the transposition in semitones (-24..24, all modes but
-    /// Off and Repitch) and the resampling quality (see time_stretch::resample).
+    /// Off and Repitch), the resampling quality (see time_stretch::resample)
+    /// and how Transients 2 fills a slowed-down hit (0 forward loop,
+    /// 1 back-and-forth loop, 2 off).
     var frame_end: i64; var original_bpm: i32; var stretch_algorithm: i32;
-    var pitch: i32; var resample: i32;
+    var pitch: i32; var resample: i32; var loop_mode: i32;
 };
 impl AudioInstance {
     /// Repitch, Stretch or Beats with an original BPM: the sample keeps that
@@ -285,7 +287,7 @@ impl SequenceTrack {
     pub fn copy_audio(self: SequenceTrack) -> list<AudioInstance> {
         var copies: list<AudioInstance> = []; let instances: list<AudioInstance> = self.instances;
         for instance in instances { copies.push(AudioInstance { clip: instance.clip.copy(), start_row: instance.start_row, length_ticks: instance.length_ticks, offset_frames: instance.offset_frames,
-            frame_end: instance.frame_end, original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample }); }
+            frame_end: instance.frame_end, original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample, loop_mode: instance.loop_mode }); }
         return copies;
     }
     pub fn release_audio(self: SequenceTrack) -> void {
@@ -1186,13 +1188,13 @@ pub fn slice_audio(self: &mut Self, area: Rect) -> bool {
     var pieces: list<AudioInstance> = [];
     if head_rows > 0 {
         pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: start, length_ticks: head_rows * 15000, offset_frames: base_offset,
-            original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm, pitch: track.instances[hit].pitch, resample: track.instances[hit].resample });
+            original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm, pitch: track.instances[hit].pitch, resample: track.instances[hit].resample, loop_mode: track.instances[hit].loop_mode });
     }
     pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: a, length_ticks: mid_rows * 15000, offset_frames: base_offset + track.instances[hit].frames_of(wide(a - start) * 15000),
-        original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm, pitch: track.instances[hit].pitch, resample: track.instances[hit].resample });
+        original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm, pitch: track.instances[hit].pitch, resample: track.instances[hit].resample, loop_mode: track.instances[hit].loop_mode });
     if tail_rows > 0 {
         pieces.push(AudioInstance { clip: track.instances[hit].clip.copy(), start_row: b + 1, length_ticks: tail_rows * 15000, offset_frames: base_offset + track.instances[hit].frames_of(wide(b + 1 - start) * 15000),
-            frame_end: track.instances[hit].frame_end, original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm, pitch: track.instances[hit].pitch, resample: track.instances[hit].resample });
+            frame_end: track.instances[hit].frame_end, original_bpm: track.instances[hit].original_bpm, stretch_algorithm: track.instances[hit].stretch_algorithm, pitch: track.instances[hit].pitch, resample: track.instances[hit].resample, loop_mode: track.instances[hit].loop_mode });
     }
     track.instances[hit].clip.release();
     var updated: list<AudioInstance> = [];
@@ -1480,7 +1482,7 @@ pub fn has_audio_properties(self: SequenceTable) -> bool {
     for track in tracks {
         let instances: list<AudioInstance> = track.instances;
         for instance in instances {
-            if instance.frame_end > 0 || instance.original_bpm > 0 || instance.stretch_algorithm > 0 || instance.pitch != 0 || instance.resample > 0 { return true; }
+            if instance.frame_end > 0 || instance.original_bpm > 0 || instance.stretch_algorithm > 0 || instance.pitch != 0 || instance.resample > 0 || instance.loop_mode > 0 { return true; }
         }
     }
     return false;
@@ -1497,14 +1499,14 @@ pub fn audio_at_cursor(self: SequenceTable) -> AudioInstance {
 /// Apply Sample properties to the placement under the cursor. Frame bounds are
 /// absolute in its loaded sample; stretch settings belong to this placement.
 /// `pitch` (semitones) needs a mode that keeps time apart from pitch.
-pub fn set_audio_properties(self: &mut Self, from: i64, to: i64, bpm: i32, algorithm: i32, pitch: i32, resample: i32, area: Rect) -> bool {
+pub fn set_audio_properties(self: &mut Self, from: i64, to: i64, bpm: i32, algorithm: i32, pitch: i32, resample: i32, loop_mode: i32, area: Rect) -> bool {
     let index: i32 = self.active_track();
     if index < 0 || !self.tracks[index].audio { self.error = "Select an AUDIO sample row first"; return false; }
     var track: SequenceTrack = self.tracks[index]; let hit: i32 = track.instance_at(self.selected_row);
     if hit < 0 { self.error = "No sample on this row"; return false; }
     let current: AudioInstance = track.instances[hit];
     if from < 0 || from >= to || to > current.clip.frames || bpm < 20 || bpm > 400 || algorithm < 0 || algorithm > 5 ||
-        pitch < -24 || pitch > 24 || resample < 0 || resample > 3 {
+        pitch < -24 || pitch > 24 || resample < 0 || resample > 3 || loop_mode < 0 || loop_mode > 2 {
         self.error = "Invalid sample properties"; return false;
     }
     if pitch != 0 && algorithm < 2 { self.error = "Pitch needs Stretch, Beats or Transients"; return false; }
@@ -1517,7 +1519,7 @@ pub fn set_audio_properties(self: &mut Self, from: i64, to: i64, bpm: i32, algor
         var next: AudioInstance = AudioInstance {}; next = track.instances[i];
         if i == hit {
             next.offset_frames = from; next.frame_end = to; next.length_ticks = i32(ticks);
-            next.original_bpm = bpm; next.stretch_algorithm = algorithm; next.pitch = pitch; next.resample = resample;
+            next.original_bpm = bpm; next.stretch_algorithm = algorithm; next.pitch = pitch; next.resample = resample; next.loop_mode = loop_mode;
         }
         updated.push(next);
     }
@@ -1660,7 +1662,7 @@ pub fn copy_slice(self: SequenceTable, start: i32, count: i32) -> SequenceTable 
             if row >= 0 && row < count {
                 instances.push(AudioInstance { clip: instance.clip, start_row: row,
                     length_ticks: instance.length_ticks, offset_frames: instance.offset_frames,
-                    frame_end: instance.frame_end, original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample });
+                    frame_end: instance.frame_end, original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample, loop_mode: instance.loop_mode });
             } else { instance.clip.release(); }
         }
         moved.instances = instances; tracks.push(moved);
