@@ -44,7 +44,7 @@ pub struct RegisteredClip { var id: i64; var frames: i64; var channels: i64; var
 pub struct SyncedClip {
     var id: i64; var frames: i64;
     var fingerprint: i64; var source_frames: i64; var from: i64; var to: i64;
-    var original_bpm: i32; var algorithm: i32; var bpm: i32;
+    var original_bpm: i32; var algorithm: i32; var pitch: i32; var resample: i32; var bpm: i32;
 };
 /// Cheap content key: enough spread to separate two clips of equal geometry,
 /// including one a destructive edit rewrote in place.
@@ -566,16 +566,18 @@ impl AudioSystem {
         let known: list<SyncedClip> = self.synced_clips;
         for entry in known {
             if entry.fingerprint == fingerprint && entry.source_frames == instance.clip.frames && entry.from == from && entry.to == to &&
-                entry.original_bpm == instance.original_bpm && entry.algorithm == instance.stretch_algorithm && entry.bpm == bpm { return entry; }
+                entry.original_bpm == instance.original_bpm && entry.algorithm == instance.stretch_algorithm &&
+                entry.pitch == instance.pitch && entry.resample == instance.resample && entry.bpm == bpm { return entry; }
         }
         // The window's length at `bpm` instead of at the original tempo.
         let frames: i64 = (rc.frames * wide(instance.original_bpm) + wide(bpm) - 1) / wide(bpm);
         var rendered: AudioClip = AudioClip {};
         rendered.channels = instance.clip.channels; rendered.sample_rate = instance.clip.sample_rate; rendered.frames = frames;
-        rendered.samples = render_synced(instance.clip.samples, instance.clip.channels, instance.clip.sample_rate, from, to, frames, instance.stretch_algorithm);
+        rendered.samples = render_synced(instance.clip.samples, instance.clip.channels, instance.clip.sample_rate, from, to, frames,
+            instance.stretch_algorithm, instance.pitch, instance.resample);
         let entry: SyncedClip = SyncedClip { id: self.register_clip(rendered), frames: frames, fingerprint: fingerprint,
             source_frames: instance.clip.frames, from: from, to: to, original_bpm: instance.original_bpm,
-            algorithm: instance.stretch_algorithm, bpm: bpm };
+            algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample, bpm: bpm };
         if entry.id >= 0 { self.synced_clips.push(entry); }
         return entry;
     }

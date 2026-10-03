@@ -1427,10 +1427,23 @@ fn tui_sample_properties_dialog_and_frame_window() {
     dialog.start.set_text("12"); dialog.end.set_text("78"); dialog.bpm.set_text("128"); dialog.algorithm.selected = 2;
     dialog.on_event(decode_input("\r"));
     verify(!dialog.active && dialog.result == 1 && dialog.frame_start == 12 && dialog.frame_end == 78);
-    verify(table.set_audio_properties(dialog.frame_start, dialog.frame_end, dialog.original_bpm, i32(dialog.algorithm.selected_id()), area));
+    verify(table.set_audio_properties(dialog.frame_start, dialog.frame_end, dialog.original_bpm, i32(dialog.algorithm.selected_id()), dialog.pitch, i32(dialog.resample.selected_id()), area));
     let instance: AudioInstance = table.audio_at_cursor(); let rendered: AudioClip = instance.render_clip();
     verify(instance.offset_frames == 12 && instance.frame_end == 78 && instance.original_bpm == 128 && instance.stretch_algorithm == 2);
     verify(rendered.offset == 12 && rendered.frames == 66 && table.has_audio_properties());
+    // Tab order reaches pitch and resampling; pitch with Off is refused.
+    dialog.open(table.audio_at_cursor(), 120);
+    verify(dialog.transpose.text == "0" && dialog.resample.selected_id() == 0);
+    dialog.on_event(decode_input("\t")); dialog.on_event(decode_input("\t")); dialog.on_event(decode_input("\t"));
+    verify(dialog.focus.selected == 4);
+    dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 5);
+    dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 6);
+    dialog.on_event(decode_input("\t")); verify(dialog.focus.selected == 3);
+    dialog.algorithm.selected = 0; dialog.transpose.set_text("5"); dialog.focus.selected = 5; dialog.on_event(decode_input("\r"));
+    verify(dialog.active && dialog.error == "Pitch needs Stretch, Beats or Transients");
+    dialog.algorithm.selected = 4; dialog.transpose.set_text("-25"); dialog.on_event(decode_input("\r")); verify(dialog.active);
+    dialog.transpose.set_text("-24"); dialog.resample.selected = 3; dialog.on_event(decode_input("\r"));
+    verify(!dialog.active && dialog.result == 1 && dialog.pitch == -24 && dialog.algorithm.selected_id() == 4 && dialog.resample.selected_id() == 3);
     dialog.release(); table.release(); clip.release();
 }
 
@@ -1447,20 +1460,25 @@ fn tui_synced_sample_rows_follow_original_bpm() {
     var instance: AudioInstance = table.audio_at_cursor();
     verify(instance.duration() == 8 * 15000);
     // Recorded at 60 BPM: its 8000 frames are 4 rows of the pattern.
-    verify(table.set_audio_properties(0, 8000, 60, 2, area));
+    verify(table.set_audio_properties(0, 8000, 60, 2, 0, 0, area));
     instance = table.audio_at_cursor();
     verify(instance.synced() && instance.duration() == 4 * 15000 && instance.render_end() == 8000);
     var view: AudioClip = instance.render_clip();
     verify(instance.frames_of(15000) == 2000 && instance.ticks_of(2000) == 15000 && view.frames_per_row == 2000);
     // Recorded at 240 BPM: 16 rows; a frame window keeps its tempo.
-    verify(table.set_audio_properties(1000, 7000, 240, 1, area));
+    verify(table.set_audio_properties(1000, 7000, 240, 1, 0, 0, area));
     instance = table.audio_at_cursor();
     view = instance.render_clip();
     verify(instance.duration() == 12 * 15000 && instance.render_end() == 7000 && view.frames == 6000);
     // Off: back to the clip's own rows.
-    verify(table.set_audio_properties(0, 8000, 240, 0, area));
+    verify(table.set_audio_properties(0, 8000, 240, 0, 0, 0, area));
     instance = table.audio_at_cursor();
     verify(!instance.synced() && instance.duration() == 8 * 15000);
+    // Pitch needs a mode that keeps time apart from pitch; it leaves LEN alone.
+    verify(!table.set_audio_properties(0, 8000, 60, 1, 7, 0, area) && table.error == "Pitch needs Stretch, Beats or Transients");
+    verify(table.set_audio_properties(0, 8000, 60, 4, -12, 2, area));
+    instance = table.audio_at_cursor();
+    verify(instance.stretch_algorithm == 4 && instance.pitch == -12 && instance.resample == 2 && instance.duration() == 4 * 15000);
     table.release(); clip.release();
 }
 

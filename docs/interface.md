@@ -87,9 +87,17 @@ frame ranges and BPM values outside 20–400 are rejected.
 With a mode other than **Off**, the placement's rows follow its original BPM
 (a 127 BPM loop keeps four rows a beat in a 120 BPM project, so its LEN grows)
 and it plays at the project tempo: **Repitch** changes speed and pitch
-together, **Stretch** keeps the pitch (overlapping grains), and **Beats** plays
-each detected hit at its original speed from its stretched time. The render is
-made when playback starts and reused until the window, mode or tempo changes.
+together, **Stretch** keeps the pitch (overlapping grains), **Beats** plays
+each detected hit at its original speed from its stretched time (leaving gaps
+when slower), and **Transients** keeps each hit's attack untouched on its
+stretched time while stretching the rest of the hit to the next one, for a
+smooth result without gaps. **Pitch** transposes Stretch, Beats and
+Transients by -24 to +24 semitones without changing their length.
+**Resampling** sets how Repitch and a transposition read between samples:
+cubic or linear, each optionally with a low-pass that removes aliasing when
+the audio is read faster than it was recorded (the default is cubic with the
+low-pass). The render is made when playback starts and reused until a
+setting or the tempo changes.
 A selectable, read-only waveform column beside the LEN and OFF columns draws
 time downward as one gray, 7-cell-wide waveform:
 left and right are summed to mono for display only (playback and meters stay

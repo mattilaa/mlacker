@@ -1,16 +1,31 @@
 mod std::math;
 
 // Offline tempo sync of an audio placement (Sample properties Repitch,
-// Stretch and Beats, the same modes as Mla Sampler's tempo sync). Each takes
-// the interleaved source frames [from, to) and returns `frames` interleaved
-// output frames that play them at the new tempo.
+// Stretch, Beats and Transients; the first three are Mla Sampler's tempo
+// sync modes). Each takes the interleaved source frames [from, to) and
+// returns `frames` interleaved output frames that play them at the new tempo.
 
 /// Render with sync mode `algorithm` (AudioInstance::stretch_algorithm:
-/// 1 Repitch, 2 Stretch, 3 Beats); anything else resamples like Repitch.
-pub fn render_synced(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, algorithm: i32) -> list<f32> {
-    if algorithm == 2 { return stretch(samples, channels, rate, from, to, frames); }
+/// 1 Repitch, 2 Stretch, 3 Beats, 4 Transients), transposed by `pitch`
+/// semitones (not Repitch, whose pitch follows its speed). `quality` is the
+/// resampling of Repitch and of a transposition (see `resample`).
+pub fn render_synced(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64,
+    algorithm: i32, pitch: i32, quality: i32) -> list<f32> {
+    if algorithm < 2 || algorithm > 4 { return resample(samples, channels, from, to, frames, quality); }
+    if pitch == 0 { return retime(samples, channels, rate, from, to, frames, algorithm); }
+    // Transposed: retime to the length that, resampled to `frames`, sounds
+    // `pitch` semitones away.
+    let ratio: f64 = std::math::pow(2.0, f64(pitch) / 12.0);
+    var longer: i64 = f64(frames) * ratio + 0.5; if longer < 1 { longer = 1; }
+    let body: list<f32> = retime(samples, channels, rate, from, to, longer, algorithm);
+    return resample(body, channels, 0, longer, frames, quality);
+}
+
+/// Tempo only, at the original pitch.
+fn retime(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, algorithm: i32) -> list<f32> {
     if algorithm == 3 { return beats(samples, channels, rate, from, to, frames); }
-    return repitch(samples, channels, from, to, frames);
+    if algorithm == 4 { return transients(samples, channels, rate, from, to, frames); }
+    return stretch(samples, channels, rate, from, to, frames);
 }
 
 /// Channel `c` of frame `f`, clamped into [from, to).
@@ -30,18 +45,34 @@ fn mono(samples: &list<f32>, ch: i64, from: i64, to: i64) -> list<f32> {
     return out;
 }
 
-/// Speed and pitch change together: 4-point Hermite resampling.
-pub fn repitch(samples: &list<f32>, channels: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+/// Speed and pitch change together. `quality`: 0 cubic (4-point Hermite)
+/// with an anti-aliasing low-pass, 1 cubic, 2 linear with the low-pass,
+/// 3 linear. The low-pass runs only when the source is read faster than it
+/// was recorded, where its highs would fold back down as aliasing.
+pub fn resample(samples: &list<f32>, channels: i64, from: i64, to: i64, frames: i64, quality: i32) -> list<f32> {
     let ch: i64 = channels < 1 ? 1 : channels;
+    if frames <= 0 || to <= from { return []; }
+    let step: f64 = f64(to - from) / f64(frames);
+    let cubic: bool = quality == 0 || quality == 1;
+    if (quality == 0 || quality == 2) && step > 1.0 {
+        let filtered: list<f32> = low_pass(samples, ch, from, to, step);
+        return interpolate(filtered, ch, 0, to - from, frames, cubic);
+    }
+    return interpolate(samples, ch, from, to, frames, cubic);
+}
+
+/// `frames` frames read evenly across [from, to), between source frames by
+/// 4-point Hermite (`cubic`) or straight-line interpolation.
+fn interpolate(samples: &list<f32>, ch: i64, from: i64, to: i64, frames: i64, cubic: bool) -> list<f32> {
     var out: list<f32> = [];
-    if frames <= 0 || to <= from { return out; }
     let step: f64 = f64(to - from) / f64(frames);
     for o in 0..frames {
         let pos: f64 = f64(from) + f64(o) * step;
         let i: i64 = pos; let t: f32 = f32(pos - f64(i));
         for c in 0..ch {
-            let x0: f32 = frame_value(samples, ch, from, to, i - 1, c); let x1: f32 = frame_value(samples, ch, from, to, i, c);
-            let x2: f32 = frame_value(samples, ch, from, to, i + 1, c); let x3: f32 = frame_value(samples, ch, from, to, i + 2, c);
+            let x1: f32 = frame_value(samples, ch, from, to, i, c); let x2: f32 = frame_value(samples, ch, from, to, i + 1, c);
+            if !cubic { out.push(x1 + (x2 - x1) * t); continue; }
+            let x0: f32 = frame_value(samples, ch, from, to, i - 1, c); let x3: f32 = frame_value(samples, ch, from, to, i + 2, c);
             let a: f32 = (x3 - x0) * 0.5f + (x1 - x2) * 1.5f;
             let b: f32 = x0 - x1 * 2.5f + x2 * 2.0f - x3 * 0.5f;
             let d: f32 = (x2 - x0) * 0.5f;
@@ -51,15 +82,57 @@ pub fn repitch(samples: &list<f32>, channels: i64, from: i64, to: i64, frames: i
     return out;
 }
 
+/// Frames [from, to) (realigned to frame 0) through a linear-phase low-pass
+/// that removes what reading them `step` times faster would alias: a
+/// Blackman-windowed sinc cut at 90 % of the new Nyquist, longer as the
+/// cut-off falls.
+fn low_pass(samples: &list<f32>, ch: i64, from: i64, to: i64, step: f64) -> list<f32> {
+    let cutoff: f64 = 0.45 / step;
+    var half: i64 = f64(32.0) * step + 0.5; if half > 256 { half = 256; }
+    let taps: i64 = 2 * half + 1;
+    var kernel: list<f32> = []; var total: f64 = 0.0;
+    for k in 0..taps {
+        let x: f64 = f64(k - half);
+        let sinc: f64 = k == half ? 2.0 * cutoff : std::math::sin(6.283185307179586 * cutoff * x) / (3.141592653589793 * x);
+        let phase: f64 = 6.283185307179586 * f64(k) / f64(taps - 1);
+        let window: f64 = 0.42 - 0.5 * std::math::cos(phase) + 0.08 * std::math::cos(2.0 * phase);
+        total = total + sinc * window; kernel.push(f32(sinc * window));
+    }
+    var normalized: list<f32> = [];
+    for k in 0..taps { normalized.push(kernel[k] / f32(total)); }
+    var out: list<f32> = [];
+    for f in from..to {
+        // Inside the range the taps index the samples directly; only the
+        // first and last `half` frames clamp at its edges.
+        let inside: bool = f - half >= from && f + half < to;
+        for c in 0..ch {
+            var sum: f32 = 0.0f;
+            if inside {
+                var at: i64 = (f - half) * ch + c;
+                for k in 0..taps { sum = sum + normalized[k] * samples[at]; at = at + ch; }
+            } else {
+                for k in 0..taps { sum = sum + normalized[k] * frame_value(samples, ch, from, to, f + k - half, c); }
+            }
+            out.push(sum);
+        }
+    }
+    return out;
+}
+
 /// Tempo changes at the original pitch: WSOLA. Hann grains of 40 ms overlap
 /// by half; each is taken near its nominal source position (within 10 ms)
 /// where it best continues the grain before it, so the overlaps stay in phase.
 pub fn stretch(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+    return wsola(samples, channels, rate, from, to, frames, 40);
+}
+
+/// WSOLA with grains of `grain_ms` (see `stretch`).
+fn wsola(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, grain_ms: i64) -> list<f32> {
     let ch: i64 = channels < 1 ? 1 : channels;
     var out: list<f32> = [];
     if frames <= 0 || to <= from { return out; }
     let input: i64 = to - from;
-    var grain: i64 = rate * 40 / 1000; if grain < 64 { grain = 64; } grain = grain - grain % 2;
+    var grain: i64 = rate * grain_ms / 1000; if grain < 64 { grain = 64; } grain = grain - grain % 2;
     let hop: i64 = grain / 2;
     let tolerance: i64 = rate * 10 / 1000;
     let step: f64 = f64(input) / f64(frames);
@@ -175,12 +248,61 @@ pub fn beats(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, 
     return out;
 }
 
+/// Ableton-style transient preserving stretch: hits (from 10 % of the
+/// strongest rise, 30 ms apart; finer than Beats) start exactly at their
+/// stretched time with their first 20 ms, the attack, untouched. The rest of
+/// each hit is time-stretched (WSOLA, 20 ms grains) to last until the next
+/// one, so a slower tempo leaves no gaps and a faster one cuts nothing off.
+/// Hits join with short fades at their quiet onset points.
+pub fn transients(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+    let ch: i64 = channels < 1 ? 1 : channels;
+    var out: list<f32> = [];
+    if frames <= 0 || to <= from { return out; }
+    let input: i64 = to - from;
+    let level: list<f32> = mono(samples, ch, from, to);
+    let points: list<i64> = find_onsets(level, rate, 0.1f, 30);
+    let attack: i64 = rate * 20 / 1000;
+    for i in 0..points.len() {
+        let start: i64 = points[i];
+        let end: i64 = i + 1 < points.len() ? points[i + 1] : input;
+        let at: i64 = start * frames / input;
+        let next: i64 = i + 1 < points.len() ? end * frames / input : frames;
+        let span: i64 = next - at;
+        if span <= 0 { continue; }
+        var keep: i64 = attack; if keep > end - start { keep = end - start; } if keep > span { keep = span; }
+        // The attack as it is, then the rest of the hit fitted to the time left.
+        var hit: list<f32> = [];
+        for n in 0..keep { for c in 0..ch { hit.push(samples[(from + start + n) * ch + c]); } }
+        let rest: i64 = span - keep;
+        if rest > 0 {
+            var body: list<f32> = [];
+            if end - start - keep >= 16 { body = wsola(samples, ch, rate, from + start + keep, from + end, rest, 20); }
+            let count: i64 = rest * ch;
+            for n in 0..count { hit.push(n < body.len() ? body[n] : 0.0f); }
+        }
+        let fade_in: i64 = i > 0 && span > 64 ? 16 : 0;
+        let fade_out: i64 = i + 1 < points.len() && span > 64 ? 32 : 0;
+        for n in 0..span {
+            var gain: f32 = 1.0f;
+            if n < fade_in { gain = f32(n + 1) / f32(fade_in + 1); }
+            if n >= span - fade_out { gain = gain * f32(span - n) / f32(fade_out + 1); }
+            for c in 0..ch { out.push(hit[n * ch + c] * gain); }
+        }
+    }
+    return out;
+}
+
 /// Where the hits start, as Mla Sampler finds them: RMS per 256-frame hop and
 /// the strongest rises in it (at least 15 % of the strongest, local peaks),
 /// taken strongest first at least 50 ms apart. Each moves to its onset, the
 /// first frame around the rise at 30 % of the peak there, then back to the
 /// quietest of the 64 frames before. Frame 0 always starts the first hit.
-pub fn onsets(level: &list<f32>, rate: i64) -> list<i64> {
+/// Unlike the sampler, a rise also has to be a fifth of the level it reaches,
+/// so the level wobble of a sustained sound is not taken for hits.
+pub fn onsets(level: &list<f32>, rate: i64) -> list<i64> { return find_onsets(level, rate, 0.15f, 50); }
+
+/// `onsets` taking rises from `threshold` of the strongest, `spacing_ms` apart.
+fn find_onsets(level: &list<f32>, rate: i64, threshold: f32, spacing_ms: i64) -> list<i64> {
     var points: list<i64> = [0];
     let frames: i64 = level.len();
     let hop: i64 = 256; let hops: i64 = frames / hop;
@@ -201,13 +323,13 @@ pub fn onsets(level: &list<f32>, rate: i64) -> list<i64> {
     // Strongest first: rise in the high bits, hop in the low 24.
     var candidates: list<i64> = [];
     for h in 1..hops {
-        if rise[h] >= strongest * 0.15f && rise[h] >= rise[h - 1] && (h + 1 >= hops || rise[h] > rise[h + 1]) {
+        if rise[h] >= strongest * threshold && rise[h] >= rms[h] * 0.2f && rise[h] >= rise[h - 1] && (h + 1 >= hops || rise[h] > rise[h + 1]) {
             let strength: i64 = rise[h] / strongest * 1000000.0f;
             candidates.push(strength * 16777216 + h);
         }
     }
     candidates.sort_desc();
-    var spacing: i64 = rate * 5 / 100 / hop; if spacing < 1 { spacing = 1; }
+    var spacing: i64 = rate * spacing_ms / 1000 / hop; if spacing < 1 { spacing = 1; }
     var taken: list<i64> = []; var cuts: list<i64> = [];
     for key in candidates {
         let h: i64 = key % 16777216;

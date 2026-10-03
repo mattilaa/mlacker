@@ -882,7 +882,7 @@ impl PatternLibrary {
             last_sample = self.audio.add_clip(clip.copy());
             instance.clip.release();
             updated.push(AudioInstance { clip: clip, start_row: instance.start_row, length_ticks: instance.length_ticks,
-                original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm });
+                original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm, pitch: instance.pitch, resample: instance.resample });
             free(label); free(group); made = made + 1;
         }
         track.instances = updated;

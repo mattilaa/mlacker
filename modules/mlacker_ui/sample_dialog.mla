@@ -19,15 +19,23 @@ use std::strbuf::free;
 
 /// Properties of one audio placement. Frame bounds are absolute positions in
 /// the loaded sample and use the usual half-open range [start, end).
+/// Focus: 0 start, 1 end, 2 BPM, 4 algorithm, 5 pitch, 6 resampling, 3 buttons.
 pub struct SampleDialog : Dialog {
-    var start: TextField; var end: TextField; var bpm: TextField;
-    var algorithm: DropDown; var frames: i64; var error: str8;
-    var frame_start: i64; var frame_end: i64; var original_bpm: i32;
+    var start: TextField; var end: TextField; var bpm: TextField; var transpose: TextField;
+    var algorithm: DropDown; var resample: DropDown; var frames: i64; var error: str8;
+    var frame_start: i64; var frame_end: i64; var original_bpm: i32; var pitch: i32;
 };
+/// Tab order of the focus indexes.
+fn focus_after(selected: i32, back: bool) -> i32 {
+    let order: array<i32, 7> = {0, 1, 2, 4, 5, 6, 3};
+    var at: i32 = 0;
+    for i in 0..7 { if order[i] == selected { at = i32(i); } }
+    return order[back ? (at + 6) % 7 : (at + 1) % 7];
+}
 impl SampleDialog {
     pub fn new() -> SampleDialog {
-        return SampleDialog { title: "Sample properties", width: 58, height: 19,
-            start: TextField::new(""), end: TextField::new(""), bpm: TextField::new(""), error: "",
+        return SampleDialog { title: "Sample properties", width: 58, height: 22,
+            start: TextField::new(""), end: TextField::new(""), bpm: TextField::new(""), transpose: TextField::new(""), error: "",
             focus: PaneFocus::new(0), button_alignment: Alignment::Center,
             buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
     }
@@ -39,35 +47,46 @@ impl SampleDialog {
         let first: str8 = format!("{}", self.frame_start); self.start.set_text(first); free(first);
         let last: str8 = format!("{}", self.frame_end); self.end.set_text(last); free(last);
         let tempo: str8 = format!("{}", self.original_bpm); self.bpm.set_text(tempo); free(tempo);
+        self.pitch = source.pitch;
+        let semitones: str8 = format!("{}", source.pitch); self.transpose.set_text(semitones); free(semitones);
         self.algorithm.set_items([
             DropDownItem { id: 0, label: "Off" }, DropDownItem { id: 1, label: "Repitch" },
-            DropDownItem { id: 2, label: "Stretch" }, DropDownItem { id: 3, label: "Beats" }
+            DropDownItem { id: 2, label: "Stretch" }, DropDownItem { id: 3, label: "Beats" },
+            DropDownItem { id: 4, label: "Transients" }
         ], source.stretch_algorithm);
+        self.resample.set_items([
+            DropDownItem { id: 0, label: "Cubic + low-pass" }, DropDownItem { id: 1, label: "Cubic" },
+            DropDownItem { id: 2, label: "Linear + low-pass" }, DropDownItem { id: 3, label: "Linear" }
+        ], source.resample);
         self.error = ""; self.reset_buttons(); self.focus.selected = 0; self.active = true; self.result = 0;
     }
     fn accept(self: &mut Self) -> void {
         let a: result<i64, str8> = table_integer(self.start.text);
         let b: result<i64, str8> = table_integer(self.end.text);
         let tempo: result<i64, str8> = table_integer(self.bpm.text);
-        if a.is_ok() && b.is_ok() && tempo.is_ok() {
-            let first: i64 = a.unwrap(); let last: i64 = b.unwrap(); let value: i64 = tempo.unwrap();
-            if first >= 0 && first < last && last <= self.frames && value >= 20 && value <= 400 {
-                self.frame_start = first; self.frame_end = last; self.original_bpm = i32(value);
+        let shift: result<i64, str8> = table_integer(self.transpose.text);
+        if a.is_ok() && b.is_ok() && tempo.is_ok() && shift.is_ok() {
+            let first: i64 = a.unwrap(); let last: i64 = b.unwrap(); let value: i64 = tempo.unwrap(); let semitones: i64 = shift.unwrap();
+            if semitones != 0 && semitones >= -24 && semitones <= 24 && self.algorithm.selected_id() < 2 {
+                self.error = "Pitch needs Stretch, Beats or Transients"; self.result = 0; return;
+            }
+            if first >= 0 && first < last && last <= self.frames && value >= 20 && value <= 400 && semitones >= -24 && semitones <= 24 {
+                self.frame_start = first; self.frame_end = last; self.original_bpm = i32(value); self.pitch = i32(semitones);
                 self.result = 1; self.active = false; return;
             }
         }
-        self.error = "Start/end: 0 <= start < end <= sample frames; BPM: 20-400"; self.result = 0;
+        self.error = "Start < end <= frames; BPM 20-400; pitch -24..24"; self.result = 0;
     }
     pub fn on_event(self: &mut Self, event: InputEvent) -> void {
         if self.pressed_button >= 0 { return; }
         if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
-            self.algorithm.cancel();
+            self.algorithm.cancel(); self.resample.cancel();
             let back: bool = event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left);
-            if back { self.focus.selected = self.focus.selected == 0 ? 3 : (self.focus.selected == 3 ? 4 : (self.focus.selected == 4 ? 2 : self.focus.selected - 1)); }
-            else { self.focus.selected = self.focus.selected == 2 ? 4 : (self.focus.selected == 4 ? 3 : (self.focus.selected == 3 ? 0 : self.focus.selected + 1)); }
+            self.focus.selected = focus_after(self.focus.selected, back);
             return;
         }
         if self.focus.selected == 4 && self.algorithm.on_event(event) { return; }
+        if self.focus.selected == 6 && self.resample.on_event(event) { return; }
         if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
             self.active = false; self.result = 2; self.pressed_button = -1; return;
         }
@@ -76,6 +95,7 @@ impl SampleDialog {
         if self.focus.selected == 0 { self.start.on_event(event); }
         if self.focus.selected == 1 { self.end.on_event(event); }
         if self.focus.selected == 2 { self.bpm.on_event(event); }
+        if self.focus.selected == 5 { self.transpose.on_event(event); }
     }
     pub fn tick(self: &mut Self) -> void {
         let action: i32 = self.tick_buttons();
@@ -90,13 +110,20 @@ impl SampleDialog {
         self.end.paint(surface, Rect::new(body.x, body.y + 4, body.width, 1), theme.foreground, theme.selection, self.focus.selected == 1);
         surface.text(Rect::new(body.x, body.y + 6, body.width, 1), "Time stretch: original BPM", theme.foreground, theme.panel);
         self.bpm.paint(surface, Rect::new(body.x, body.y + 7, body.width, 1), theme.foreground, theme.selection, self.focus.selected == 2);
-        surface.text(Rect::new(body.x, body.y + 9, body.width, 1), "Algorithm", theme.foreground, theme.panel);
-        let row: Rect = Rect::new(body.x, body.y + 10, body.width, 1);
+        let left: i32 = body.width / 2 - 1; let right_x: i32 = body.x + body.width / 2 + 1; let right: i32 = body.width - body.width / 2 - 1;
+        surface.text(Rect::new(body.x, body.y + 9, left, 1), "Algorithm", theme.foreground, theme.panel);
+        surface.text(Rect::new(right_x, body.y + 9, right, 1), "Pitch (semitones)", theme.foreground, theme.panel);
+        let row: Rect = Rect::new(body.x, body.y + 10, left, 1);
         self.algorithm.paint(surface, row, theme, self.focus.selected == 4);
-        surface.text(Rect::new(body.x, body.y + 12, body.width, 1), self.error, theme.accent, theme.panel);
+        self.transpose.paint(surface, Rect::new(right_x, body.y + 10, right, 1), theme.foreground, theme.selection, self.focus.selected == 5);
+        surface.text(Rect::new(body.x, body.y + 12, body.width, 1), "Resampling (Repitch and pitch)", theme.foreground, theme.panel);
+        let quality: Rect = Rect::new(body.x, body.y + 13, body.width, 1);
+        self.resample.paint(surface, quality, theme, self.focus.selected == 6);
+        surface.text(Rect::new(body.x, body.y + 15, body.width, 1), self.error, theme.accent, theme.panel);
         self.algorithm.paint_popup(surface, row, viewport, theme);
+        self.resample.paint_popup(surface, quality, viewport, theme);
     }
     pub fn release(self: &mut Self) -> void {
-        self.start.release(); self.end.release(); self.bpm.release(); self.algorithm.release();
+        self.start.release(); self.end.release(); self.bpm.release(); self.transpose.release(); self.algorithm.release(); self.resample.release();
     }
 }
