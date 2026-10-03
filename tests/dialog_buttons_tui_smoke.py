@@ -36,10 +36,10 @@ def main():
             tui.send(ADD_AUDIO)
             assert b"stereo_tone" in tui.send(b"\x15" + os.fsencode(FIXTURE) + b"\r", 0.9)
             frame = tui.send(EDIT_SAMPLE, 0.6)
-            assert b"Edit sample 1" in frame, frame[-5000:]
+            assert b"Sample editor" in frame and b" stereo_tone.wav | " in frame, frame[-5000:]
             assert not any(hint in frame for hint in HINTS), frame[-5000:]
             # Ctrl+S asks for the new clip's name in a Save/Cancel dialog.
-            assert b"Trimmed to the selection" in tui.send(b"vLx")
+            assert b"Trimmed to the selection" in tui.send(b"vLt")
             frame = tui.send(b"\x13", 0.6)
             assert b"Save clip" in frame and b"Save" in frame and b"Cancel" in frame, frame[-5000:]
             assert b"stereo_tone - Trim 1.wav" in frame, frame[-5000:]

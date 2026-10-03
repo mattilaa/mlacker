@@ -360,14 +360,14 @@ def main():
                 zoomed = read_frame(1)
                 assert b"WAVE" in zoomed and b"WAVE x2" not in zoomed  # no waveform zoom
                 os.write(master, b"s")
-                assert b" Sample: " in read_frame(1)
+                assert b" Sample " in read_frame(1)
                 # The focused Sample pane zooms with +/-.
                 os.write(master, b"\x1b[106;6u")
                 read_frame(2)
                 os.write(master, b"+" * 15)
                 assert b"1 frames/px" in read_frame(2)
                 os.write(master, b"-")
-                assert b" Sample: " in read_frame(2)
+                assert b" Sample " in read_frame(2)
                 os.write(master, b"\x1b[107;6u")
                 read_frame(1)
                 # Both views share the texture and type controls.
@@ -383,7 +383,7 @@ def main():
                 os.write(master, b"\x1b[106;6u")
                 read_frame(2)
                 os.write(master, b"=")
-                assert b" Sample: " in read_frame(2)
+                assert b" Sample " in read_frame(2)
                 os.write(master, b"s")
                 assert b" Inspector " in read_frame(2)
                 os.write(master, b"\x1b[107;6u")
@@ -398,11 +398,11 @@ def main():
                 read_frame(1)
                 if path == aif_path:
                     os.write(master, b"s")
-                    assert b" Sample: " in read_frame(1)
+                    assert b" Sample " in read_frame(1)
                     os.write(master, b"G")
                     assert b" Inspector " in read_frame(1)  # cursor past short clip
                     os.write(master, b"gg")
-                    assert b" Sample: " not in read_frame(1)  # requires s to reopen
+                    assert b" Sample " not in read_frame(1)  # requires s to reopen
             os.write(master, b"G")
             assert b"072" in read_frame(1)
             os.write(master, b"gg")

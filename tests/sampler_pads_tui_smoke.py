@@ -82,16 +82,16 @@ def main():
             expect(tui.send(b"\x15" + bytes(kick) + b"\r", 0.7), b"Pad 1: kick.wav (added to Audio)")
 
             # Trims: closing without saving changes nothing...
-            expect(tui.send(EDIT_SAMPLE, 0.5), b"Edit sample 3: kick.wav")
-            expect(tui.send(b"vLx"), b"[modified]", b"Trimmed to the selection")
+            expect(tui.send(EDIT_SAMPLE, 0.5), b" kick.wav | ")
+            expect(tui.send(b"vLt"), b"[modified]", b"Trimmed to the selection")
             expect(tui.send(b"\x1b", 0.6), b"Unsaved trim")
             expect(tui.send(b"\x1b", 0.6), b"Sample edits discarded")
             # ...a destructive save replaces the sample with the new clip and
             # refreshes the pad that uses it.
             tui.send(EDIT_SAMPLE, 0.5)
-            tui.send(b"vLx")
+            tui.send(b"vLt")
             expect(tui.send(b"u"), b"Undone")
-            tui.send(b"vLx")
+            tui.send(b"vLt")
             expect(tui.send(b"\x13", 0.6), b"Save clip", b"kick - Trim 1.wav")
             expect(tui.send(b"\t "), b"(*) Destructive")
             expect(tui.send(b"\r", 0.6), b"Saved kick - Trim 1.wav over sample 3: 0 placement(s), 1 drum pad(s) updated")

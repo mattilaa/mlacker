@@ -209,8 +209,8 @@ impl TrimSaveDialog {
 }
 
 /// Sample editor for one Audio-list sample: the cursor, zoom and selection
-/// keys of its `SampleView` (see `SampleView::on_key`), `x` to trim the
-/// working copy to the selection with up to 16 undo steps, Ctrl+P to play,
+/// keys of its `SampleView` (see `SampleView::on_key`), `t` to trim the
+/// working copy to the selection and `x` to delete it, with up to 16 undo steps, Ctrl+P to play,
 /// and Ctrl+S to save the result as a new clip through `save`.
 /// on_event results: 0 handled/ignored, 1 save accepted (`saved_name`,
 /// `save_destructive`), 2 close, 3 play/stop, 4 the save dialog wants its
@@ -265,13 +265,21 @@ impl SampleEditor {
     /// Trim the working copy to the selection. Returns false with `status` set
     /// when nothing narrower than the whole sample is selected.
     pub fn trim(self: &mut Self) -> bool {
-        if !self.has_selection() { self.status = "Select a range first: v, then move an edge with h/l"; return false; }
+        if !self.has_selection() { self.status = "Select a range first: v, then move to its other end"; return false; }
         let ch: i64 = self.clip.channels < 1 ? 1 : self.clip.channels;
         let from: i64 = self.selection_start(); let to: i64 = self.selection_end();
         self.cropped_to_watch = !self.length_changed && from == self.watch_from && to == self.watch_to;
         self.length_changed = true;
         self.push_history(self.clip.with_samples(pcm_crop(self.clip.samples, ch, from, to)));
         self.status = "Trimmed to the selection"; return true;
+    }
+    /// Delete the selection from the working copy, closing the gap.
+    pub fn delete(self: &mut Self) -> bool {
+        if !self.has_selection() { self.status = "Select a range first: v, then move to its other end"; return false; }
+        let ch: i64 = self.clip.channels < 1 ? 1 : self.clip.channels;
+        self.length_changed = true; self.cropped_to_watch = false;
+        self.push_history(self.clip.with_samples(pcm_delete(self.clip.samples, ch, self.selection_start(), self.selection_end())));
+        self.status = "Deleted the selection"; return true;
     }
     pub fn undo(self: &mut Self) -> bool {
         if self.history.len() == 0 { self.status = "Nothing to undo"; return false; }
@@ -295,7 +303,7 @@ impl SampleEditor {
         let pending: bool = self.close_pending; self.close_pending = false;
         if escape {
             if self.view.selecting || self.has_selection() {
-                self.view.clear_selection(self.clip.frames, self.cursor()); self.status = "Selection dropped"; return 0;
+                self.view.clear_selection(self.clip.frames, self.cursor()); self.status = "Unselected"; return 0;
             }
             if self.modified && !pending { self.close_pending = true; self.status = "Unsaved trim: Esc again closes without saving, Ctrl+S saves"; return 0; }
             return 2;
@@ -303,7 +311,8 @@ impl SampleEditor {
         let code: i32 = event.code; let mods: i32 = (event.modifiers - 1) % 64 + 1;
         if (code == 16 && mods == 1) || (code == 112 && mods == 5) { return 3; }
         if (code == 19 && mods == 1) || (code == 115 && mods == 5) { return 4; }
-        if code == 120 && mods == 1 { self.trim(); return 0; }
+        if code == 116 && mods == 1 { self.trim(); return 0; }
+        if code == 120 && mods == 1 { self.delete(); return 0; }
         if code == 117 && mods == 1 { self.undo(); return 0; }
         if self.view.on_key(event, self.clip, width, 0) { self.status = self.view.status; }
         return 0;
@@ -340,19 +349,18 @@ impl SampleEditor {
     pub fn tick(self: &mut Self) -> i32 { return self.save.active ? self.save.tick() : 0; }
     pub fn paint(self: SampleEditor, surface: Surface, area: Rect, theme: Theme) -> void {
         if !self.active { return; }
-        let name: str8 = base_name(self.clip.source);
-        let title: str8 = format!(" Edit sample {}: {}{} ", self.index + 1, name, self.modified ? " [modified]" : "");
-        let panel: Panel = Panel { title: title };
+        let panel: Panel = Panel { title: " Sample editor " };
         let body: Rect = panel.paint_focused(surface, area, theme, true);
-        free(title); free(name);
         if body.height < 5 { return; }
         let wave: Rect = Rect::new(body.x, body.y, body.width, body.height - 3);
         self.view.paint_at(surface, wave, theme, self.clip, 0, 0);
-        let line: str8 = sample_info(self.view, self.clip, 0, self.status);
-        surface.text(Rect::new(body.x, body.y + body.height - 3, body.width, 1), line, theme.accent, theme.panel); free(line);
-        surface.text(Rect::new(body.x, body.y + body.height - 2, body.width, 1), sample_keys(), theme.muted, theme.panel);
-        surface.text(Rect::new(body.x, body.y + body.height - 1, body.width, 1),
-            "x trim  u undo  Ctrl+P play  Ctrl+S save as a new clip  Esc drops the selection, then closes", theme.muted, theme.panel);
+        surface.text(Rect::new(body.x, body.y + body.height - 3, body.width, 1), sample_keys(), theme.muted, theme.panel);
+        surface.text(Rect::new(body.x, body.y + body.height - 2, body.width, 1),
+            "t trim  x delete  u undo  Ctrl+P play  Ctrl+S save as a new clip  Esc unselects, then closes", theme.muted, theme.panel);
+        let name: str8 = base_name(self.clip.source);
+        let label: str8 = format!("{}{}", name, self.modified ? " [modified]" : ""); free(name);
+        let line: str8 = sample_info(self.view, self.clip, 0, label, self.status); free(label);
+        paint_status_bar(surface, Rect::new(body.x, body.y + body.height - 1, body.width, 1), theme, line); free(line);
         self.save.paint(surface, area, theme);
     }
     /// Hand the edited clip to the caller (ownership moves); closes the editor.
@@ -373,19 +381,37 @@ impl SampleEditor {
 }
 
 /// Key help shared by the sample editor and the Sample pane.
-pub fn sample_keys() -> str8 { return "v select  B/E start/end edge  h/l move  H/L big step  t transient snap  +/- zoom  = fit"; }
+pub fn sample_keys() -> str8 { return "h/l move  H/L fast  T transient mode  Ctrl+H/L transient  B/E start/end  v select  +/- zoom  = fit"; }
 
-/// Owned status line of a sample view: cursor, selection (and the edge being
-/// moved), length, format, snap and `status`.
-pub fn sample_info(shown: &SampleView, source: &AudioClip, row: i32, status: str8) -> str8 {
+/// Owned "s.mmm" text of `frames` at `rate`.
+fn seconds(frames: i64, rate: i64) -> str8 {
+    let ms: i64 = frames * 1000 / (rate > 0 ? rate : 1);
+    let part: str8 = std::strbuf::zpad_i64(ms % 1000, 3);
+    let text: str8 = format!("{}.{}", ms / 1000, part); free(part);
+    return text;
+}
+/// Owned status bar text of a sample view: `name`, the cursor position, the
+/// selection, transient mode, `status`, length and format.
+pub fn sample_info(shown: &SampleView, source: &AudioClip, row: i32, name: str8, status: str8) -> str8 {
     var view: SampleView = SampleView {}; view = shown;
     var clip: AudioClip = AudioClip {}; clip = source;
     let rate: i64 = clip.sample_rate > 0 ? clip.sample_rate : 1;
-    let edge: str8 = !view.selecting ? "" : (view.edge_end ? " [end]" : " [start]");
-    let selection: str8 = view.selecting || view.has_selection(clip.frames)
-        ? format!("Selection {}..{} ms{}", view.sel_start * 1000 / rate, view.sel_end * 1000 / rate, edge) : clone("No selection");
-    let line: str8 = format!("Cursor {} ms | {} | {} ms | {} ch {} Hz | Snap {}{}{}", view.cursor(clip, row) * 1000 / rate, selection,
-        clip.frames * 1000 / rate, clip.channels, clip.sample_rate, view.snap ? "on" : "off", status == "" ? "" : " | ", status);
-    free(selection);
+    let cursor: i64 = view.cursor(clip, row);
+    let at: str8 = seconds(cursor, rate); let length: str8 = seconds(clip.frames, rate);
+    var selection: str8 = clone(view.selecting ? "Selecting | " : "");
+    if view.has_selection(clip.frames) {
+        let from: str8 = seconds(view.sel_start, rate); let to: str8 = seconds(view.sel_end, rate);
+        free(selection); selection = format!("Sel {}-{} s | ", from, to); free(from); free(to);
+    }
+    // Length and format come last: on a narrow pane they are cut off first.
+    let line: str8 = format!(" {} | {} s ({}) | {}Transients {}{}{} | {} s {} ch {} Hz", name, at, cursor, selection,
+        view.transient_mode ? "on" : "off", status == "" ? "" : " | ", status, length, clip.channels, clip.sample_rate);
+    free(at); free(length); free(selection);
     return line;
+}
+/// Paint `text` as a status bar across `area`'s first row.
+pub fn paint_status_bar(surface: Surface, area: Rect, theme: Theme, text: str8) -> void {
+    let bar: Rect = Rect::new(area.x, area.y, area.width, 1);
+    surface.fill(bar, Cell { glyph: 32, foreground: theme.foreground, background: theme.selection });
+    surface.text(bar, text, theme.foreground, theme.selection);
 }

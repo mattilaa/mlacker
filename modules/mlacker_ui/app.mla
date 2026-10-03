@@ -63,6 +63,7 @@ use mlacker_ui::sample_editor::sibling_path;
 use mlacker_ui::sample_editor::TrimSaveDialog;
 use mlacker_ui::sample_editor::sample_info;
 use mlacker_ui::sample_editor::sample_keys;
+use mlacker_ui::sample_editor::paint_status_bar;
 use mlacker_ui::sample_editor::pcm_crop;
 use mlacker_ui::sample_view::sample_pane_key;
 mod mlacker_ui::sample_dialog;
@@ -330,7 +331,7 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
     if show_sample {
         let track: SequenceTrack = table.tracks[table.active_track()];
         let instance: AudioInstance = track.instances[track.instance_at(table.selected_row)];
-        let name: str8 = base_name(instance.clip.source); sample_title = format!(" Sample: {} ", name); free(name);
+        sample_title = clone(" Sample ");
     }
     let details: Panel = Panel { title: show_sampler ? sampler_title : show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
     let bottom: Rect = details.paint_focused(surface, inspector.bounds, theme, focus.is_active(2));
@@ -352,15 +353,18 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
         let instance: AudioInstance = track.instances[track.instance_at(table.selected_row)];
         let render_clip: AudioClip = instance.render_clip();
         let row: i32 = table.selected_row - instance.start_row;
+        // The waveform, the key help, then the status bar: clip name, cursor
+        // position, selection and transient mode.
         let help: bool = bottom.height > 6;
-        let wave: Rect = help ? Rect::new(bottom.x, bottom.y, bottom.width, bottom.height - 2) : bottom;
+        let wave: Rect = Rect::new(bottom.x, bottom.y, bottom.width, bottom.height - (help ? 2 : 1));
         sample.paint_at(surface, wave, theme, render_clip, row, transport.playing ? transport.phase : 0);
         if help {
-            let line: str8 = sample_info(sample, render_clip, row, message);
-            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 2, bottom.width, 1), line, theme.accent, theme.panel); free(line);
-            let keys: str8 = format!("{}  x trim  Ctrl+P play  Ctrl+S save as a new clip  Esc drops the selection", sample_keys());
-            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), keys, theme.muted, theme.panel); free(keys);
+            let keys: str8 = format!("{}  t trim  x delete  Ctrl+P play  Ctrl+S save  Esc unselect", sample_keys());
+            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 2, bottom.width, 1), keys, theme.muted, theme.panel); free(keys);
         }
+        let name: str8 = base_name(instance.clip.source);
+        let line: str8 = sample_info(sample, render_clip, row, name, message); free(name);
+        paint_status_bar(surface, Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), theme, line); free(line);
         if(patterns.error != "" || table.error != "") && bottom.height > 0 {
             surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
         }
@@ -1679,12 +1683,22 @@ pub fn run() -> i32 {
                     let suggested: str8 = trim_name(instance.clip.source, library.audio.samples);
                     clip_save.open(suggested); free(suggested);
                 }
-                else if code == 120 && mods == 1 {
+                else if (code == 116 || code == 120) && mods == 1 {
+                    // t keeps the selection, x deletes it. A placement plays
+                    // one continuous window of its sample, so x needs the
+                    // selection to touch the clip's start or end.
                     free(message);
-                    if !sample.has_selection(rc.frames) { message = clone("Select a range first: v, then move an edge with h/l"); }
-                    else if library.table.trim_audio(sample.sel_start, sample.sel_end, panes[1].bounds.inset(1)) {
+                    let lo: i64 = sample.sel_start; let hi: i64 = sample.sel_end;
+                    var keep_from: i64 = lo; var keep_to: i64 = hi;
+                    if code == 120 { keep_from = lo == 0 ? hi : 0; keep_to = lo == 0 ? rc.frames : lo; }
+                    if !sample.has_selection(rc.frames) { message = clone("Select a range first: v, then move to its other end"); }
+                    else if code == 120 && lo > 0 && hi < rc.frames {
+                        message = clone("x deletes a part at the clip's start or end; for a middle part use Audio > Edit sample");
+                    }
+                    else if library.table.trim_audio(keep_from, keep_to, panes[1].bounds.inset(1)) {
                         sample.anchor_active = false; sample.selecting = false; sample.zoom = 0;
-                        message = clone("Trimmed the clip to the selection | Ctrl+S saves it as a new clip");
+                        message = clone(code == 116 ? "Trimmed the clip to the selection | Ctrl+S saves it as a new clip"
+                            : "Deleted the selection from the clip | Ctrl+S saves it as a new clip");
                     } else { message = clone(library.table.error); }
                 }
                 else if sample.on_key(event, rc, panes[2].bounds.width - 2, row) { free(message); message = clone(sample.status); }
@@ -3105,7 +3119,7 @@ pub fn run() -> i32 {
                     let kept: i64 = sample.anchor_frame; let anchored: bool = sample.anchor_active;
                     sample.reset_selection(sample.sel_frames);
                     if anchored { sample.anchor_frame = kept; sample.anchor_active = true; }
-                    free(message); message = clone("Selection dropped"); dirty = true;
+                    free(message); message = clone("Unselected"); dirty = true;
                 }
                 else if sample_editor.active {
                     if sample_editor.on_event(event, panes[1].bounds.width - 2) == 2 {

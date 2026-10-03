@@ -1681,10 +1681,9 @@ fn tui_horizontal_sample_zoom_and_render() {
     view.on_key(decode_input("+"), clip, 10, 0);
     verify(view.span(clip, 8) == 8 && view.start(clip, 3, 8) == 20);
     view.on_key(decode_input("+"), clip, 10, 0); verify(view.zoom == 2);
-    // The old Ctrl+H/L zoom chords are gone.
-    verify(!view.on_key(decode_input("\x1b[108;5u"), clip, 10, 0));
+    // Ctrl+Shift+L is pane navigation, and Ctrl+H/L no longer zoom.
     verify(!view.on_key(decode_input("\x1b[108;6u"), clip, 10, 0));
-    verify(!view.on_key(decode_input("\x08"), clip, 10, 0));
+    view.on_key(decode_input("\x1b[104;5u"), clip, 10, 0); verify(view.zoom == 2);
     view.on_key(decode_input("-"), clip, 10, 0); verify(view.zoom == 1);
     view.anchor_active = false; // the cursor follows the row again
     let surface: Surface = Surface::new(18, 6); let theme: Theme = Theme::dark_blue();
@@ -1713,30 +1712,29 @@ fn tui_sample_view_selection() {
     verify(sub.samples.len() == 16 && sub.channels == 1 && sub.samples[0] == 0.5f);
     var empty: AudioClip = AudioClip { source: clone("e"), channels: 1, frames_per_row: 8 };
     let none: AudioClip = empty.slice_frames(0, 10); verify(none.frames == 0 && none.peaks.len() == 0);
-    // Selection edges: v selects everything and h/l move the start edge,
-    // Shift+E/Shift+B pick the end/start edge (step = span / columns).
+    // v starts a selection at the cursor; it follows the cursor from there.
     var big: AudioClip = AudioClip { source: clone("b"), channels: 1, sample_rate: 48000, frames: 1024, frames_per_row: 128 };
     for _i in 0..1024 { big.samples.push(0.0f); }
     var view: SampleView = SampleView { visible: true };
     view.reset_selection(big.frames);
     verify(view.sel_start == 0 && view.sel_end == 1024 && view.sel_frames == 1024);
     verify(!view.anchor_active);
-    verify(view.on_key(decode_input("v"), big, 34, 0) && view.selecting && !view.edge_end);
-    verify(view.on_key(decode_input("l"), big, 34, 0)); verify(view.sel_start == 32);
-    verify(view.anchor_active && view.anchor_frame == view.sel_start);
-    verify(view.on_key(decode_input("h"), big, 34, 0)); verify(view.sel_start == 0);
-    verify(view.on_key(decode_input("E"), big, 34, 0) && view.edge_end);
-    verify(view.on_key(decode_input("h"), big, 34, 0)); verify(view.sel_end == 992);
-    verify(view.anchor_active && view.anchor_frame == view.sel_end);
-    verify(view.on_key(decode_input("l"), big, 34, 0)); verify(view.sel_end == 1024);
-    verify(view.on_key(decode_input("B"), big, 34, 0) && !view.edge_end);
-    for _i in 0..80 { view.on_key(decode_input("l"), big, 34, 0); }
-    verify(view.sel_start == 1023 && view.sel_end == 1024);
-    // The old Ctrl+N/M and Shift+N/M edge keys are gone.
+    // 34 columns: a 32-column wave, so h/l step 1024 / 32 = 32 frames.
+    verify(view.on_key(decode_input("l"), big, 34, 0) && view.anchor_active && view.anchor_frame == 32);
+    verify(view.on_key(decode_input("v"), big, 34, 0) && view.selecting && !view.has_selection(big.frames));
+    verify(view.on_key(decode_input("l"), big, 34, 0)); verify(view.sel_start == 32 && view.sel_end == 64);
+    // Back past where v was pressed: the selection flips to that side.
+    for _i in 0..2 { view.on_key(decode_input("h"), big, 34, 0); }
+    verify(view.sel_start == 0 && view.sel_end == 32);
+    // Shift+E / Shift+B: the clip's end / beginning; the selection follows.
+    verify(view.on_key(decode_input("E"), big, 34, 0)); verify(view.sel_start == 32 && view.sel_end == 1024);
+    verify(view.on_key(decode_input("\x1b[98;2u"), big, 34, 0)); verify(view.sel_start == 0 && view.sel_end == 32);
+    verify(view.anchor_frame == 0);
+    // The old Ctrl+M and Shift+N/M edge keys are gone.
     verify(!view.on_key(decode_input("\x1b[109;5u"), big, 34, 0));
     verify(!view.on_key(decode_input("N"), big, 34, 0));
     verify(view.on_key(decode_input("+"), big, 34, 0)); verify(view.zoom == 1);
-    // A proper subset shades its columns darker than the panel; outside stays panel.
+    // A proper subset shades its columns lighter than the panel; outside stays panel.
     var mono: AudioClip = AudioClip { source: clone("m"), channels: 1, sample_rate: 8, frames: 32, frames_per_row: 8 };
     for i in 0..32 { mono.samples.push(i % 2 == 0 ? -1.0f : 1.0f); }
     var paint: SampleView = SampleView { grainy: true };
@@ -1744,7 +1742,7 @@ fn tui_sample_view_selection() {
     let surface: Surface = Surface::new(18, 6); let theme: Theme = Theme::dark_blue();
     paint.paint_at(surface, surface.bounds(), theme, mono, 3, 0);
     let inside: Cell = surface.cell(4, 1); let outside: Cell = surface.cell(12, 1);
-    verify(inside.background != theme.panel && inside.background != theme.selection);
+    verify(inside.background == lighten(theme.panel, 22) && inside.background != theme.selection);
     verify(outside.background == theme.panel);
     surface.release();
     clip.release(); empty.release(); big.release(); mono.release();
@@ -2312,41 +2310,42 @@ fn tui_sample_editor_keys_select_trim_and_undo() {
     // 82 columns: an 80-column wave, so h/l step 4000 / 80 = 50 frames.
     let width: i32 = 82;
     let escape: InputEvent = InputEvent { kind: InputKind::Menu, key: Key::Escape };
-    verify(editor.on_event(decode_input("x"), width) == 0 && !editor.modified); // trim needs a selection
+    verify(editor.on_event(decode_input("t"), width) == 0 && !editor.modified); // trim needs a selection
+    // Use case: find the start, v, move to the end, t trims to it.
     for _i in 0..4 { editor.on_event(decode_input("l"), width); }
     verify(editor.cursor() == 200 && !editor.has_selection());
-    // v selects the whole sample and moves its start edge.
     editor.on_event(decode_input("v"), width);
-    verify(editor.view.selecting && !editor.view.edge_end && editor.cursor() == 0 && !editor.has_selection());
-    for _i in 0..4 { editor.on_event(decode_input("l"), width); }
-    verify(editor.selection_start() == 200 && editor.selection_end() == 4000);
-    // Shift+E moves the end edge instead; Shift+B goes back to the start.
-    editor.on_event(decode_input("E"), width);
-    verify(editor.view.edge_end && editor.cursor() == 4000);
-    for _i in 0..10 { editor.on_event(decode_input("h"), width); }
-    verify(editor.selection_start() == 200 && editor.selection_end() == 3500);
-    editor.on_event(decode_input("\x1b[98;2u"), width);
-    verify(!editor.view.edge_end && editor.cursor() == 200);
-    // An edge never crosses the other one.
-    for _i in 0..100 { editor.on_event(decode_input("l"), width); }
-    verify(editor.selection_start() == 3499 && editor.selection_end() == 3500);
-    // Esc cancels the selection; the editor stays open.
-    verify(editor.on_event(escape, width) == 0 && !editor.has_selection() && !editor.view.selecting && editor.active);
-    // Shift+L: an eighth of the view (500 frames), in either key spelling;
-    // a Num Lock bit in the modifiers changes nothing.
-    editor.on_event(decode_input("v"), width);
+    verify(editor.view.selecting && !editor.has_selection());
+    for _i in 0..10 { editor.on_event(decode_input("l"), width); }
+    verify(editor.selection_start() == 200 && editor.selection_end() == 700);
+    // Shift+L: an eighth of the view (500 frames), in either key spelling; a
+    // Num Lock bit in the modifiers changes nothing.
     editor.on_event(decode_input("L"), width);
     editor.on_event(decode_input("\x1b[108;130u"), width);
-    editor.on_event(decode_input("E"), width);
-    for _i in 0..40 { editor.on_event(decode_input("\x1b[104;129u"), width); }
-    verify(editor.selection_start() == 1000 && editor.selection_end() == 1000 + 1000);
-    editor.on_event(decode_input("x"), width);
-    verify(editor.modified && editor.clip.frames == 1000 && editor.cursor() == 0 && !editor.has_selection());
+    verify(editor.selection_start() == 200 && editor.selection_end() == 1700);
+    // Esc unselects; the editor stays open.
+    verify(editor.on_event(escape, width) == 0 && !editor.has_selection() && !editor.view.selecting && editor.active);
+    editor.on_event(decode_input("v"), width);
+    for _i in 0..4 { editor.on_event(decode_input("h"), width); }
+    verify(editor.selection_start() == 1500 && editor.selection_end() == 1700);
+    editor.on_event(decode_input("t"), width);
+    verify(editor.modified && editor.clip.frames == 200 && editor.cursor() == 0 && !editor.has_selection());
     verify(editor.clip.detail_peaks.len() == editor.clip.peaks.len() * 4);
     verify(source.samples[3999] == 0.5f); // the session copy is untouched
     editor.on_event(decode_input("u"), width);
     verify(editor.clip.frames == 4000 && !editor.modified);
     verify(!editor.undo());
+    // Use case: find the start, v, Shift+B to the beginning, x deletes it.
+    for _i in 0..10 { editor.on_event(decode_input("l"), width); }
+    editor.on_event(decode_input("v"), width);
+    editor.on_event(decode_input("B"), width);
+    verify(editor.selection_start() == 0 && editor.selection_end() == 500);
+    editor.on_event(decode_input("x"), width);
+    verify(editor.clip.frames == 3500 && editor.clip.samples[0] == source.samples[500]);
+    // x also cuts from the middle, closing the gap.
+    editor.select(1000, 1500); editor.on_event(decode_input("x"), width);
+    verify(editor.clip.frames == 3000 && editor.clip.samples[1000] == source.samples[2000]);
+    editor.undo(); editor.undo();
     // +/- zoom around the cursor, = fits the whole sample again.
     editor.on_event(decode_input("+"), width); verify(editor.view.zoom == 1);
     editor.on_event(decode_input("-"), width); verify(editor.view.zoom == 0);
@@ -2408,14 +2407,30 @@ fn tui_sample_editor_trim_names_and_transients() {
     let points: list<i64> = transient_frames(bursts);
     verify(points.len() == 2);
     verify(points[0] > 1930 && points[0] <= 2000 && points[1] > 5930 && points[1] <= 6000);
-    // With snapping on, Shift+H/L jump between them.
+    // Ctrl+L / Ctrl+H jump to the next / previous transient, in either key
+    // spelling; a running selection keeps its start.
     var editor: SampleEditor = SampleEditor {};
     editor.open(bursts, 0);
-    editor.on_event(decode_input("t"), 82); verify(editor.view.snap);
-    editor.on_event(decode_input("L"), 82); verify(editor.cursor() == points[0]);
+    editor.on_event(decode_input("v"), 82);
+    editor.on_event(decode_input("\x0c"), 82); verify(editor.cursor() == points[0]);
+    editor.on_event(decode_input("\x1b[108;5u"), 82); verify(editor.cursor() == points[1]);
+    verify(editor.selection_start() == 0 && editor.selection_end() == points[1]);
+    editor.on_event(decode_input("\x0c"), 82); verify(editor.cursor() == 8000);
+    editor.on_event(decode_input("\x1b[104;5u"), 82); verify(editor.cursor() == points[1]);
+    // Transient mode (Shift+T): h/l step between transients, H/L between the
+    // strong ones (both bursts here are equally strong).
+    editor.view.clear_selection(8000, 0);
+    editor.on_event(decode_input("T"), 82); verify(editor.view.transient_mode);
+    verify(editor.view.transients_strong.len() == 2);
+    editor.on_event(decode_input("l"), 82); verify(editor.cursor() == points[0]);
+    editor.on_event(decode_input("l"), 82); verify(editor.cursor() == points[1]);
+    editor.on_event(decode_input("h"), 82); verify(editor.cursor() == points[0]);
     editor.on_event(decode_input("L"), 82); verify(editor.cursor() == points[1]);
-    editor.on_event(decode_input("L"), 82); verify(editor.cursor() == 8000);
-    editor.on_event(decode_input("H"), 82); verify(editor.cursor() == points[1]);
+    editor.on_event(decode_input("\x1b[116;2u"), 82); verify(!editor.view.transient_mode);
+    editor.on_event(decode_input("h"), 82); verify(editor.cursor() == points[1] - 100);
+    // The status bar names the clip and shows the position and the mode.
+    let bar: str8 = sample_info(editor.view, editor.clip, 0, "bursts.wav", "");
+    verify(std::strbuf::find(bar, " bursts.wav | 0.") == 0 && std::strbuf::find(bar, "Transients off") > 0); free(bar);
     editor.release(); bursts.release();
 }
 
@@ -2463,20 +2478,22 @@ fn tui_sample_pane_keys_on_a_clip_window() {
     var view: SampleView = SampleView { grainy: true };
     view.reset_selection(window.frames);
     let row: i32 = 2;
-    verify(view.cursor(window, row) == 2 * window.frames_per_row);
+    let at: i64 = 2 * window.frames_per_row;
+    verify(view.cursor(window, row) == at);
     // Num Lock and Caps Lock bits in the modifiers do not matter.
     verify(view.on_key(decode_input("\x1b[108;129u"), window, 82, row));
-    verify(view.cursor(window, row) == 2 * window.frames_per_row + 50);
-    verify(view.on_key(decode_input("v"), window, 82, row) && view.selecting && view.cursor(window, row) == 0);
+    verify(view.cursor(window, row) == at + 50);
+    verify(view.on_key(decode_input("v"), window, 82, row) && view.selecting);
     verify(view.on_key(decode_input("L"), window, 82, row));
-    verify(view.on_key(decode_input("\x1b[101;66u"), window, 82, row) && view.edge_end && view.cursor(window, row) == 4000);
-    verify(view.on_key(decode_input("H"), window, 82, row));
-    verify(view.has_selection(window.frames) && view.sel_start == 500 && view.sel_end == 3500);
+    verify(view.has_selection(window.frames) && view.sel_start == at + 50 && view.sel_end == at + 550);
+    verify(view.on_key(decode_input("\x1b[101;66u"), window, 82, row) && view.cursor(window, row) == 4000);
+    verify(view.sel_start == at + 50 && view.sel_end == 4000);
     verify(view.on_key(decode_input("+"), window, 82, row) && view.zoom == 1);
     verify(view.on_key(decode_input("="), window, 82, row) && view.zoom == 0);
     // Keys that are not the pane's are left to the rest of the app.
     verify(!view.on_key(decode_input("q"), window, 82, row));
-    verify(sample_pane_key(decode_input("x")) && sample_pane_key(decode_input("\x10")) && sample_pane_key(decode_input("\x13")));
+    verify(sample_pane_key(decode_input("x")) && sample_pane_key(decode_input("t")) && sample_pane_key(decode_input("\x10")));
+    verify(sample_pane_key(decode_input("\x13")) && sample_pane_key(decode_input("\x1b[108;5u")) && sample_pane_key(decode_input("\x0c")));
     verify(!sample_pane_key(decode_input("j")) && !sample_pane_key(decode_input("\x0e")));
     window.release();
 }

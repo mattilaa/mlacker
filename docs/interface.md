@@ -132,10 +132,15 @@ use its keys; Ctrl+F shows it fullscreen. The cursor starts on the Pattern row
 and the view stays centred on it while zooming. **`+`/`-`** zoom in/out by factors
 of two, from the full clip to one original sample per horizontal pixel (two
 pixels per cell in Grainy mode), and **`=`** fits the whole clip again. **`h`/`l`**
-move the cursor one visible column (so the step tracks the zoom) and
-**`H`/`L`** an eighth of the view. The display shows its time range and frames
-per pixel, with a highlighted cursor column, and below it the cursor, selection,
-length and format. Stereo uses green L and red R lanes; mono uses one lane.
+move the cursor one visible column (so the step tracks the zoom), **`H`/`L`** an
+eighth of the view, **Ctrl+H/Ctrl+L** to the previous/next transient, and
+**Shift+B/Shift+E** to the clip's beginning/end. **Shift+T** toggles transient
+mode: `h`/`l` then step between transients and `H`/`L` between the strong ones
+(the hits that stand out, like bass drums). Found transients are marked over the
+waveform: ▼ strong, ▿ the others. The display shows its time range and frames
+per pixel, with a highlighted cursor column. Below it a status bar shows the
+clip's name, the cursor position (seconds and frame), the selection, whether
+transient mode is on, and the clip's length and format. Stereo uses green L and red R lanes; mono uses one lane.
 Filled mode extends to the zero line; Wave draws the signed sample
 trace/envelope, revealing individual oscillations at sufficient zoom. Menus and
 editors retain exclusive keyboard ownership.
@@ -144,16 +149,15 @@ Decoded samples are shared read-only by pattern/track copies, so zooming neither
 reopens the source file nor changes clip timing, notes, or automation.
 
 While the Sample pane is focused you can select a sample-accurate region of the
-clip. **`v`** selects the whole clip and `h`/`l` (and `H`/`L`) then move its
-**start** edge; **Shift+E** switches to the **end** edge and **Shift+B** back to the
-start (either also starts selecting). The edges never cross, the view follows
-the moving edge, and **Esc** drops the selection. **`t`** toggles transient snap:
-`H`/`L` then jump to the previous/next transient, marked with ▾ over the
-waveform. The selected region is drawn with a **darker background** than the
-rest of the clip; a full-clip selection shows no shading.
+clip. **`v`** starts a selection at the cursor; it then spans from there to
+wherever the cursor moves, with any of the keys above, and **Esc** unselects.
+The selected region is drawn with a **lighter background** than the rest of the
+clip.
 
-- **`x`** trims the placement to the selection (non-destructively: the sample is
-  untouched).
+- **`t`** trims the placement to the selection, and **`x`** deletes the selection
+  from it (non-destructively: the sample is untouched). A placement plays one
+  continuous part of its sample, so `x` works on a selection that reaches the
+  clip's start or end; Audio → Edit sample also cuts from the middle.
 - **Ctrl+P** plays the selection, or the whole clip, on the master output with a
   moving play line; again stops.
 - **Ctrl+S** saves the placement's audible part as a new sample named
@@ -165,8 +169,7 @@ rest of the clip; a full-clip selection shows no shading.
 
 The selection resets to the whole clip whenever the Sample view is opened.
 Moving the Pattern cursor to another row releases the cursor and restores the
-row-anchored view. The Sample panel title shows the clip's file name (not its
-full path).
+row-anchored view. The clip's file name (not its full path) is in the status bar.
 
 One row currently represents a sixteenth note at the displayed BPM (120 by
 default). Longer clips extend the pattern with empty MIDI/automation cells;

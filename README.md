@@ -865,8 +865,8 @@ instance.
 
 `E` opens the slot's sample in the sample editor (see Sample editing), with
 the slot's loop already selected, or nothing selected when the loop is off. A
-reversed slot's loop is selected where it lies in the stored sample, and
-`h`/`l` adjust its start edge (`Shift+E` the end). `x` trims the sample to it. Saving a trim to exactly the loop destructively (Ctrl+S, then
+reversed slot's loop is selected where it lies in the stored sample, with the
+cursor at its end. `t` trims the sample to it. Saving a trim to exactly the loop destructively (Ctrl+S, then
 Destructive) resets the slot's loop to span the whole new sample and its start
 to the beginning, so it plays as before, without the audio outside the loop. The
 edit changes the session sample, so every placement and pad using it updates;
@@ -967,19 +967,22 @@ steps; nothing changes in the session until you save.
 
 The editor uses the same keys as the Sample pane (`s` over a clip in the
 Pattern view; see docs/interface.md). A cursor moves over the waveform and
-stays in the middle of the view while you zoom. `v` starts selecting: the whole sample is selected and `h`/`l` move its
-start edge. `Shift+E` switches to the end edge and `Shift+B` back to the start
-(either also starts selecting). The edges never cross.
+stays in the middle of the view while you zoom. A status bar at the bottom shows
+the sample's name, the cursor position, the selection and whether transient
+mode is on. `v` starts a selection at the
+cursor, and the selection then follows the cursor until `Esc` unselects.
 
 | Key | Action |
 |-----|--------|
-| `v` | Select the whole sample and move its start edge |
-| `Shift+B` / `Shift+E` | Move the start / end edge of the selection |
-| `h` / `l` | Move the cursor (or the active edge) back / forward one column of the view |
-| `H` / `L` | Move a bigger step (an eighth of the view), or to the previous / next transient while snapping |
-| `t` | Toggle transient snap for `H` / `L`; transients are marked over the waveform |
-| `Esc` | Cancel the selection; with none, close the editor (asks once if a trim is unsaved) |
-| `x` | Trim: keep only the selection |
+| `h` / `l` | Move the cursor one column of the view |
+| `H` / `L` | Move an eighth of the view |
+| `Ctrl+H` / `Ctrl+L` | Jump to the previous / next transient |
+| `Shift+T` | Transient mode: `h`/`l` step between transients, `H`/`L` between strong ones (like bass drums); marked ▼ strong, ▿ others |
+| `Shift+B` / `Shift+E` | Jump to the beginning / end of the sample |
+| `v` | Start a selection at the cursor |
+| `Esc` | Unselect; with nothing selected, close the editor (asks once if an edit is unsaved) |
+| `t` | Trim: keep only the selection |
+| `x` | Delete the selection, closing the gap |
 | `u` | Undo |
 | `+` / `-` | Zoom in / out around the cursor |
 | `=` | Fit the whole sample in the pane |

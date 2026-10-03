@@ -181,8 +181,8 @@ def main():
             # E edits the slot's sample with its loop (frames 50-4750)
             # selected; a destructive save of the trim to it, under the
             # original name, makes the loop span the whole sample.
-            expect(tui.send_until(b"E", b"Edit sample 3"), b"Edit sample 3", b"Selection 1..98 ms")
-            expect(tui.send(b"x"), b"Trimmed to the selection")
+            expect(tui.send_until(b"E", b"Sample editor"), b"Sample editor", b"Sel 0.001-0.098 s")
+            expect(tui.send(b"t"), b"Trimmed to the selection")
             expect(tui.send(b"\x13", 0.6), b"square - Trim 1.wav")
             tui.send(b"\x15square.wav\t ")
             expect(tui.send_until(b"\r", b"the slot's loop now spans it"), b"over sample 3")
