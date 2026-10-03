@@ -6,12 +6,12 @@ mod std::math;
 // returns `frames` interleaved output frames that play them at the new tempo.
 
 /// Render with sync mode `algorithm` (AudioInstance::stretch_algorithm:
-/// 1 Repitch, 2 Stretch, 3 Beats, 4 Transients), transposed by `pitch`
+/// 1 Repitch, 2 Stretch, 3 Beats, 4 Transients, 5 Transients 2), transposed by `pitch`
 /// semitones (not Repitch, whose pitch follows its speed). `quality` is the
 /// resampling of Repitch and of a transposition (see `resample`).
 pub fn render_synced(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64,
     algorithm: i32, pitch: i32, quality: i32) -> list<f32> {
-    if algorithm < 2 || algorithm > 4 { return resample(samples, channels, from, to, frames, quality); }
+    if algorithm < 2 || algorithm > 5 { return resample(samples, channels, from, to, frames, quality); }
     if pitch == 0 { return retime(samples, channels, rate, from, to, frames, algorithm); }
     // Transposed: retime to the length that, resampled to `frames`, sounds
     // `pitch` semitones away.
@@ -25,6 +25,7 @@ pub fn render_synced(samples: &list<f32>, channels: i64, rate: i64, from: i64, t
 fn retime(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64, algorithm: i32) -> list<f32> {
     if algorithm == 3 { return beats(samples, channels, rate, from, to, frames); }
     if algorithm == 4 { return transients(samples, channels, rate, from, to, frames); }
+    if algorithm == 5 { return transients_smooth(samples, channels, rate, from, to, frames); }
     return stretch(samples, channels, rate, from, to, frames);
 }
 
@@ -248,8 +249,9 @@ pub fn beats(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, 
     return out;
 }
 
-/// Ableton-style transient preserving stretch: hits (from 10 % of the
-/// strongest rise, 30 ms apart; finer than Beats) start exactly at their
+/// Ableton-style transient preserving stretch: hits (found in the
+/// `emphasized` level from 10 % of the strongest rise, 30 ms apart; finer
+/// than Beats) start exactly at their
 /// stretched time with their first 20 ms, the attack, untouched. The rest of
 /// each hit is time-stretched (WSOLA, 20 ms grains) to last until the next
 /// one, so a slower tempo leaves no gaps and a faster one cuts nothing off.
@@ -260,7 +262,7 @@ pub fn transients(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: 
     if frames <= 0 || to <= from { return out; }
     let input: i64 = to - from;
     let level: list<f32> = mono(samples, ch, from, to);
-    let points: list<i64> = find_onsets(level, rate, 0.1f, 30);
+    let points: list<i64> = find_onsets(emphasized(level), rate, 0.1f, 30);
     let attack: i64 = rate * 20 / 1000;
     for i in 0..points.len() {
         let start: i64 = points[i];
@@ -289,6 +291,137 @@ pub fn transients(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: 
             for c in 0..ch { out.push(hit[n * ch + c] * gain); }
         }
     }
+    return out;
+}
+
+/// Transients 2: `transients` made smoother. Each hit keeps its attack
+/// untouched for as long as it lasts (until the level 1 ms windows fall to
+/// half their peak, 8-40 ms) and stretches the rest with longer grains
+/// (WSOLA, 30 ms). Instead of fading out before the next hit, it runs on 10 ms
+/// past it and fades out under it (raised cosine) while the next attack
+/// starts at full level, so the seams neither dip nor click. Last, a
+/// look-ahead peak guard keeps the result within the source's own peak.
+pub fn transients_smooth(samples: &list<f32>, channels: i64, rate: i64, from: i64, to: i64, frames: i64) -> list<f32> {
+    let ch: i64 = channels < 1 ? 1 : channels;
+    if frames <= 0 || to <= from { return []; }
+    let input: i64 = to - from;
+    let level: list<f32> = mono(samples, ch, from, to);
+    let points: list<i64> = find_onsets(emphasized(level), rate, 0.1f, 30);
+    let overlap: i64 = rate * 10 / 1000; let ramp: i64 = 24;
+    // Every hit's output, run on into the next one, back to back in `hits`:
+    // hit i starts at output frame placed[i] and is lengths[i] frames long.
+    var hits: list<f32> = []; var placed: list<i64> = []; var offsets: list<i64> = []; var lengths: list<i64> = [];
+    for i in 0..points.len() {
+        let start: i64 = points[i];
+        let end: i64 = i + 1 < points.len() ? points[i + 1] : input;
+        let at: i64 = start * frames / input;
+        let next: i64 = i + 1 < points.len() ? end * frames / input : frames;
+        let span: i64 = next - at;
+        if span <= 0 { continue; }
+        let tail: i64 = i + 1 < points.len() ? overlap : 0;
+        let length: i64 = span + tail;
+        var keep: i64 = attack_length(level, rate, start, end); if keep > length { keep = length; }
+        offsets.push(hits.len() / ch); placed.push(at); lengths.push(length);
+        let rest: i64 = length - keep;
+        var body: list<f32> = [];
+        if rest > 0 && end - start - keep >= 16 { body = wsola(samples, ch, rate, from + start + keep, from + end, rest, 30); }
+        for n in 0..length {
+            var gain: f32 = 1.0f;
+            if i > 0 && n < ramp { gain = 0.5f - 0.5f * std::math::cos(3.141592653589793f * f32(n + 1) / f32(ramp + 1)); }
+            if tail > 0 && n >= span { gain = gain * (0.5f + 0.5f * std::math::cos(3.141592653589793f * f32(n - span + 1) / f32(tail + 1))); }
+            for c in 0..ch {
+                let k: i64 = (n - keep) * ch + c;
+                let v: f32 = n < keep ? samples[(from + start + n) * ch + c] : (k < body.len() ? body[k] : 0.0f);
+                hits.push(v * gain);
+            }
+        }
+    }
+    // Mix: the hit under each frame plus earlier ones still running on.
+    var out: list<f32> = []; var hit: i64 = 0;
+    for o in 0..frames {
+        while hit + 1 < placed.len() && placed[hit + 1] <= o { hit = hit + 1; }
+        for c in 0..ch {
+            var value: f32 = 0.0f; var j: i64 = hit;
+            while j >= 0 && hit - j < 8 {
+                let n: i64 = o - placed[j];
+                if n >= 0 && n < lengths[j] { value = value + hits[(offsets[j] + n) * ch + c]; }
+                j = j - 1;
+            }
+            out.push(value);
+        }
+    }
+    var ceiling: f32 = 0.0f;
+    for f in from..to { for c in 0..ch { let v: f32 = samples[f * ch + c] < 0.0f ? -samples[f * ch + c] : samples[f * ch + c]; if v > ceiling { ceiling = v; } } }
+    return peak_guard(out, ch, rate, ceiling);
+}
+
+/// Frames from `start` (before `end`) a hit's attack lasts: past its loudest
+/// 1 ms window in the first 30 ms, until a window falls under half of it;
+/// 8 to 40 ms.
+fn attack_length(level: &list<f32>, rate: i64, start: i64, end: i64) -> i64 {
+    let window: i64 = rate / 1000 < 8 ? 8 : rate / 1000;
+    let shortest: i64 = rate * 8 / 1000; let longest: i64 = rate * 40 / 1000;
+    let limit: i64 = end - start;
+    var loudest: f32 = 0.0f; var peak_at: i64 = 0;
+    var at: i64 = 0;
+    while at + window <= limit && at < rate * 30 / 1000 {
+        let energy: f32 = window_energy(level, start + at, window);
+        if energy > loudest { loudest = energy; peak_at = at; }
+        at = at + window;
+    }
+    var length: i64 = longest;
+    at = peak_at + window;
+    while at + window <= limit && at < longest {
+        if window_energy(level, start + at, window) < loudest * 0.25f { length = at; break; }
+        at = at + window;
+    }
+    if length < shortest { length = shortest; }
+    return length > limit ? limit : length;
+}
+
+/// Mean square of `length` mono frames from `start`.
+fn window_energy(level: &list<f32>, start: i64, length: i64) -> f32 {
+    var sum: f32 = 0.0f;
+    let stop: i64 = start + length;
+    for f in start..stop { sum = sum + level[f] * level[f]; }
+    return sum / f32(length);
+}
+
+/// `samples` with no frame above `ceiling`: the gain falls in a straight line
+/// over the 2 ms before a frame that would pass it and recovers over 50 ms.
+/// Unchanged when nothing passes it.
+fn peak_guard(samples: &list<f32>, ch: i64, rate: i64, ceiling: f32) -> list<f32> {
+    let frames: i64 = samples.len() / ch;
+    var needed: list<f32> = []; var over: bool = false;
+    for f in 0..frames {
+        var high: f32 = 0.0f;
+        for c in 0..ch { let v: f32 = samples[f * ch + c] < 0.0f ? -samples[f * ch + c] : samples[f * ch + c]; if v > high { high = v; } }
+        if high > ceiling && ceiling > 0.0f { needed.push(ceiling / high); over = true; } else { needed.push(1.0f); }
+    }
+    if !over { var copy: list<f32> = []; for v in samples { copy.push(v); } return copy; }
+    // Look-ahead (built backwards), then release, then apply.
+    let attack: f32 = 1.0f / f32(rate * 2 / 1000 + 1); let release: f32 = 1.0f / f32(rate * 50 / 1000 + 1);
+    var backwards: list<f32> = []; var gain: f32 = 1.0f;
+    for k in 0..frames {
+        let f: i64 = frames - 1 - k;
+        gain = gain + attack; if needed[f] < gain { gain = needed[f]; }
+        backwards.push(gain);
+    }
+    var out: list<f32> = []; gain = 1.0f;
+    for f in 0..frames {
+        let ahead: f32 = backwards[frames - 1 - f];
+        gain = gain + release; if ahead < gain { gain = ahead; }
+        for c in 0..ch { out.push(samples[f * ch + c] * gain); }
+    }
+    return out;
+}
+
+/// `level` with its highs lifted (x[n] - 0.95 x[n-1]): hits keep their
+/// click while the level wobble of low sounds, which `onsets` could take
+/// for hits, nearly vanishes.
+fn emphasized(level: &list<f32>) -> list<f32> {
+    var out: list<f32> = []; var previous: f32 = 0.0f;
+    for v in level { out.push(v - 0.95f * previous); previous = v; }
     return out;
 }
 

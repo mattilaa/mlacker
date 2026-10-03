@@ -52,7 +52,7 @@ impl SampleDialog {
         self.algorithm.set_items([
             DropDownItem { id: 0, label: "Off" }, DropDownItem { id: 1, label: "Repitch" },
             DropDownItem { id: 2, label: "Stretch" }, DropDownItem { id: 3, label: "Beats" },
-            DropDownItem { id: 4, label: "Transients" }
+            DropDownItem { id: 4, label: "Transients" }, DropDownItem { id: 5, label: "Transients 2" }
         ], source.stretch_algorithm);
         self.resample.set_items([
             DropDownItem { id: 0, label: "Cubic + low-pass" }, DropDownItem { id: 1, label: "Cubic" },

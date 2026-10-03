@@ -155,9 +155,9 @@ pub struct AudioInstance {
     var clip: AudioClip; var start_row: i32; var length_ticks: i32; var offset_frames: i64;
     /// Exact exclusive source-frame end (0 means the clip/LEN-derived end),
     /// plus the placement's time-stretch controls: the sync mode (0 Off,
-    /// 1 Repitch, 2 Stretch, 3 Beats, 4 Transients; append-only), the
-    /// transposition in semitones (-24..24, all modes but Off and Repitch)
-    /// and the resampling quality (see time_stretch::resample).
+    /// 1 Repitch, 2 Stretch, 3 Beats, 4 Transients, 5 Transients 2;
+    /// append-only), the transposition in semitones (-24..24, all modes but
+    /// Off and Repitch) and the resampling quality (see time_stretch::resample).
     var frame_end: i64; var original_bpm: i32; var stretch_algorithm: i32;
     var pitch: i32; var resample: i32;
 };
@@ -1503,7 +1503,7 @@ pub fn set_audio_properties(self: &mut Self, from: i64, to: i64, bpm: i32, algor
     var track: SequenceTrack = self.tracks[index]; let hit: i32 = track.instance_at(self.selected_row);
     if hit < 0 { self.error = "No sample on this row"; return false; }
     let current: AudioInstance = track.instances[hit];
-    if from < 0 || from >= to || to > current.clip.frames || bpm < 20 || bpm > 400 || algorithm < 0 || algorithm > 4 ||
+    if from < 0 || from >= to || to > current.clip.frames || bpm < 20 || bpm > 400 || algorithm < 0 || algorithm > 5 ||
         pitch < -24 || pitch > 24 || resample < 0 || resample > 3 {
         self.error = "Invalid sample properties"; return false;
     }

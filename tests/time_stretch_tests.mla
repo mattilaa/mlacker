@@ -98,7 +98,7 @@ fn low_pass_stops_aliasing_when_reading_faster() {
 fn pitch_transposes_without_changing_length() {
     let tone: list<f32> = sine(440.0f, 44100);
     // An octave up and a fifth down at the same tempo.
-    for algorithm in [2, 4] {
+    for algorithm in [2, 4, 5] {
         let up: list<f32> = render_synced(tone, 1, 44100, 0, 44100, 44100, i32(algorithm), 12, 0);
         verify_eq(up.len(), 44100);
         let cycles: i64 = crossings(up, 1);
@@ -139,4 +139,40 @@ fn transients_keep_attacks_and_fill_the_gaps() {
     }
     let beat: list<f32> = beats(hits, 1, 44100, 0, 88200, 176400);
     verify(peak(beat, 2 * 23050 + 30000, 2 * 23050 + 32000) == 0.0f);
+}
+
+#[test]
+fn transients_2_join_hits_without_dips_or_overs() {
+    // A held 110 Hz bass under a tick every beat (22050 frames) at full
+    // scale, played at half the tempo.
+    var mix: list<f32> = []; var source_peak: f32 = 0.0f;
+    for f in 0..88200 {
+        let phase: i64 = f % 22050;
+        let tick: f32 = phase >= 1000 && phase < 1300 ? 0.55f * std::math::sin(6.283185307179586f * 2000.0f * f32(phase) / 44100.0f) : 0.0f;
+        let v: f32 = 0.45f * std::math::sin(6.283185307179586f * 110.0f * f32(f) / 44100.0f) + tick;
+        mix.push(v); let a: f32 = v < 0.0f ? -v : v; if a > source_peak { source_peak = a; }
+    }
+    let smooth: list<f32> = render_synced(mix, 1, 44100, 0, 88200, 176400, 5, 0, 0);
+    verify_eq(smooth.len(), 176400);
+    verify(peak(smooth, 0, 176400) <= source_peak + 0.0001f);
+    for hit in 1..4 {
+        let at: i64 = 2 * (wide(hit) * 22050 + 1000);
+        // The tick on time over the bass.
+        verify(peak(smooth, at + 20, at + 300) > 0.7f);
+        // Around the seam the bass keeps its level (a 110 Hz cycle is 401
+        // frames, so any 200 frames reach most of its peak).
+        var lowest: f32 = 1.0f;
+        var w: i64 = at - 1200;
+        while w < at + 400 { let p: f32 = peak(smooth, w, w + 200); if p < lowest { lowest = p; } w = w + 50; }
+        verify(lowest > 0.3f);
+    }
+    // No clicks at the seams: before each tick the steps between frames stay
+    // those of the bass (at most 0.45 * 2 pi * 110 / 44100 = 0.007).
+    for hit in 1..4 {
+        let at: i64 = 2 * (wide(hit) * 22050 + 1000);
+        var step: f32 = 0.0f;
+        let lo: i64 = at - 1200; let hi: i64 = at - 80;
+        for f in lo..hi { let d: f32 = smooth[f] - smooth[f - 1]; let a: f32 = d < 0.0f ? -d : d; if a > step { step = a; } }
+        verify(step < 0.012f);
+    }
 }

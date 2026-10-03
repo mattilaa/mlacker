@@ -91,7 +91,10 @@ together, **Stretch** keeps the pitch (overlapping grains), **Beats** plays
 each detected hit at its original speed from its stretched time (leaving gaps
 when slower), and **Transients** keeps each hit's attack untouched on its
 stretched time while stretching the rest of the hit to the next one, for a
-smooth result without gaps. **Pitch** transposes Stretch, Beats and
+smooth result without gaps. **Transients 2** is smoother still: each attack
+stays untouched for as long as it actually lasts, the rest is stretched with
+longer grains, each hit runs on and crossfades under the next one instead of
+fading out before it, and a peak guard keeps the result from clipping. **Pitch** transposes Stretch, Beats and
 Transients by -24 to +24 semitones without changing their length.
 **Resampling** sets how Repitch and a transposition read between samples:
 cubic or linear, each optionally with a low-pass that removes aliasing when
