@@ -81,16 +81,20 @@ def main():
             expect(tui.send(b"\r"), b"Load sample for pad 1")
             expect(tui.send(b"\x15" + bytes(kick) + b"\r", 0.7), b"Pad 1: kick.wav (added to Audio)")
 
-            # Destructive edit: discarded edits change nothing...
-            expect(tui.send(EDIT_SAMPLE, 0.5), b"Edit sample 3: kick.wav")
-            expect(tui.send(b"r"), b"[modified]")
+            # Trims: closing without saving changes nothing...
+            expect(tui.send(EDIT_SAMPLE, 0.5), b" kick.wav | ")
+            expect(tui.send(b"vLt"), b"[modified]", b"Trimmed to the selection")
+            expect(tui.send(b"\x1b", 0.6), b"Unsaved trim")
             expect(tui.send(b"\x1b", 0.6), b"Sample edits discarded")
-            # ...saved edits replace the sample and refresh the pad that uses it.
+            # ...a destructive save replaces the sample with the new clip and
+            # refreshes the pad that uses it.
             tui.send(EDIT_SAMPLE, 0.5)
-            expect(tui.send(b"n"), b"Normalized to 0 dBFS")
+            tui.send(b"vLt")
             expect(tui.send(b"u"), b"Undone")
-            tui.send(b"n")
-            expect(tui.send(b"\r", 0.6), b"Sample 3 saved: 0 placement(s), 1 drum pad(s) updated")
+            tui.send(b"vLt")
+            expect(tui.send(b"\x13", 0.6), b"Save clip", b"kick - Trim 1.wav")
+            expect(tui.send(b"\t "), b"(*) Destructive")
+            expect(tui.send(b"\r", 0.6), b"Saved kick - Trim 1.wav over sample 3: 0 placement(s), 1 drum pad(s) updated")
 
             # Kit preset: parameters plus embedded pads (MLAPRE 1.1).
             expect(tui.send(SAVE_PRESET), b"Save plugin preset (.mlapre)", b"Mla Drum - ")
@@ -101,12 +105,12 @@ def main():
 
             # Clear pad 1, then loading the kit restores it.
             tui.send(SEND_TO_PAD)
-            expect(tui.send(b"h"), b"pad 1: kick.wav")
+            expect(tui.send(b"h"), b"pad 1: kick - Trim 1.wav")
             expect(tui.send(BACKSPACE, 0.5), b"Pad 1 cleared")
             expect(tui.send(LOAD_PRESET), b"Load plugin preset (.mlapre)")
             expect(tui.send(b"\x15" + bytes(kit) + b"\r", 1.2), b"Loaded kit preset: 2 pad(s)")
             expect(tui.send(SEND_TO_PAD), b"pad 2: empty")  # pad 1 is loaded again
-            expect(tui.send(b"h"), b"kick.wav")
+            expect(tui.send(b"h"), b"kick - Trim 1.wav")
             tui.send(b"\x1b", 0.6)
 
             # A second Instrument track must not silently share instance #1.
@@ -190,8 +194,8 @@ def main():
         # pad index 2 <- sample 1 (snare, the override).
         pads = struct.pack("<q", 12) + b"SAMPLER_PADS" + struct.pack("<7q", 2, 1, 0, 2, 1, 2, 1)
         assert saved.endswith(pads), saved[-120:]
-        # The edited kick is stored normalized (16000/32768 scaled to 1.0).
-        assert struct.pack("<d", 1.0) * 16 in saved
+        # The edited kick is stored as the trimmed clip, under its new name.
+        assert b"kick - Trim 1.wav" in saved, saved[:400]
 
         tui = Terminal(str(path), cwd=directory)
         try:

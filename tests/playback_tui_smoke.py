@@ -110,10 +110,11 @@ def main():
             until(lambda s: "Add audio" in s)
             send(b"\x15" + path.encode() + b"\r")
             until(lambda s: "WAVE" in s and "Add audio" not in s)
-            send(b"s" + b"\x1b[108;5u" * 4)
-            before = until(lambda s: " Sample: " in s)
+            # Zoom in from the focused Sample pane, then hand the keys back.
+            send(b"s" + b"\x1b[106;6u" + b"+" * 4 + b"\x1b[107;6u")
+            before = until(lambda s: " Sample ─" in s)
             send(b" ")
-            followed = until(lambda s: "PLAY" in s and " Sample: " in s and
+            followed = until(lambda s: "PLAY" in s and " Sample ─" in s and
                              (m := re.search(r"\| (\d+)\.\.(\d+) ms", s)) is not None and int(m[1]) > 0)
             assert followed != before
             send(b" ")

@@ -62,6 +62,8 @@ use mlacker_ui::waveform::paint_mono_wave;
 use mlacker_ui::waveform::paint_mono_grainy;
 mod mlacker_ui::sample_view;
 use mlacker_ui::sample_view::SampleView;
+use mlacker_ui::sample_view::transient_frames;
+use mlacker_ui::sample_view::sample_pane_key;
 use mlacker_ui::audio_clip::*;
 mod mlacker_ui::bpm_dialog;
 use mlacker_ui::bpm_dialog::BpmDialog;
@@ -1674,14 +1676,16 @@ fn tui_horizontal_sample_zoom_and_render() {
     for i in 0..32 { clip.samples.push(i % 2 == 0 ? -1.0f : 1.0f); }
     var view: SampleView = SampleView { grainy: false };
     verify(view.span(clip, 8) == 32 && view.start(clip, 0, 8) == 0);
-    view.on_event(decode_input("\x1b[108;5u"), clip, 10);
+    view.on_key(decode_input("+"), clip, 10, 0);
     verify(view.span(clip, 8) == 16 && view.start(clip, 2, 8) == 8);
-    view.on_event(decode_input("\x1b[108;5u"), clip, 10);
+    view.on_key(decode_input("+"), clip, 10, 0);
     verify(view.span(clip, 8) == 8 && view.start(clip, 3, 8) == 20);
-    view.on_event(decode_input("\x1b[108;5u"), clip, 10); verify(view.zoom == 2);
-    verify(!view.on_event(decode_input("\x1b[108;6u"), clip, 10));
-    verify(!view.on_event(decode_input("\x08"), clip, 10));
-    view.on_event(decode_input("\x1b[104;5u"), clip, 10); verify(view.zoom == 1);
+    view.on_key(decode_input("+"), clip, 10, 0); verify(view.zoom == 2);
+    // Ctrl+Shift+L is pane navigation, and Ctrl+H/L no longer zoom.
+    verify(!view.on_key(decode_input("\x1b[108;6u"), clip, 10, 0));
+    view.on_key(decode_input("\x1b[104;5u"), clip, 10, 0); verify(view.zoom == 2);
+    view.on_key(decode_input("-"), clip, 10, 0); verify(view.zoom == 1);
+    view.anchor_active = false; // the cursor follows the row again
     let surface: Surface = Surface::new(18, 6); let theme: Theme = Theme::dark_blue();
     view.wave = true; view.zoom = 20;
     view.paint(surface, surface.bounds(), theme, clip, 1);
@@ -1708,25 +1712,29 @@ fn tui_sample_view_selection() {
     verify(sub.samples.len() == 16 && sub.channels == 1 && sub.samples[0] == 0.5f);
     var empty: AudioClip = AudioClip { source: clone("e"), channels: 1, frames_per_row: 8 };
     let none: AudioClip = empty.slice_frames(0, 10); verify(none.frames == 0 && none.peaks.len() == 0);
-    // Trim points: Ctrl+N/M move start, Shift/capital N/M move end (step = span/px).
+    // v starts a selection at the cursor; it follows the cursor from there.
     var big: AudioClip = AudioClip { source: clone("b"), channels: 1, sample_rate: 48000, frames: 1024, frames_per_row: 128 };
     for _i in 0..1024 { big.samples.push(0.0f); }
     var view: SampleView = SampleView { visible: true };
     view.reset_selection(big.frames);
     verify(view.sel_start == 0 && view.sel_end == 1024 && view.sel_frames == 1024);
     verify(!view.anchor_active);
-    verify(view.on_event(decode_input("\x1b[109;5u"), big, 34)); verify(view.sel_start == 16);
-    verify(view.anchor_active && view.anchor_frame == view.sel_start);
-    verify(view.on_event(decode_input("\x1b[110;5u"), big, 34)); verify(view.sel_start == 0);
-    verify(view.on_event(decode_input("N"), big, 34)); verify(view.sel_end == 1008);
-    verify(view.anchor_active && view.anchor_frame == view.sel_end);
-    verify(view.on_event(decode_input("M"), big, 34)); verify(view.sel_end == 1024);
-    verify(view.on_event(decode_input("\x1b[110;2u"), big, 34)); verify(view.sel_end == 1008);
-    verify(view.on_event(decode_input("\x1b[109;2u"), big, 34)); verify(view.sel_end == 1024);
-    for _i in 0..80 { view.on_event(decode_input("\x1b[109;5u"), big, 34); }
-    verify(view.sel_start < view.sel_end && view.sel_end == 1024);
-    verify(view.on_event(decode_input("\x1b[108;5u"), big, 34)); verify(view.zoom == 1);
-    // A proper subset shades its columns darker than the panel; outside stays panel.
+    // 34 columns: a 32-column wave, so h/l step 1024 / 32 = 32 frames.
+    verify(view.on_key(decode_input("l"), big, 34, 0) && view.anchor_active && view.anchor_frame == 32);
+    verify(view.on_key(decode_input("v"), big, 34, 0) && view.selecting && !view.has_selection(big.frames));
+    verify(view.on_key(decode_input("l"), big, 34, 0)); verify(view.sel_start == 32 && view.sel_end == 64);
+    // Back past where v was pressed: the selection flips to that side.
+    for _i in 0..2 { view.on_key(decode_input("h"), big, 34, 0); }
+    verify(view.sel_start == 0 && view.sel_end == 32);
+    // Shift+E / Shift+B: the clip's end / beginning; the selection follows.
+    verify(view.on_key(decode_input("E"), big, 34, 0)); verify(view.sel_start == 32 && view.sel_end == 1024);
+    verify(view.on_key(decode_input("\x1b[98;2u"), big, 34, 0)); verify(view.sel_start == 0 && view.sel_end == 32);
+    verify(view.anchor_frame == 0);
+    // The old Ctrl+M and Shift+N/M edge keys are gone.
+    verify(!view.on_key(decode_input("\x1b[109;5u"), big, 34, 0));
+    verify(!view.on_key(decode_input("N"), big, 34, 0));
+    verify(view.on_key(decode_input("+"), big, 34, 0)); verify(view.zoom == 1);
+    // A proper subset shades its columns lighter than the panel; outside stays panel.
     var mono: AudioClip = AudioClip { source: clone("m"), channels: 1, sample_rate: 8, frames: 32, frames_per_row: 8 };
     for i in 0..32 { mono.samples.push(i % 2 == 0 ? -1.0f : 1.0f); }
     var paint: SampleView = SampleView { grainy: true };
@@ -1734,7 +1742,7 @@ fn tui_sample_view_selection() {
     let surface: Surface = Surface::new(18, 6); let theme: Theme = Theme::dark_blue();
     paint.paint_at(surface, surface.bounds(), theme, mono, 3, 0);
     let inside: Cell = surface.cell(4, 1); let outside: Cell = surface.cell(12, 1);
-    verify(inside.background != theme.panel && inside.background != theme.selection);
+    verify(inside.background == lighten(theme.panel, 22) && inside.background != theme.selection);
     verify(outside.background == theme.panel);
     surface.release();
     clip.release(); empty.release(); big.release(); mono.release();
@@ -2294,33 +2302,136 @@ fn tui_sample_edit_primitives() {
 }
 
 #[test]
-fn tui_sample_editor_edits_undo_and_limits() {
+fn tui_sample_editor_keys_select_trim_and_undo() {
     let source: AudioClip = test_clip(4000, 0.5f);
     var editor: SampleEditor = SampleEditor {};
     editor.open(source, 0);
-    verify(editor.active && !editor.modified);
-    verify(!editor.edit(116)); // crop needs a narrower selection
-    verify(!editor.edit(120)); // cannot delete everything
-    verify(editor.edit(110));  // normalize whole sample
-    verify(editor.modified && editor.clip.frames == 4000 && editor.clip.samples[3999] == 1.0f);
-    verify(source.samples[3999] == 0.5f); // the session copy is untouched
-    editor.view.sel_start = 1000; editor.view.sel_end = 3000;
-    verify(editor.edit(116));
-    verify(editor.clip.frames == 2000 && editor.clip.peaks.len() == (2000 + editor.clip.frames_per_row - 1) / editor.clip.frames_per_row);
+    verify(editor.active && !editor.modified && !editor.has_selection());
+    // 82 columns: an 80-column wave, so h/l step 4000 / 80 = 50 frames.
+    let width: i32 = 82;
+    let escape: InputEvent = InputEvent { kind: InputKind::Menu, key: Key::Escape };
+    verify(editor.on_event(decode_input("t"), width) == 0 && !editor.modified); // trim needs a selection
+    // Use case: find the start, v, move to the end, t trims to it.
+    for _i in 0..4 { editor.on_event(decode_input("l"), width); }
+    verify(editor.cursor() == 200 && !editor.has_selection());
+    editor.on_event(decode_input("v"), width);
+    verify(editor.view.selecting && !editor.has_selection());
+    for _i in 0..10 { editor.on_event(decode_input("l"), width); }
+    verify(editor.selection_start() == 200 && editor.selection_end() == 700);
+    // Shift+L: an eighth of the view (500 frames), in either key spelling; a
+    // Num Lock bit in the modifiers changes nothing.
+    editor.on_event(decode_input("L"), width);
+    editor.on_event(decode_input("\x1b[108;130u"), width);
+    verify(editor.selection_start() == 200 && editor.selection_end() == 1700);
+    // Esc unselects; the editor stays open.
+    verify(editor.on_event(escape, width) == 0 && !editor.has_selection() && !editor.view.selecting && editor.active);
+    editor.on_event(decode_input("v"), width);
+    for _i in 0..4 { editor.on_event(decode_input("h"), width); }
+    verify(editor.selection_start() == 1500 && editor.selection_end() == 1700);
+    editor.on_event(decode_input("t"), width);
+    verify(editor.modified && editor.clip.frames == 200 && editor.cursor() == 0 && !editor.has_selection());
     verify(editor.clip.detail_peaks.len() == editor.clip.peaks.len() * 4);
-    editor.view.sel_start = 0; editor.view.sel_end = 500;
-    verify(editor.edit(115));
-    verify(editor.clip.samples[10] == 0.0f && editor.clip.samples[600] != 0.0f);
-    verify(editor.edit(117) && editor.clip.samples[10] != 0.0f); // undo silence
-    verify(editor.edit(117) && editor.clip.frames == 4000);     // undo crop
-    verify(editor.edit(117) && !editor.modified);                // undo normalize
-    verify(!editor.edit(117));
+    verify(source.samples[3999] == 0.5f); // the session copy is untouched
+    editor.on_event(decode_input("u"), width);
+    verify(editor.clip.frames == 4000 && !editor.modified);
+    verify(!editor.undo());
+    // Use case: find the start, v, Shift+B to the beginning, x deletes it.
+    for _i in 0..10 { editor.on_event(decode_input("l"), width); }
+    editor.on_event(decode_input("v"), width);
+    editor.on_event(decode_input("B"), width);
+    verify(editor.selection_start() == 0 && editor.selection_end() == 500);
+    editor.on_event(decode_input("x"), width);
+    verify(editor.clip.frames == 3500 && editor.clip.samples[0] == source.samples[500]);
+    // x also cuts from the middle, closing the gap.
+    editor.select(1000, 1500); editor.on_event(decode_input("x"), width);
+    verify(editor.clip.frames == 3000 && editor.clip.samples[1000] == source.samples[2000]);
+    editor.undo(); editor.undo();
+    // +/- zoom around the cursor, = fits the whole sample again.
+    editor.on_event(decode_input("+"), width); verify(editor.view.zoom == 1);
+    editor.on_event(decode_input("-"), width); verify(editor.view.zoom == 0);
+    editor.on_event(decode_input("+"), width); editor.on_event(decode_input("+"), width); verify(editor.view.zoom == 2);
+    editor.on_event(decode_input("="), width); verify(editor.view.zoom == 0);
+    // Zoomed in, h/l steps shrink with the view.
+    editor.on_event(decode_input("+"), width); editor.on_event(decode_input("l"), width);
+    verify(editor.cursor() == 25);
+    editor.on_event(decode_input("="), width);
+    // Ctrl+P plays, Ctrl+S asks for the clip's name and mode.
+    verify(editor.on_event(decode_input("\x10"), width) == 3);
+    verify(editor.on_event(decode_input("\x13"), width) == 4);
+    editor.open_save("edit-test - Trim 1.wav");
+    verify(editor.save.active && !editor.save.destructive);
+    editor.on_event(decode_input("\t"), width);
+    editor.on_event(decode_input(" "), width);
+    verify(editor.save.destructive);
+    verify(editor.on_event(decode_input("\r"), width) == 1);
+    let saved: str8 = editor.saved_name();
+    verify(saved == "edit-test - Trim 1.wav" && editor.save_destructive && !editor.save.active);
+    // A rejected name keeps the dialog open; ".wav" is added when missing.
+    editor.save_failed("taken");
+    let shown: str8 = editor.save.error;
+    verify(editor.save.active && shown == "taken");
+    editor.save.name.set_text("Other");
+    verify(editor.on_event(decode_input("\r"), width) == 1);
+    let renamed: str8 = editor.saved_name(); verify(renamed == "Other.wav");
+    // With an unsaved trim, the first Esc only warns.
+    editor.select(0, 2000); editor.trim();
+    verify(editor.on_event(escape, width) == 0 && editor.close_pending);
+    verify(editor.on_event(escape, width) == 2);
     // Undo depth is bounded.
-    for _i in 0..20 { editor.edit(45); }
+    for _i in 0..20 { editor.select(0, editor.clip.frames - 10); editor.trim(); }
     verify(editor.history.len() == 16);
     let taken: AudioClip = editor.take();
-    verify(!editor.active && taken.frames == 4000);
+    verify(!editor.active && taken.frames == 2000 - 200);
     taken.release(); source.release();
+}
+
+#[test]
+fn tui_sample_editor_trim_names_and_transients() {
+    let none: list<AudioClip> = [];
+    let first: str8 = trim_name("/a/b/kick.wav", none); verify(first == "kick - Trim 1.wav"); free(first);
+    var samples: list<f32> = []; for _i in 0..100 { samples.push(0.0f); }
+    let made: result<AudioClip, str8> = AudioClip::from_pcm("/a/b/kick - Trim 1.wav", samples, 1, 8000, 120);
+    let named: AudioClip = made.unwrap();
+    let library: list<AudioClip> = [named];
+    let second: str8 = trim_name("/a/b/kick.wav", library); verify(second == "kick - Trim 2.wav"); free(second);
+    // Trimming a trim numbers on from the original name.
+    let again: str8 = trim_name("/a/b/kick - Trim 1.wav", library); verify(again == "kick - Trim 2.wav"); free(again);
+    let path: str8 = sibling_path("/a/b/kick.wav", "kick - Trim 1.wav"); verify(path == "/a/b/kick - Trim 1.wav"); free(path);
+    let bare: str8 = sibling_path("kick.wav", "x.wav"); verify(bare == "x.wav"); free(bare);
+    for clip in library { clip.release(); }
+    // Two bursts in silence: one transient at (or just before) each onset.
+    var pcm: list<f32> = [];
+    for i in 0..8000 { pcm.push((i >= 2000 && i < 2400) || (i >= 6000 && i < 6400) ? 0.8f : 0.0f); }
+    let decoded: result<AudioClip, str8> = AudioClip::from_pcm("bursts.wav", pcm, 1, 8000, 120);
+    let bursts: AudioClip = decoded.unwrap();
+    let points: list<i64> = transient_frames(bursts);
+    verify(points.len() == 2);
+    verify(points[0] > 1930 && points[0] <= 2000 && points[1] > 5930 && points[1] <= 6000);
+    // Ctrl+L / Ctrl+H jump to the next / previous transient, in either key
+    // spelling; a running selection keeps its start.
+    var editor: SampleEditor = SampleEditor {};
+    editor.open(bursts, 0);
+    editor.on_event(decode_input("v"), 82);
+    editor.on_event(decode_input("\x0c"), 82); verify(editor.cursor() == points[0]);
+    editor.on_event(decode_input("\x1b[108;5u"), 82); verify(editor.cursor() == points[1]);
+    verify(editor.selection_start() == 0 && editor.selection_end() == points[1]);
+    editor.on_event(decode_input("\x0c"), 82); verify(editor.cursor() == 8000);
+    editor.on_event(decode_input("\x1b[104;5u"), 82); verify(editor.cursor() == points[1]);
+    // Transient mode (Shift+T): h/l step between transients, H/L between the
+    // strong ones (both bursts here are equally strong).
+    editor.view.clear_selection(8000, 0);
+    editor.on_event(decode_input("T"), 82); verify(editor.view.transient_mode);
+    verify(editor.view.transients_strong.len() == 2);
+    editor.on_event(decode_input("l"), 82); verify(editor.cursor() == points[0]);
+    editor.on_event(decode_input("l"), 82); verify(editor.cursor() == points[1]);
+    editor.on_event(decode_input("h"), 82); verify(editor.cursor() == points[0]);
+    editor.on_event(decode_input("L"), 82); verify(editor.cursor() == points[1]);
+    editor.on_event(decode_input("\x1b[116;2u"), 82); verify(!editor.view.transient_mode);
+    editor.on_event(decode_input("h"), 82); verify(editor.cursor() == points[1] - 100);
+    // The status bar names the clip and shows the position and the mode.
+    let bar: str8 = sample_info(editor.view, editor.clip, 0, "bursts.wav", "");
+    verify(std::strbuf::find(bar, " bursts.wav | 0.") == 0 && std::strbuf::find(bar, "Transients off") > 0); free(bar);
+    editor.release(); bursts.release();
 }
 
 #[test]
@@ -2337,8 +2448,8 @@ fn tui_replace_sample_updates_all_placements() {
     verify(library.table.insert_audio(clip, area));
     var editor: SampleEditor = SampleEditor {};
     let stored_clip: AudioClip = library.audio.samples[0]; editor.open(stored_clip, 0);
-    editor.view.sel_start = 0; editor.view.sel_end = 3000;
-    verify(editor.edit(116));
+    editor.select(0, 3000);
+    verify(editor.trim());
     verify(library.replace_sample(0, editor.take()) == 2);
     let track: SequenceTrack = library.table.tracks[library.table.tracks.len() - 1];
     let first: AudioInstance = track.instances[0]; let second: AudioInstance = track.instances[1];
@@ -2358,27 +2469,96 @@ fn tui_replace_sample_updates_all_placements() {
 }
 
 #[test]
+fn tui_sample_pane_keys_on_a_clip_window() {
+    // The Sample pane shows a placement's window of its sample (offset 1000,
+    // 4000 frames) and starts with the cursor on the pattern row.
+    var base: AudioClip = test_clip(8000, 0.5f);
+    var window: AudioClip = AudioClip {}; window = base;
+    window.offset = 1000; window.frames = 4000;
+    var view: SampleView = SampleView { grainy: true };
+    view.reset_selection(window.frames);
+    let row: i32 = 2;
+    let at: i64 = 2 * window.frames_per_row;
+    verify(view.cursor(window, row) == at);
+    // Num Lock and Caps Lock bits in the modifiers do not matter.
+    verify(view.on_key(decode_input("\x1b[108;129u"), window, 82, row));
+    verify(view.cursor(window, row) == at + 50);
+    verify(view.on_key(decode_input("v"), window, 82, row) && view.selecting);
+    verify(view.on_key(decode_input("L"), window, 82, row));
+    verify(view.has_selection(window.frames) && view.sel_start == at + 50 && view.sel_end == at + 550);
+    verify(view.on_key(decode_input("\x1b[101;66u"), window, 82, row) && view.cursor(window, row) == 4000);
+    verify(view.sel_start == at + 50 && view.sel_end == 4000);
+    verify(view.on_key(decode_input("+"), window, 82, row) && view.zoom == 1);
+    verify(view.on_key(decode_input("="), window, 82, row) && view.zoom == 0);
+    // Keys that are not the pane's are left to the rest of the app.
+    verify(!view.on_key(decode_input("q"), window, 82, row));
+    verify(sample_pane_key(decode_input("x")) && sample_pane_key(decode_input("t")) && sample_pane_key(decode_input("\x10")));
+    verify(sample_pane_key(decode_input("\x13")) && sample_pane_key(decode_input("\x1b[108;5u")) && sample_pane_key(decode_input("\x0c")));
+    verify(!sample_pane_key(decode_input("j")) && !sample_pane_key(decode_input("\x0e")));
+    window.release();
+}
+
+#[test]
+fn tui_sample_pane_cut_from_the_middle() {
+    // x on a middle selection in the Sample pane: the placement plays a new
+    // sample, "<name> - Edit 1.wav", holding its window without the cut.
+    var library: PatternLibrary = PatternLibrary::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    library.table.create_track_kind(false, true, area);
+    let clip: AudioClip = test_clip(8000, 0.25f);
+    library.audio.samples.push(clip);
+    library.audio.view.items.push(ListItem { id: 1, label: clone("1 edit-test.wav") });
+    library.table.selected_row = 2;
+    verify(library.table.insert_audio(clip, area));
+    let track: SequenceTrack = library.table.tracks[library.table.tracks.len() - 1];
+    let instance: AudioInstance = track.instances[0];
+    let rc: AudioClip = instance.render_clip();
+    let window: list<f32> = pcm_crop(instance.clip.samples, 1, rc.offset, rc.offset + rc.frames);
+    var edited: AudioClip = instance.clip.with_samples(pcm_delete(window, 1, 2000, 3000));
+    let name: str8 = numbered_name(instance.clip.source, library.audio.samples, "Edit");
+    verify(name == "edit-test - Edit 1.wav");
+    free(edited.source); edited.source = sibling_path(instance.clip.source, name); free(name);
+    verify(library.audio.add_clip(edited.copy()) == 1);
+    verify(library.table.replace_audio_clip(edited, area));
+    let after: SequenceTrack = library.table.tracks[library.table.tracks.len() - 1];
+    let cut: AudioInstance = after.instances[0];
+    verify(cut.clip.frames == 7000 && cut.offset_frames == 0 && cut.clip.samples[2000] == clip.samples[3000]);
+    let original: AudioClip = library.audio.samples[0]; verify(original.frames == 8000);
+    // The session keeps the placement on the new sample.
+    let directory: str8 = clone("/private/tmp/mlacker-cut-test-XXXXXX"); mkdtemp(directory);
+    let path: str8 = format!("{}/cut.mlack", directory);
+    var audio: AudioSystem = AudioSystem {}; var codec: SessionCodec = SessionCodec {};
+    verify(codec.save(path, library, SessionView {}, audio));
+    let loaded: result<SessionData, str8> = SessionCodec::load(path); verify(loaded.is_ok());
+    var restored: SessionData = loaded.unwrap();
+    verify(restored.library.audio.samples.len() == 2);
+    let kept: AudioClip = restored.library.audio.samples[1]; verify(kept.frames == 7000);
+    restored.release();
+    library.release(); std::fs::remove_tree(directory); free(path); free(directory);
+}
+
+#[test]
 fn tui_sample_editor_crop_to_watched_range() {
     let source: AudioClip = test_clip(4000, 0.5f);
     var editor: SampleEditor = SampleEditor {};
-    // A crop to exactly the selected (watched) range: a Sampler slot's loop.
+    // A trim to exactly the selected (watched) range: a Sampler slot's loop.
     editor.open(source, 0);
     editor.select(1000, 3000);
     verify(editor.selection_start() == 1000 && editor.selection_end() == 3000);
-    verify(editor.edit(116) && editor.clip.frames == 2000 && editor.cropped_to_watch);
-    // Undoing it, or cropping another range, is not.
-    verify(editor.edit(117) && !editor.cropped_to_watch);
+    verify(editor.trim() && editor.clip.frames == 2000 && editor.cropped_to_watch);
+    // Undoing it, or trimming another range, is not.
+    verify(editor.undo() && !editor.cropped_to_watch);
     editor.release(); editor.open(source, 0);
     editor.select(1000, 3000);
     editor.view.sel_start = 500; editor.view.sel_end = 3000;
-    verify(editor.edit(116) && !editor.cropped_to_watch);
-    // Nor is one after a delete moved the audio, even on the same frames.
+    verify(editor.trim() && !editor.cropped_to_watch);
+    // Nor is one after an earlier trim moved the audio.
     editor.release(); editor.open(source, 0);
     editor.select(1000, 3000);
-    editor.view.sel_start = 0; editor.view.sel_end = 100;
-    verify(editor.edit(120));
+    editor.view.sel_start = 0; editor.view.sel_end = 3900;
+    verify(editor.trim());
     editor.view.sel_start = 1000; editor.view.sel_end = 3000; editor.view.sel_frames = editor.clip.frames;
-    verify(editor.edit(116) && !editor.cropped_to_watch);
+    verify(editor.trim() && !editor.cropped_to_watch);
     // The selection is clamped to the sample.
     editor.release(); editor.open(source, 0);
     editor.select(-10, 999999);

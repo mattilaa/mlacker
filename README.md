@@ -863,13 +863,12 @@ rest by 1%. `[`/`]` step by 6 dB, an octave and 10%. A slot on its own
 envelope keeps it, so a short pad and a sustained, looping zone can share one
 instance.
 
-`E` opens the slot's sample in the destructive sample editor (see
-Destructive sample editing), with the slot's loop already selected, or the
-whole sample when the loop is off. A reversed slot's loop is selected where it
-lies in the stored sample. `n`, `i`/`o`, `r` and the other edits then work on
-the loop, and `t` crops the sample to it. Saving a crop to exactly the loop
-resets the slot's loop to span the whole new sample and its start to the
-beginning, so it plays as before, without the audio outside the loop. The
+`E` opens the slot's sample in the sample editor (see Sample editing), with
+the slot's loop already selected, or nothing selected when the loop is off. A
+reversed slot's loop is selected where it lies in the stored sample, with the
+cursor at its end. `t` trims the sample to it. Saving a trim to exactly the loop destructively (Ctrl+S, then
+Destructive) resets the slot's loop to span the whole new sample and its start
+to the beginning, so it plays as before, without the audio outside the loop. The
 edit changes the session sample, so every placement and pad using it updates;
 other slots' loop points stay as they were.
 
@@ -960,33 +959,49 @@ sharing one instance share its input. The route belongs to the Instrument
 track in each pattern, and `.mlack` saves it (the `INSTRUMENT_INPUTS`
 extension).
 
-### Destructive sample editing
+### Sample editing
 
 **Audio → Edit sample (destructive)**, or `e` in the Audio list, opens the selected
 sample in an editor over the Pattern view. Edits work on a copy with 16 undo
-steps. The **Save** button (or Enter) saves the result into the session, and
-**Discard** (or Esc) drops it. Tab moves to the buttons and back.
-Saving replaces the sample in the Audio list and in every pattern placement.
-Placements whose length changed return to the natural length. Every drum pad
-that uses the sample is re-sent at once.
+steps; nothing changes in the session until you save.
 
-Select a range with `Ctrl+N`/`Ctrl+M` (start) and `Shift+N`/`Shift+M` (end).
-`Ctrl+H`/`Ctrl+L` zoom, and `a` selects everything. Without a narrower selection,
-edits apply to the whole sample.
+The editor uses the same keys as the Sample pane (`s` over a clip in the
+Pattern view; see docs/interface.md). A cursor moves over the waveform and
+stays in the middle of the view while you zoom. A status bar at the bottom shows
+the sample's name, the cursor position, the selection and whether transient
+mode is on. `v` starts a selection at the
+cursor, and the selection then follows the cursor until `Esc` unselects.
 
-| Key | Edit |
-|-----|------|
-| `t` | Crop to the selection |
-| `x` | Delete the selection |
-| `r` | Reverse |
-| `i` / `o` | Linear fade in / fade out |
-| `n` | Normalize the selection peak to 0 dBFS |
-| `-` / `+` | Gain −1 dB / +1 dB |
-| `s` | Silence |
+| Key | Action |
+|-----|--------|
+| `h` / `l` | Move the cursor one column of the view |
+| `H` / `L` | Move an eighth of the view |
+| `Ctrl+H` / `Ctrl+L` | Jump to the previous / next transient |
+| `Shift+T` | Transient mode: `h`/`l` step between transients, `H`/`L` between strong ones (like bass drums); marked ▼ strong, ▿ others |
+| `Shift+B` / `Shift+E` | Jump to the beginning / end of the sample |
+| `v` | Start a selection at the cursor |
+| `Esc` | Unselect; with nothing selected, close the editor (asks once if an edit is unsaved) |
+| `t` | Trim: keep only the selection |
+| `x` | Delete the selection, closing the gap |
 | `u` | Undo |
+| `+` / `-` | Zoom in / out around the cursor |
+| `=` | Fit the whole sample in the pane |
+| `Ctrl+P` | Play the selection, or the whole sample without one; again stops |
+| `Ctrl+S` | Save as a new clip |
 
-Results are hard-clipped to −1..1, the range sessions store. Edits change the
-session copy only. The source WAV/AIFF on disk is never rewritten.
+**Ctrl+S** always saves the result as a new clip in the Audio list, named
+`SampleName - Trim 1.wav` (the first free number; a trim of a trim numbers on
+from the original name). The dialog lets you change the name and pick a mode:
+
+- **Non-destructive** adds the new clip and leaves the original sample, its
+  pattern placements and drum pads as they were.
+- **Destructive** puts the new clip in place of the original: it takes the
+  original's place in the Audio list and in every pattern placement, and every
+  drum pad that used the original is re-sent at once. Placements whose length
+  changed return to the natural length.
+
+The new clip is saved with the session (in a project, as a WAV in `Audio/`).
+The source WAV/AIFF on disk is never rewritten.
 
 ### Mixer faders and MIDI recording
 
