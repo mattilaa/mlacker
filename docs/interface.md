@@ -66,6 +66,12 @@ tail — that all share one full sample buffer with independent offsets, lengths
 and start rows.
 
 Each instance references decoded samples and carries its own start row.
+A sample row under the Pattern cursor opens a **Sample properties** dialog with
+Enter. Its frame start and exclusive frame end trim that placement
+non-destructively; the dialog also keeps the source's original BPM and a time
+stretch mode (**Off**, **Repitch**, **Stretch**, or **Beats**). Tab moves through
+the fields, algorithm selector, and **OK**/**Cancel** buttons. Invalid or empty
+frame ranges and BPM values outside 20–400 are rejected.
 A read-only waveform column
 beside the LEN column draws time downward as one gray, 7-cell-wide waveform:
 left and right are summed to mono for display only (playback and meters stay

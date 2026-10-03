@@ -58,6 +58,8 @@ use mlacker_ui::sampler_view::AutoMapEntry;
 mod tui::piano;
 use tui::piano::piano_note_name;
 use mlacker_ui::sample_editor::SampleEditor;
+mod mlacker_ui::sample_dialog;
+use mlacker_ui::sample_dialog::SampleDialog;
 use mlacker_ui::audio_clip::base_name;
 mod mlacker_ui::bpm_dialog;
 mod mlacker_ui::curve_dialog;
@@ -419,6 +421,7 @@ pub fn run() -> i32 {
     var last_plugin_dir: str8 = clone("/Library/Audio/Plug-Ins/VST3"); var last_preset_dir: str8 = clone("");
     var piano: PianoDialog = PianoDialog::new();
     var sample_editor: SampleEditor = SampleEditor {};
+    var sample_dialog: SampleDialog = SampleDialog::new();
     // The Sampler slot (instrument slot and sample slot) whose sample the
     // editor is editing, or -1: a crop to its loop resets the loop.
     var editing_sampler_slot: i32 = -1; var editing_sampler_pad: i32 = -1;
@@ -1068,7 +1071,7 @@ pub fn run() -> i32 {
             transport.elapsed_ms = i32(wide(transport.row) * 15000 / wide(transport.bpm));
         }
         // Editing a moving row would otherwise commit to a different row.
-        if library.table.editing || library.table.visual || library.renaming || dialog.active || question.active || paste_error.active || settings.active || sample_editor.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || curve_dialog.active { transport.playing = false; }
+        if library.table.editing || library.table.visual || library.renaming || dialog.active || question.active || paste_error.active || settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || curve_dialog.active { transport.playing = false; }
         if library.table.recording_track >= 0 {
             let armed: SequenceTrack = library.table.tracks[library.table.recording_track];
             if !armed.record_armed { transport.playing = false; }
@@ -1178,7 +1181,7 @@ pub fn run() -> i32 {
         }
         // Consume every note-on, including a note released within this poll.
         // Modal editors never receive destructive background recording edits.
-        if menus.active < 0 && !dialog.active && !question.active && !paste_error.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !instrument_editor.active && !sample_editor.active && !piano.active && !share_question.active && !remove_question.active && !library.renaming && !mixer.bus_focus && library.table.group_detail_rows == 0 {
+        if menus.active < 0 && !dialog.active && !question.active && !paste_error.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !instrument_editor.active && !sample_editor.active && !sample_dialog.active && !piano.active && !share_question.active && !remove_question.active && !library.renaming && !mixer.bus_focus && library.table.group_detail_rows == 0 {
             let notes: list<MidiInputEvent> = midi.midi.note_events;
             if library.table.recording_track < 0 && !library.table.editing {
                 for note in notes { if note.kind == 1 { if library.table.record_note(note.note, note.velocity) { dirty = true; } } }
@@ -1318,6 +1321,15 @@ pub fn run() -> i32 {
                     else { transport.set_bpm(bpm_dialog.value); }
                 }
             }
+            if sample_dialog.active && sample_dialog.pressed_button >= 0 {
+                sample_dialog.tick(); dirty = true;
+                if !sample_dialog.active && sample_dialog.result == 1 {
+                    let changed: bool = library.table.set_audio_properties(sample_dialog.frame_start, sample_dialog.frame_end,
+                        sample_dialog.original_bpm, i32(sample_dialog.algorithm.selected_id()), terminal_bounds());
+                    free(message); message = changed ? clone("Sample properties updated") : clone(library.table.error);
+                    playback_dirty = changed;
+                }
+            }
             if dialog.active && dialog.pressed_button >= 0 {
                 dialog.tick(); dirty = true;
                 if dialog.accepted { accept_pending = true; }
@@ -1399,7 +1411,7 @@ pub fn run() -> i32 {
         let viewport: Viewport = menus.viewport(area);
         let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
         focus.reconcile(panes);
-        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
+        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
         if curve_pending {
             curve_pending = false;
             let written: i32 = library.table.apply_curve(curve_dialog.selected);
@@ -1467,6 +1479,7 @@ pub fn run() -> i32 {
             // Menus sit above the pane contents, below the modal dialogs.
             menus.paint(surface, surface.bounds(), Theme::dark_blue());
             sample_editor.paint(surface, panes[1].bounds, Theme::dark_blue());
+            sample_dialog.paint(surface, area, Theme::dark_blue());
             dialog.paint(surface, area, Theme::dark_blue());
             question.paint(surface, area, Theme::dark_blue());
             share_question.paint(surface, area, Theme::dark_blue());
@@ -1555,7 +1568,7 @@ pub fn run() -> i32 {
                     focus.selected == 0 && library.audio_mode && menus.active < 0 &&
                     !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
                     !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
-                    !paste_error.active && !library.renaming && !sample_editor.active && !piano.active {
+                    !paste_error.active && !library.renaming && !sample_editor.active && !sample_dialog.active && !piano.active {
                 let index: i32 = library.audio.view.selected;
                 let replay: bool = preview_sample != index || !midi.previewing();
                 midi.stop_preview(); preview_sample = -1;
@@ -1578,10 +1591,10 @@ pub fn run() -> i32 {
                      (event.code == 32 && event.modifiers == 5)) && matrix.visible && menus.active < 0 &&
                     !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
                     !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
-                    !paste_error.active && !library.renaming {
+                    !paste_error.active && !library.renaming && !sample_dialog.active {
                 song_request = song_playing ? 2 : 1; dirty = true;
             }
-            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
+            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !bpm_dialog.active && !sample_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
                 // In the song matrix, Space plays the matrix from the cursor
                 // row, every lane mixed, like Ctrl+P; it stops whatever plays.
                 // Elsewhere it plays the selected pattern.
@@ -1592,7 +1605,7 @@ pub fn run() -> i32 {
             // Tab / Shift+Tab cycle every pane of the main view: sidebar,
             // pattern, inspector/mixer, the FX bus, and the VST3 editor.
             else if event.kind == InputKind::Menu && event.key == Key::Toggle && menus.active < 0 &&
-                    !sample_editor.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
+                    !sample_editor.active && !sample_dialog.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
                 let has_bus: bool = panes[2].visible() && mixer.visible && !keyboard.visible && !sampler.visible && midi.effects.len() > 0;
                 let has_editor: bool = panes[1].visible() && instrument_editor.active;
                 var stop: i32 = focus.selected == 0 ? 0 : (focus.selected == 1 ? 1 : (mixer.bus_focus && has_bus ? 3 : 2));
@@ -1642,6 +1655,18 @@ pub fn run() -> i32 {
                 }
                 else if action == 2 { sample_editor.release(); editing_sampler_slot = -1; free(message); message = clone("Sample edits discarded"); }
                 dirty = true;
+            }
+            else if sample_dialog.active {
+                if event.kind != InputKind::None || event.code != 0 {
+                    sample_dialog.on_event(event); dirty = true;
+                    if !sample_dialog.active && sample_dialog.result == 1 {
+                        let changed: bool = library.table.set_audio_properties(sample_dialog.frame_start, sample_dialog.frame_end,
+                            sample_dialog.original_bpm, i32(sample_dialog.algorithm.selected_id()), panes[1].bounds.inset(1));
+                        free(message); message = changed ? clone("Sample properties updated") : clone(library.table.error);
+                        playback_dirty = changed;
+                    }
+                    if !sample_dialog.active && sample_dialog.result == 2 { free(message); message = clone("Cancelled."); }
+                }
             }
             else if piano.active {
                 if event.kind != InputKind::None || event.code != 0 {
@@ -2096,7 +2121,9 @@ pub fn run() -> i32 {
                 }
                 dirty = true;
             } else if focus.selected == 1 {
-                if !library.table.editing && (library.table.group_detail_rows > 0 || (event.code == 102 && event.modifiers == 1)) {
+                if event.kind == InputKind::Menu && event.key == Key::Enter && library.table.audio_under_cursor() {
+                    sample_dialog.open(library.table.audio_at_cursor(), transport.bpm); dirty = true;
+                } else if !library.table.editing && (library.table.group_detail_rows > 0 || (event.code == 102 && event.modifiers == 1)) {
                     command = library.table.insert_event(event, panes[1].bounds.inset(1)); dirty = true;
                 } else { if library.table.edit_event(event, panes[1].bounds.inset(1)) { dirty = true; } }
             } else if focus.selected == 0 {
@@ -2909,6 +2936,7 @@ pub fn run() -> i32 {
                     if sample_editor.on_event(event, panes[1].bounds.width - 2) == 2 { sample_editor.release(); free(message); message = clone("Sample edits discarded"); }
                     dirty = true;
                 }
+                else if sample_dialog.active { sample_dialog.on_event(event); dirty = true; }
                 else if piano.active { piano.on_event(event); dirty = true; }
                 else if settings.active { settings.on_event(event); dirty = true; }
                 else if curve_dialog.active {
@@ -2976,7 +3004,7 @@ pub fn run() -> i32 {
     midi.release();
     settings.release();
     free(session_path); free(request_path);
-    instrument_editor.release(); sample_editor.release(); piano.release(); picker.release(); outputs.release(); song_table.release(); mixer_table.release(); free(preset_path); free(preview_path);
+    instrument_editor.release(); sample_editor.release(); sample_dialog.release(); piano.release(); picker.release(); outputs.release(); song_table.release(); mixer_table.release(); free(preset_path); free(preview_path);
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
     sidebar_clipboard.release();
     library.release(); dialog.release(); bpm_dialog.release(); free(message);

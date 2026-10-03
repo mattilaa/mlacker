@@ -1,0 +1,102 @@
+mod mlacker_ui::sequence;
+mod tui::dialog;
+mod tui::dropdown;
+mod tui::table;
+use mlacker_ui::sequence::AudioInstance;
+use tui::dialog::Dialog;
+use tui::dropdown::*;
+use tui::textfield::TextField;
+use tui::button::PushButton;
+use tui::focus::PaneFocus;
+use tui::layout::Alignment;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use tui::menu::Key;
+use tui::table::table_integer;
+use std::strbuf::free;
+
+/// Properties of one audio placement. Frame bounds are absolute positions in
+/// the loaded sample and use the usual half-open range [start, end).
+pub struct SampleDialog : Dialog {
+    var start: TextField; var end: TextField; var bpm: TextField;
+    var algorithm: DropDown; var frames: i64; var error: str8;
+    var frame_start: i64; var frame_end: i64; var original_bpm: i32;
+};
+impl SampleDialog {
+    pub fn new() -> SampleDialog {
+        return SampleDialog { title: "Sample properties", width: 58, height: 19,
+            start: TextField::new(""), end: TextField::new(""), bpm: TextField::new(""), error: "",
+            focus: PaneFocus::new(0), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
+    }
+    pub fn open(self: &mut Self, source: AudioInstance, project_bpm: i32) -> void {
+        self.frames = source.clip.frames;
+        self.frame_start = source.offset_frames < 0 ? 0 : source.offset_frames;
+        self.frame_end = source.frame_end > self.frame_start ? source.frame_end : source.render_end();
+        self.original_bpm = source.original_bpm > 0 ? source.original_bpm : project_bpm;
+        let first: str8 = format!("{}", self.frame_start); self.start.set_text(first); free(first);
+        let last: str8 = format!("{}", self.frame_end); self.end.set_text(last); free(last);
+        let tempo: str8 = format!("{}", self.original_bpm); self.bpm.set_text(tempo); free(tempo);
+        self.algorithm.set_items([
+            DropDownItem { id: 0, label: "Off" }, DropDownItem { id: 1, label: "Repitch" },
+            DropDownItem { id: 2, label: "Stretch" }, DropDownItem { id: 3, label: "Beats" }
+        ], source.stretch_algorithm);
+        self.error = ""; self.reset_buttons(); self.focus.selected = 0; self.active = true; self.result = 0;
+    }
+    fn accept(self: &mut Self) -> void {
+        let a: result<i64, str8> = table_integer(self.start.text);
+        let b: result<i64, str8> = table_integer(self.end.text);
+        let tempo: result<i64, str8> = table_integer(self.bpm.text);
+        if a.is_ok() && b.is_ok() && tempo.is_ok() {
+            let first: i64 = a.unwrap(); let last: i64 = b.unwrap(); let value: i64 = tempo.unwrap();
+            if first >= 0 && first < last && last <= self.frames && value >= 20 && value <= 400 {
+                self.frame_start = first; self.frame_end = last; self.original_bpm = i32(value);
+                self.result = 1; self.active = false; return;
+            }
+        }
+        self.error = "Start/end: 0 <= start < end <= sample frames; BPM: 20-400"; self.result = 0;
+    }
+    pub fn on_event(self: &mut Self, event: InputEvent) -> void {
+        if self.pressed_button >= 0 { return; }
+        if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
+            self.algorithm.cancel();
+            let back: bool = event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left);
+            if back { self.focus.selected = self.focus.selected == 0 ? 3 : (self.focus.selected == 3 ? 4 : (self.focus.selected == 4 ? 2 : self.focus.selected - 1)); }
+            else { self.focus.selected = self.focus.selected == 2 ? 4 : (self.focus.selected == 4 ? 3 : (self.focus.selected == 3 ? 0 : self.focus.selected + 1)); }
+            return;
+        }
+        if self.focus.selected == 4 && self.algorithm.on_event(event) { return; }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
+            self.active = false; self.result = 2; self.pressed_button = -1; return;
+        }
+        if self.focus.selected == 3 { self.on_button_event(event); return; }
+        if event.kind == InputKind::Menu && event.key == Key::Enter { self.accept(); return; }
+        if self.focus.selected == 0 { self.start.on_event(event); }
+        if self.focus.selected == 1 { self.end.on_event(event); }
+        if self.focus.selected == 2 { self.bpm.on_event(event); }
+    }
+    pub fn tick(self: &mut Self) -> void {
+        let action: i32 = self.tick_buttons();
+        if action == 1 { self.accept(); } else if action == 2 { self.active = false; self.result = 2; }
+    }
+    pub fn paint(self: SampleDialog, surface: Surface, viewport: Rect, theme: Theme) -> void {
+        if !self.active { return; }
+        let body: Rect = self.paint_frame(surface, viewport, theme);
+        surface.text(body, "Sample frame start", theme.foreground, theme.panel);
+        self.start.paint(surface, Rect::new(body.x, body.y + 1, body.width, 1), theme.foreground, theme.selection, self.focus.selected == 0);
+        surface.text(Rect::new(body.x, body.y + 3, body.width, 1), "Sample frame end (exclusive)", theme.foreground, theme.panel);
+        self.end.paint(surface, Rect::new(body.x, body.y + 4, body.width, 1), theme.foreground, theme.selection, self.focus.selected == 1);
+        surface.text(Rect::new(body.x, body.y + 6, body.width, 1), "Time stretch: original BPM", theme.foreground, theme.panel);
+        self.bpm.paint(surface, Rect::new(body.x, body.y + 7, body.width, 1), theme.foreground, theme.selection, self.focus.selected == 2);
+        surface.text(Rect::new(body.x, body.y + 9, body.width, 1), "Algorithm", theme.foreground, theme.panel);
+        let row: Rect = Rect::new(body.x, body.y + 10, body.width, 1);
+        self.algorithm.paint(surface, row, theme, self.focus.selected == 4);
+        surface.text(Rect::new(body.x, body.y + 12, body.width, 1), self.error, theme.accent, theme.panel);
+        self.algorithm.paint_popup(surface, row, viewport, theme);
+    }
+    pub fn release(self: &mut Self) -> void {
+        self.start.release(); self.end.release(); self.bpm.release(); self.algorithm.release();
+    }
+}

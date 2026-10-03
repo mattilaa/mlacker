@@ -65,6 +65,8 @@ use mlacker_ui::sample_view::SampleView;
 use mlacker_ui::audio_clip::*;
 mod mlacker_ui::bpm_dialog;
 use mlacker_ui::bpm_dialog::BpmDialog;
+mod mlacker_ui::sample_dialog;
+use mlacker_ui::sample_dialog::SampleDialog;
 use mlacker_ui::mixer::meter_ramp;
 mod mlacker_ui::frame_rate;
 use mlacker_ui::frame_rate::FrameRate;
@@ -1350,6 +1352,29 @@ fn tui_transport_clock_and_bpm_dialog() {
     dialog.open(137); dialog.editor.set_text("200"); dialog.on_event(decode_input("\t")); dialog.on_event(decode_input("\r"));
     for _i in 0..10 { dialog.tick(); } verify(!dialog.active && dialog.value == 200 && dialog.result == 1);
     dialog.release();
+}
+
+#[test]
+fn tui_sample_properties_dialog_and_frame_window() {
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var table: SequenceTable = SequenceTable::new(); table.create_track_kind(false, true, area);
+    var clip: AudioClip = AudioClip { source: clone("dialog.wav"), channels: 1, sample_rate: 8000, frames: 100, frames_per_row: 10 };
+    for _i in 0..100 { clip.samples.push(0.25f); }
+    for _i in 0..10 { clip.peaks.push(WavePeak { left: 250, right: 250 }); }
+    for _i in 0..40 { clip.detail_peaks.push(WavePeak { left: 250, right: 250 }); }
+    table.selected_row = 4; verify(table.insert_audio(clip, area));
+    var dialog: SampleDialog = SampleDialog::new(); dialog.open(table.audio_at_cursor(), 120);
+    verify(dialog.start.text == "0" && dialog.end.text == "100" && dialog.bpm.text == "120");
+    dialog.start.set_text("80"); dialog.end.set_text("40"); dialog.on_event(decode_input("\r"));
+    verify(dialog.active && dialog.error != "");
+    dialog.start.set_text("12"); dialog.end.set_text("78"); dialog.bpm.set_text("128"); dialog.algorithm.selected = 2;
+    dialog.on_event(decode_input("\r"));
+    verify(!dialog.active && dialog.result == 1 && dialog.frame_start == 12 && dialog.frame_end == 78);
+    verify(table.set_audio_properties(dialog.frame_start, dialog.frame_end, dialog.original_bpm, i32(dialog.algorithm.selected_id()), area));
+    let instance: AudioInstance = table.audio_at_cursor(); let rendered: AudioClip = instance.render_clip();
+    verify(instance.offset_frames == 12 && instance.frame_end == 78 && instance.original_bpm == 128 && instance.stretch_algorithm == 2);
+    verify(rendered.offset == 12 && rendered.frames == 66 && table.has_audio_properties());
+    dialog.release(); table.release(); clip.release();
 }
 
 #[test]
