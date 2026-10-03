@@ -21,6 +21,16 @@ into the selected AUDIO track at the Pattern cursor row. Without an audio track
 selected, importing only adds the sample to the Audio list and opens that view;
 it does not create a track or put audio on a MIDI track.
 
+**Audio → Make track clips destructive** crops every placement in the selected
+AUDIO track to its current source-frame window and replaces it with that
+independent sample. The new samples are named `SampleAudio.aif - 1`,
+`SampleAudio.aif - 2`, and so on. They appear under a `SampleAudio.aif` group in
+**View → Audio**; Enter on the group expands or collapses it, while Enter on a
+child still inserts that sample. Saving a project writes the slices as float
+WAV files below `Audio/SampleAudio.aif/`, preserving the group when the project
+is reopened or moved. Tracks containing more than one original source produce
+one group per source.
+
 Importing with an AUDIO track selected also inserts an instance at the selected
 row. A track can contain multiple independent, non-overlapping instances.
 Overlapping insertions are rejected, while the loaded sample remains available.
@@ -41,10 +51,12 @@ audio is under the cursor, and `p` pastes audio only on an AUDIO track with a
 non-empty audio clipboard, otherwise pasting rows. The audio clipboard is one
 clip carried per pattern and is duplicated when a pattern/track is cloned.
 
-Visual selection also drives whole-clip edits. Enter visual mode (`v` or `V`) on
-an AUDIO track, extend the row range, then `y`/`d` copy/cut the **first whole
-instance** intersecting the selection into the audio clipboard (unlike the
-row-granular `c`/`y`, these operate on the entire clip). **Ctrl+J/Ctrl+K** move
+Visual selection also drives audio edits. Enter visual mode (`v` or `V`) on an
+AUDIO track and extend the row range. `y` copies only the selected rows of the
+first intersecting instance, so paste checks and inserts that selected duration;
+the clipboard keeps a non-destructive window into the full source, so the
+pasted placement's LEN can later expand where source audio and pattern space
+remain. `d` cuts the whole intersecting instance. **Ctrl+J/Ctrl+K** move
 the instance under the cursor down/up one row, with pattern-bounds and
 non-overlap checks; the cursor follows it. Transpose (`J`/`K`) on an audio LEN
 cell that is not an instance's start row is a silent no-op instead of erroring.

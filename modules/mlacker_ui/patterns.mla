@@ -3,11 +3,12 @@ mod mlacker_ui::sequence;
 mod tui::dialog;
 mod mlacker_ui::dialog_buttons;
 mod mlacker_ui::audio_library;
-use mlacker_ui::audio_library::AudioLibrary;
-use mlacker_ui::audio_clip::AudioClip;
+use mlacker_ui::audio_library::*;
+use mlacker_ui::audio_clip::*;
 use tui::listview::*;
 use mlacker_ui::sequence::SequenceTable;
 use mlacker_ui::sequence::SequenceTrack;
+use mlacker_ui::sequence::AudioInstance;
 use tui::textfield::TextField;
 use tui::dialog::Dialog;
 use mlacker_ui::dialog_buttons::TextPrompt;
@@ -649,7 +650,7 @@ impl PatternLibrary {
         }
         if self.audio_mode {
             let action: i32 = self.audio.view.on_event(event, area);
-            if action == 2 { self.insert_selected_audio(area); }
+            if action == 2 && !self.audio.toggle_group() { self.insert_selected_audio(area); }
             return action != 0;
         }
         let action: i32 = self.view.on_event(event, area);
@@ -787,17 +788,7 @@ impl PatternLibrary {
         for i in 0..self.audio.samples.len() { if i32(i) != index { kept.push(self.audio.samples[i]); } }
         self.audio.samples = kept; self.audio.view.marks = [];
         sample.release();
-        // Rebuild the list labels: entries are numbered by position.
-        let items: list<ListItem> = self.audio.view.items;
-        for item in items { free(item.label); }
-        var labels: list<ListItem> = [];
-        for i in 0..self.audio.samples.len() {
-            let clip: AudioClip = self.audio.samples[i];
-            let name: str8 = base_name(clip.source);
-            labels.push(ListItem { id: i32(i) + 1, label: format!("{} {}", i + 1, name) });
-            free(name);
-        }
-        self.audio.view.items = labels;
+        self.audio.rebuild();
         if self.audio.view.selected >= self.audio.view.items.len() { self.audio.view.selected = i32(self.audio.view.items.len()) - 1; }
         self.audio.view.cancel_pending(); self.audio.view.reconcile(area);
         self.table.reconcile(area);
@@ -846,7 +837,7 @@ impl PatternLibrary {
         return count;
     }
     pub fn insert_selected_audio(self: &mut Self, area: Rect) -> bool {
-        let index: i32 = self.audio.view.selected;
+        let index: i32 = self.audio.selected_sample();
         if index < 0 || index >= self.audio.samples.len() { self.error = "Select a loaded sample"; return false; }
         let clip: AudioClip = self.audio.samples[index];
         self.error = ""; return self.table.insert_audio(clip, area);
@@ -860,6 +851,51 @@ impl PatternLibrary {
             if track.audio { self.insert_selected_audio(area); return true; }
         }
         self.show_audio(); return true;
+    }
+    /// Crop every placement on the active AUDIO track into its own sample,
+    /// replace the placements with those independent samples, and put them in
+    /// expandable Audio-pane groups named after their original source files.
+    pub fn make_audio_track_destructive(self: &mut Self, area: Rect) -> i32 {
+        let index: i32 = self.table.active_track();
+        if index < 0 || !self.table.tracks[index].audio { self.error = "Select an AUDIO track first"; return 0; }
+        var track: SequenceTrack = self.table.tracks[index];
+        if track.instances.len() == 0 { self.error = "The AUDIO track has no clips"; return 0; }
+        if self.audio.samples.len() + track.instances.len() > 256 { self.error = "Maximum 256 samples"; return 0; }
+        var groups: list<str8> = [];
+        var updated: list<AudioInstance> = []; var made: i32 = 0; var last_sample: i32 = -1;
+        let instances: list<AudioInstance> = track.instances;
+        for instance in instances {
+            var group: str8 = audio_group(instance.clip.source);
+            if group == "" { free(group); group = base_name(instance.clip.source); }
+            var known: bool = false; for existing in groups { if existing == group { known = true; } }
+            if !known { groups.push(clone(group)); }
+            var number: i32 = 1; let samples: list<AudioClip> = self.audio.samples;
+            for sample in samples {
+                let sample_group: str8 = audio_group(sample.source);
+                if sample_group == group { number = number + 1; }
+                free(sample_group);
+            }
+            let label: str8 = format!("{} - {}", group, number);
+            let source: str8 = format!("{}/{}", group, label);
+            let end: i64 = instance.render_end(); var clip: AudioClip = instance.clip.slice_frames(instance.offset_frames, end);
+            free(clip.source); clip.source = source;
+            last_sample = self.audio.add_clip(clip.copy());
+            instance.clip.release();
+            updated.push(AudioInstance { clip: clip, start_row: instance.start_row, length_ticks: instance.length_ticks,
+                original_bpm: instance.original_bpm, stretch_algorithm: instance.stretch_algorithm });
+            free(label); free(group); made = made + 1;
+        }
+        track.instances = updated;
+        var tracks: list<SequenceTrack> = [];
+        for t in 0..self.table.tracks.len() { tracks.push(i32(t) == index ? track : self.table.tracks[t]); }
+        self.table.tracks = tracks; self.table.rebuild_columns(); self.table.reconcile(area); self.table.error = "";
+        // Open every affected group, then leave the final generated clip selected.
+        for group in groups {
+            if !self.audio.group_open(group) { self.audio.expanded.push(clone(group)); }
+            free(group);
+        }
+        self.audio.rebuild(); if last_sample >= 0 { self.audio.select_sample(last_sample); }
+        self.error = ""; return made;
     }
     /// `frame` supplies the OK/Cancel buttons and their focus.
     pub fn paint_rename(self: PatternLibrary, surface: Surface, area: Rect, theme: Theme, frame: &TextPrompt) -> void {

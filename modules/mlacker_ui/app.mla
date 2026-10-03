@@ -223,7 +223,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                                 menu_item(bounce.tail_seconds == 5 ? "[x] 5 s" : "[ ] 5 s", Action::BounceTail5, true, keymap),
                                                 menu_item(bounce.tail_seconds == 10 ? "[x] 10 s" : "[ ] 10 s", Action::BounceTail10, true, keymap),
                                                 menu_item(bounce.tail_seconds == 20 ? "[x] 20 s" : "[ ] 20 s", Action::BounceTail20, true, keymap)]),
-                                menu_item(bounce.second_pass ? "[x] Bounce second pass (seamless loop)" : "[ ] Bounce second pass (seamless loop)", Action::ToggleBounceSecondPass, true, keymap)] },
+                                menu_item(bounce.second_pass ? "[x] Bounce second pass (seamless loop)" : "[ ] Bounce second pass (seamless loop)", Action::ToggleBounceSecondPass, true, keymap),
+                                menu_item("Make track clips destructive", Action::MakeAudioDestructive, true, keymap)] },
                     Menu {title: "Instrument", items: [
                                 menu_item("Add instrument", Action::AddInstrument, plugins, keymap),
                                 menu_item("Open VST3 editor", Action::OpenPluginEditor, plugins, keymap),
@@ -1040,7 +1041,7 @@ pub fn run() -> i32 {
         // An Audio view preview ends at the clip's end, or when the selection,
         // the sidebar focus or the view changes, or a dialog opens.
         if preview_sample >= 0 {
-            if !midi.previewing() || focus.selected != 0 || !library.audio_mode || library.audio.view.selected != preview_sample || dialog.active {
+            if !midi.previewing() || focus.selected != 0 || !library.audio_mode || library.audio.selected_sample() != preview_sample || dialog.active {
                 midi.stop_preview(); preview_sample = -1; dirty = true;
                 if starts_with(message, "Playing sample ") == 1 { free(message); message = clone("Preview stopped"); }
             }
@@ -1569,7 +1570,7 @@ pub fn run() -> i32 {
                     !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
                     !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
                     !paste_error.active && !library.renaming && !sample_editor.active && !sample_dialog.active && !piano.active {
-                let index: i32 = library.audio.view.selected;
+                let index: i32 = library.audio.selected_sample();
                 let replay: bool = preview_sample != index || !midi.previewing();
                 midi.stop_preview(); preview_sample = -1;
                 if preview_path != "" { free(preview_path); preview_path = clone(""); }
@@ -2318,7 +2319,7 @@ pub fn run() -> i32 {
                 // pad; the Instruments list is the fallback for other tracks.
                 let track_slot: i32 = library.table.active_instrument();
                 let slot: i32 = track_slot > 0 ? track_slot : library.selected_instrument();
-                let selected: i32 = library.audio.view.selected;
+                let selected: i32 = library.audio.selected_sample();
                 let root: i64 = slot < 1 ? -1 : midi.output.instrument_sampler(slot, 0);
                 if root < 0 {
                     free(message); message = clone("Select a loaded sampler instrument (e.g. Mla Drum) in Instruments first");
@@ -2406,7 +2407,7 @@ pub fn run() -> i32 {
             }
             else if command == Action::EditSample {
                 editing_sampler_slot = -1;
-                let index: i32 = library.audio.view.selected;
+                let index: i32 = library.audio.selected_sample();
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
                 else {
                     transport.playing = false;
@@ -2446,7 +2447,7 @@ pub fn run() -> i32 {
                 }
             }
             else if command == Action::RemoveAudio {
-                let index: i32 = library.audio.view.selected;
+                let index: i32 = library.audio.selected_sample();
                 let uses: i32 = library.sample_usage(index);
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
                 else if uses == 0 { remove_target = index; remove_request = 1; }
@@ -2460,6 +2461,13 @@ pub fn run() -> i32 {
                     remove_question.open(); focus.set_menu_active(true);
                     free(name);
                 }
+            }
+            else if command == Action::MakeAudioDestructive {
+                transport.playing = false;
+                let count: i32 = library.make_audio_track_destructive(panes[1].bounds.inset(1));
+                free(message);
+                message = count > 0 ? format!("Made {} track clip(s) destructive; save the project to write their Audio group folder", count) : clone(library.error);
+                if count > 0 { library.show_audio(); playback_dirty = true; }
             }
             else if command == Action::RemoveInstrument {
                 let id: i32 = library.selected_instrument();

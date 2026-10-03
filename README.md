@@ -204,8 +204,9 @@ ordinary files:
 
 ```
 My song.mlaproj/
-  Project.mlack      session (format 1.3)
-  Audio/             every sample of the Audio list, as float32 WAV
+  Project.mlack      session (format 1.4)
+  Audio/             ordinary Audio-list samples, as float32 WAV
+    SampleAudio.aif/ destructive slices grouped by their original filename
   Presets/           each plugin's parameters: Instrument 01 - <name>.mlapre,
                      Master / Effect N / Insert N - <name>.mlafxpre
 ```
@@ -276,7 +277,7 @@ dialog or text field has the keyboard.
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
-| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass |
+| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass, Make track clips destructive |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
 | Record | Play metronome, Extend pattern when playing, Metronome ▸, Bounce selection to sample |

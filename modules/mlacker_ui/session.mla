@@ -1,5 +1,5 @@
 /// MLACK binary session 1.0. All lengths and integers are little endian.
-/// A project (1.2) is a `.mlaproj` folder: Project.mlack refers to float WAVs
+/// A project (1.4) is a `.mlaproj` folder: Project.mlack refers to float WAVs
 /// in Audio/ and plugin presets in Presets/ by paths relative to the folder.
 mod std::serde::detail;
 mod std::fs;
@@ -7,6 +7,7 @@ mod std::bytes;
 mod std::audio;
 mod mlacker_ui::patterns;
 mod mlacker_ui::audio_controller;
+mod mlacker_ui::audio_library;
 mod mlacker_ui::spectrum;
 use mlacker_ui::spectrum::MasterBus;
 use std::serde::detail::*;
@@ -14,6 +15,7 @@ use std::fs::File;
 use mlacker_ui::patterns::*;
 use mlacker_ui::sequence::*;
 use mlacker_ui::audio_clip::*;
+use mlacker_ui::audio_library::*;
 use mlacker_ui::audio_controller::AudioSystem;
 use mlacker_ui::audio_controller::EffectChannel;
 use mlacker_ui::audio_controller::PadAssignment;
@@ -207,10 +209,12 @@ fn file_safe(name: str8) -> str8 {
     let safe: str8 = std::strbuf::builder_to_string(builder);
     std::strbuf::builder_free(builder); bytes.close(); return safe;
 }
-/// A project content path is `folder/name`: one component below one of the
-/// project's own folders, so a project never refers outside itself.
+/// A project content path is `folder/name`; Audio additionally permits the
+/// generated-slice layout `Audio/group/name`. Components never escape root.
 fn content_path(path: str8, folder: str8) -> bool {
-    let pattern: str8 = format!("{}/[^./\\\\][^/\\\\]*", folder);
+    let pattern: str8 = folder == "Audio"
+        ? format!("{}/[^./\\\\][^/\\\\]*(/[^./\\\\][^/\\\\]*)?", folder)
+        : format!("{}/[^./\\\\][^/\\\\]*", folder);
     let valid: bool = tui::table::table_matches(pattern, path); free(pattern); return valid;
 }
 /// Owned file name stem for the plugin in `slot`.
@@ -561,12 +565,24 @@ impl SessionCodec {
         var clip: AudioClip = AudioClip {}; clip = source;
         var name: str8 = clone("");
         if !self.reading && !self.failed {
-            let base: str8 = base_name(clip.source);
-            let dot: i64 = std::strbuf::rfind(base, ".");
-            let bare: str8 = dot > 0 ? std::strbuf::sub(base, 0, dot) : clone(base); free(base);
-            let safe: str8 = file_safe(bare); free(bare);
+            let group: str8 = audio_group(clip.source); var folder: str8 = clone("Audio");
+            var base: str8 = audio_label(clip.source);
+            if group == "" {
+                free(base); base = base_name(clip.source);
+                let dot: i64 = std::strbuf::rfind(base, ".");
+                let bare: str8 = dot > 0 ? std::strbuf::sub(base, 0, dot) : clone(base); free(base); base = bare;
+            } else {
+                let safe_group: str8 = file_safe(group);
+                if safe_group != "" { free(folder); folder = format!("Audio/{}", safe_group); }
+                free(safe_group);
+                let full_folder: str8 = format!("{}/{}", self.root, folder);
+                let made: result<i32, str8> = std::fs::mkdir_p(full_folder);
+                if made.is_err() { self.fail_with(format!("Cannot create {}", folder)); }
+                free(full_folder);
+            }
+            let safe: str8 = file_safe(base); free(base);
             let stem: str8 = safe == "" ? format!("Sample {}", index + 1) : clone(safe); free(safe);
-            free(name); name = self.unique_file("Audio", stem, ".wav"); free(stem);
+            free(name); name = self.unique_file(folder, stem, ".wav"); free(stem); free(folder); free(group);
             let full: str8 = format!("{}/{}", self.root, name);
             if !clip.write_wav(full) {
                 self.fail_with(format!("Cannot write {}", name));
@@ -759,7 +775,7 @@ impl SessionCodec {
         v.row = self.number(v.row, 0, 16383); v.phase = self.integer(v.phase, 0, 14999);
         v.pane = self.number(v.pane, 0, 2); v.sidebar = self.number(v.sidebar, 0, 3);
         v.list_selected = self.number(v.list_selected, -1, 65535); v.list_scroll = self.number(v.list_scroll, 0, 65535);
-        v.audio_selected = self.number(v.audio_selected, -1, 255); v.audio_scroll = self.number(v.audio_scroll, 0, 255);
+        v.audio_selected = self.number(v.audio_selected, -1, 511); v.audio_scroll = self.number(v.audio_scroll, 0, 511);
         v.instrument_selected = self.number(v.instrument_selected, -1, 31); v.instrument_scroll = self.number(v.instrument_scroll, 0, 31);
         v.mixer = self.flag(v.mixer); v.meter_grainy = self.flag(v.meter_grainy); v.meter_fps = self.number(v.meter_fps, 1, 240);
         v.sample = self.flag(v.sample); v.sample_grainy = self.flag(v.sample_grainy); v.sample_wave = self.flag(v.sample_wave); v.sample_zoom = self.number(v.sample_zoom, 0, 30);
@@ -797,9 +813,9 @@ impl SessionCodec {
         // INSTRUMENT_INPUTS.
         let mastered: bool = mastered_view || looped || aux_routed;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
-        // A project session (1.3) keeps samples and plugin state in files.
+        // A project session (1.4) also permits Audio/group/sample.wav.
         let project: bool = self.root != "";
-        self.number(1, 1, 1); self.minor = self.number(project ? 3 : 2, project ? 2 : 0, project ? 3 : 2);
+        self.number(1, 1, 1); self.minor = self.number(project ? 4 : 2, project ? 2 : 0, project ? 4 : 2);
         self.audio_off = !self.reading || (project ? self.minor >= 3 : self.minor >= 2);
         var state: SessionView = self.view(view);
         let sample_count: i32 = self.number(i32(library.audio.samples.len()), 0, 256);
@@ -807,8 +823,9 @@ impl SessionCodec {
             if self.failed { break; }
             var clip: AudioClip = AudioClip {}; if !self.reading { clip = library.audio.samples[i]; }
             let decoded: AudioClip = project ? self.clip_file(clip, i) : self.clip(clip);
-            if self.reading { library.audio.samples.push(decoded); let name: str8 = base_name(decoded.source); library.audio.view.items.push(ListItem { id: i32(i) + 1, label: format!("{} {}", i + 1, name) }); free(name); }
+            if self.reading { library.audio.samples.push(decoded); }
         }
+        if self.reading { library.audio.rebuild(); }
         var count: i32 = audio.processor_path != "" ? 1 : 0;
         let paths: list<str8> = audio.instrument_paths; for path in paths { if path != "" { count = count + 1; } }
         count = self.number(count, 0, 33); var plugins: list<PluginSnapshot> = [];
