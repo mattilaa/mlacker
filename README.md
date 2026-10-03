@@ -479,8 +479,10 @@ backwards through every pane of the main view: the sidebar, the pattern editor,
 the inspector/mixer, the FX bus (when the mixer shows effect channels) and the
 VST3 editor (while it is open). The pattern pane is skipped while the VST3 editor
 covers it, and the editor keeps its own keys only while it holds focus, so Tab
-moves out of it without closing it. `Ctrl+Shift+H/J/K/L` still moves between
-panes by direction.
+moves out of it without closing it. Choosing **Patterns**, **Audio** or
+**Instruments** from the View menu shows and focuses the View sidebar; choosing
+**Song matrix** focuses the Pattern pane. View commands that show a lower-pane
+tool focus that pane.
 
 **Ctrl+F** toggles the focused Pattern or lower pane fullscreen. The View
 sidebar remains at the left when it is shown, and an open virtual piano remains
@@ -527,7 +529,7 @@ matrix. Ctrl+P from the pattern or the matrix still plays the matrix.
 
 Browsing starts focused on the **Directories** pane on the left, where `j/k`
 moves, Enter or `l` expands, and `h` collapses. Tab cycles Path → Directories →
-Files → buttons, and Ctrl+Shift+H/J/K/L moves between them. Typing `/` or `~`
+Files → buttons (Shift+Tab cycles backwards). Typing `/` or `~`
 jumps to the path field and starts a fresh absolute path; Ctrl+U clears the field
 and focuses it. Save choosers open in the path field instead, since they start
 from a suggested filename. Relative paths typed into the field resolve against
@@ -1005,7 +1007,7 @@ The source WAV/AIFF on disk is never rewritten.
 
 ### Mixer faders and MIDI recording
 
-Press `m` to show Mixer, then focus it with Tab (or `Ctrl+Shift+J`) from Pattern
+Press `m` to show Mixer, then focus it with Tab from Pattern
 view.
 `h/l` or Left/Right selects tracks. Each strip has a vertical volume fader beside
 its VU meter, with the 0–100 value underneath. `Shift+J/K` lowers/raises volume;
@@ -1183,7 +1185,7 @@ focused.
 
 While the keyboard has focus, it keeps printable keys for itself, including `q`
 (quit with `Ctrl+C`, or leave the pane first). Tab, Shift+Tab,
-`Ctrl+Shift+H/J/K/L`, F1, `Shift+M` and control shortcuts keep working as usual.
+F1, `Shift+M` and control shortcuts keep working as usual.
 The widget behind it is `tui::piano::PianoKeyboard`, which the drum-pad picker
 uses too.
 

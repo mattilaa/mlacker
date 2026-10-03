@@ -21,7 +21,7 @@ def main():
     try:
         tui.read(0.8)
         expect(tui.send(F1 + b"lll\r", 0.6), b"Track 1")         # Track > Create MIDI track
-        tui.send(b"\x1b[108;6u", 0.4)                             # focus the pattern editor
+        tui.send(b"\t", 0.4)                                      # focus the pattern editor
         expect(tui.send(b"zz", 0.5), b"CC1")                      # show LEN/OFF, then CC
         tui.send(b"llll", 0.4)                                    # NOTE -> CC1
         expect(tui.send(b"\r\x150\r", 0.5), b"0")

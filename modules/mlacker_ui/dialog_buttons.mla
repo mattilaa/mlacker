@@ -17,7 +17,7 @@ pub fn button_key(action: i32) -> InputEvent {
 
 /// OK/Cancel frame for the text prompts owned by the pattern library and the
 /// sequence table (rename pattern, rename track, CC column). Pane 0 is the text
-/// field, pane 3 the buttons; Tab or Ctrl+Shift+J/K moves between them.
+/// field, pane 3 the buttons; Tab and Shift+Tab move between them.
 /// `owner` is the prompt it frames: 0 none, 1 pattern rename, 2 track prompt.
 pub struct TextPrompt : Dialog { var owner: i32; };
 impl TextPrompt {

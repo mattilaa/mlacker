@@ -16,7 +16,7 @@ def main():
         try:
             tui.read(.8)
             tui.send(F1 + b"lll" + b"jj\r")  # Instrument track.
-            tui.send(b"\x1b[108;6u")  # Focus Pattern view.
+            tui.send(b"\t")  # Focus Pattern view.
             frame = tui.send(b"f")
             assert b"- empty -" in frame, frame[-5000:]
             frame = tui.send(b"\r")

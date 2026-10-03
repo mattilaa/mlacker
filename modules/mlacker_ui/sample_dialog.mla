@@ -85,7 +85,7 @@ impl SampleDialog {
         if self.pressed_button >= 0 { return; }
         if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
             self.algorithm.cancel(); self.resample.cancel(); self.looping.cancel();
-            let back: bool = event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left);
+            let back: bool = (event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left)) || event.modifiers == 2;
             self.focus.selected = focus_after(self.focus.selected, back);
             return;
         }

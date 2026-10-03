@@ -127,7 +127,7 @@ Grainy is the default for both sample waveforms and Mixer meters.
 
 Press `s` while an audio clip is under the Pattern cursor to toggle the horizontal
 **Sample** view in the lower pane. It replaces (and remembers) the Mixer/Inspector;
-moving off the clip closes it. Focus the Sample pane (Ctrl+Shift+J, or Tab) to
+moving off the clip closes it. Focus the Sample pane with Tab to
 use its keys; Ctrl+F shows it fullscreen. The cursor starts on the Pattern row
 and the view stays centred on it while zooming. **`+`/`-`** zoom in/out by factors
 of two, from the full clip to one original sample per horizontal pixel (two
@@ -258,7 +258,7 @@ handoff, overflow, and indicator tests live in `tests/midi_tests.mla`.
 File → Settings selects the MIDI input adapter and AUHAL master output device.
 Both offer System default and Disabled. Enter opens a dropdown, j/k or arrows
 browse, Enter commits its choice, and Escape cancels the popup. A second Escape
-cancels Settings. Tab or Ctrl+Shift+H/J/K/L moves between fields and the centered
+cancels Settings. Tab or Shift+Tab moves between fields and the centered
 OK/Cancel buttons. Only OK applies choices. Device choices last for this run;
 no settings file or automatic hot-plug reconnect is implemented yet. Output
 open/start errors keep Settings open and retain the previous output.
@@ -352,7 +352,7 @@ opening the length dialog.
 ### Navigation
 
 The pattern is a `tui::table::Table` with a frozen ROW column and one column
-group per track. Focus the sequence pane with Ctrl+Shift+L; `l`/`h`
+group per track. Focus the sequence pane with Tab; `l`/`h`
 select the next/previous column and `j`/`k` (or Down/Up) select rows. Navigation
 stops at the edges and scrolls the selection into view, with a fixed header.
 `G` jumps to the bottom row; consecutive `gg` jumps to the first row. These

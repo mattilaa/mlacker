@@ -15,7 +15,7 @@ from pathlib import Path
 from session_tui_smoke import Terminal, F1
 
 ADD_AUDIO = F1 + b"lllll\r"
-FILES_PANE = b"\x1b[108;6u"
+FILES_PANE = b"\t"
 HINT = b"Ctrl+P: play/stop preview"
 PLAYING = b"Playing preview | Ctrl+P stops"
 
@@ -66,7 +66,6 @@ def main():
             # View > Audio: Ctrl+P plays the selected sample, again stops it,
             # and moving the selection stops it too.
             expect(tui.send(F1 + b"ll" + b"jj\r"), b" Audio ")
-            tui.send(b"\x1b[104;6u")  # focus the sidebar
             tui.send(b"gg")
             expect(tui.send(b"\x10"), b"Playing sample 1: a_long.wav | Ctrl+P stops")
             expect(tui.send(b"\x10"), b"Preview stopped")

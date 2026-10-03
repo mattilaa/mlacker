@@ -16,7 +16,7 @@ def main():
     try:
         tui.read(0.8)
         tui.send(F1 + b"lll\r")  # Track > Create track > MIDI
-        frame = tui.send(b"\x1b[108;6uK")  # Pattern pane, create a note
+        frame = tui.send(b"\tK")  # Pattern pane, create a note
         assert b"C-4" in frame and b"100" in frame, frame[-5000:]
         tui.send(b"vly")
         frame = tui.send(b"lp")  # NOTE clipboard cannot start on VEL

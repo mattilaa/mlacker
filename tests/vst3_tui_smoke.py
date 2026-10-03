@@ -62,7 +62,6 @@ def main():
         frame = send(F1 + b"lljjj\r")
         assert b"Instruments" in frame and b"001 Mlacker Test" in frame, frame[-6000:]
         # The list owns normal navigation and Enter, without changing pattern.
-        send(b"\x1b[104;6u")  # Ctrl+Shift+H: focus left
         frame = send(b"ggG\r")
         assert b"Instrument: 1" in frame
         frame = send(b"m")

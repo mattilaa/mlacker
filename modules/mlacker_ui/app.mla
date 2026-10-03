@@ -1571,6 +1571,12 @@ pub fn run() -> i32 {
                 for held in ended { midi.keyboard_note(held.target, false, held.note, 0); }
                 continue;
             }
+            // mlacker uses Tab / Shift+Tab (and the View menu's pane-selecting
+            // commands) for focus traversal. The shared TUI decoder still
+            // identifies Ctrl+Shift+H/J/K/L as Pane events for other clients;
+            // discard them before they can reach either the main view or a
+            // modal widget here.
+            if event.kind == InputKind::Pane { continue; }
             // Any edit may change the next row: prepare it again afterwards.
             if prepared_row >= 0 && !prepared_playback.started() && (event.kind != InputKind::None || event.code != 0) {
                 prepared_table.release(); prepared_mixer.release();
@@ -2142,9 +2148,6 @@ pub fn run() -> i32 {
             else if event.kind == InputKind::Menu && function_number(event.key) > 0 && event.modifiers == 1 {
                 menus.on_function_key(event.key);
                 focus.set_menu_active(menus.active >= 0);
-                dirty = true;
-            } else if event.kind == InputKind::Pane {
-                focus.navigate(event.key, panes);
                 dirty = true;
             } else if focus.selected == 2 && spectrum.visible && spectrum.handles(event) {
                 spectrum.on_event(event, midi.output);
@@ -2843,7 +2846,8 @@ pub fn run() -> i32 {
                 }
             }
             else if command == Action::ViewPatterns {
-                matrix.visible = false; library.show_patterns();
+                matrix.visible = false; library.show_patterns(); view_pane_visible = true;
+                focus.selected = 0; mixer.bus_focus = false; instrument_editor.focused = false;
             }
             else if command == Action::TogglePaneFullscreen {
                 free(message);
@@ -2870,13 +2874,19 @@ pub fn run() -> i32 {
                 matrix.visible = !matrix.visible;
                 // A session with no song yet opens on one empty row to edit.
                 if matrix.visible && library.song.len() == 0 { library.matrix_insert_row(0, false); }
-                if matrix.visible { focus.selected = 1; }
+                focus.selected = 1; mixer.bus_focus = false; instrument_editor.focused = false;
                 free(message);
                 message = clone(matrix.visible ? "Song matrix: Enter places the pattern selected in the sidebar; parallel lanes play together"
                     : "Song matrix closed");
             }
-            else if command == Action::ViewAudio { library.show_audio(); }
-            else if command == Action::ViewInstruments { library.show_instruments(); }
+            else if command == Action::ViewAudio {
+                library.show_audio(); view_pane_visible = true;
+                focus.selected = 0; mixer.bus_focus = false; instrument_editor.focused = false;
+            }
+            else if command == Action::ViewInstruments {
+                library.show_instruments(); view_pane_visible = true;
+                focus.selected = 0; mixer.bus_focus = false; instrument_editor.focused = false;
+            }
             else if command == Action::CreateInstrumentTrack {
                 // Never join an instance another track already plays through: two
                 // tracks on one instance share its pads, fader and meters. Sharing
@@ -3016,6 +3026,7 @@ pub fn run() -> i32 {
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
+                if spectrum.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
             }
             else if command == Action::ToggleVirtualKeyboard {
                 keyboard.visible = !keyboard.visible;

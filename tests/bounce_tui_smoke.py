@@ -44,7 +44,7 @@ def main():
         frame = tui.send(b"h" + b"k" * 5 + b" ", 0.6)
         assert b"Add audio" in frame and b"Bounce tail" in frame, frame[-4000:]
         tui.send(b"\x1b")
-        tui.send(b"\x1b[108;6u")  # focus the pattern editor
+        tui.send(b"\t")  # focus the pattern editor
         # No visual selection: the whole pattern.
         frame = tui.send(BOUNCE, 3.0)
         expect_any(frame, b"Bounced rows 1-", b"Bouncing needs audio enabled")

@@ -159,13 +159,12 @@ def main():
 
             # Space marks several files in the audio chooser; Enter opens them all.
             expect(tui.send(F1 + b"lllll\r"), b"Add audio", b"kick.wav")
-            tui.send(b"\x1b[108;6u")  # focus the Files pane
+            tui.send(b"\t")            # focus the Files pane
             tui.send(b"  ")            # mark kick.wav and snare.wav
             expect(tui.send(b"\r", 0.9), b"Added 2 samples")
             # Shift+Backspace removes the selected library item. An unused
             # sample goes at once, and its drum pads are emptied.
             expect(tui.send(F1 + b"ll" + b"jj\r"), b" Audio ")
-            tui.send(b"\x1b[104;6u")  # focus the library pane
             tui.send(b"gg")
             frame = expect(tui.send(b"\x1b[127;2u", 0.6), b"Removed sample 1")
             assert b"drum pad(s) cleared" in frame, frame[-4000:]
@@ -173,7 +172,6 @@ def main():
             expect(tui.send(F1 + b"lllll" + b"jjj\r", 0.6), b"Removed sample")
             # An instrument that tracks play asks before it goes.
             expect(tui.send(F1 + b"ll" + b"jjj\r"), b" Instruments ")
-            tui.send(b"\x1b[104;6u")
             tui.send(b"gg")
             # Shift+Backspace goes through the sidebar's marked-item removal.
             frame = expect(tui.send(b"\x1b[127;2u", 0.6), b"track(s) use this instrument")
@@ -182,7 +180,7 @@ def main():
 
             # Sessions are single-open: Space must not mark there.
             expect(tui.send(F1 + b"j\r"), b"Open session")
-            tui.send(b"\x1b[108;6u")
+            tui.send(b"\t")
             frame = tui.send(b" ")
             assert b"Marked" not in frame, frame[-4000:]
             tui.send(b"\x1b", 0.6)

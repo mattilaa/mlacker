@@ -145,11 +145,9 @@ def main():
         os.write(master, F1 + b"ll")
         read_frame(None)
         os.write(master, b"\r")
-        assert b" Patterns " in read_frame(1)
+        assert b" Patterns " in read_frame(0)
         # Browsing the matrix leaves its last cell's pattern selected, so come
         # back to pattern 1 explicitly from the library pane.
-        os.write(master, b"\x1b[104;6u")
-        read_frame(0)
         os.write(master, b"gg")
         read_frame(0)
         # Tab cycles panes forwards and Shift+Tab backwards, in both the CSI Z
@@ -167,7 +165,7 @@ def main():
         os.write(master, b"\t")
         read_frame(0)
         # The sequence is a real 64-row table; column/row input stays in its pane.
-        os.write(master, b"\x1b[108;6u")
+        os.write(master, b"\t")
         read_frame(1)
         os.write(master, b"G")
         assert b"064" in read_frame(1)
@@ -362,13 +360,13 @@ def main():
                 os.write(master, b"s")
                 assert b" Sample " in read_frame(1)
                 # The focused Sample pane zooms with +/-.
-                os.write(master, b"\x1b[106;6u")
+                os.write(master, b"\t")
                 read_frame(2)
                 os.write(master, b"+" * 15)
                 assert b"1 frames/px" in read_frame(2)
                 os.write(master, b"-")
                 assert b" Sample " in read_frame(2)
-                os.write(master, b"\x1b[107;6u")
+                os.write(master, b"\x1b[Z")
                 read_frame(1)
                 # Both views share the texture and type controls.
                 os.write(master, F1 + b"ll")
@@ -379,14 +377,14 @@ def main():
                 read_frame(None)
                 os.write(master, b"jjjjljjlj\r")
                 assert b"Grainy Wave" in read_frame(1, pattern_grainy=True)
-                # The lower pane owns zoom input; pane navigation stays distinct.
-                os.write(master, b"\x1b[106;6u")
+                # The lower pane owns zoom input after Tab moves focus there.
+                os.write(master, b"\t")
                 read_frame(2)
                 os.write(master, b"=")
                 assert b" Sample " in read_frame(2)
                 os.write(master, b"s")
                 assert b" Inspector " in read_frame(2)
-                os.write(master, b"\x1b[107;6u")
+                os.write(master, b"\x1b[Z")
                 read_frame(1)
                 os.write(master, F1 + b"ll")
                 read_frame(None)
@@ -413,21 +411,22 @@ def main():
         os.write(master, F1 + b"ll")
         read_frame(None)
         os.write(master, b"jj\r")
-        assert b" Audio " in read_frame(1)
-        os.write(master, b"\x1b[104;6u")
-        assert b"2 mono.AIF" in read_frame(0)
+        audio_view = read_frame(0)
+        assert b" Audio " in audio_view and b"2 mono.AIF" in audio_view
         os.write(master, b"\r")  # reuse selected sample at the Pattern cursor (row 6)
         assert b"WAVE" in read_frame(0)
-        os.write(master, b"\x1b[108;6u" + b"j" * 15)
+        os.write(master, b"\t" + b"j" * 15)
         read_frame(1)
-        os.write(master, b"\x1b[104;6u\r")  # a second independent instance at row 21
+        os.write(master, F1 + b"lljj\r\r")  # Audio focuses the sidebar; add a second instance at row 21
         assert b"WAVE" in read_frame(0)
-        os.write(master, b"\x1b[108;6u\x7f")
+        os.write(master, b"\t\x7f")
         assert b"WAVE" in read_frame(1)  # the first instance remains
         os.write(master, b"gg" + F1 + b"ll")
         read_frame(None)
         os.write(master, b"\r")
-        assert b" Patterns " in read_frame(1)
+        assert b" Patterns " in read_frame(0)
+        os.write(master, b"\t")
+        read_frame(1)
         os.write(master, b"m")
         assert b"A5" in read_frame(1)
         os.write(master, b"m")
@@ -436,14 +435,14 @@ def main():
         os.write(master, b"h" * 30)
         read_frame(1, table_cell=((28, 4), (60, 91, 128)), table_text=((24, 4), "001"))
         # Menu navigation must not mutate the underlying table, even after
-        # scrolling beyond its viewport; column and pane keys are captured too.
+        # scrolling beyond its viewport; column keys are captured too.
         os.write(master, F1)
         read_frame(None)
         os.write(master, b"j" * 70 + b"llGm\x1b[106;6u")
         read_frame(None)
         os.write(master, b"\x1b")
         assert b"001" in read_frame(1, table_cell=((28, 4), (60, 91, 128)))
-        os.write(master, b"\x1b[104;6u")
+        os.write(master, F1 + b"ll\r")  # View > Patterns also focuses the sidebar.
         read_frame(0)
         # List navigation selects another pattern; its mixer is independent.
         os.write(master, b"jl")
@@ -453,22 +452,26 @@ def main():
         os.write(master, b"m")
         while b" Inspector " not in read_frame(0):
             pass
-        os.write(master, b"\x1b[108;6u")
+        os.write(master, b"\t")
         read_frame(1, table_cell=((28, 4), (60, 91, 128)))
-        os.write(master, b"\x1b[104;6u")
+        os.write(master, b"\x1b[Z")
         read_frame(0)
-        # Ctrl+Shift+L/J/K/H traverses the nested pane geometry.
-        for packet, pane in [(b"\x1b[108;6u", 1), (b"\x1b[106;6u", 2),
-                             (b"\x1b[107;6u", 1), (b"\x1b[104;6u", 0),
-                             (b"\x1b[108;6u", 1), (b"\x1b[106;6u", 2)]:
+        # Tab/Shift+Tab traverses the panes; Ctrl+Shift+H/J/K/L is ignored.
+        for packet, pane in [(b"\t", 1), (b"\t", 2), (b"\x1b[Z", 1),
+                             (b"\x1b[Z", 0), (b"\t", 1), (b"\t", 2)]:
             os.write(master, packet)
             read_frame(pane)
+        os.write(master, b"\x1b[104;6u\x1b[106;6u\x1b[107;6u\x1b[108;6u\t")
+        read_frame(0)  # Tab still advances from pane 2: the old shortcuts did nothing.
+        os.write(master, b"\t")
+        read_frame(1)
+        os.write(master, b"\t")
+        read_frame(2)
         os.write(master, F1)
         assert b"New session" in read_frame(None)
         os.write(master, b"\x1b[107;6u")
-        read_frame(None)  # menu retains keyboard ownership
         os.write(master, b"\x1b")
-        read_frame(2)  # previous pane restored, not the first pane
+        read_frame(2)  # ignored shortcut leaves the previous pane selected
         for dismissal in (F1,):
             os.write(master, F1)
             read_frame(None)
@@ -517,18 +520,18 @@ def main():
         os.write(master, b"\x15tests/fixtures/tui_dialog\r")
         browser = read_frame(None, 0)
         assert b"alpha.session" in browser and b"qhjk session.session" in browser
-        os.write(master, b"\x1b[106;6u")  # path -> files
+        os.write(master, b"\t\t")  # path -> directories -> files
         read_frame(None, 2)
-        os.write(master, b"\x1b[104;6u")  # files -> directories
+        os.write(master, b"\x1b[Z")  # files -> directories
         read_frame(None, 1)
         os.write(master, b"jl")  # select branch, expand it
         browser = read_frame(None, 1)
         assert b"child.session" in browser and b"nested" in browser
-        os.write(master, b"\x1b[108;6u")
+        os.write(master, b"\t")
         read_frame(None, 2)
-        os.write(master, b"\x1b[107;6u")
+        os.write(master, b"\x1b[Z\x1b[Z")
         read_frame(None, 0)
-        os.write(master, b"\x1b[106;6u\r")
+        os.write(master, b"\t\t\r")
         assert b"Selected:" in read_frame(2)
         # An invalid typed path keeps the dialog open, even when it contains q.
         # Ctrl+U moves focus from the directory tree to the path field, so the

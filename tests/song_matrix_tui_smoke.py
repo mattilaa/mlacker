@@ -25,7 +25,7 @@ def main():
         expect(tui.send(F1 + b"llllll\r"), b"Add VST3 instrument")
         expect(tui.send(b"\x15" + os.fsencode(os.path.abspath(sys.argv[2])) + b"\r", 1.0),
                b"Instrument loaded:")
-        tui.send(b"\x1b[108;6u")                 # focus the pattern editor
+        tui.send(b"\t")                          # focus the pattern editor
         expect(tui.send(b"K", 0.5), b"C-4")      # default note in the NOTE cell
         expect(tui.send(F1 + b"llll" + b"j\r", 0.6), b"Pattern / 2")  # Pattern > Clone
 
@@ -66,14 +66,13 @@ def main():
         # that pattern in the editor to see it.
         expect(tui.send(b"M", 0.8), b"Song matrix closed")
         tui.send(F1 + b"ll\r", 0.6)              # View > Patterns
-        tui.send(b"\x1b[104;6u", 0.5)            # focus the sidebar
         frame = tui.send(b"k", 0.8)              # select pattern 1
         assert b"- 2" in frame, frame[-4000:]
 
         # Browsing the matrix follows the pattern under the cursor: the editor
         # and the mixer show that pattern's tracks and routing, with nothing
         # playing.
-        tui.send(b"\x1b[108;6u", 0.5)            # focus the pattern pane
+        tui.send(b"\t", 0.5)                     # focus the pattern pane
         expect(tui.send(b"M", 0.8), b"Song matrix")
         tui.send(b"o", 0.6)                      # an empty row below, no clash
         tui.send(b"\r", 0.7)                     # pattern picker for the cell
