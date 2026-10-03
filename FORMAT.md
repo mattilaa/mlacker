@@ -186,6 +186,17 @@ are accepted. Unsupported major or minor versions fail closed.
     record; files without properties omit it, so older readers still open
     them.
 
+21. Optional `AUDIO_GROUPS` extension follows `AUDIO_PROPERTIES`: the Audio-list
+    groups. A group count (0–4096), then each group's path: names joined by
+    `/` (`Drums`, `Drums/Kicks`), none empty, `.` or `..`, each group's parent
+    listed before it. Then a count matching the sample list and each sample's
+    group path, empty for none, otherwise one of the listed paths. It is
+    written when the list has any group, and it requires the preceding tags
+    (`AUDIO_PROPERTIES` is then written even without properties). Without it,
+    a plain session puts generated slices (`kick.wav/kick.wav - 1`) in a group
+    named after their original, and a project takes each sample's group from
+    its folder.
+
 The active pattern is serialized from the live editor, not its older library
 snapshot. Audio placements reference the embedded sample list; plugin assignments
 reference stable slots, including holes left by removed instruments.
@@ -234,7 +245,11 @@ A project 1.3 session is the portable 1.2 document with two differences:
   path. Kit presets are accepted, but their pads are ignored: sampler pads
   still come from `SAMPLER_PADS`.
 
-Content paths are exactly one file name below `Audio/` or `Presets/`; any
+Content paths are one file name below `Presets/`, or below `Audio/` or one of
+its group folders (`Audio/Drums/Kicks/kick.wav`: the sample is in group
+`Drums/Kicks`, see `AUDIO_GROUPS`, which also keeps empty group folders and
+whose names win over the folders'; a folder drops an audio extension from its
+group's name, so group `illusion.wav` is the folder `Audio/illusion`); any
 other path, including absolute paths and `..`, is rejected, so a project only
 reads its own files and opens from any location. Plugin bundle paths remain
 absolute. Project sessions are only read as part of a project. The reader also

@@ -11,7 +11,8 @@ use std::strbuf::sub;
 
 /// Owned group name encoded by a generated slice path. Before its first
 /// project save the path is `group/name`; after loading it is
-/// `.../Audio/group/name.wav`. Other sample paths are ungrouped.
+/// `.../Audio/group/name.wav`, the folder without its audio extension in
+/// projects saved with groups. Other sample paths are ungrouped.
 pub fn audio_group(source: str8) -> str8 {
     let slash: i64 = rfind(source, "/");
     if slash <= 0 { return clone(""); }
@@ -20,8 +21,12 @@ pub fn audio_group(source: str8) -> str8 {
     let previous: i64 = rfind(parent_path, "/");
     let parent: str8 = previous < 0 ? clone(parent_path) : sub(parent_path, previous + 1, len(parent_path) - previous - 1);
     var generated: bool = false;
-    let prefix: str8 = format!("{} - ", parent);
-    if std::strbuf::find(child, prefix) == 0 {
+    // "kick.wav - 1" in folder "kick.wav", or (a folder drops its audio
+    // extension) in folder "kick".
+    let prefix: str8 = format!("{} - ", parent); let dotted: str8 = format!("{}.", parent);
+    let named: bool = std::strbuf::find(child, prefix) == 0 || (std::strbuf::find(child, dotted) == 0 && std::strbuf::find(child, " - ") > 0);
+    free(dotted);
+    if named {
         generated = previous < 0;
         if previous >= 0 {
             let grand_path: str8 = sub(parent_path, 0, previous);
@@ -49,46 +54,183 @@ pub fn audio_label(source: str8) -> str8 {
     return name;
 }
 
+/// Owned last component of group path `path` ("Drums/Kicks" -> "Kicks").
+pub fn group_name(path: str8) -> str8 {
+    let slash: i64 = rfind(path, "/");
+    return slash < 0 ? clone(path) : sub(path, slash + 1, len(path) - slash - 1);
+}
+/// Owned parent of group path `path` ("Drums/Kicks" -> "Drums", "Drums" -> "").
+pub fn group_parent(path: str8) -> str8 {
+    let slash: i64 = rfind(path, "/");
+    return slash < 0 ? clone("") : sub(path, 0, slash);
+}
+/// True when group path `path` is `group` or lies inside it.
+pub fn in_group(path: str8, group: str8) -> bool {
+    if path == group { return true; }
+    let prefix: str8 = format!("{}/", group);
+    let inside: bool = std::strbuf::starts_with(path, prefix) == 1; free(prefix);
+    return inside;
+}
+
 /// Session-wide loaded samples; independent from removable pattern instances.
+/// Samples can sit in groups, which nest ("Drums", "Drums/Kicks") and may be
+/// empty; in a project each group is a folder below Audio/.
 pub struct AudioLibrary {
     var samples: list<AudioClip>; var view: ListView; var error: str8{""};
-    /// Owned names of groups currently opened in the Audio pane.
+    /// Owned paths of groups currently opened in the Audio pane.
     var expanded: list<str8>;
+    /// Owned group paths; every group's parent is listed too.
+    var groups: list<str8>;
+    /// Owned group path of each sample (in step with `samples`), "" for none.
+    var sample_groups: list<str8>;
 };
 impl AudioLibrary {
     pub fn group_open(self: AudioLibrary, name: str8) -> bool {
         let groups: list<str8> = self.expanded; for group in groups { if group == name { return true; } } return false;
+    }
+    pub fn has_group(self: AudioLibrary, path: str8) -> bool {
+        let groups: list<str8> = self.groups; for group in groups { if group == path { return true; } } return false;
+    }
+    /// Index of group `path` in `groups`, or -1.
+    pub fn group_index(self: AudioLibrary, path: str8) -> i32 {
+        for i in 0..self.groups.len() { if self.groups[i] == path { return i32(i); } }
+        return -1;
+    }
+    /// Group path of sample `index` (borrowed), "" for none.
+    pub fn group_of(self: AudioLibrary, index: i32) -> str8 {
+        if index < 0 || index >= self.sample_groups.len() { return ""; }
+        return self.sample_groups[index];
+    }
+    /// List group `path` and its parents ("" is no group).
+    pub fn ensure_group(self: &mut Self, path: str8) -> void {
+        if path == "" || self.has_group(path) { return; }
+        let parent: str8 = group_parent(path); self.ensure_group(parent); free(parent);
+        self.groups.push(clone(path));
+    }
+    /// Put sample `index` in group `path` ("" for none), listing the group.
+    pub fn set_group(self: &mut Self, index: i32, path: str8) -> void {
+        self.align();
+        if index < 0 || index >= self.sample_groups.len() { return; }
+        self.ensure_group(path);
+        let old: list<str8> = self.sample_groups; var next: list<str8> = [];
+        for i in 0..old.len() { if i32(i) == index { free(old[i]); next.push(clone(path)); } else { next.push(old[i]); } }
+        self.sample_groups = next;
+    }
+    /// Keep `sample_groups` in step with `samples` (missing entries are "").
+    fn align(self: &mut Self) -> void {
+        if self.sample_groups.len() == self.samples.len() { return; }
+        let old: list<str8> = self.sample_groups; var next: list<str8> = [];
+        for i in 0..old.len() { if i < self.samples.len() { next.push(old[i]); } else { free(old[i]); } }
+        while next.len() < self.samples.len() { next.push(clone("")); }
+        self.sample_groups = next;
+    }
+    /// Drop sample `index`'s group entry; the caller removes the sample.
+    pub fn forget_sample(self: &mut Self, index: i32) -> void {
+        self.align();
+        let old: list<str8> = self.sample_groups; var next: list<str8> = [];
+        for i in 0..old.len() { if i32(i) == index { free(old[i]); } else { next.push(old[i]); } }
+        self.sample_groups = next;
+    }
+    /// Create group `name` inside `parent` ("" for the top level). Returns
+    /// false with `error` set for an empty or taken name, or one with a '/'.
+    pub fn add_group(self: &mut Self, parent: str8, name: str8) -> bool {
+        let trimmed: str8 = std::strbuf::trim(name);
+        if trimmed == "" || std::strbuf::find(trimmed, "/") >= 0 || std::strbuf::find(trimmed, "\\") >= 0 || trimmed == "." || trimmed == ".." {
+            free(trimmed); self.error = "Enter a group name without / or \\"; return false;
+        }
+        let path: str8 = parent == "" ? clone(trimmed) : format!("{}/{}", parent, trimmed); free(trimmed);
+        if self.has_group(path) { free(path); self.error = "That group already exists"; return false; }
+        self.ensure_group(path);
+        // Show it: open its parents, then select it.
+        var open: str8 = group_parent(path);
+        while open != "" {
+            if !self.group_open(open) { self.expanded.push(clone(open)); }
+            let up: str8 = group_parent(open); free(open); open = up;
+        }
+        free(open);
+        self.rebuild(); self.select_group(path); free(path);
+        self.error = ""; return true;
+    }
+    /// Forget group `path` and the groups inside it (their samples must be
+    /// gone already).
+    pub fn drop_group(self: &mut Self, path: str8) -> void {
+        let old: list<str8> = self.groups; var kept: list<str8> = [];
+        for group in old { if in_group(group, path) { free(group); } else { kept.push(group); } }
+        self.groups = kept;
+        let opened: list<str8> = self.expanded; var still: list<str8> = [];
+        for group in opened { if in_group(group, path) { free(group); } else { still.push(group); } }
+        self.expanded = still;
+    }
+    /// Groups inside group `path` (at any depth).
+    pub fn subgroup_count(self: AudioLibrary, path: str8) -> i32 {
+        var count: i32 = 0;
+        let groups: list<str8> = self.groups; for group in groups { if group != path && in_group(group, path) { count = count + 1; } }
+        return count;
+    }
+    /// Samples in group `path` or the groups inside it.
+    pub fn samples_in_group(self: AudioLibrary, path: str8) -> list<i32> {
+        var found: list<i32> = [];
+        for i in 0..self.sample_groups.len() { if in_group(self.sample_groups[i], path) { found.push(i32(i)); } }
+        return found;
     }
     fn item_index(self: AudioLibrary, id: i32) -> i32 {
         let items: list<ListItem> = self.view.items;
         for i in 0..items.len() { if items[i].id == id { return i32(i); } }
         return -1;
     }
-    /// Rebuild group headers and visible sample rows. Positive IDs remain
-    /// sample index + 1; a group's negative ID is based on its first sample.
+    /// The rows of group `parent`'s child groups (each followed, when open, by
+    /// its own rows and samples), indented by `depth`.
+    fn group_rows(self: AudioLibrary, parent: str8, depth: i32) -> list<ListItem> {
+        var children: list<i32> = [];
+        for i in 0..self.groups.len() {
+            let up: str8 = group_parent(self.groups[i]);
+            if up == parent {
+                // Insert in name order.
+                var at: i64 = 0;
+                while at < children.len() && std::strbuf::compare(self.groups[children[at]], self.groups[i]) < 0 { at = at + 1; }
+                var sorted: list<i32> = [];
+                for c in 0..children.len() { if c == at { sorted.push(i32(i)); } sorted.push(children[c]); }
+                if at == children.len() { sorted.push(i32(i)); }
+                children = sorted;
+            }
+            free(up);
+        }
+        let indent: str8 = std::strbuf::repeat("  ", wide(depth));
+        var rows: list<ListItem> = [];
+        for g in children {
+            let path: str8 = self.groups[g]; let open: bool = self.group_open(path);
+            let name: str8 = group_name(path);
+            rows.push(ListItem { id: -g - 1, label: format!("{}{} {}", indent, open ? "v" : ">", name) }); free(name);
+            if open {
+                let inner: list<ListItem> = self.group_rows(path, depth + 1);
+                for row in inner { rows.push(row); }
+                let pad: str8 = std::strbuf::repeat("  ", wide(depth + 1));
+                for i in 0..self.samples.len() {
+                    let member: str8 = self.group_of(i32(i));
+                    if member != path { continue; }
+                    let clip: AudioClip = self.samples[i]; let label: str8 = audio_label(clip.source);
+                    rows.push(ListItem { id: i32(i) + 1, label: format!("{}{} {}", pad, i + 1, label) }); free(label);
+                }
+                free(pad);
+            }
+        }
+        free(indent);
+        return rows;
+    }
+    /// Rebuild the rows: groups (as a tree) then the samples in no group.
+    /// Sample rows have ID sample index + 1, group rows -(group index + 1).
     pub fn rebuild(self: &mut Self) -> void {
+        self.align();
         var selected_id: i32 = 0;
         if self.view.selected >= 0 && self.view.selected < self.view.items.len() { selected_id = self.view.items[self.view.selected].id; }
         let old: list<ListItem> = self.view.items; for item in old { free(item.label); }
-        var items: list<ListItem> = []; var seen: list<str8> = [];
+        var items: list<ListItem> = self.group_rows("", 0);
         for i in 0..self.samples.len() {
-            let clip: AudioClip = self.samples[i]; let group: str8 = audio_group(clip.source);
-            if group == "" {
-                let label: str8 = audio_label(clip.source);
-                items.push(ListItem { id: i32(i) + 1, label: format!("{} {}", i + 1, label) }); free(label); free(group); continue;
-            }
-            var first: bool = true; for known in seen { if known == group { first = false; } }
-            if first {
-                seen.push(clone(group));
-                items.push(ListItem { id: -i32(i) - 1, label: format!("{} {}", self.group_open(group) ? "v" : ">", group) });
-            }
-            if self.group_open(group) {
-                let label: str8 = audio_label(clip.source);
-                items.push(ListItem { id: i32(i) + 1, label: format!("  {} {}", i + 1, label) }); free(label);
-            }
-            free(group);
+            let member: str8 = self.group_of(i32(i));
+            if member != "" { continue; }
+            let clip: AudioClip = self.samples[i]; let label: str8 = audio_label(clip.source);
+            items.push(ListItem { id: i32(i) + 1, label: format!("{} {}", i + 1, label) }); free(label);
         }
-        for group in seen { free(group); }
         let item_count: i64 = items.len(); self.view.items = items; self.view.marks = [];
         let restored: i32 = self.item_index(selected_id);
         self.view.selected = restored >= 0 ? restored : (item_count > 0 ? 0 : -1);
@@ -98,24 +240,51 @@ impl AudioLibrary {
         if self.view.selected < 0 || self.view.selected >= self.view.items.len() { return -1; }
         let id: i32 = self.view.items[self.view.selected].id; return id > 0 ? id - 1 : -1;
     }
+    /// The selected group row's path (borrowed), or "".
+    pub fn selected_group(self: AudioLibrary) -> str8 {
+        if self.view.selected < 0 || self.view.selected >= self.view.items.len() { return ""; }
+        let id: i32 = self.view.items[self.view.selected].id;
+        let index: i32 = -id - 1;
+        return id < 0 && index < self.groups.len() ? self.groups[index] : "";
+    }
+    /// The group a new item goes in: the selected group, or the selected
+    /// sample's group (borrowed; "" for the top level).
+    pub fn current_group(self: AudioLibrary) -> str8 {
+        let group: str8 = self.selected_group();
+        if group != "" { return group; }
+        return self.group_of(self.selected_sample());
+    }
     pub fn select_sample(self: &mut Self, index: i32) -> void {
         let position: i32 = self.item_index(index + 1); if position >= 0 { self.view.selected = position; }
     }
-    /// Toggle the selected group. Returns true only for a group header.
+    /// Open sample `index`'s group and the groups around it, then select it.
+    pub fn reveal_sample(self: &mut Self, index: i32) -> void {
+        var open: str8 = clone(self.group_of(index));
+        while open != "" {
+            if !self.group_open(open) { self.expanded.push(clone(open)); }
+            let up: str8 = group_parent(open); free(open); open = up;
+        }
+        free(open);
+        self.rebuild(); self.select_sample(index);
+    }
+    pub fn select_group(self: &mut Self, path: str8) -> void {
+        let index: i32 = self.group_index(path); if index < 0 { return; }
+        let position: i32 = self.item_index(-index - 1); if position >= 0 { self.view.selected = position; }
+    }
+    /// Open or close the selected group. Returns true only for a group row.
     pub fn toggle_group(self: &mut Self) -> bool {
-        if self.view.selected < 0 || self.view.selected >= self.view.items.len() { return false; }
-        let item: ListItem = self.view.items[self.view.selected]; if item.id >= 0 { return false; }
-        let sample: i32 = -item.id - 1; if sample < 0 || sample >= self.samples.len() { return false; }
-        let name: str8 = audio_group(self.samples[sample].source); var next: list<str8> = []; var found: bool = false;
+        let selected: str8 = self.selected_group(); if selected == "" { return false; }
+        let name: str8 = clone(selected); var next: list<str8> = []; var found: bool = false;
         let groups: list<str8> = self.expanded;
         for group in groups { if group == name { found = true; free(group); } else { next.push(group); } }
         if !found { next.push(clone(name)); }
-        self.expanded = next; self.rebuild(); self.view.selected = self.item_index(-sample - 1); free(name); return true;
+        self.expanded = next; self.rebuild(); self.select_group(name); free(name); return true;
     }
     pub fn load(self: &mut Self, path: str8, bpm: i32) -> bool {
         let loaded: result<AudioClip, str8> = AudioClip::load(path, bpm);
         if loaded.is_err() { self.error = loaded.unwrap_err(); return false; }
-        self.samples.push(loaded.unwrap()); self.rebuild(); self.select_sample(i32(self.samples.len()) - 1);
+        self.align(); self.samples.push(loaded.unwrap()); self.sample_groups.push(clone(""));
+        self.rebuild(); self.select_sample(i32(self.samples.len()) - 1);
         self.view.cancel_pending(); self.error = ""; return true;
     }
     /// Index of a sample with identical format and PCM, or -1.
@@ -134,16 +303,22 @@ impl AudioLibrary {
     }
     /// Take ownership of a decoded clip; reuses an identical existing sample
     /// (releasing `clip`). Returns the sample index, or -1 at the 256 limit.
-    pub fn add_clip(self: &mut Self, clip: AudioClip) -> i32 {
+    pub fn add_clip(self: &mut Self, clip: AudioClip) -> i32 { return self.add_clip_in(clip, ""); }
+    /// add_clip, putting a new sample in group `group` ("" for none).
+    pub fn add_clip_in(self: &mut Self, clip: AudioClip, group: str8) -> i32 {
         let existing: i32 = self.find_clip(clip);
         if existing >= 0 { clip.release(); return existing; }
         if self.samples.len() >= 256 { clip.release(); self.error = "Maximum 256 samples"; return -1; }
-        self.samples.push(clip); self.rebuild(); self.select_sample(i32(self.samples.len()) - 1); self.error = "";
+        self.align(); self.ensure_group(group);
+        self.samples.push(clip); self.sample_groups.push(clone(group));
+        self.reveal_sample(i32(self.samples.len()) - 1); self.error = "";
         return i32(self.samples.len()) - 1;
     }
     pub fn release(self: AudioLibrary) -> void {
         let samples: list<AudioClip> = self.samples; for sample in samples { sample.release(); }
         let items: list<ListItem> = self.view.items; for item in items { free(item.label); }
-        let groups: list<str8> = self.expanded; for group in groups { free(group); }
+        let opened: list<str8> = self.expanded; for group in opened { free(group); }
+        let groups: list<str8> = self.groups; for group in groups { free(group); }
+        let assigned: list<str8> = self.sample_groups; for group in assigned { free(group); }
     }
 }

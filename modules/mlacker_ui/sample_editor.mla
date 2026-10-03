@@ -140,19 +140,35 @@ pub fn sibling_path(source: str8, name: str8) -> str8 {
     return path;
 }
 
-/// Ctrl+S in the sample editor: the new clip's file name, and whether it
-/// replaces the original (destructive) or is added beside it. Focus: 0 name,
-/// 1 mode, 3 buttons.
-pub struct TrimSaveDialog : Dialog { var name: TextField; var destructive: bool; var error: str8; };
+/// Ctrl+S in the sample editor: the new clip's file name, whether it
+/// replaces the original (destructive) or is added beside it, and the
+/// Audio-list group it goes in. Focus: 0 name, 1 mode, 2 group, 3 buttons.
+pub struct TrimSaveDialog : Dialog {
+    var name: TextField; var destructive: bool; var error: str8;
+    /// Owned group paths to choose from; `group` is the chosen one's index
+    /// + 1, 0 for no group.
+    var groups: list<str8>; var group: i32;
+};
 impl TrimSaveDialog {
     pub fn new() -> TrimSaveDialog {
-        return TrimSaveDialog { title: "Save clip", width: 60, height: 15, name: TextField::new(""), error: "",
+        return TrimSaveDialog { title: "Save clip", width: 60, height: 17, name: TextField::new(""), error: "",
             focus: PaneFocus::new(0), button_alignment: Alignment::Center,
             buttons: [PushButton { label: "Save", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
     }
-    pub fn open(self: &mut Self, name: str8) -> void {
+    /// Open suggesting `name`, with `groups` to choose from and `current`
+    /// (one of them, or "") chosen.
+    pub fn open(self: &mut Self, name: str8, groups: &list<str8>, current: str8) -> void {
+        var paths: list<str8> = []; paths = groups;
+        let old: list<str8> = self.groups; for path in old { free(path); }
+        var copied: list<str8> = []; self.group = 0;
+        for i in 0..paths.len() { copied.push(clone(paths[i])); if paths[i] == current { self.group = i32(i) + 1; } }
+        self.groups = copied;
         self.name.set_text(name); self.error = ""; self.reset_buttons();
         self.focus.selected = 0; self.active = true; self.result = 0;
+    }
+    /// The chosen group's path (borrowed), "" for none.
+    pub fn chosen_group(self: TrimSaveDialog) -> str8 {
+        return self.group > 0 && self.group <= self.groups.len() ? self.groups[self.group - 1] : "";
     }
     /// Show `error` and keep the dialog open, e.g. when the name is taken.
     pub fn reject(self: &mut Self, error: str8) -> void {
@@ -177,7 +193,7 @@ impl TrimSaveDialog {
         if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
             let back: bool = (event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left)) || event.modifiers == 2;
             let s: i32 = self.focus.selected;
-            self.focus.selected = back ? (s == 0 ? 3 : (s == 1 ? 0 : 1)) : (s == 0 ? 1 : (s == 1 ? 3 : 0));
+            self.focus.selected = back ? (s == 0 ? 3 : (s == 3 ? 2 : s - 1)) : (s == 3 ? 0 : (s == 2 ? 3 : s + 1));
             return 0;
         }
         if self.focus.selected == 3 { self.on_button_event(event); return 0; }
@@ -185,6 +201,13 @@ impl TrimSaveDialog {
         if self.focus.selected == 1 {
             if (event.kind == InputKind::Menu && (event.key == Key::Left || event.key == Key::Right || event.key == Key::Up || event.key == Key::Down)) ||
                event.code == 32 { self.destructive = !self.destructive; }
+            return 0;
+        }
+        if self.focus.selected == 2 {
+            // Left/Right (h/l) or Space step through no group and the groups.
+            let count: i32 = i32(self.groups.len()) + 1;
+            if event.kind == InputKind::Menu && (event.key == Key::Left || event.key == Key::Up) { self.group = (self.group + count - 1) % count; }
+            else if (event.kind == InputKind::Menu && (event.key == Key::Right || event.key == Key::Down)) || event.code == 32 { self.group = (self.group + 1) % count; }
             return 0;
         }
         self.name.on_event(event);
@@ -210,9 +233,17 @@ impl TrimSaveDialog {
             theme.foreground, focused && !self.destructive ? theme.selection : theme.panel);
         surface.text(replace, self.destructive ? "(*) Destructive: replace the original everywhere" : "( ) Destructive: replace the original everywhere",
             theme.foreground, focused && self.destructive ? theme.selection : theme.panel);
-        surface.text(Rect::new(body.x, body.y + 7, body.width, 1), self.error, theme.accent, theme.panel);
+        surface.text(Rect::new(body.x, body.y + 7, body.width, 1), "Group (Left/Right to choose)", theme.foreground, theme.panel);
+        let chosen: str8 = self.chosen_group();
+        let shown: str8 = format!("< {} >", chosen == "" ? "No group" : chosen);
+        surface.text(Rect::new(body.x, body.y + 8, body.width, 1), shown, theme.foreground, self.focus.selected == 2 ? theme.selection : theme.panel); free(shown);
+        surface.text(Rect::new(body.x, body.y + 10, body.width, 1), self.error, theme.accent, theme.panel);
     }
-    pub fn release(self: &mut Self) -> void { self.name.release(); }
+    pub fn release(self: &mut Self) -> void {
+        self.name.release();
+        let old: list<str8> = self.groups; for path in old { free(path); }
+        self.groups = [];
+    }
 }
 
 /// Sample editor for one Audio-list sample: the cursor, zoom and selection
@@ -345,8 +376,9 @@ impl SampleEditor {
     }
     /// The file name accepted in the save dialog; valid until `take` or `release`.
     pub fn saved_name(self: SampleEditor) -> str8 { return self.save.name.text; }
-    /// Open the Ctrl+S dialog suggesting `name`.
-    pub fn open_save(self: &mut Self, name: str8) -> void { self.save.open(name); }
+    /// Open the Ctrl+S dialog suggesting `name`, with `groups` to choose from
+    /// and `current` chosen.
+    pub fn open_save(self: &mut Self, name: str8, groups: &list<str8>, current: str8) -> void { self.save.open(name, groups, current); }
     /// The save could not happen: show `error` in the still open dialog.
     pub fn save_failed(self: &mut Self, error: str8) -> void { self.save.reject(error); }
     /// True while a dialog button shows its press; `tick` then completes it.

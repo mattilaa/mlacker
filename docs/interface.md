@@ -21,15 +21,30 @@ into the selected AUDIO track at the Pattern cursor row. Without an audio track
 selected, importing only adds the sample to the Audio list and opens that view;
 it does not create a track or put audio on a MIDI track.
 
+Samples can be organised in **groups**, which nest. Groups come first in the
+Audio list, in name order, then the samples in no group; Enter on a group opens
+or closes it, while Enter on a sample still inserts it. **Audio → Add group** asks
+for a name and creates the group inside the selected group (or the selected
+sample's group), or at the top level. **Audio → Remove group** removes the
+selected group; when it holds groups or samples, a warning lists them first, and
+confirming removes them all, with their pattern placements and drum pads. In a
+project each group is a folder below `Audio/`, e.g. `Audio/Drums/Kicks/` for
+Kicks inside Drums, empty groups included. A folder drops an audio extension
+from its group's name (group `illusion.wav` is the folder `illusion`), so it
+never clashes with a sample file such as `Audio/illusion.wav`.
+
 **Audio → Make track clips destructive** crops every placement in the selected
 AUDIO track to its current source-frame window and replaces it with that
 independent sample. The new samples are named `SampleAudio.aif - 1`,
-`SampleAudio.aif - 2`, and so on. They appear under a `SampleAudio.aif` group in
-**View → Audio**; Enter on the group expands or collapses it, while Enter on a
-child still inserts that sample. Saving a project writes the slices as float
-WAV files below `Audio/SampleAudio.aif/`, preserving the group when the project
-is reopened or moved. Tracks containing more than one original source produce
-one group per source.
+`SampleAudio.aif - 2`, and so on, in a new group named after the clip, inside
+the group of the clip's sample (`Drums/SampleAudio.aif` for a sample in Drums).
+Saving a project writes them as float WAV files in that group's folder, so the
+groups survive reopening or moving the project. Tracks containing more than one
+original source produce one group per source.
+
+Saving a clip from the sample editor or the Sample pane (Ctrl+S) also chooses
+its group: the dialog's Group row starts at the original sample's group, and
+Left/Right step through no group and every group.
 
 Importing with an AUDIO track selected also inserts an instance at the selected
 row. A track can contain multiple independent, non-overlapping instances.

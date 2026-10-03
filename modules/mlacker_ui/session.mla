@@ -209,13 +209,36 @@ fn file_safe(name: str8) -> str8 {
     let safe: str8 = std::strbuf::builder_to_string(builder);
     std::strbuf::builder_free(builder); bytes.close(); return safe;
 }
-/// A project content path is `folder/name`; Audio additionally permits the
-/// generated-slice layout `Audio/group/name`. Components never escape root.
+/// A project content path is `folder/name`; Audio additionally permits group
+/// folders, `Audio/group/.../name`. Components never escape root.
 fn content_path(path: str8, folder: str8) -> bool {
     let pattern: str8 = folder == "Audio"
-        ? format!("{}/[^./\\\\][^/\\\\]*(/[^./\\\\][^/\\\\]*)?", folder)
+        ? format!("{}/[^./\\\\][^/\\\\]*(/[^./\\\\][^/\\\\]*)*", folder)
         : format!("{}/[^./\\\\][^/\\\\]*", folder);
     let valid: bool = tui::table::table_matches(pattern, path); free(pattern); return valid;
+}
+/// Owned `name` without an audio file extension (.wav, .aif, .aiff); other
+/// dots, as in "kick.wav - 1", stay.
+fn audio_stem(name: str8) -> str8 {
+    let dot: i64 = std::strbuf::rfind(name, ".");
+    if dot <= 0 { return clone(name); }
+    let ext: str8 = std::strbuf::sub(name, dot, std::strbuf::len(name) - dot);
+    let known: bool = ext == ".wav" || ext == ".WAV" || ext == ".aif" || ext == ".AIF" || ext == ".aiff" || ext == ".AIFF"; free(ext);
+    return known ? std::strbuf::sub(name, 0, dot) : clone(name);
+}
+/// True for a group path of non-empty components that are not "." or "..".
+fn group_path_valid(path: str8) -> bool {
+    return tui::table::table_matches("[^/\\\\]+(/[^/\\\\]+)*", path) && std::strbuf::find(path, "//") < 0 &&
+        path != "." && path != ".." && std::strbuf::find(path, "/../") < 0 && std::strbuf::find(path, "/./") < 0 &&
+        std::strbuf::starts_with(path, "../") == 0 && std::strbuf::starts_with(path, "./") == 0 &&
+        std::strbuf::ends_with(path, "/..") == 0 && std::strbuf::ends_with(path, "/.") == 0;
+}
+/// Owned group of project audio file `path` (relative, "Audio/a/b/x.wav" ->
+/// "a/b"), "" for a file directly in Audio/.
+fn path_group(path: str8) -> str8 {
+    let slash: i64 = std::strbuf::rfind(path, "/");
+    if slash <= 6 { return clone(""); }
+    return std::strbuf::sub(path, 6, slash - 6);
 }
 /// Owned file name stem for the plugin in `slot`.
 fn slot_label(slot: i32) -> str8 {
@@ -547,6 +570,36 @@ impl SessionCodec {
         if !self.failed && self.problem == "" { self.problem = problem; } else { free(problem); }
         self.failed = true;
     }
+    /// Owned project folder of Audio-list group `group` ("Audio" for none,
+    /// "Audio/Drums/Kicks" for "Drums/Kicks", "Audio/Drums/loop" for
+    /// "Drums/loop.wav"), created when saving.
+    fn group_folder(self: &mut Self, group: str8) -> str8 {
+        var folder: str8 = clone("Audio");
+        var rest: str8 = clone(group);
+        while rest != "" {
+            let slash: i64 = std::strbuf::find(rest, "/");
+            let part: str8 = slash < 0 ? clone(rest) : std::strbuf::sub(rest, 0, slash);
+            let tail: str8 = slash < 0 ? clone("") : std::strbuf::sub(rest, slash + 1, std::strbuf::len(rest) - slash - 1);
+            // Sample files always end in .wav, so a folder without an audio
+            // extension never clashes with one: group "illusion.wav" (named
+            // after its clip) is the folder "illusion", beside illusion.wav.
+            var bare: str8 = audio_stem(part); free(part);
+            var stem: str8 = audio_stem(bare);
+            while stem != bare { free(bare); bare = stem; stem = audio_stem(bare); }
+            free(stem);
+            let safe: str8 = file_safe(bare); free(bare);
+            if safe != "" { let deeper: str8 = format!("{}/{}", folder, safe); free(folder); folder = deeper; }
+            free(safe); free(rest); rest = tail;
+        }
+        free(rest);
+        if !self.reading && !self.failed && folder != "Audio" {
+            let full: str8 = format!("{}/{}", self.root, folder);
+            let made: result<i32, str8> = std::fs::mkdir_p(full);
+            if made.is_err() { self.fail_with(format!("Cannot create {}", folder)); }
+            free(full);
+        }
+        return folder;
+    }
     /// Owned `folder/stem extension` path that is still free under the
     /// project root; later files with the same stem are numbered.
     fn unique_file(self: &mut Self, folder: str8, stem: str8, extension: str8) -> str8 {
@@ -561,28 +614,17 @@ impl SessionCodec {
     }
     /// Project sample: the PCM is a float WAV in Audio/ and the session keeps
     /// its relative path, format and row size. Peaks are rebuilt on load.
-    fn clip_file(self: &mut Self, source: AudioClip, index: i64) -> AudioClip {
+    /// A sample in group `group` is written to that group's folder, e.g.
+    /// Audio/Drums/Kicks/kick.wav for "Drums/Kicks".
+    fn clip_file(self: &mut Self, source: AudioClip, index: i64, group: str8) -> AudioClip {
         var clip: AudioClip = AudioClip {}; clip = source;
         var name: str8 = clone("");
         if !self.reading && !self.failed {
-            let group: str8 = audio_group(clip.source); var folder: str8 = clone("Audio");
-            var base: str8 = audio_label(clip.source);
-            if group == "" {
-                free(base); base = base_name(clip.source);
-                let dot: i64 = std::strbuf::rfind(base, ".");
-                let bare: str8 = dot > 0 ? std::strbuf::sub(base, 0, dot) : clone(base); free(base); base = bare;
-            } else {
-                let safe_group: str8 = file_safe(group);
-                if safe_group != "" { free(folder); folder = format!("Audio/{}", safe_group); }
-                free(safe_group);
-                let full_folder: str8 = format!("{}/{}", self.root, folder);
-                let made: result<i32, str8> = std::fs::mkdir_p(full_folder);
-                if made.is_err() { self.fail_with(format!("Cannot create {}", folder)); }
-                free(full_folder);
-            }
+            let folder: str8 = self.group_folder(group);
+            let label: str8 = audio_label(clip.source); let base: str8 = audio_stem(label); free(label);
             let safe: str8 = file_safe(base); free(base);
             let stem: str8 = safe == "" ? format!("Sample {}", index + 1) : clone(safe); free(safe);
-            free(name); name = self.unique_file(folder, stem, ".wav"); free(stem); free(folder); free(group);
+            free(name); name = self.unique_file(folder, stem, ".wav"); free(stem); free(folder);
             let full: str8 = format!("{}/{}", self.root, name);
             if !clip.write_wav(full) {
                 self.fail_with(format!("Cannot write {}", name));
@@ -833,8 +875,11 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
-        // Sample properties of audio placements (frame end, tempo sync).
-        let propertied: bool = !self.reading && library.has_audio_properties();
+        // Audio-list groups (written last, so everything before it is too).
+        let grouped: bool = !self.reading && library.audio.groups.len() > 0;
+        // Sample properties of audio placements (frame end, tempo sync),
+        // written (perhaps without properties) whenever AUDIO_GROUPS follows.
+        let propertied: bool = !self.reading && (library.has_audio_properties() || grouped);
         // Instrument tracks taking an AUDIO track as their plugin's input
         // (written, perhaps without routes, whenever AUDIO_PROPERTIES follows).
         let inputs_routed: bool = !self.reading && (library.has_input_routes() || propertied);
@@ -858,8 +903,16 @@ impl SessionCodec {
         for i in 0..sample_count {
             if self.failed { break; }
             var clip: AudioClip = AudioClip {}; if !self.reading { clip = library.audio.samples[i]; }
-            let decoded: AudioClip = project ? self.clip_file(clip, i) : self.clip(clip);
-            if self.reading { library.audio.samples.push(decoded); }
+            let decoded: AudioClip = project ? self.clip_file(clip, i, self.reading ? "" : library.audio.group_of(i)) : self.clip(clip);
+            if self.reading {
+                library.audio.samples.push(decoded);
+                // A project file's folder below Audio/ is its sample's group.
+                if project && !self.failed {
+                    let skip: i64 = std::strbuf::len(self.root) + 1;
+                    let relative: str8 = std::strbuf::sub(decoded.source, skip, std::strbuf::len(decoded.source) - skip);
+                    let group: str8 = path_group(relative); library.audio.set_group(i, group); free(group); free(relative);
+                }
+            }
         }
         if self.reading { library.audio.rebuild(); }
         var count: i32 = audio.processor_path != "" ? 1 : 0;
@@ -1302,6 +1355,59 @@ impl SessionCodec {
                 library.table.release(); library.table = entry.data.copy_pattern();
             }
         }
+        // Optional AUDIO_GROUPS extension: the Audio-list groups, as paths
+        // ("Drums", "Drums/Kicks"; each parent listed before its children),
+        // then each sample's group path ("" for none). A project also keeps
+        // every group as a folder below Audio/, empty ones included.
+        let groups_extension: bool = self.reading ? self.reader.remaining() > 0 : grouped;
+        var groups_read: bool = false;
+        if groups_extension && !self.failed {
+            let tag: str8 = self.text("AUDIO_GROUPS"); if tag != "AUDIO_GROUPS" { self.failed = true; } if self.reading { free(tag); }
+            let group_count: i32 = self.number(i32(library.audio.groups.len()), 0, 4096);
+            var listed: list<str8> = [];
+            for g in 0..group_count {
+                if self.failed { break; }
+                let path: str8 = self.text(self.reading ? "" : library.audio.groups[g]);
+                if !self.reading { if project { let folder: str8 = self.group_folder(path); free(folder); } continue; }
+                let parent: str8 = group_parent(path);
+                var known: bool = parent == "";
+                for other in listed { if other == parent { known = true; } }
+                free(parent);
+                if path == "" || !known || !group_path_valid(path) { self.failed = true; free(path); break; }
+                listed.push(path);
+            }
+            let assigned: i32 = self.number(i32(library.audio.samples.len()), 0, 256);
+            if self.reading && assigned != library.audio.samples.len() { self.failed = true; }
+            for i in 0..assigned {
+                if self.failed { break; }
+                let path: str8 = self.text(self.reading ? "" : library.audio.group_of(i));
+                if !self.reading { continue; }
+                var known: bool = path == "";
+                for other in listed { if other == path { known = true; } }
+                if !known { self.failed = true; } else { library.audio.set_group(i, path); }
+                free(path);
+            }
+            // The listed groups replace those taken from project folders
+            // (a folder may differ from its group's name, see group_folder).
+            if self.reading && !self.failed {
+                let old: list<str8> = library.audio.groups; for path in old { free(path); }
+                library.audio.groups = [];
+                for path in listed { library.audio.ensure_group(path); }
+                groups_read = true;
+            }
+            for path in listed { free(path); }
+        }
+        // Sessions from before groups: generated slices ("kick.wav/kick.wav -
+        // 1") sit in a group named after their original.
+        if self.reading && !groups_read && !project && !self.failed {
+            for i in 0..library.audio.samples.len() {
+                let clip: AudioClip = library.audio.samples[i];
+                let group: str8 = audio_group(clip.source);
+                if group != "" { library.audio.set_group(i32(i), group); }
+                free(group);
+            }
+        }
+        if self.reading { library.audio.rebuild(); }
         if state.editor_slot > 32 {
             var found: bool = false; for plugin in plugins { if plugin.slot == state.editor_slot { found = true; } }
             if !found { self.failed = true; }
