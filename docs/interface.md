@@ -155,9 +155,11 @@ The selected region is drawn with a **lighter background** than the rest of the
 clip.
 
 - **`t`** trims the placement to the selection, and **`x`** deletes the selection
-  from it (non-destructively: the sample is untouched). A placement plays one
-  continuous part of its sample, so `x` works on a selection that reaches the
-  clip's start or end; Audio → Edit sample also cuts from the middle.
+  from it. Both leave the sample untouched: keeping a part, or cutting one off
+  the clip's start or end, only moves the part of the sample the placement
+  plays. Cutting from the middle makes a new sample, `Name - Edit 1.wav`, in the
+  Audio list, and the placement plays that. The cursor stays where the cut was,
+  at the same zoom.
 - **Ctrl+P** plays the selection, or the whole clip, on the master output with a
   moving play line; again stops.
 - **Ctrl+S** saves the placement's audible part as a new sample named

@@ -2499,6 +2499,45 @@ fn tui_sample_pane_keys_on_a_clip_window() {
 }
 
 #[test]
+fn tui_sample_pane_cut_from_the_middle() {
+    // x on a middle selection in the Sample pane: the placement plays a new
+    // sample, "<name> - Edit 1.wav", holding its window without the cut.
+    var library: PatternLibrary = PatternLibrary::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    library.table.create_track_kind(false, true, area);
+    let clip: AudioClip = test_clip(8000, 0.25f);
+    library.audio.samples.push(clip);
+    library.audio.view.items.push(ListItem { id: 1, label: clone("1 edit-test.wav") });
+    library.table.selected_row = 2;
+    verify(library.table.insert_audio(clip, area));
+    let track: SequenceTrack = library.table.tracks[library.table.tracks.len() - 1];
+    let instance: AudioInstance = track.instances[0];
+    let rc: AudioClip = instance.render_clip();
+    let window: list<f32> = pcm_crop(instance.clip.samples, 1, rc.offset, rc.offset + rc.frames);
+    var edited: AudioClip = instance.clip.with_samples(pcm_delete(window, 1, 2000, 3000));
+    let name: str8 = numbered_name(instance.clip.source, library.audio.samples, "Edit");
+    verify(name == "edit-test - Edit 1.wav");
+    free(edited.source); edited.source = sibling_path(instance.clip.source, name); free(name);
+    verify(library.audio.add_clip(edited.copy()) == 1);
+    verify(library.table.replace_audio_clip(edited, area));
+    let after: SequenceTrack = library.table.tracks[library.table.tracks.len() - 1];
+    let cut: AudioInstance = after.instances[0];
+    verify(cut.clip.frames == 7000 && cut.offset_frames == 0 && cut.clip.samples[2000] == clip.samples[3000]);
+    let original: AudioClip = library.audio.samples[0]; verify(original.frames == 8000);
+    // The session keeps the placement on the new sample.
+    let directory: str8 = clone("/private/tmp/mlacker-cut-test-XXXXXX"); mkdtemp(directory);
+    let path: str8 = format!("{}/cut.mlack", directory);
+    var audio: AudioSystem = AudioSystem {}; var codec: SessionCodec = SessionCodec {};
+    verify(codec.save(path, library, SessionView {}, audio));
+    let loaded: result<SessionData, str8> = SessionCodec::load(path); verify(loaded.is_ok());
+    var restored: SessionData = loaded.unwrap();
+    verify(restored.library.audio.samples.len() == 2);
+    let kept: AudioClip = restored.library.audio.samples[1]; verify(kept.frames == 7000);
+    restored.release();
+    library.release(); std::fs::remove_tree(directory); free(path); free(directory);
+}
+
+#[test]
 fn tui_sample_editor_crop_to_watched_range() {
     let source: AudioClip = test_clip(4000, 0.5f);
     var editor: SampleEditor = SampleEditor {};

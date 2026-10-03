@@ -96,12 +96,16 @@ pub fn pcm_peak(samples: &list<f32>, channels: i64, from: i64, to: i64) -> f32 {
 
 
 /// Owned file name stem of `source`: no folder, no extension, and no
-/// " - Trim N" suffix, so trimming a trim numbers on from the original.
+/// " - Trim N" or " - Edit N" suffix, so editing an edit numbers on from the
+/// original.
 fn trim_stem(source: str8) -> str8 {
     let name: str8 = base_name(source);
     let dot: i64 = rfind(name, ".");
     var stem: str8 = dot > 0 ? sub(name, 0, dot) : clone(name); free(name);
-    let mark: i64 = rfind(stem, " - Trim ");
+    // Both suffixes are 8 bytes before the number.
+    var mark: i64 = rfind(stem, " - Trim ");
+    let edit: i64 = rfind(stem, " - Edit ");
+    if edit > mark { mark = edit; }
     if mark > 0 {
         let first: i64 = mark + 8; let size: i64 = len(stem); var digits: bool = first < size;
         for i in first..size { let b: i32 = byte_at(stem, i); if b < 48 || b > 57 { digits = false; } }
@@ -111,12 +115,15 @@ fn trim_stem(source: str8) -> str8 {
 }
 /// Owned `Name - Trim N.wav` for a trim of `source`, with the first N no
 /// sample in `samples` is named yet.
-pub fn trim_name(source: str8, samples: &list<AudioClip>) -> str8 {
+pub fn trim_name(source: str8, samples: &list<AudioClip>) -> str8 { return numbered_name(source, samples, "Trim"); }
+/// Owned `Name - <word> N.wav` (word "Trim" or "Edit"), with the first N no
+/// sample in `samples` is named yet.
+pub fn numbered_name(source: str8, samples: &list<AudioClip>, word: str8) -> str8 {
     var clips: list<AudioClip> = []; clips = samples;
     let stem: str8 = trim_stem(source);
     var name: str8 = clone("");
     for n in 1..100000 {
-        free(name); name = format!("{} - Trim {}.wav", stem, n);
+        free(name); name = format!("{} - {} {}.wav", stem, word, n);
         var taken: bool = false;
         for clip in clips { let other: str8 = base_name(clip.source); if other == name { taken = true; } free(other); }
         if !taken { break; }
