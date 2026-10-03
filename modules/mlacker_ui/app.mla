@@ -2121,8 +2121,10 @@ pub fn run() -> i32 {
                 }
                 dirty = true;
             } else if focus.selected == 1 {
-                if event.kind == InputKind::Menu && event.key == Key::Enter && library.table.audio_under_cursor() {
-                    sample_dialog.open(library.table.audio_at_cursor(), transport.bpm); dirty = true;
+                if event.kind == InputKind::Menu && event.key == Key::Enter && library.table.is_audio_waveform() {
+                    if library.table.audio_under_cursor() { sample_dialog.open(library.table.audio_at_cursor(), transport.bpm); }
+                    else { free(message); message = clone("No sample on this row"); }
+                    dirty = true;
                 } else if !library.table.editing && (library.table.group_detail_rows > 0 || (event.code == 102 && event.modifiers == 1)) {
                     command = library.table.insert_event(event, panes[1].bounds.inset(1)); dirty = true;
                 } else { if library.table.edit_event(event, panes[1].bounds.inset(1)) { dirty = true; } }

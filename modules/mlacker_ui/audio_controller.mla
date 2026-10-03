@@ -417,7 +417,7 @@ impl AudioSystem {
                         let rc: AudioClip = instance.render_clip();
                         let id: i64 = self.register_clip(instance.clip);
                         if id < 0 { valid = false; continue; }
-                        let start: i64 = wide(instance.start_row) * 15000;
+                        let start: i64 = wide(instance.start_row) * 15000 + table.audio_timing_offset(i32(t), instance.start_row);
                         let duration: i64 = rc.frames * wide(bpm) * 1000 / instance.clip.sample_rate;
                         var next: i64 = self.sample_epoch + (tick - self.sample_epoch) / period * period + start;
                         if next + duration <= tick { next = next + period; }

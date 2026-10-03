@@ -66,14 +66,14 @@ tail — that all share one full sample buffer with independent offsets, lengths
 and start rows.
 
 Each instance references decoded samples and carries its own start row.
-A sample row under the Pattern cursor opens a **Sample properties** dialog with
-Enter. Its frame start and exclusive frame end trim that placement
+Select the WAVE column on a sample row and press Enter to open a **Sample
+properties** dialog. Its frame start and exclusive frame end trim that placement
 non-destructively; the dialog also keeps the source's original BPM and a time
 stretch mode (**Off**, **Repitch**, **Stretch**, or **Beats**). Tab moves through
 the fields, algorithm selector, and **OK**/**Cancel** buttons. Invalid or empty
 frame ranges and BPM values outside 20–400 are rejected.
-A read-only waveform column
-beside the LEN column draws time downward as one gray, 7-cell-wide waveform:
+A selectable, read-only waveform column beside the LEN and OFF columns draws
+time downward as one gray, 7-cell-wide waveform:
 left and right are summed to mono for display only (playback and meters stay
 stereo), and the level grows outward from the center to both edges. Waveforms
 scroll with the table, while ROW stays frozen.
@@ -270,13 +270,16 @@ order even when offsets reorder notes. Pattern loops repeat shifted onsets;
 starting/seeking skips onsets already in the past (no automatic preroll or
 retroactive note-ons). Thus a negative OFF on row 1 first plays just before the
 next loop. A live edit refreshes future onsets without altering already-issued
-voices' end times. OFF is MIDI-only; audio retains its LEN column.
+voices' end times. Audio has the same signed OFF scale and editing keys. Its
+value shifts the placement's playback start relative to the row; it may only be
+set on the instance's starting row.
 
 Audio LEN defaults to the sample duration. Edit it at the instance's starting
 row to shorten its gate; it cannot exceed the sample, pattern end or next
 instance. Its fractional tail is visible in the waveform and its mixer gate
 ends at LEN, leaving the loaded sample unchanged. Clear audio LEN to restore
-the available sample duration.
+the available sample duration. Enter on LEN or OFF edits that cell; Enter on
+WAVE opens Sample properties.
 
 `mlacker_ui::note_playback::NotePlayback` produces timestamped note-on/off events
 using the transport's continuous musical ticks (15000 per sixteenth). Note-offs
@@ -310,7 +313,8 @@ mlacker's **Track** menu always targets the selected column's track:
 
 - Rename opens a text dialog with OK and Cancel buttons (Enter and Escape also work).
 - Create track → MIDI track / AUDIO track appends an empty track of the chosen
-  type and selects it. MIDI has NOTE, VEL, LEN, OFF, CC1; AUDIO has LEN.
+  type and selects it. MIDI has NOTE, VEL, LEN, OFF, CC1; AUDIO has LEN and OFF,
+  plus WAVE after its first sample is placed.
   Mixed groups have different widths; navigation, frozen ROW, deletion, and
   duplication follow their actual column ranges. Duplicate preserves track type.
 - Duplicate appends an independent copy of the pattern, mute flag, and automation

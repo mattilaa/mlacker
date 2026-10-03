@@ -1,4 +1,4 @@
-# MLACK session format 1.1
+# MLACK session format 1.2
 
 Extension: `.mlack`. A self-contained binary document for the editor's committed
 state. No compression, executable code, or live pointers are stored. Plugin paths
@@ -15,8 +15,9 @@ are accepted. Unsupported major or minor versions fail closed.
 
 ## Document order
 
-1. String `MLACK`, integer major `1`, integer minor `1`. Minor `0` documents
-   are still read; they differ only in the track automation record below.
+1. String `MLACK`, integer major `1`, integer minor `2`. Minor `0` and `1`
+   documents are still read. Minor `0` differs in the track automation record
+   below; minor `1` has no OFF cell on AUDIO tracks.
 2. View record, in order:
    - BPM, beats per bar, beat unit, transport row, fractional phase (0–14999).
    - Focused pane; sidebar mode (0 Patterns, 1 Song, 2 Audio, 3 Instruments).
@@ -58,8 +59,10 @@ are accepted. Unsupported major or minor versions fail closed.
    - Each audio instance: zero-based sample-list index, starting row, length ticks
      (0 means natural sample length). 15000 ticks represent one sixteenth note.
    - Row list. Each row is a string list containing all cells, including hidden
-     columns and ROW. Column definitions are rebuilt from track metadata; cells
-     must match the resulting column count and writable-column validation rules.
+     columns and ROW. AUDIO tracks contain LEN and OFF followed by WAVE when the
+     track has an instance; minor-0/1 rows omit AUDIO OFF. Column definitions are
+     rebuilt from track metadata; cells must match the resulting column count
+     and writable-column validation rules.
 7. Song order: list of stable pattern IDs, allowing repeated occurrences.
    This is lane 1 of the song matrix, so 0 marks an empty row. Files written
    before the matrix never contain 0.
@@ -191,17 +194,17 @@ plugin-internal sample libraries. It preserves the exposed parameter state edite
 by mlacker. Sampler pads filled by mlacker are the exception: they are rebuilt
 from the embedded sample list (`SAMPLER_PADS`). Future incompatible additions require a new version.
 
-## Project folders (`.mlaproj`, session 1.2)
+## Project folders (`.mlaproj`, session 1.3)
 
 A project is a directory whose name ends in `.mlaproj`:
 
-- `Project.mlack`: the session, minor version **2**.
+- `Project.mlack`: the session, minor version **3**.
 - `Audio/`: one IEEE float32 WAV per sample-list entry, named after the source
   file (`kick.wav`, then `kick 2.wav`, … for repeated names).
 - `Presets/`: one parameter preset per loaded plugin: `.mlapre` (1.0) for
   instruments, `.mlafxpre` for the master, aux effect and insert plugins.
 
-A 1.2 session is the 1.1 document with two differences:
+A project 1.3 session is the portable 1.2 document with two differences:
 
 - A sample is its relative path string (`Audio/<name>`), channel count, sample
   rate, frame count and frames per row. The file must still have that format and
@@ -214,8 +217,9 @@ A 1.2 session is the 1.1 document with two differences:
 Content paths are exactly one file name below `Audio/` or `Presets/`; any
 other path, including absolute paths and `..`, is rejected, so a project only
 reads its own files and opens from any location. Plugin bundle paths remain
-absolute. A 1.2 session is only read as part of a project, and a project only
-reads 1.2 sessions. A failed load names the missing or invalid content file.
+absolute. Project sessions are only read as part of a project. The reader also
+accepts legacy project 1.2 sessions, adding an empty AUDIO OFF cell to each row.
+A failed load names the missing or invalid content file.
 
 Saving writes `<folder>.saving`, then renames an existing project to
 `<folder>.previous`, moves the new folder into place and removes the old one.

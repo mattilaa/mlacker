@@ -869,7 +869,7 @@ pub fn insert_audio(self: &mut Self, source: &AudioClip, area: Rect) -> bool {
         }
     }
     let insert: bool = track.instances.len() == 0;
-    let column: i32 = self.audio_length_column(index) + 1;
+    let column: i32 = self.audio_waveform_column(index);
     track.instances.push(AudioInstance { clip: clip.copy(), start_row: row });
     self.replace_track(index, track);
     if insert {
@@ -894,7 +894,7 @@ pub fn insert_audio(self: &mut Self, source: &AudioClip, area: Rect) -> bool {
     }
     let saved: SequenceTrack = self.tracks[index];
     let placed: AudioInstance = saved.instances[saved.instances.len() - 1];
-    self.write_owned_cell(row, column - 1, duration_text(placed.duration()));
+    self.write_owned_cell(row, self.audio_length_column(index), duration_text(placed.duration()));
     self.reconcile(area); self.error = ""; return true;
 }
 pub fn remove_audio_under_cursor(self: &mut Self) -> bool {
@@ -906,13 +906,14 @@ pub fn remove_audio_under_cursor(self: &mut Self) -> bool {
         let instance: AudioInstance = track.instances[i];
         if i == hit {
             self.write_owned_cell(instance.start_row, self.audio_length_column(index), clone(""));
+            self.write_owned_cell(instance.start_row, self.audio_offset_column(index), clone(""));
             instance.clip.release();
         } else { kept.push(instance); }
     }
     let empty: bool = kept.len() == 0;
     track.instances = kept; self.replace_track(index, track);
     if empty {
-        let column: i32 = self.audio_length_column(index) + 1;
+        let column: i32 = self.audio_waveform_column(index);
         var rows: list<TableRow> = []; let old: list<TableRow> = self.rows;
         for row in old {
             var cells: list<str8> = [];
@@ -1029,8 +1030,12 @@ pub fn move_audio(self: &mut Self, delta: i32, area: Rect) -> bool {
     track.instances = updated; self.replace_track(index, track);
     self.revision = self.revision + 1;
     let len_col: i32 = self.audio_length_column(index);
+    let off_col: i32 = self.audio_offset_column(index);
+    let old_row: TableRow = self.rows[old_start]; let timing: str8 = clone(old_row.cells[off_col]);
     self.write_owned_cell(old_start, len_col, clone(""));
+    self.write_owned_cell(old_start, off_col, clone(""));
     self.write_owned_cell(new_start, len_col, duration_text(dur));
+    self.write_owned_cell(new_start, off_col, timing);
     self.selected_row = self.selected_row + delta;
     self.reconcile(area); self.error = ""; return true;
 }
@@ -1448,7 +1453,7 @@ pub fn paint_audio_style(self: SequenceTable, surface: Surface, area: Rect, them
     for t in 0..self.tracks.len() {
         let track: SequenceTrack = self.tracks[t];
         if track.instances.len() > 0 {
-            let x: i32 = area.x + self.column_x(self.audio_length_column(i32(t)) + 1);
+            let x: i32 = area.x + self.column_x(self.audio_waveform_column(i32(t)));
             let half: i32 = 3;
             for y in 0..body.height {
                 let row: i32 = self.scroll_y + i32(y) / self.row_spacing();
@@ -1571,7 +1576,7 @@ pub fn copy_slice(self: SequenceTable, start: i32, count: i32) -> SequenceTable 
 }
 pub fn track_columns(self: SequenceTable, index: i32) -> i32 {
     let track: SequenceTrack = self.tracks[index]; let slots: i32 = i32(track.automation.len());
-    return track.audio ? slots + (track.instances.len() > 0 ? 2 : 1) : track.note_lines * 4 + slots + (track.comment ? 1 : 0);
+    return track.audio ? slots + (track.instances.len() > 0 ? 3 : 2) : track.note_lines * 4 + slots + (track.comment ? 1 : 0);
 }
 /// TEXT column of track `index`, or -1 when it has none.
 pub fn comment_column(self: SequenceTable, index: i32) -> i32 {
@@ -1631,10 +1636,26 @@ pub fn automation_column(self: SequenceTable, index: i32, slot: i32) -> i32 {
     let track: SequenceTrack = self.tracks[index];
     return self.track_start(index) + (track.audio ? 0 : track.note_lines * 4) + slot - 1;
 }
-/// LEN column of an AUDIO track; its waveform column follows it.
+/// LEN, OFF and optional waveform columns of an AUDIO track.
 pub fn audio_length_column(self: SequenceTable, index: i32) -> i32 {
     let track: SequenceTrack = self.tracks[index];
     return self.track_start(index) + i32(track.automation.len());
+}
+pub fn audio_offset_column(self: SequenceTable, index: i32) -> i32 { return self.audio_length_column(index) + 1; }
+pub fn audio_waveform_column(self: SequenceTable, index: i32) -> i32 { return self.audio_length_column(index) + 2; }
+pub fn is_audio_waveform(self: SequenceTable) -> bool {
+    let index: i32 = self.active_track(); if index < 0 { return false; }
+    let track: SequenceTrack = self.tracks[index];
+    return track.audio && track.instances.len() > 0 && self.selected_column == self.audio_waveform_column(index);
+}
+/// Fine timing offset of an audio placement, stored in its OFF cell.
+pub fn audio_timing_offset(self: SequenceTable, index: i32, row: i32) -> i64 {
+    if index < 0 || index >= self.tracks.len() || row < 0 || row >= self.rows.len() { return 0; }
+    let track: SequenceTrack = self.tracks[index]; if !track.audio { return 0; }
+    let data: TableRow = self.rows[row]; let column: i32 = self.audio_offset_column(index);
+    if column < 0 || column >= data.cells.len() || data.cells[column] == "" { return 0; }
+    let ticks: i64 = offset_ticks(data.cells[column]);
+    return ticks >= -245760000 && ticks <= 245760000 ? ticks : 0;
 }
 /// Track owning `column`, or -1 for the ROW column.
 pub fn track_of_column(self: SequenceTable, column: i32) -> i32 {
@@ -1724,9 +1745,12 @@ pub fn rebuild_columns(self: &mut Self) -> void {
         if !track.audio && track.comment {
             columns.push(TableColumn { title: "TEXT", width: self.comment_width(i32(i)), value_type: "str8", nullable: true, hidden: track.zoom_stage < 2 });
         }
-        if track.audio { columns.push(TableColumn { title: "LEN", width: 6, value_type: "str8", pattern: "[0-9]{1,5}(\\.[0-9]{1,2})?", nullable: true }); }
+        if track.audio {
+            columns.push(TableColumn { title: "LEN", width: 6, value_type: "str8", pattern: "[0-9]{1,5}(\\.[0-9]{1,2})?", nullable: true });
+            columns.push(TableColumn { title: "OFF", width: 6, value_type: "str8", pattern: "[+-]?[0-9]{1,5}(\\.[0-9]{1,2})?", nullable: true });
+        }
         if track.audio && track.instances.len() > 0 {
-            columns.push(TableColumn { title: "WAVE", width: 7, value_type: "str8", read_only: true, nullable: true });
+            columns.push(TableColumn { title: "WAVE", width: 7, value_type: "str8", read_only: true, selectable: true, nullable: true });
         }
     }
     self.columns = columns; self.groups = groups; self.column_titles = titles;
@@ -1929,7 +1953,7 @@ pub fn clear_track(self: &mut Self) -> void {
     let first: i32 = self.track_start(index); let end: i32 = first + self.track_columns(index);
     var track: SequenceTrack = self.tracks[index];
     let has_clip: bool = track.instances.len() > 0;
-    let wave: i32 = track.audio ? self.audio_length_column(index) + 1 : -1;
+    let wave: i32 = track.audio ? self.audio_waveform_column(index) : -1;
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
     for row in previous {
         var cells: list<str8> = [];
@@ -2328,7 +2352,8 @@ pub fn is_offset(self: SequenceTable) -> bool {
     let index: i32 = self.active_track(); if index < 0 { return false; }
     let track: SequenceTrack = self.tracks[index];
     let offset: i32 = self.selected_column - self.track_start(index);
-    return !track.audio && offset >= 0 && offset < track.note_lines * 4 && offset % 4 == 3;
+    return track.audio ? self.selected_column == self.audio_offset_column(index)
+        : offset >= 0 && offset < track.note_lines * 4 && offset % 4 == 3;
 }
 fn write_owned_cell(self: &mut Self, row: i32, column: i32, value: str8) -> void {
     let data: TableRow = self.rows[row]; let old: str8 = data.cells[column];
@@ -2491,6 +2516,13 @@ fn commit(self: &mut Self, value: str8) -> bool {
     let comment: bool = self.is_comment();
     if comment && len(value) > wide(comment_limit()) { self.error = "TEXT: up to 240 characters"; return false; }
     if self.is_offset() && offset_ticks(value) < -245760000 { self.error = "OFF: -16384.00 to 16384.00 sixteenth notes"; return false; }
+    if self.is_offset() {
+        let index: i32 = self.active_track(); let track: SequenceTrack = self.tracks[index];
+        if track.audio {
+            let hit: i32 = track.instance_at(self.selected_row);
+            if hit < 0 || track.instances[hit].start_row != self.selected_row { self.error = "Set OFF at the start of an audio instance"; return false; }
+        }
+    }
     if self.is_note() && value != "" {
         if self.note_index(value) < 0 { self.error = "Expected MIDI note C--1 through G-9"; return false; }
     }

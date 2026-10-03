@@ -235,6 +235,7 @@ impl PatternData {
 /// project folder (empty for a plain session); `problem` explains the first
 /// failure involving a project file.
 pub struct SessionCodec { var reading: bool; var failed: bool; var binary: SessionBuffer; var reader: SessionReader; var cells: i64; var minor: i32;
+    var audio_off: bool;
     var root: str8{""}; var problem: str8{""}; };
 impl SessionCodec {
     /// Exposed-parameter preset. Caller joins MIDI before loading; IDs are stable.
@@ -730,10 +731,20 @@ impl SessionCodec {
             var row: TableRow = TableRow {}; if !self.reading { row = table.rows[r]; }
             let count: i32 = self.number(i32(row.cells.len()), 1, 20000);
             self.cells = self.cells + count;
-            if self.cells > 8000000 || count != table.columns.len() { self.failed = true; break; }
+            var audio_tracks: i32 = 0; let tracks_for_row: list<SequenceTrack> = table.tracks;
+            for track in tracks_for_row { if track.audio { audio_tracks = audio_tracks + 1; } }
+            let expected: i32 = i32(table.columns.len()) - (self.reading && !self.audio_off ? audio_tracks : 0);
+            if self.cells > 8000000 || count != expected { self.failed = true; break; }
             var cells: list<str8> = [];
-            for c in 0..count {
-                let value: str8 = self.text(self.reading ? "" : row.cells[c]); cells.push(value);
+            for c in 0..table.columns.len() {
+                var legacy_off: bool = false;
+                if self.reading && !self.audio_off {
+                    for t in 0..table.tracks.len() {
+                        let track: SequenceTrack = table.tracks[t];
+                        if track.audio && i32(c) == table.audio_offset_column(i32(t)) { legacy_off = true; }
+                    }
+                }
+                let value: str8 = legacy_off ? clone("") : self.text(self.reading ? "" : row.cells[c]); cells.push(value);
                 let column: TableColumn = table.columns[c];
                 if !column.read_only && !column.validate(value) { self.failed = true; }
             }
@@ -786,9 +797,10 @@ impl SessionCodec {
         // INSTRUMENT_INPUTS.
         let mastered: bool = mastered_view || looped || aux_routed;
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
-        // A project session (1.2) keeps samples and plugin state in files.
+        // A project session (1.3) keeps samples and plugin state in files.
         let project: bool = self.root != "";
-        self.number(1, 1, 1); self.minor = self.number(project ? 2 : 1, project ? 2 : 0, project ? 2 : 1);
+        self.number(1, 1, 1); self.minor = self.number(project ? 3 : 2, project ? 2 : 0, project ? 3 : 2);
+        self.audio_off = !self.reading || (project ? self.minor >= 3 : self.minor >= 2);
         var state: SessionView = self.view(view);
         let sample_count: i32 = self.number(i32(library.audio.samples.len()), 0, 256);
         for i in 0..sample_count {
@@ -1242,7 +1254,7 @@ impl SessionCodec {
                 if !found { clips.push(instance.clip); }
             }
         }
-        codec.text("MLAPATT"); codec.number(1, 1, 1); codec.minor = codec.number(1, 0, 1); codec.text(name);
+        codec.text("MLAPATT"); codec.number(1, 1, 1); codec.minor = codec.number(2, 0, 2); codec.audio_off = true; codec.text(name);
         codec.number(i32(clips.len()), 0, 256);
         for clip in clips { codec.clip(clip); }
         codec.sequence_data(table, clips);
@@ -1260,7 +1272,7 @@ impl SessionCodec {
         if read.is_err() { return Err<PatternData, str8>("Cannot read pattern file"); }
         var codec: SessionCodec = SessionCodec { reading: true, reader: read.unwrap() };
         let magic: str8 = codec.text(""); if magic != "MLAPATT" { codec.failed = true; } free(magic);
-        codec.number(1, 1, 1); codec.minor = codec.number(1, 0, 1);
+        codec.number(1, 1, 1); codec.minor = codec.number(0, 0, 2); codec.audio_off = codec.minor >= 2;
         var data: PatternData = PatternData { name: codec.text("") };
         let count: i32 = codec.number(0, 0, 256);
         for i in 0..count { if codec.failed { break; } data.clips.push(codec.clip(AudioClip {})); }
