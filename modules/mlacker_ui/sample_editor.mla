@@ -1,6 +1,7 @@
 mod mlacker_ui::audio_clip;
 mod mlacker_ui::sample_view;
 mod tui::widgets;
+mod tui::dialog;
 use mlacker_ui::audio_clip::AudioClip;
 use mlacker_ui::audio_clip::base_name;
 use mlacker_ui::sample_view::SampleView;
@@ -8,11 +9,20 @@ use tui::geometry::*;
 use tui::surface::*;
 use tui::theme::*;
 use tui::widgets::Panel;
+use tui::dialog::Dialog;
+use tui::textfield::TextField;
 use tui::button::PushButton;
+use tui::focus::PaneFocus;
+use tui::layout::Alignment;
 use tui::input::*;
 use tui::menu::Key;
 use std::strbuf::clone;
 use std::strbuf::free;
+use std::strbuf::len;
+use std::strbuf::sub;
+use std::strbuf::rfind;
+use std::strbuf::find;
+use std::strbuf::byte_at;
 
 // Destructive edits on interleaved PCM. Each returns a new list; the source is
 // never modified because clips share sample data between placements. Frame
@@ -84,16 +94,135 @@ pub fn pcm_peak(samples: &list<f32>, channels: i64, from: i64, to: i64) -> f32 {
     return peak;
 }
 
-/// Destructive editor for one Audio-list sample. Edits apply to a working copy
-/// with up to 16 undo steps; nothing changes in the session until `commit`.
-/// on_event results: 0 handled/ignored, 1 commit, 2 discard. Tab moves between
-/// the waveform and the Save/Discard buttons (`button` 0/1, -1 = waveform).
+
+/// Owned file name stem of `source`: no folder, no extension, and no
+/// " - Trim N" suffix, so trimming a trim numbers on from the original.
+fn trim_stem(source: str8) -> str8 {
+    let name: str8 = base_name(source);
+    let dot: i64 = rfind(name, ".");
+    var stem: str8 = dot > 0 ? sub(name, 0, dot) : clone(name); free(name);
+    let mark: i64 = rfind(stem, " - Trim ");
+    if mark > 0 {
+        let first: i64 = mark + 8; let size: i64 = len(stem); var digits: bool = first < size;
+        for i in first..size { let b: i32 = byte_at(stem, i); if b < 48 || b > 57 { digits = false; } }
+        if digits { let bare: str8 = sub(stem, 0, mark); free(stem); stem = bare; }
+    }
+    return stem;
+}
+/// Owned `Name - Trim N.wav` for a trim of `source`, with the first N no
+/// sample in `samples` is named yet.
+pub fn trim_name(source: str8, samples: &list<AudioClip>) -> str8 {
+    var clips: list<AudioClip> = []; clips = samples;
+    let stem: str8 = trim_stem(source);
+    var name: str8 = clone("");
+    for n in 1..100000 {
+        free(name); name = format!("{} - Trim {}.wav", stem, n);
+        var taken: bool = false;
+        for clip in clips { let other: str8 = base_name(clip.source); if other == name { taken = true; } free(other); }
+        if !taken { break; }
+    }
+    free(stem);
+    return name;
+}
+/// Owned path of file `name` in the folder of `source` (bare when it has none).
+pub fn sibling_path(source: str8, name: str8) -> str8 {
+    let slash: i64 = rfind(source, "/");
+    if slash < 0 { return clone(name); }
+    let folder: str8 = sub(source, 0, slash + 1);
+    let path: str8 = format!("{}{}", folder, name); free(folder);
+    return path;
+}
+
+/// Ctrl+S in the sample editor: the new clip's file name, and whether it
+/// replaces the original (destructive) or is added beside it. Focus: 0 name,
+/// 1 mode, 3 buttons.
+pub struct TrimSaveDialog : Dialog { var name: TextField; var destructive: bool; var error: str8; };
+impl TrimSaveDialog {
+    pub fn new() -> TrimSaveDialog {
+        return TrimSaveDialog { title: "Save clip", width: 60, height: 15, name: TextField::new(""), error: "",
+            focus: PaneFocus::new(0), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "Save", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
+    }
+    pub fn open(self: &mut Self, name: str8) -> void {
+        self.name.set_text(name); self.error = ""; self.reset_buttons();
+        self.focus.selected = 0; self.active = true; self.result = 0;
+    }
+    /// Show `error` and keep the dialog open, e.g. when the name is taken.
+    pub fn reject(self: &mut Self, error: str8) -> void {
+        self.error = error; self.reset_buttons(); self.focus.selected = 0; self.active = true; self.result = 0;
+    }
+    fn accept(self: &mut Self) -> i32 {
+        let name: str8 = std::strbuf::trim(self.name.text);
+        let bad: bool = name == "" || find(name, "/") >= 0 || find(name, "\\") >= 0;
+        if bad { free(name); self.error = "Enter a file name without folders"; return 0; }
+        let lower: str8 = len(name) > 4 ? sub(name, len(name) - 4, 4) : clone("");
+        let wav: bool = lower == ".wav" || lower == ".WAV"; free(lower);
+        if !wav { let named: str8 = format!("{}.wav", name); free(name); self.name.set_text(named); free(named); }
+        else { self.name.set_text(name); free(name); }
+        self.active = false; self.result = 1; return 1;
+    }
+    /// 0 while open, 1 saved (the name is in `name.text`), 2 cancelled.
+    pub fn on_event(self: &mut Self, event: InputEvent) -> i32 {
+        if self.pressed_button >= 0 { return 0; }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
+            self.active = false; self.result = 2; return 2;
+        }
+        if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
+            let back: bool = (event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left)) || event.modifiers == 2;
+            let s: i32 = self.focus.selected;
+            self.focus.selected = back ? (s == 0 ? 3 : (s == 1 ? 0 : 1)) : (s == 0 ? 1 : (s == 1 ? 3 : 0));
+            return 0;
+        }
+        if self.focus.selected == 3 { self.on_button_event(event); return 0; }
+        if event.kind == InputKind::Menu && event.key == Key::Enter { return self.accept(); }
+        if self.focus.selected == 1 {
+            if (event.kind == InputKind::Menu && (event.key == Key::Left || event.key == Key::Right || event.key == Key::Up || event.key == Key::Down)) ||
+               event.code == 32 { self.destructive = !self.destructive; }
+            return 0;
+        }
+        self.name.on_event(event);
+        return 0;
+    }
+    /// Call once per 10ms UI tick; returns a completed button press for the
+    /// caller to replay as Enter (Save) or Escape (Cancel).
+    pub fn tick(self: &mut Self) -> i32 {
+        let action: i32 = self.tick_buttons();
+        if action != 0 { self.focus.selected = 0; }
+        return action;
+    }
+    pub fn paint(self: TrimSaveDialog, surface: Surface, viewport: Rect, theme: Theme) -> void {
+        if !self.active { return; }
+        let body: Rect = self.paint_frame(surface, viewport, theme);
+        surface.text(body, "File name (a new clip in the Audio list)", theme.foreground, theme.panel);
+        self.name.paint(surface, Rect::new(body.x, body.y + 1, body.width, 1), theme.foreground, theme.selection, self.focus.selected == 0);
+        surface.text(Rect::new(body.x, body.y + 3, body.width, 1), "Save mode", theme.foreground, theme.panel);
+        let focused: bool = self.focus.selected == 1;
+        let keep: Rect = Rect::new(body.x, body.y + 4, body.width, 1);
+        let replace: Rect = Rect::new(body.x, body.y + 5, body.width, 1);
+        surface.text(keep, self.destructive ? "( ) Non-destructive: keep the original" : "(*) Non-destructive: keep the original",
+            theme.foreground, focused && !self.destructive ? theme.selection : theme.panel);
+        surface.text(replace, self.destructive ? "(*) Destructive: replace the original everywhere" : "( ) Destructive: replace the original everywhere",
+            theme.foreground, focused && self.destructive ? theme.selection : theme.panel);
+        surface.text(Rect::new(body.x, body.y + 7, body.width, 1), self.error, theme.accent, theme.panel);
+    }
+    pub fn release(self: &mut Self) -> void { self.name.release(); }
+}
+
+/// Sample editor for one Audio-list sample: the cursor, zoom and selection
+/// keys of its `SampleView` (see `SampleView::on_key`), `x` to trim the
+/// working copy to the selection with up to 16 undo steps, Ctrl+P to play,
+/// and Ctrl+S to save the result as a new clip through `save`.
+/// on_event results: 0 handled/ignored, 1 save accepted (`saved_name`,
+/// `save_destructive`), 2 close, 3 play/stop, 4 the save dialog wants its
+/// suggested name (`open_save`).
 pub struct SampleEditor {
     var active: bool; var index: i32; var clip: AudioClip; var history: list<AudioClip>;
     var view: SampleView; var modified: bool; var status: str8{""};
-    var button: i32{-1}; var pressed: i32{-1}; var press_ticks: i32;
+    var save: TrimSaveDialog; var save_ready: bool; var save_destructive: bool;
+    /// Esc once more closes without saving.
+    var close_pending: bool;
     /// A range to watch (a sampler slot's loop, see `select`), and whether
-    /// the only change of length so far is a crop to exactly that range.
+    /// the only change of length so far is a trim to exactly that range.
     var watch_from: i64{-1}; var watch_to: i64{-1};
     var length_changed: bool; var cropped_to_watch: bool;
 };
@@ -103,110 +232,112 @@ impl SampleEditor {
         var clip: AudioClip = AudioClip {}; clip = source;
         self.clip = clip.copy(); self.clip.offset = 0; self.index = index;
         self.view = SampleView { grainy: true, zoom: 0 };
-        self.view.reset_selection(self.clip.frames);
-        self.view.anchor_frame = 0; self.view.anchor_active = true;
-        self.modified = false; self.status = ""; self.button = -1; self.pressed = -1; self.active = true;
+        self.view.clear_selection(self.clip.frames, 0);
+        self.close_pending = false;
+        self.save = TrimSaveDialog::new(); self.save_ready = true;
+        self.modified = false; self.status = ""; self.active = true;
         self.watch_from = -1; self.watch_to = -1; self.length_changed = false; self.cropped_to_watch = false;
     }
     /// Select frames `from` .. `to` (clamped) and watch that range: after a
-    /// crop to exactly it, `cropped_to_watch` says so.
+    /// trim to exactly it, `cropped_to_watch` says so.
     pub fn select(self: &mut Self, from: i64, to: i64) -> void {
         let start: i64 = from < 0 ? 0 : from;
         let end: i64 = to > self.clip.frames ? self.clip.frames : to;
         if end <= start { return; }
-        self.view.sel_start = start; self.view.sel_end = end; self.view.sel_frames = self.clip.frames;
-        self.view.anchor_frame = start; self.view.anchor_active = true;
+        self.view.select(start, end, self.clip.frames);
         self.watch_from = start; self.watch_to = end;
     }
+    pub fn cursor(self: SampleEditor) -> i64 { return self.view.cursor(self.clip, 0); }
     /// Selection in frames; the whole sample when nothing narrower is selected.
-    pub fn selection_start(self: SampleEditor) -> i64 {
-        return self.view.sel_frames == self.clip.frames && self.view.sel_end > self.view.sel_start ? self.view.sel_start : 0;
-    }
-    pub fn selection_end(self: SampleEditor) -> i64 {
-        return self.view.sel_frames == self.clip.frames && self.view.sel_end > self.view.sel_start ? self.view.sel_end : self.clip.frames;
-    }
-    fn whole(self: SampleEditor) -> bool {
-        return self.selection_start() <= 0 && self.selection_end() >= self.clip.frames;
-    }
-    fn apply(self: &mut Self, samples: list<f32>, status: str8, keep_selection: bool) -> void {
-        let from: i64 = self.selection_start(); let to: i64 = self.selection_end();
-        let next: AudioClip = self.clip.with_samples(samples);
+    pub fn selection_start(self: SampleEditor) -> i64 { return self.view.selection_start(self.clip.frames); }
+    pub fn selection_end(self: SampleEditor) -> i64 { return self.view.selection_end(self.clip.frames); }
+    pub fn has_selection(self: SampleEditor) -> bool { return self.view.has_selection(self.clip.frames); }
+    fn push_history(self: &mut Self, next: AudioClip) -> void {
         self.history.push(self.clip);
         if self.history.len() > 16 {
             let old: list<AudioClip> = self.history; var kept: list<AudioClip> = [];
             for i in 0..old.len() { let item: AudioClip = old[i]; if i == 0 { item.release(); } else { kept.push(item); } }
             self.history = kept;
         }
-        self.clip = next; self.modified = true; self.status = status;
-        self.view.reset_selection(self.clip.frames);
-        if keep_selection { self.view.sel_start = from; self.view.sel_end = to; }
-        self.view.anchor_frame = keep_selection ? from : 0; self.view.anchor_active = true;
+        self.clip = next; self.modified = true;
+        self.view.clear_selection(self.clip.frames, 0); self.view.zoom = 0;
     }
-    /// Apply an edit by command letter; also used by tests. Returns false with
-    /// `status` set when the edit is not possible.
-    pub fn edit(self: &mut Self, command: i32) -> bool {
+    /// Trim the working copy to the selection. Returns false with `status` set
+    /// when nothing narrower than the whole sample is selected.
+    pub fn trim(self: &mut Self) -> bool {
+        if !self.has_selection() { self.status = "Select a range first: v, then move an edge with h/l"; return false; }
         let ch: i64 = self.clip.channels < 1 ? 1 : self.clip.channels;
         let from: i64 = self.selection_start(); let to: i64 = self.selection_end();
-        if command == 116 { // t: crop to selection
-            if self.whole() { self.status = "Select a range first (Ctrl+N/M start, Shift+N/M end)"; return false; }
-            self.cropped_to_watch = !self.length_changed && from == self.watch_from && to == self.watch_to;
-            self.length_changed = true;
-            self.apply(pcm_crop(self.clip.samples, ch, from, to), "Cropped to selection", false); return true;
-        }
-        if command == 120 { // x: delete selection
-            if self.whole() { self.status = "Cannot delete the whole sample"; return false; }
-            self.length_changed = true; self.cropped_to_watch = false;
-            self.apply(pcm_delete(self.clip.samples, ch, from, to), "Deleted selection", false); return true;
-        }
-        if command == 114 { self.apply(pcm_reverse(self.clip.samples, ch, from, to), "Reversed", true); return true; }
-        if command == 105 { self.apply(pcm_scale(self.clip.samples, ch, from, to, 1.0f, 1), "Faded in", true); return true; }
-        if command == 111 { self.apply(pcm_scale(self.clip.samples, ch, from, to, 1.0f, 2), "Faded out", true); return true; }
-        if command == 115 { self.apply(pcm_scale(self.clip.samples, ch, from, to, 0.0f, 0), "Silenced", true); return true; }
-        if command == 45 { self.apply(pcm_scale(self.clip.samples, ch, from, to, 0.89125094f, 0), "Gain -1 dB", true); return true; }
-        if command == 43 || command == 61 { self.apply(pcm_scale(self.clip.samples, ch, from, to, 1.12201845f, 0), "Gain +1 dB", true); return true; }
-        if command == 110 { // n: normalize selection peak to 0 dBFS
-            let peak: f32 = pcm_peak(self.clip.samples, ch, from, to);
-            if peak < 0.000001f { self.status = "Selection is silent"; return false; }
-            self.apply(pcm_scale(self.clip.samples, ch, from, to, 1.0f / peak, 0), "Normalized to 0 dBFS", true); return true;
-        }
-        if command == 97 { self.view.reset_selection(self.clip.frames); self.status = "Selected all"; return true; }
-        if command == 117 { // u: undo
-            if self.history.len() == 0 { self.status = "Nothing to undo"; return false; }
-            // Undo may take back the crop: stop trusting it.
-            self.length_changed = true; self.cropped_to_watch = false;
-            let old: list<AudioClip> = self.history; var kept: list<AudioClip> = [];
-            for i in 0..old.len() - 1 { kept.push(old[i]); }
-            self.clip.release(); self.clip = old[old.len() - 1]; self.history = kept;
-            self.modified = self.history.len() > 0; self.status = "Undone";
-            self.view.reset_selection(self.clip.frames); self.view.anchor_frame = 0; self.view.anchor_active = true;
-            return true;
-        }
-        return false;
+        self.cropped_to_watch = !self.length_changed && from == self.watch_from && to == self.watch_to;
+        self.length_changed = true;
+        self.push_history(self.clip.with_samples(pcm_crop(self.clip.samples, ch, from, to)));
+        self.status = "Trimmed to the selection"; return true;
+    }
+    pub fn undo(self: &mut Self) -> bool {
+        if self.history.len() == 0 { self.status = "Nothing to undo"; return false; }
+        // Undo may take back the trim: stop trusting it.
+        self.length_changed = true; self.cropped_to_watch = false;
+        let old: list<AudioClip> = self.history; var kept: list<AudioClip> = [];
+        for i in 0..old.len() - 1 { kept.push(old[i]); }
+        self.clip.release(); self.clip = old[old.len() - 1]; self.history = kept;
+        self.modified = self.history.len() > 0; self.status = "Undone";
+        self.view.clear_selection(self.clip.frames, 0); self.view.zoom = 0;
+        return true;
     }
     pub fn on_event(self: &mut Self, event: InputEvent, width: i32) -> i32 {
-        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 { return 2; }
-        if event.kind == InputKind::Menu && event.key == Key::Toggle { self.button = self.button < 0 ? 0 : -1; return 0; }
-        if self.button >= 0 {
-            if self.pressed >= 0 { return 0; }
-            if event.kind == InputKind::Menu && (event.key == Key::Left || event.key == Key::Right) { self.button = 1 - self.button; }
-            if (event.kind == InputKind::Menu && event.key == Key::Enter) || event.code == 32 { self.pressed = self.button; self.press_ticks = 10; }
+        if self.save.active {
+            let result: i32 = self.save.on_event(event);
+            if result == 1 { self.save_destructive = self.save.destructive; return 1; }
             return 0;
         }
-        if event.kind == InputKind::Menu && event.key == Key::Enter { return 1; }
-        if self.view.on_event(event, self.clip, width) { self.status = ""; return 0; }
-        // '+' arrives with or without Shift depending on the terminal.
-        if (event.modifiers == 1 && event.code >= 32) || (event.modifiers == 2 && event.code == 43) { self.edit(event.code); }
+        if event.released || (event.kind == InputKind::None && event.code == 0) { return 0; }
+        let escape: bool = event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32;
+        let pending: bool = self.close_pending; self.close_pending = false;
+        if escape {
+            if self.view.selecting || self.has_selection() {
+                self.view.clear_selection(self.clip.frames, self.cursor()); self.status = "Selection dropped"; return 0;
+            }
+            if self.modified && !pending { self.close_pending = true; self.status = "Unsaved trim: Esc again closes without saving, Ctrl+S saves"; return 0; }
+            return 2;
+        }
+        let code: i32 = event.code; let mods: i32 = (event.modifiers - 1) % 64 + 1;
+        if (code == 16 && mods == 1) || (code == 112 && mods == 5) { return 3; }
+        if (code == 19 && mods == 1) || (code == 115 && mods == 5) { return 4; }
+        if code == 120 && mods == 1 { self.trim(); return 0; }
+        if code == 117 && mods == 1 { self.undo(); return 0; }
+        if self.view.on_key(event, self.clip, width, 0) { self.status = self.view.status; }
         return 0;
     }
-    /// Call once per 10ms UI tick; returns 1 (Save) or 2 (Discard) when a
-    /// button press completes, for the caller to replay as Enter or Escape.
-    pub fn tick(self: &mut Self) -> i32 {
-        if self.pressed < 0 { return 0; }
-        self.press_ticks = self.press_ticks - 1;
-        if self.press_ticks > 0 { return 0; }
-        let action: i32 = self.pressed == 0 ? 1 : 2;
-        self.pressed = -1; self.button = -1; return action;
+    /// The audio Ctrl+P plays: the selection, or the whole working copy.
+    pub fn play_clip(self: SampleEditor) -> AudioClip {
+        let ch: i64 = self.clip.channels < 1 ? 1 : self.clip.channels;
+        let from: i64 = self.selection_start(); let to: i64 = self.selection_end();
+        return AudioClip { samples: pcm_crop(self.clip.samples, ch, from, to), channels: self.clip.channels,
+            sample_rate: self.clip.sample_rate, frames: to - from };
     }
+    pub fn start_play(self: &mut Self, now: i64) -> void {
+        self.view.start_play(self.selection_start(), self.selection_end(), self.clip.sample_rate, now);
+        self.status = self.has_selection() ? "Playing the selection | Ctrl+P stops" : "Playing | Ctrl+P stops";
+    }
+    pub fn stop_play(self: &mut Self) -> void { self.view.stop_play(); self.status = ""; }
+    pub fn playing(self: SampleEditor) -> bool { return self.view.playing; }
+    /// Advance the play position to `now`; `previewing` false ends playback.
+    pub fn follow(self: &mut Self, now: i64, previewing: bool) -> void {
+        let was: bool = self.view.playing;
+        self.view.follow(now, previewing);
+        if was && !self.view.playing { self.status = ""; }
+    }
+    /// The file name accepted in the save dialog; valid until `take` or `release`.
+    pub fn saved_name(self: SampleEditor) -> str8 { return self.save.name.text; }
+    /// Open the Ctrl+S dialog suggesting `name`.
+    pub fn open_save(self: &mut Self, name: str8) -> void { self.save.open(name); }
+    /// The save could not happen: show `error` in the still open dialog.
+    pub fn save_failed(self: &mut Self, error: str8) -> void { self.save.reject(error); }
+    /// True while a dialog button shows its press; `tick` then completes it.
+    pub fn pressing(self: SampleEditor) -> bool { return self.save.active && self.save.pressed_button >= 0; }
+    /// Call once per 10ms UI tick; returns 1 (Save) or 2 (Cancel) when a
+    /// dialog button press completes, for the caller to replay as Enter or Escape.
+    pub fn tick(self: &mut Self) -> i32 { return self.save.active ? self.save.tick() : 0; }
     pub fn paint(self: SampleEditor, surface: Surface, area: Rect, theme: Theme) -> void {
         if !self.active { return; }
         let name: str8 = base_name(self.clip.source);
@@ -214,40 +345,47 @@ impl SampleEditor {
         let panel: Panel = Panel { title: title };
         let body: Rect = panel.paint_focused(surface, area, theme, true);
         free(title); free(name);
-        if body.height < 9 { return; }
-        let wave: Rect = Rect::new(body.x, body.y, body.width, body.height - 7);
+        if body.height < 5 { return; }
+        let wave: Rect = Rect::new(body.x, body.y, body.width, body.height - 3);
         self.view.paint_at(surface, wave, theme, self.clip, 0, 0);
-        let rate: i64 = self.clip.sample_rate > 0 ? self.clip.sample_rate : 1;
-        let from: i64 = self.selection_start(); let to: i64 = self.selection_end();
-        let info: str8 = format!("Selection {}..{} ms of {} ms | {} ch {} Hz{}{}", from * 1000 / rate, to * 1000 / rate,
-            self.clip.frames * 1000 / rate, self.clip.channels, self.clip.sample_rate, self.status == "" ? "" : " | ", self.status);
-        surface.text(Rect::new(body.x, body.y + body.height - 7, body.width, 1), info, theme.accent, theme.panel); free(info);
-        surface.text(Rect::new(body.x, body.y + body.height - 6, body.width, 1),
-            "Ctrl+N/M start  Shift+N/M end  Ctrl+H/L zoom  a all  t crop  x delete  r reverse  i/o fade in/out",
-            theme.muted, theme.panel);
-        surface.text(Rect::new(body.x, body.y + body.height - 5, body.width, 1),
-            "n normalize  -/+ gain 1 dB  s silence  u undo", theme.muted, theme.panel);
-        // Save writes to the session and drum pads; Discard drops the edits.
-        let buttons: list<PushButton> = [PushButton { label: "Save", action: 1 }, PushButton { label: "Discard", action: 2 }];
-        var total: i32 = 2; for button in buttons { total = total + button.width(); }
-        var x: i32 = body.x + (body.width - total) / 2;
-        for i in 0..buttons.len() {
-            let button: PushButton = buttons[i];
-            button.paint(surface, Rect::new(x, body.y + body.height - 4, button.width(), 4), theme, self.button == i32(i), self.pressed == i32(i));
-            x = x + button.width() + 2;
-        }
+        let line: str8 = sample_info(self.view, self.clip, 0, self.status);
+        surface.text(Rect::new(body.x, body.y + body.height - 3, body.width, 1), line, theme.accent, theme.panel); free(line);
+        surface.text(Rect::new(body.x, body.y + body.height - 2, body.width, 1), sample_keys(), theme.muted, theme.panel);
+        surface.text(Rect::new(body.x, body.y + body.height - 1, body.width, 1),
+            "x trim  u undo  Ctrl+P play  Ctrl+S save as a new clip  Esc drops the selection, then closes", theme.muted, theme.panel);
+        self.save.paint(surface, area, theme);
     }
     /// Hand the edited clip to the caller (ownership moves); closes the editor.
     pub fn take(self: &mut Self) -> AudioClip {
         let clip: AudioClip = self.clip;
-        let old: list<AudioClip> = self.history; for item in old { item.release(); }
-        self.history = []; self.clip = AudioClip {}; self.active = false; self.modified = false;
+        self.clip = AudioClip {};
+        self.release();
         return clip;
     }
     pub fn release(self: &mut Self) -> void {
         let old: list<AudioClip> = self.history; for item in old { item.release(); }
         self.history = [];
         self.clip.release();
-        self.clip = AudioClip {}; self.active = false; self.modified = false;
+        self.clip = AudioClip {}; self.active = false; self.modified = false; self.view.playing = false;
+        self.view.transients = []; self.view.transients_key = -1;
+        if self.save_ready { self.save.release(); self.save = TrimSaveDialog {}; self.save_ready = false; }
     }
+}
+
+/// Key help shared by the sample editor and the Sample pane.
+pub fn sample_keys() -> str8 { return "v select  B/E start/end edge  h/l move  H/L big step  t transient snap  +/- zoom  = fit"; }
+
+/// Owned status line of a sample view: cursor, selection (and the edge being
+/// moved), length, format, snap and `status`.
+pub fn sample_info(shown: &SampleView, source: &AudioClip, row: i32, status: str8) -> str8 {
+    var view: SampleView = SampleView {}; view = shown;
+    var clip: AudioClip = AudioClip {}; clip = source;
+    let rate: i64 = clip.sample_rate > 0 ? clip.sample_rate : 1;
+    let edge: str8 = !view.selecting ? "" : (view.edge_end ? " [end]" : " [start]");
+    let selection: str8 = view.selecting || view.has_selection(clip.frames)
+        ? format!("Selection {}..{} ms{}", view.sel_start * 1000 / rate, view.sel_end * 1000 / rate, edge) : clone("No selection");
+    let line: str8 = format!("Cursor {} ms | {} | {} ms | {} ch {} Hz | Snap {}{}{}", view.cursor(clip, row) * 1000 / rate, selection,
+        clip.frames * 1000 / rate, clip.channels, clip.sample_rate, view.snap ? "on" : "off", status == "" ? "" : " | ", status);
+    free(selection);
+    return line;
 }

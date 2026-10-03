@@ -127,31 +127,46 @@ Grainy is the default for both sample waveforms and Mixer meters.
 
 Press `s` while an audio clip is under the Pattern cursor to toggle the horizontal
 **Sample** view in the lower pane. It replaces (and remembers) the Mixer/Inspector;
-moving off the clip closes it. With either the Pattern or Sample pane focused,
-**Ctrl+H/L** zooms time out/in by factors of two, anchored around the cursor row.
-Zoom ranges from the full clip to one original sample per horizontal pixel (two
-pixels per cell in Grainy mode). The display shows its time range and frames per
-pixel, with a highlighted cursor column. Stereo uses green L and red R lanes;
-mono uses one lane. Filled mode extends to the zero line; Wave draws the signed
-sample trace/envelope, revealing individual oscillations at sufficient zoom.
-These controls require modifier-aware terminal input; raw Backspace is not zoom.
-Menus and editors retain exclusive keyboard ownership, including `s` and Ctrl+H/L.
+moving off the clip closes it. Focus the Sample pane (Ctrl+Shift+J, or Tab) to
+use its keys; Ctrl+F shows it fullscreen. The cursor starts on the Pattern row
+and the view stays centred on it while zooming. **`+`/`-`** zoom in/out by factors
+of two, from the full clip to one original sample per horizontal pixel (two
+pixels per cell in Grainy mode), and **`=`** fits the whole clip again. **`h`/`l`**
+move the cursor one visible column (so the step tracks the zoom) and
+**`H`/`L`** an eighth of the view. The display shows its time range and frames
+per pixel, with a highlighted cursor column, and below it the cursor, selection,
+length and format. Stereo uses green L and red R lanes; mono uses one lane.
+Filled mode extends to the zero line; Wave draws the signed sample
+trace/envelope, revealing individual oscillations at sufficient zoom. Menus and
+editors retain exclusive keyboard ownership.
 
 Decoded samples are shared read-only by pattern/track copies, so zooming neither
 reopens the source file nor changes clip timing, notes, or automation.
 
-While the Sample view is open you can mark a sample-accurate region of the clip.
-**Ctrl+N/Ctrl+M** move the region's **start** point left/right and
-**Shift+N/Shift+M** move its **end** point, each by one visible column (so the
-step tracks the current zoom). The selected region is drawn with a **darker
-background** than the rest of the clip; a full-clip selection shows no shading.
-**Ctrl+Y** lifts the selected region into the audio clipboard as a fresh clip
-(new peaks/samples, source untouched), so it can be pasted (`p`) at any row to
-rearrange grooves. The selection resets to the whole clip whenever the Sample
-view is opened. While a start/end point is being adjusted the view follows that
-edge (scrolling so the moving edge stays centred); moving the Pattern cursor to
-another row releases the follow and restores the row-anchored view. The Sample
-panel title shows the clip's file name (not its full path).
+While the Sample pane is focused you can select a sample-accurate region of the
+clip. **`v`** selects the whole clip and `h`/`l` (and `H`/`L`) then move its
+**start** edge; **Shift+E** switches to the **end** edge and **Shift+B** back to the
+start (either also starts selecting). The edges never cross, the view follows
+the moving edge, and **Esc** drops the selection. **`t`** toggles transient snap:
+`H`/`L` then jump to the previous/next transient, marked with ▾ over the
+waveform. The selected region is drawn with a **darker background** than the
+rest of the clip; a full-clip selection shows no shading.
+
+- **`x`** trims the placement to the selection (non-destructively: the sample is
+  untouched).
+- **Ctrl+P** plays the selection, or the whole clip, on the master output with a
+  moving play line; again stops.
+- **Ctrl+S** saves the placement's audible part as a new sample named
+  `Name - Trim 1.wav` (editable). *Non-destructive* adds it to the Audio list
+  and leaves the original as it is; *Destructive* puts it in place of the
+  original sample in the Audio list, every placement and every drum pad.
+- **Ctrl+Y** lifts the selected region into the audio clipboard as a fresh clip
+  (new peaks/samples, source untouched), so it can be pasted (`p`) at any row.
+
+The selection resets to the whole clip whenever the Sample view is opened.
+Moving the Pattern cursor to another row releases the cursor and restores the
+row-anchored view. The Sample panel title shows the clip's file name (not its
+full path).
 
 One row currently represents a sixteenth note at the displayed BPM (120 by
 default). Longer clips extend the pattern with empty MIDI/automation cells;

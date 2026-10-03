@@ -58,6 +58,13 @@ use mlacker_ui::sampler_view::AutoMapEntry;
 mod tui::piano;
 use tui::piano::piano_note_name;
 use mlacker_ui::sample_editor::SampleEditor;
+use mlacker_ui::sample_editor::trim_name;
+use mlacker_ui::sample_editor::sibling_path;
+use mlacker_ui::sample_editor::TrimSaveDialog;
+use mlacker_ui::sample_editor::sample_info;
+use mlacker_ui::sample_editor::sample_keys;
+use mlacker_ui::sample_editor::pcm_crop;
+use mlacker_ui::sample_view::sample_pane_key;
 mod mlacker_ui::sample_dialog;
 use mlacker_ui::sample_dialog::SampleDialog;
 use mlacker_ui::audio_clip::base_name;
@@ -286,7 +293,8 @@ fn aux_route_text(destination: i32) -> str8 {
     return destination < 0 ? clone("MAIN") : (destination == 0 ? clone("MST") : format!("A{}", destination));
 }
 
-fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample: SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
+fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample_ref: &SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
+    var sample: SampleView = SampleView {}; sample = sample_ref;
     let theme: Theme = Theme::dark_blue();
     surface.fill(surface.bounds(), Cell { glyph: 32, foreground: theme.foreground, background: theme.background });
     let library: Pane = panes[0];
@@ -343,7 +351,16 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
         let track: SequenceTrack = table.tracks[table.active_track()];
         let instance: AudioInstance = track.instances[track.instance_at(table.selected_row)];
         let render_clip: AudioClip = instance.render_clip();
-        sample.paint_at(surface, bottom, theme, render_clip, table.selected_row - instance.start_row, transport.playing ? transport.phase : 0);
+        let row: i32 = table.selected_row - instance.start_row;
+        let help: bool = bottom.height > 6;
+        let wave: Rect = help ? Rect::new(bottom.x, bottom.y, bottom.width, bottom.height - 2) : bottom;
+        sample.paint_at(surface, wave, theme, render_clip, row, transport.playing ? transport.phase : 0);
+        if help {
+            let line: str8 = sample_info(sample, render_clip, row, message);
+            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 2, bottom.width, 1), line, theme.accent, theme.panel); free(line);
+            let keys: str8 = format!("{}  x trim  Ctrl+P play  Ctrl+S save as a new clip  Esc drops the selection", sample_keys());
+            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), keys, theme.muted, theme.panel); free(keys);
+        }
         if(patterns.error != "" || table.error != "") && bottom.height > 0 {
             surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
         }
@@ -422,6 +439,8 @@ pub fn run() -> i32 {
     var last_plugin_dir: str8 = clone("/Library/Audio/Plug-Ins/VST3"); var last_preset_dir: str8 = clone("");
     var piano: PianoDialog = PianoDialog::new();
     var sample_editor: SampleEditor = SampleEditor {};
+    // Ctrl+S in the Sample pane: the clip under the cursor as a new sample.
+    var clip_save: TrimSaveDialog = TrimSaveDialog::new();
     var sample_dialog: SampleDialog = SampleDialog::new();
     // The Sampler slot (instrument slot and sample slot) whose sample the
     // editor is editing, or -1: a crop to its loop resets the loop.
@@ -1046,6 +1065,18 @@ pub fn run() -> i32 {
                 if starts_with(message, "Playing sample ") == 1 { free(message); message = clone("Preview stopped"); }
             }
         }
+        // The Sample pane's play position follows its preview, which stops
+        // when the pane closes or the cursor leaves the clip.
+        if sample.playing {
+            if !sample.visible || !library.table.audio_under_cursor() { midi.stop_preview(); }
+            sample.follow(now, midi.previewing());
+            if sample.playing { playback_dirty = true; } else { dirty = true; }
+        }
+        // The sample editor's play position follows its preview.
+        if sample_editor.view.playing {
+            sample_editor.follow(now, midi.previewing());
+            if sample_editor.view.playing { playback_dirty = true; } else { dirty = true; }
+        }
         // A preview ends at the clip's end, when the dialog closes, or when
         // the cursor moves to another file.
         if preview_path != "" {
@@ -1287,7 +1318,8 @@ pub fn run() -> i32 {
                 else if picker.active && picker.pressed_button >= 0 { action = picker.tick(); dirty = true; }
                 else if outputs.active && outputs.pressed_button >= 0 { action = outputs.tick(); dirty = true; }
                 else if piano.active && piano.pressed_button >= 0 { action = piano.tick(); dirty = true; }
-                else if sample_editor.active && sample_editor.pressed >= 0 { action = sample_editor.tick(); dirty = true; }
+                else if sample_editor.active && sample_editor.pressing() { action = sample_editor.tick(); dirty = true; }
+                else if clip_save.active && clip_save.pressed_button >= 0 { action = clip_save.tick(); dirty = true; }
                 if action != 0 { replay = button_key(action); replay_pending = true; }
             }
             if settings.active && settings.pressed_button >= 0 {
@@ -1412,7 +1444,7 @@ pub fn run() -> i32 {
         let viewport: Viewport = menus.viewport(area);
         let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
         focus.reconcile(panes);
-        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
+        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
         if curve_pending {
             curve_pending = false;
             let written: i32 = library.table.apply_curve(curve_dialog.selected);
@@ -1481,6 +1513,7 @@ pub fn run() -> i32 {
             menus.paint(surface, surface.bounds(), Theme::dark_blue());
             sample_editor.paint(surface, panes[1].bounds, Theme::dark_blue());
             sample_dialog.paint(surface, area, Theme::dark_blue());
+            clip_save.paint(surface, area, Theme::dark_blue());
             dialog.paint(surface, area, Theme::dark_blue());
             question.paint(surface, area, Theme::dark_blue());
             share_question.paint(surface, area, Theme::dark_blue());
@@ -1556,8 +1589,107 @@ pub fn run() -> i32 {
             if library.table.paste_error {
                 paste_error.question = library.table.error; paste_error.open(); library.table.paste_error = false; dirty = true;
             }
+            // The Sample pane (s over an audio clip) has the keyboard for its
+            // cursor, selection and zoom keys while it is focused.
+            let sample_pane: bool = focus.selected == 2 && sample.visible && library.table.audio_under_cursor() &&
+                !sampler.visible && !keyboard.visible && !spectrum.visible && menus.active < 0 &&
+                !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
+                !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
+                !paste_error.active && !library.renaming && !library.table.editing && !sample_editor.active && !sample_dialog.active &&
+                !piano.active && !clip_save.active && !(instrument_editor.active && instrument_editor.focused);
             if paste_error.active { paste_error.on_event(event); dirty = true; }
-            else if key.global && (key.action != Action::None || key.waiting) { command = key.action; dirty = true; }
+            else if clip_save.active {
+                if clip_save.on_event(event) == 1 {
+                    if !library.table.audio_under_cursor() { free(message); message = clone("The clip is no longer under the cursor"); }
+                    else {
+                        // The audible part of the clip under the cursor becomes a
+                        // new sample, added beside the original or (destructive)
+                        // replacing it everywhere.
+                        let track: SequenceTrack = library.table.tracks[library.table.active_track()];
+                        let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
+                        let name: str8 = clone(clip_save.name.text); let destructive: bool = clip_save.destructive;
+                        var index: i32 = -1; var taken: bool = false;
+                        for i in 0..library.audio.samples.len() {
+                            let other: AudioClip = library.audio.samples[i];
+                            if other.source == instance.clip.source && other.frames == instance.clip.frames { index = i32(i); }
+                        }
+                        for i in 0..library.audio.samples.len() {
+                            let other: AudioClip = library.audio.samples[i]; let other_name: str8 = base_name(other.source);
+                            if other_name == name && !(destructive && i32(i) == index) { taken = true; }
+                            free(other_name);
+                        }
+                        if taken { clip_save.reject("A sample with this name is already in the Audio list"); }
+                        else if destructive && index < 0 { clip_save.reject("The clip's sample is not in the Audio list"); }
+                        else {
+                            var region: AudioClip = instance.clip.slice_frames(instance.offset_frames, instance.render_end());
+                            free(message);
+                            if region.peaks.len() == 0 { region.release(); message = clone("The clip is empty"); }
+                            else {
+                                free(region.source); region.source = sibling_path(instance.clip.source, name);
+                                if sample.playing { midi.stop_preview(); sample.stop_play(); }
+                                if destructive {
+                                    let placed: i32 = library.replace_sample(index, region);
+                                    library.audio.rebuild(); library.audio.select_sample(index);
+                                    let saved: AudioClip = library.audio.samples[index];
+                                    let pads: i32 = midi.refresh_pads(index, saved);
+                                    sampler.forget_cuts();
+                                    message = pads < 0 ? format!("Saved {} over sample {}, but a drum pad rejected it: {}", name, index + 1, __mlang_std_audio_last_error())
+                                        : format!("Saved {} over sample {}: {} placement(s), {} drum pad(s) updated", name, index + 1, placed, pads);
+                                } else {
+                                    let added: i32 = library.audio.add_clip(region);
+                                    message = added < 0 ? format!("Cannot add {}: {}", name, library.audio.error)
+                                        : format!("Saved {} as sample {}; the original is unchanged", name, added + 1);
+                                }
+                                sample.anchor_active = false; sample.selecting = false;
+                            }
+                        }
+                        free(name);
+                    }
+                }
+                dirty = true;
+            }
+            else if key.global && (key.action != Action::None || key.waiting) &&
+                    !((sample_editor.active || sample_pane) && key.action == Action::SaveSession) { command = key.action; dirty = true; }
+            else if sample_pane && sample_pane_key(event) {
+                let track: SequenceTrack = library.table.tracks[library.table.active_track()];
+                let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
+                let rc: AudioClip = instance.render_clip();
+                let row: i32 = library.table.selected_row - instance.start_row;
+                let code: i32 = event.code; let mods: i32 = (event.modifiers - 1) % 64 + 1;
+                if (code == 16 && mods == 1) || (code == 112 && mods == 5) {
+                    // Ctrl+P: the selection, or the whole clip; again stops.
+                    let was_playing: bool = sample.playing;
+                    midi.stop_preview(); sample.stop_play(); preview_sample = -1;
+                    if preview_path != "" { free(preview_path); preview_path = clone(""); }
+                    free(message);
+                    if was_playing { message = clone("Preview stopped"); }
+                    else {
+                        let lo: i64 = sample.selection_start(rc.frames); let hi: i64 = sample.selection_end(rc.frames);
+                        let ch: i64 = rc.channels < 1 ? 1 : rc.channels;
+                        let play: AudioClip = AudioClip { samples: pcm_crop(rc.samples, ch, rc.offset + lo, rc.offset + hi),
+                            channels: rc.channels, sample_rate: rc.sample_rate, frames: hi - lo };
+                        let error: str8 = midi.preview_clip(play);
+                        if error == "" {
+                            sample.start_play(lo, hi, rc.sample_rate, now_ms());
+                            message = clone(sample.has_selection(rc.frames) ? "Playing the selection | Ctrl+P stops" : "Playing the clip | Ctrl+P stops");
+                        } else { message = clone(error); }
+                    }
+                }
+                else if (code == 19 && mods == 1) || (code == 115 && mods == 5) {
+                    let suggested: str8 = trim_name(instance.clip.source, library.audio.samples);
+                    clip_save.open(suggested); free(suggested);
+                }
+                else if code == 120 && mods == 1 {
+                    free(message);
+                    if !sample.has_selection(rc.frames) { message = clone("Select a range first: v, then move an edge with h/l"); }
+                    else if library.table.trim_audio(sample.sel_start, sample.sel_end, panes[1].bounds.inset(1)) {
+                        sample.anchor_active = false; sample.selecting = false; sample.zoom = 0;
+                        message = clone("Trimmed the clip to the selection | Ctrl+S saves it as a new clip");
+                    } else { message = clone(library.table.error); }
+                }
+                else if sample.on_key(event, rc, panes[2].bounds.width - 2, row) { free(message); message = clone(sample.status); }
+                dirty = true;
+            }
             // Space starts/stops from every pane, including the mixer and the
             // VST3 editor. Text entry and modal dialogs keep it for themselves.
             // Ctrl+P plays the matrix. Terminals send it as the control byte
@@ -1592,10 +1724,10 @@ pub fn run() -> i32 {
                      (event.code == 32 && event.modifiers == 5)) && matrix.visible && menus.active < 0 &&
                     !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
                     !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
-                    !paste_error.active && !library.renaming && !sample_dialog.active {
+                    !paste_error.active && !library.renaming && !sample_editor.active && !sample_dialog.active && !sample_pane {
                 song_request = song_playing ? 2 : 1; dirty = true;
             }
-            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !bpm_dialog.active && !sample_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
+            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !bpm_dialog.active && !sample_editor.active && !sample_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
                 // In the song matrix, Space plays the matrix from the cursor
                 // row, every lane mixed, like Ctrl+P; it stops whatever plays.
                 // Elsewhere it plays the selected pattern.
@@ -1637,24 +1769,67 @@ pub fn run() -> i32 {
             }
             else if sample_editor.active {
                 let action: i32 = sample_editor.on_event(event, panes[1].bounds.width - 2);
-                if action == 1 && !sample_editor.modified { sample_editor.release(); free(message); message = clone("Sample unchanged"); }
-                else if action == 1 {
-                    let index: i32 = sample_editor.index;
-                    let loop_cropped: bool = editing_sampler_slot > 0 && sample_editor.cropped_to_watch;
-                    let placed: i32 = library.replace_sample(index, sample_editor.take());
-                    let edited: AudioClip = library.audio.samples[index];
-                    let pads: i32 = midi.refresh_pads(index, edited);
-                    sampler.forget_cuts();
-                    // Cropped to a Sampler slot's loop: that slot now loops,
-                    // and starts, over the whole sample.
-                    if loop_cropped { SamplerView::loop_to_whole(midi.output, editing_sampler_slot, editing_sampler_pad); }
-                    free(message);
-                    message = pads < 0 ? format!("Sample {} saved, but a drum pad rejected it: {}", index + 1, __mlang_std_audio_last_error())
-                        : format!("Sample {} saved: {} placement(s), {} drum pad(s) updated{}", index + 1, placed, pads,
-                            loop_cropped ? "; the slot's loop now spans it" : "");
-                    editing_sampler_slot = -1;
+                if action == 2 {
+                    if sample_editor.view.playing { midi.stop_preview(); }
+                    let modified: bool = sample_editor.modified;
+                    sample_editor.release(); editing_sampler_slot = -1;
+                    free(message); message = clone(modified ? "Sample edits discarded" : "Sample editor closed");
                 }
-                else if action == 2 { sample_editor.release(); editing_sampler_slot = -1; free(message); message = clone("Sample edits discarded"); }
+                else if action == 3 {
+                    let was_playing: bool = sample_editor.view.playing;
+                    midi.stop_preview(); sample_editor.stop_play(); preview_sample = -1;
+                    if preview_path != "" { free(preview_path); preview_path = clone(""); }
+                    if !was_playing {
+                        let error: str8 = midi.preview_clip(sample_editor.play_clip());
+                        if error == "" { sample_editor.start_play(now_ms()); } else { sample_editor.status = error; }
+                    }
+                }
+                else if action == 4 {
+                    let original: AudioClip = library.audio.samples[sample_editor.index];
+                    let suggested: str8 = trim_name(original.source, library.audio.samples);
+                    sample_editor.open_save(suggested); free(suggested);
+                }
+                else if action == 1 {
+                    // A new clip named in the dialog: added beside the original,
+                    // or (destructive) replacing it everywhere.
+                    let index: i32 = sample_editor.index;
+                    let destructive: bool = sample_editor.save_destructive;
+                    let name: str8 = clone(sample_editor.saved_name());
+                    var taken: bool = false;
+                    for i in 0..library.audio.samples.len() {
+                        let clip: AudioClip = library.audio.samples[i]; let other: str8 = base_name(clip.source);
+                        if other == name && !(destructive && i32(i) == index) { taken = true; }
+                        free(other);
+                    }
+                    if taken { sample_editor.save_failed("A sample with this name is already in the Audio list"); }
+                    else {
+                        let loop_cropped: bool = destructive && editing_sampler_slot > 0 && sample_editor.cropped_to_watch;
+                        if sample_editor.view.playing { midi.stop_preview(); }
+                        let original: AudioClip = library.audio.samples[index];
+                        let path: str8 = sibling_path(original.source, name);
+                        var edited: AudioClip = sample_editor.take(); free(edited.source); edited.source = path;
+                        free(message);
+                        if destructive {
+                            let placed: i32 = library.replace_sample(index, edited);
+                            library.audio.rebuild(); library.audio.select_sample(index);
+                            let saved: AudioClip = library.audio.samples[index];
+                            let pads: i32 = midi.refresh_pads(index, saved);
+                            sampler.forget_cuts();
+                            // Trimmed to a Sampler slot's loop: that slot now loops,
+                            // and starts, over the whole sample.
+                            if loop_cropped { SamplerView::loop_to_whole(midi.output, editing_sampler_slot, editing_sampler_pad); }
+                            message = pads < 0 ? format!("Saved {} over sample {}, but a drum pad rejected it: {}", name, index + 1, __mlang_std_audio_last_error())
+                                : format!("Saved {} over sample {}: {} placement(s), {} drum pad(s) updated{}", name, index + 1, placed, pads,
+                                    loop_cropped ? "; the slot's loop now spans it" : "");
+                        } else {
+                            let added: i32 = library.audio.add_clip(edited);
+                            message = added < 0 ? format!("Cannot add {}: {}", name, library.audio.error)
+                                : format!("Saved {} as sample {}; sample {} is unchanged", name, added + 1, index + 1);
+                        }
+                        editing_sampler_slot = -1;
+                    }
+                    free(name);
+                }
                 dirty = true;
             }
             else if sample_dialog.active {
@@ -1951,15 +2126,6 @@ pub fn run() -> i32 {
                     }
                     dirty = true;
                 }
-            } else if event.code == 116 && event.modifiers == 1 &&(focus.selected == 1 || focus.selected == 2) && sample.visible && library.table.audio_under_cursor() {
-                free(message);
-                if library.table.trim_audio(sample.sel_start, sample.sel_end, panes[1].bounds.inset(1)) {
-                    let track: SequenceTrack = library.table.tracks[library.table.active_track()];
-                    let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
-                    let rc: AudioClip = instance.render_clip(); sample.reset_selection(rc.frames);
-                    message = clone("Trimmed audio clip to selection.");
-                } else { message = clone(library.table.error); }
-                dirty = true;
             } else if event.modifiers == 5 && event.code == 121 &&
             (focus.selected == 1 || focus.selected == 2) && sample.visible && library.table.audio_under_cursor() {
                 let track: SequenceTrack = library.table.tracks[library.table.active_track()];
@@ -1971,14 +2137,6 @@ pub fn run() -> i32 {
                     message = clone("Copied waveform selection to clipboard.");
                 } else { region.release(); message = clone("Waveform selection is empty."); }
                 dirty = true;
-            } else if ((event.modifiers == 5 &&(event.code == 104 || event.code == 108 || event.code == 110 || event.code == 109)) ||
-            (event.modifiers == 2 &&(event.code == 110 || event.code == 109)) ||
-            (event.modifiers == 1 &&(event.code == 78 || event.code == 77))) &&
-            (focus.selected == 1 || focus.selected == 2) && sample.visible && library.table.audio_under_cursor() {
-                let track: SequenceTrack = library.table.tracks[library.table.active_track()];
-                let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
-                let rc: AudioClip = instance.render_clip();
-                if sample.on_event(event, rc, panes[2].bounds.width - 2) { dirty = true; }
             } else if focus.selected == 2 && mixer.visible && follow_matrix && song_playing && mixer_table.tracks.len() > 0 {
                 // The strips belong to the playing song row, not to one
                 // pattern, so they are a view of the mix, not a place to edit.
@@ -2391,7 +2549,7 @@ pub fn run() -> i32 {
                 }
             }
             else if command == Action::EditSamplerSample {
-                // The selected slot's sample, its loop selected: t crops to it.
+                // The selected slot's sample, its loop selected: x trims to it.
                 let target: i32 = SamplerView::target(midi.output, library.table.active_instrument());
                 let used: i32 = target > 0 ? midi.pad_sample(target, sampler.slot) : -1;
                 if used < 0 || used >= library.audio.samples.len() {
@@ -2402,7 +2560,7 @@ pub fn run() -> i32 {
                     sample_editor.open(clip, used);
                     sample_editor.select(sampler.loop_range_start(midi.output, target, clip.frames), sampler.loop_range_end(midi.output, target, clip.frames));
                     editing_sampler_slot = target; editing_sampler_pad = sampler.slot;
-                    free(message); message = format!("Editing slot {}'s sample, its loop selected: t crops to it, Enter saves", sampler.slot + 1);
+                    free(message); message = format!("Editing slot {}'s sample, its loop selected: x trims to it, Ctrl+S saves", sampler.slot + 1);
                 }
             }
             else if command == Action::EditSample {
@@ -2413,7 +2571,7 @@ pub fn run() -> i32 {
                     transport.playing = false;
                     let clip: AudioClip = library.audio.samples[index];
                     sample_editor.open(clip, index);
-                    free(message); message = clone("Editing a copy: Save writes it to the session and drum pads");
+                    free(message); message = clone("Editing a copy: Ctrl+S saves it as a new clip");
                 }
             }
             else if command == Action::OpenPluginEditor {
@@ -2942,8 +3100,20 @@ pub fn run() -> i32 {
                 library.instruments.cancel_pending();
                 if paste_error.active { paste_error.on_event(event); dirty = true; }
                 else if instrument_editor.active && instrument_editor.focused && !dialog.active { instrument_editor.on_event(event, midi.output, panes[1].bounds); dirty = true; }
+                else if clip_save.active { clip_save.on_event(event); dirty = true; }
+                else if focus.selected == 2 && sample.visible && library.table.audio_under_cursor() && !sample_editor.active && (sample.selecting || sample.sel_start > 0 || sample.sel_end < sample.sel_frames) {
+                    let kept: i64 = sample.anchor_frame; let anchored: bool = sample.anchor_active;
+                    sample.reset_selection(sample.sel_frames);
+                    if anchored { sample.anchor_frame = kept; sample.anchor_active = true; }
+                    free(message); message = clone("Selection dropped"); dirty = true;
+                }
                 else if sample_editor.active {
-                    if sample_editor.on_event(event, panes[1].bounds.width - 2) == 2 { sample_editor.release(); free(message); message = clone("Sample edits discarded"); }
+                    if sample_editor.on_event(event, panes[1].bounds.width - 2) == 2 {
+                        if sample_editor.view.playing { midi.stop_preview(); }
+                        let modified: bool = sample_editor.modified;
+                        sample_editor.release(); editing_sampler_slot = -1;
+                        free(message); message = clone(modified ? "Sample edits discarded" : "Sample editor closed");
+                    }
                     dirty = true;
                 }
                 else if sample_dialog.active { sample_dialog.on_event(event); dirty = true; }

@@ -2,30 +2,170 @@ mod mlacker_ui::audio_clip;
 mod tui::surface;
 mod tui::theme;
 mod tui::input;
+mod tui::menu;
 use mlacker_ui::audio_clip::AudioClip;
 use tui::geometry::*;
 use tui::surface::*;
 use tui::theme::*;
-use tui::input::InputEvent;
+use tui::input::*;
+use tui::menu::Key;
 use std::strbuf::free;
 
+/// Frames of `clip`'s window (from its `offset`) where the mono level rises
+/// sharply: onsets of hits and notes, at least 30 ms apart. Each is the first
+/// frame around the rise that reaches 30% of the peak there, moved back to the
+/// quietest of the 64 frames before.
+pub fn transient_frames(source: &AudioClip) -> list<i64> {
+    var clip: AudioClip = AudioClip {}; clip = source;
+    var out: list<i64> = [];
+    let channels: i64 = clip.channels < 1 ? 1 : clip.channels;
+    let frames: i64 = clip.frames; let base: i64 = clip.offset < 0 ? 0 : clip.offset;
+    if frames <= 0 || clip.samples.len() < (base + frames) * channels { return out; }
+    let samples: list<f32> = clip.samples;
+    let hop: i64 = 256; let hops: i64 = frames / hop;
+    var levels: list<f32> = [];
+    for h in 0..hops {
+        var sum: f32 = 0.0f; let from: i64 = h * hop; let to: i64 = from + hop;
+        for f in from..to { let v: f32 = mono_value(samples, channels, base + f); sum = sum + v * v; }
+        levels.push(std::math::sqrt(sum / f32(hop)));
+    }
+    var rises: list<f32> = []; var strongest: f32 = 0.0f;
+    for h in 0..hops {
+        let rise: f32 = h == 0 ? levels[0] : levels[h] - levels[h - 1];
+        rises.push(rise > 0.0f ? rise : 0.0f);
+        if rise > strongest { strongest = rise; }
+    }
+    let floor: f32 = strongest * 0.15f > 0.005f ? strongest * 0.15f : 0.005f;
+    let rate: i64 = clip.sample_rate < 1 ? 48000 : clip.sample_rate;
+    let spacing: i64 = (rate * 30 / 1000 + hop - 1) / hop;
+    // Local maxima above the floor; of two too close, the stronger stays.
+    var picked: list<i64> = [];
+    for h in 0..hops {
+        let rise: f32 = rises[h];
+        if rise < floor { continue; }
+        if h > 0 && rises[h - 1] > rise { continue; }
+        if h + 1 < hops && rises[h + 1] >= rise { continue; }
+        let count: i64 = picked.len();
+        if count > 0 && h - picked[count - 1] < spacing {
+            if rises[picked[count - 1]] >= rise { continue; }
+            var kept: list<i64> = []; for i in 0..count - 1 { kept.push(picked[i]); } picked = kept;
+        }
+        picked.push(h);
+    }
+    for h in picked {
+        let lo: i64 = h * hop - hop < 0 ? 0 : h * hop - hop;
+        let far: i64 = h * hop + 2 * hop; let hi: i64 = far < frames ? far : frames;
+        var peak: f32 = 0.0f;
+        for f in lo..hi { let a: f32 = mono_level(samples, channels, base + f); if a > peak { peak = a; } }
+        var onset: i64 = h * hop;
+        for f in lo..hi { if mono_level(samples, channels, base + f) >= peak * 0.3f { onset = f; break; } }
+        let back: i64 = onset - 64 < lo ? lo : onset - 64; let through: i64 = onset + 1;
+        var quiet: i64 = onset; var level: f32 = 2.0f;
+        for f in back..through { let a: f32 = mono_level(samples, channels, base + f); if a <= level { level = a; quiet = f; } }
+        if out.len() == 0 || quiet > out[out.len() - 1] { out.push(quiet); }
+    }
+    return out;
+}
+fn mono_value(samples: &list<f32>, channels: i64, f: i64) -> f32 {
+    var pcm: list<f32> = []; pcm = samples;
+    return channels < 2 ? pcm[f] : (pcm[f * channels] + pcm[f * channels + 1]) * 0.5f;
+}
+fn mono_level(samples: &list<f32>, channels: i64, f: i64) -> f32 {
+    let v: f32 = mono_value(samples, channels, f);
+    return v < 0.0f ? -v : v;
+}
+
+/// True for a key the Sample pane acts on: the `SampleView::on_key` keys, and
+/// x (trim), Ctrl+P (play) and Ctrl+S (save as a new clip).
+pub fn sample_pane_key(event: InputEvent) -> bool {
+    if event.released { return false; }
+    let code: i32 = event.code; let mods: i32 = (event.modifiers - 1) % 64 + 1;
+    if mods == 1 {
+        if code == 104 || code == 108 || code == 72 || code == 76 || code == 118 || code == 66 || code == 69 ||
+           code == 116 || code == 43 || code == 45 || code == 61 || code == 120 || code == 16 || code == 19 { return true; }
+        if code == 0 && event.kind == InputKind::Menu && (event.key == Key::Left || event.key == Key::Right) { return true; }
+    }
+    if mods == 2 { return code == 104 || code == 108 || code == 98 || code == 101 || code == 72 || code == 76 || code == 66 || code == 69 || code == 43 || code == 61; }
+    return mods == 5 && (code == 112 || code == 115);
+}
+
+/// Waveform of one clip window with a cursor, a selection and the keys that
+/// move them (`on_key`). The view stays centred on the cursor while zooming.
+/// `v` selects the whole clip and h/l then move its start edge, or its end
+/// edge after Shift+E (Shift+B goes back to the start).
 pub struct SampleView { var grainy: bool{true}; var wave: bool; var zoom: i32; var visible: bool;
     var sel_start: i64; var sel_end: i64; var sel_frames: i64;
-    var anchor_frame: i64; var anchor_active: bool; };
+    /// The cursor, once a key moved it; until then it follows the pattern row.
+    var anchor_frame: i64; var anchor_active: bool;
+    /// While selecting, h/l move the end edge when `edge_end`, else the start.
+    var selecting: bool; var edge_end: bool;
+    /// Shift+H/L jump between transients (`t`), found once per clip window.
+    var snap: bool; var transients: list<i64>; var transients_key: i64{-1};
+    /// A Ctrl+P preview of frames `play_from`..`play_to` started at
+    /// `play_started` (ms), now at `play_frame`.
+    var playing: bool; var play_from: i64; var play_to: i64; var play_started: i64; var play_frame: i64; var play_rate: i64;
+    /// What the last key did (static text), or "".
+    var status: str8{""}; };
 impl SampleView {
-    /// Reset the trim selection to cover the whole clip of `frames` frames.
+    /// Reset the selection to cover the whole clip of `frames` frames.
     pub fn reset_selection(self: &mut Self, frames: i64) -> void {
-        self.sel_start = 0; self.sel_end = frames; self.sel_frames = frames; self.anchor_active = false;
+        self.sel_start = 0; self.sel_end = frames; self.sel_frames = frames; self.anchor_active = false; self.selecting = false;
     }
-    fn move_start(self: &mut Self, delta: i64) -> void {
-        var v: i64 = self.sel_start + delta;
-        if v < 0 { v = 0; } if v >= self.sel_end { v = self.sel_end - 1; }
-        self.sel_start = v; self.anchor_frame = v; self.anchor_active = true;
+    /// The cursor frame: where a key put it, else at pattern row `row`.
+    pub fn cursor(self: SampleView, source: &AudioClip, row: i32) -> i64 {
+        var clip: AudioClip = AudioClip {}; clip = source;
+        var at: i64 = self.anchor_active ? self.anchor_frame : wide(row) * clip.frames_per_row;
+        if at > clip.frames { at = clip.frames; } if at < 0 { at = 0; }
+        return at;
     }
-    fn move_end(self: &mut Self, delta: i64, frames: i64) -> void {
-        var v: i64 = self.sel_end + delta;
-        if v > frames { v = frames; } if v <= self.sel_start { v = self.sel_start + 1; }
-        self.sel_end = v; self.anchor_frame = v; self.anchor_active = true;
+    fn set_cursor(self: &mut Self, frame: i64) -> void { self.anchor_frame = frame; self.anchor_active = true; }
+    /// True when a range narrower than the whole clip of `frames` is selected.
+    pub fn has_selection(self: SampleView, frames: i64) -> bool {
+        return self.sel_frames == frames && self.sel_end > self.sel_start && (self.sel_start > 0 || self.sel_end < frames);
+    }
+    /// Selection in frames; the whole clip when nothing narrower is selected.
+    pub fn selection_start(self: SampleView, frames: i64) -> i64 { return self.has_selection(frames) ? self.sel_start : 0; }
+    pub fn selection_end(self: SampleView, frames: i64) -> i64 { return self.has_selection(frames) ? self.sel_end : frames; }
+    /// Drop the selection, keeping the cursor at `cursor`.
+    pub fn clear_selection(self: &mut Self, frames: i64, cursor: i64) -> void {
+        self.reset_selection(frames); self.set_cursor(cursor);
+    }
+    /// Select `from`..`to` of a clip of `frames` frames, moving the start edge.
+    pub fn select(self: &mut Self, from: i64, to: i64, frames: i64) -> void {
+        self.sel_start = from; self.sel_end = to; self.sel_frames = frames;
+        self.selecting = true; self.edge_end = false; self.set_cursor(from);
+    }
+    /// Start selecting (the whole clip when nothing is selected yet) and put
+    /// the cursor on the start or the end edge.
+    fn begin_select(self: &mut Self, frames: i64, end_edge: bool) -> void {
+        if !self.selecting && !self.has_selection(frames) { self.sel_start = 0; self.sel_end = frames; }
+        self.sel_frames = frames; self.selecting = true; self.edge_end = end_edge;
+        self.set_cursor(end_edge ? self.sel_end : self.sel_start);
+        self.status = end_edge ? "Selecting the end: h/l move it, Shift+B the start, x trims, Esc drops it"
+            : "Selecting the start: h/l move it, Shift+E the end, x trims, Esc drops it";
+    }
+    /// Put the cursor at `frame` (clamped). While selecting it moves the
+    /// active edge, which never crosses the other one.
+    fn move_to(self: &mut Self, frame: i64, frames: i64) -> void {
+        var at: i64 = frame < 0 ? 0 : (frame > frames ? frames : frame);
+        if self.selecting {
+            if self.edge_end { if at <= self.sel_start { at = self.sel_start + 1; } self.sel_end = at; }
+            else { if at >= self.sel_end { at = self.sel_end - 1; } self.sel_start = at; }
+            self.sel_frames = frames;
+        }
+        self.set_cursor(at);
+    }
+    /// The nearest transient before (`forward` false) or after `cursor`, or
+    /// the clip's start or end when there is none.
+    fn next_transient(self: &mut Self, source: &AudioClip, cursor: i64, forward: bool) -> i64 {
+        var clip: AudioClip = AudioClip {}; clip = source;
+        let key: i64 = clip.offset * 1000003 + clip.frames;
+        if key != self.transients_key { self.transients = transient_frames(clip); self.transients_key = key; }
+        let points: list<i64> = self.transients;
+        if forward { for p in points { if p > cursor { return p; } } return clip.frames; }
+        var found: i64 = 0;
+        for p in points { if p < cursor { found = p; } }
+        return found;
     }
     pub fn span(self: SampleView, source: &AudioClip, pixels: i32) -> i64 {
         var clip: AudioClip = AudioClip {}; clip = source;
@@ -42,27 +182,71 @@ impl SampleView {
         if start + span > clip.frames { start = clip.frames - span; }
         return start;
     }
-    pub fn on_event(self: &mut Self, event: InputEvent, source: &AudioClip, width: i32) -> bool {
+    /// Cursor, zoom, selection and snap keys for a pane `width` columns wide
+    /// (panel border included) showing `clip` at pattern row `row`. Returns
+    /// true when the key was one of them.
+    ///   h/l        cursor (or the active edge) one column back/forward
+    ///   H/L        an eighth of the view, or the previous/next transient
+    ///   v, B/E     select: whole clip, start edge / end edge (Shift)
+    ///   t          toggle transient snap for H/L
+    ///   + - =      zoom in / out around the cursor / fit the clip
+    pub fn on_key(self: &mut Self, event: InputEvent, source: &AudioClip, width: i32, row: i32) -> bool {
         var clip: AudioClip = AudioClip {}; clip = source;
-        let pixels: i32 = (width > 2 ? width - 2 : 1) * (self.grainy ? 2 : 1);
+        if event.released || clip.frames <= 0 { return false; }
         if self.sel_frames != clip.frames { self.reset_selection(clip.frames); }
-        if event.modifiers == 5 && event.code == 104 { if self.zoom > 0 { self.zoom = self.zoom - 1; } return true; }
-        if event.modifiers == 5 && event.code == 108 {
-            if self.zoom < 30 && self.span(clip, pixels) > wide(pixels) { self.zoom = self.zoom + 1; }
+        // Caps/Num Lock bits (64, 128) are not modifiers here.
+        let code: i32 = event.code; let mods: i32 = (event.modifiers - 1) % 64 + 1;
+        let plain: bool = mods == 1;
+        // Shift+letter: an uppercase letter, or the letter with the Shift mask.
+        let shift_h: bool = (code == 72 && plain) || ((code == 104 || code == 72) && mods == 2);
+        let shift_l: bool = (code == 76 && plain) || ((code == 108 || code == 76) && mods == 2);
+        let shift_b: bool = (code == 66 && plain) || ((code == 98 || code == 66) && mods == 2);
+        let shift_e: bool = (code == 69 && plain) || ((code == 101 || code == 69) && mods == 2);
+        let pixels: i32 = (width > 2 ? width - 2 : 1) * (self.grainy ? 2 : 1);
+        let span: i64 = self.span(clip, pixels);
+        let columns: i64 = wide(width > 2 ? width - 2 : 1);
+        let cursor: i64 = self.cursor(clip, row);
+        let left: bool = (code == 104 && plain) || (code == 0 && event.kind == InputKind::Menu && event.key == Key::Left);
+        let right: bool = (code == 108 && plain) || (code == 0 && event.kind == InputKind::Menu && event.key == Key::Right);
+        if left || right {
+            let step: i64 = span / columns;
+            self.move_to(cursor + (right ? 1 : -1) * (step < 1 ? 1 : step), clip.frames); self.status = ""; return true;
+        }
+        if shift_h || shift_l {
+            if self.snap { self.move_to(self.next_transient(clip, cursor, shift_l), clip.frames); }
+            else { let step: i64 = span / 8; self.move_to(cursor + (shift_l ? 1 : -1) * (step < 1 ? 1 : step), clip.frames); }
+            self.status = ""; return true;
+        }
+        if (code == 118 && plain) || shift_b { self.begin_select(clip.frames, false); return true; }
+        if shift_e { self.begin_select(clip.frames, true); return true; }
+        if code == 116 && plain {
+            self.snap = !self.snap;
+            self.status = self.snap ? "Transient snap on: Shift+H/L jump between transients" : "Transient snap off";
             return true;
         }
-        let span: i64 = self.span(clip, pixels);
-        var step: i64 = span / wide(pixels); if step < 1 { step = 1; }
-        // Start point: Ctrl+N left, Ctrl+M right. End point: Shift+N left, Shift+M right.
-        if event.modifiers == 5 && event.code == 110 { self.move_start(-step); return true; }
-        if event.modifiers == 5 && event.code == 109 { self.move_start(step); return true; }
-        if (event.modifiers == 2 && event.code == 110) || (event.modifiers == 1 && event.code == 78) {
-            self.move_end(-step, clip.frames); return true;
+        // '+' arrives with or without Shift depending on the terminal; so may
+        // '=' with Shift.
+        if code == 43 || (code == 61 && mods == 2) {
+            self.set_cursor(cursor);
+            if self.zoom < 30 && span > wide(pixels) { self.zoom = self.zoom + 1; }
+            self.status = ""; return true;
         }
-        if (event.modifiers == 2 && event.code == 109) || (event.modifiers == 1 && event.code == 77) {
-            self.move_end(step, clip.frames); return true;
-        }
+        if code == 45 && plain { self.set_cursor(cursor); if self.zoom > 0 { self.zoom = self.zoom - 1; } self.status = ""; return true; }
+        if code == 61 && plain { self.zoom = 0; self.status = ""; return true; }
         return false;
+    }
+    /// Start showing a preview of frames `from`..`to` played at `rate` from `now` (ms).
+    pub fn start_play(self: &mut Self, from: i64, to: i64, rate: i64, now: i64) -> void {
+        self.play_from = from; self.play_to = to; self.play_rate = rate > 0 ? rate : 1;
+        self.play_started = now; self.play_frame = from; self.playing = true;
+    }
+    pub fn stop_play(self: &mut Self) -> void { self.playing = false; }
+    /// Advance the play position to `now`; `previewing` false ends it.
+    pub fn follow(self: &mut Self, now: i64, previewing: bool) -> void {
+        if !self.playing { return; }
+        if !previewing { self.playing = false; return; }
+        let at: i64 = self.play_from + (now - self.play_started) * self.play_rate / 1000;
+        self.play_frame = at > self.play_to ? self.play_to : at;
     }
     pub fn paint(self: SampleView, surface: Surface, area: Rect, theme: Theme, source: &AudioClip, row: i32) -> void {
         self.paint_at(surface, area, theme, source, row, 0);
@@ -95,6 +279,28 @@ impl SampleView {
         if clip.channels == 2 {
             self.paint_channel(surface, Rect::new(area.x + 2, area.y + 1 + top_height, area.width - 2, height - top_height), theme, clip, 1, start, span, cursor, sel0, sel1, 0xef6575);
             surface.text(Rect::new(area.x, area.y + 1 + top_height, 1, 1), "R", 0xef6575, theme.panel);
+        }
+        self.paint_marks(surface, Rect::new(area.x + 2, area.y + 1, area.width - 2, height), theme, clip, start, span);
+    }
+    /// Transient ticks (while snapping) and the play position over the waveform.
+    fn paint_marks(self: SampleView, surface: Surface, lane: Rect, theme: Theme, source: &AudioClip, start: i64, span: i64) -> void {
+        var clip: AudioClip = AudioClip {}; clip = source;
+        if lane.width <= 0 || lane.height <= 0 || span <= 0 { return; }
+        if self.snap && self.transients_key == clip.offset * 1000003 + clip.frames {
+            let points: list<i64> = self.transients;
+            for p in points {
+                if p < start || p >= start + span { continue; }
+                let x: i32 = lane.x + i32((p - start) * wide(lane.width) / span);
+                surface.put(x, lane.y, Cell { glyph: 0x25be, foreground: theme.accent, background: theme.panel });
+            }
+        }
+        if self.playing && self.play_frame >= start && self.play_frame < start + span {
+            let x: i32 = lane.x + i32((self.play_frame - start) * wide(lane.width) / span);
+            for r in 0..lane.height {
+                let y: i32 = lane.y + i32(r);
+                let old: Cell = surface.cell(x, y);
+                surface.put(x, y, Cell { glyph: old.glyph == 32 ? 0x2502 : old.glyph, foreground: theme.accent, background: old.background });
+            }
         }
     }
     fn paint_channel(self: SampleView, surface: Surface, area: Rect, theme: Theme, source: &AudioClip,

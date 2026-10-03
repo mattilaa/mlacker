@@ -36,18 +36,23 @@ def main():
             tui.send(ADD_AUDIO)
             assert b"stereo_tone" in tui.send(b"\x15" + os.fsencode(FIXTURE) + b"\r", 0.9)
             frame = tui.send(EDIT_SAMPLE, 0.6)
-            assert b"Edit sample 1" in frame and b"Save" in frame and b"Discard" in frame, frame[-5000:]
+            assert b"Edit sample 1" in frame, frame[-5000:]
             assert not any(hint in frame for hint in HINTS), frame[-5000:]
-            assert b"Reversed" in tui.send(b"r")
-            frame = tui.send(b"\t" + RIGHT + b"\r", 0.6)
-            assert b"Sample edits discarded" in frame, frame[-5000:]
-            frame = tui.send(EDIT_SAMPLE, 0.6)
-            tui.send(b"r")
-            frame = tui.send(b"\t\r", 0.6)
-            assert b"Sample 1 saved" in frame, frame[-5000:]
+            # Ctrl+S asks for the new clip's name in a Save/Cancel dialog.
+            assert b"Trimmed to the selection" in tui.send(b"vLx")
+            frame = tui.send(b"\x13", 0.6)
+            assert b"Save clip" in frame and b"Save" in frame and b"Cancel" in frame, frame[-5000:]
+            assert b"stereo_tone - Trim 1.wav" in frame, frame[-5000:]
+            assert not any(hint in frame for hint in HINTS), frame[-5000:]
+            # Tab Tab reaches the buttons; Right selects Cancel.
+            frame = tui.send(b"\t\t" + RIGHT + b"\r", 0.6)
+            assert b"Sample 2" not in frame and b"[modified]" in frame, frame[-5000:]
+            tui.send(b"\x13", 0.6)
+            frame = tui.send(b"\t\t\r", 0.8)
+            assert b"Saved stereo_tone - Trim 1.wav as sample 2; sample 1 is unchanged" in frame, frame[-5000:]
         finally:
             tui.close()
-    print("PASS: rename prompt OK/Cancel buttons, sample editor Save/Discard buttons, no key hints")
+    print("PASS: rename prompt OK/Cancel buttons, sample editor save dialog buttons, no key hints")
 
 
 if __name__ == "__main__":

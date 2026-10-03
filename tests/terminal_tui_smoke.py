@@ -361,10 +361,15 @@ def main():
                 assert b"WAVE" in zoomed and b"WAVE x2" not in zoomed  # no waveform zoom
                 os.write(master, b"s")
                 assert b" Sample: " in read_frame(1)
-                os.write(master, b"\x1b[108;5u" * 15)
-                assert b"1 frames/px" in read_frame(1)
-                os.write(master, b"\x1b[104;5u")
-                assert b" Sample: " in read_frame(1)
+                # The focused Sample pane zooms with +/-.
+                os.write(master, b"\x1b[106;6u")
+                read_frame(2)
+                os.write(master, b"+" * 15)
+                assert b"1 frames/px" in read_frame(2)
+                os.write(master, b"-")
+                assert b" Sample: " in read_frame(2)
+                os.write(master, b"\x1b[107;6u")
+                read_frame(1)
                 # Both views share the texture and type controls.
                 os.write(master, F1 + b"ll")
                 read_frame(None)
@@ -374,10 +379,10 @@ def main():
                 read_frame(None)
                 os.write(master, b"jjjjljjlj\r")
                 assert b"Grainy Wave" in read_frame(1, pattern_grainy=True)
-                # The lower pane can own zoom input too; pane navigation stays distinct.
+                # The lower pane owns zoom input; pane navigation stays distinct.
                 os.write(master, b"\x1b[106;6u")
                 read_frame(2)
-                os.write(master, b"\x1b[104;5u")
+                os.write(master, b"=")
                 assert b" Sample: " in read_frame(2)
                 os.write(master, b"s")
                 assert b" Inspector " in read_frame(2)
