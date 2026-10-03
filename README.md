@@ -181,7 +181,7 @@ same name are replaced. The destinations come from `mlacker.conf`. When running
 `--option plugin_dir=DIR` or `--option plugins="mla_verb mla_eq"` (names under
 `plugins/`).
 
-## Sessions (.mlack 1.1)
+## Sessions (.mlack 1.2)
 
 Launching mlacker without a filename starts one empty, 64-row **Untitled**
 pattern, with no tracks, song entries, instruments, or samples. Menus stay closed.
@@ -204,7 +204,7 @@ ordinary files:
 
 ```
 My song.mlaproj/
-  Project.mlack      session (format 1.2)
+  Project.mlack      session (format 1.3)
   Audio/             every sample of the Audio list, as float32 WAV
   Presets/           each plugin's parameters: Instrument 01 - <name>.mlapre,
                      Master / Effect N / Insert N - <name>.mlafxpre
@@ -532,8 +532,8 @@ and focuses it. Save choosers open in the path field instead, since they start
 from a suggested filename. Relative paths typed into the field resolve against
 the directory being browsed.
 
-Version 1.1 stores all patterns and song order, track types and assignments,
-NOTE/VEL/LEN/OFF/automation data, audio placements, loaded samples, loaded
+Version 1.2 stores all patterns and song order, track types and assignments,
+NOTE/VEL/LEN/OFF/automation data, audio LEN/OFF and placements, loaded samples, loaded
 instrument/master-plugin paths and normalized parameter states, BPM/time signature,
 playhead/cursors, pane focus, track zoom, scroll positions, sidebar mode, mixer and
 sample styles, meter update rate, and the parameter editor's selection/visibility.
