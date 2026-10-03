@@ -41,10 +41,12 @@ audio is under the cursor, and `p` pastes audio only on an AUDIO track with a
 non-empty audio clipboard, otherwise pasting rows. The audio clipboard is one
 clip carried per pattern and is duplicated when a pattern/track is cloned.
 
-Visual selection also drives whole-clip edits. Enter visual mode (`v` or `V`) on
-an AUDIO track, extend the row range, then `y`/`d` copy/cut the **first whole
-instance** intersecting the selection into the audio clipboard (unlike the
-row-granular `c`/`y`, these operate on the entire clip). **Ctrl+J/Ctrl+K** move
+Visual selection also drives audio edits. Enter visual mode (`v` or `V`) on an
+AUDIO track and extend the row range. `y` copies only the selected rows of the
+first intersecting instance, so paste checks and inserts that selected duration;
+the clipboard keeps a non-destructive window into the full source, so the
+pasted placement's LEN can later expand where source audio and pattern space
+remain. `d` cuts the whole intersecting instance. **Ctrl+J/Ctrl+K** move
 the instance under the cursor down/up one row, with pattern-bounds and
 non-overlap checks; the cursor follows it. Transpose (`J`/`K`) on an audio LEN
 cell that is not an instance's start row is a silent no-op instead of erroring.

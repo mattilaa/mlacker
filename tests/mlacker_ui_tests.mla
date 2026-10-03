@@ -1235,10 +1235,53 @@ fn tui_audio_cut_copy_paste() {
 }
 
 #[test]
+fn tui_audio_visual_copy_fits_selected_rows() {
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var table: SequenceTable = SequenceTable::new(); table.track_action(28, area);
+    var clip: AudioClip = AudioClip { source: clone("visual-copy-test"), channels: 1, frames: 80, frames_per_row: 10 };
+    for _f in 0..80 { clip.samples.push(0.25f); }
+    for _r in 0..8 { clip.peaks.push(WavePeak { left: 250 }); }
+    for _r in 0..32 { clip.detail_peaks.push(WavePeak { left: 250 }); }
+    table.selected_row = 0; verify(table.insert_audio(clip, area));
+    // Split rows 2-3 out of the instance, then insert three empty rows directly
+    // below the slice. The tail moves from row 4 to row 7.
+    table.selected_row = 2; table.selected_column = table.audio_length_column(3);
+    verify(table.edit_event(decode_input("v"), area)); table.selected_row = 3;
+    verify(table.slice_audio(area));
+    table.edit_event(decode_input("o"), area); table.edit_event(decode_input("o"), area); table.edit_event(decode_input("o"), area);
+    let split: SequenceTrack = table.tracks[3];
+    verify(split.instances.len() == 3 && split.instance_at(4) == -1 && split.instance_at(7) >= 0);
+    // The middle is still a window into the full source, so LEN can expand
+    // into the inserted space and then return to its original two rows.
+    table.selected_row = 2; table.edit_event(decode_input("\r"), area); table.editor.set_text("4.00"); table.edit_event(decode_input("\r"), area);
+    verify(!table.editing && table.tracks[3].instances[1].duration() == 60000);
+    table.edit_event(decode_input("\r"), area); table.editor.set_text("2.00"); table.edit_event(decode_input("\r"), area);
+    // Copy the two-row middle slice and paste it into the new three-row gap.
+    table.selected_row = 2; verify(table.edit_event(decode_input("v"), area)); table.selected_row = 3;
+    verify(table.edit_event(decode_input("y"), area));
+    verify(table.audio_clipboard.peaks.len() == 8 && table.audio_clipboard.frames == 80);
+    verify(table.audio_clipboard_offset == 20 && table.audio_clipboard_length == 30000);
+    table.selected_row = 4; verify(table.edit_event(decode_input("p"), area));
+    let track: SequenceTrack = table.tracks[3];
+    verify(track.instances.len() == 4 && track.instance_at(4) >= 0 && track.instance_at(5) >= 0);
+    verify(track.instance_at(6) == -1 && track.instance_at(7) >= 0);
+    let pasted: AudioInstance = track.instances[3];
+    verify(pasted.offset_frames == 20 && pasted.length_ticks == 30000 && pasted.clip.frames == 80);
+    // Once the following tail is removed, the pasted non-destructive window
+    // can also expand from two rows to four rows of its shared source.
+    table.selected_row = 7; verify(table.remove_audio_under_cursor());
+    table.selected_row = 4; table.edit_event(decode_input("\r"), area); table.editor.set_text("4.00"); table.edit_event(decode_input("\r"), area);
+    let expanded: AudioInstance = table.audio_at_cursor();
+    verify(!table.editing && expanded.duration() == 60000 && expanded.clip.frames == 80);
+    table.release(); clip.release();
+}
+
+#[test]
 fn tui_audio_visual_move_reverse() {
     let area: Rect = Rect::new(0, 0, 120, 12);
     var table: SequenceTable = SequenceTable::new(); table.track_action(28, area);
     var clip: AudioClip = AudioClip { source: clone("v-test"), frames: 80, frames_per_row: 10 };
+    for _f in 0..80 { clip.samples.push(0.25f); }
     for r in 0..8 { clip.peaks.push(WavePeak { left: 100 + i32(r) }); }
     for _r in 0..32 { clip.detail_peaks.push(WavePeak { left: 200 }); }
     table.selected_row = 2; verify(table.insert_audio(clip, area));
@@ -1249,11 +1292,12 @@ fn tui_audio_visual_move_reverse() {
     verify(table.edit_event(decode_input("J"), area));
     verify(table.error == "" && table.rows[5].cells[len_col] == cell_before);
     free(cell_before);
-    // Visual whole-instance copy: v enters visual, extend down, y copies the clip.
+    // Visual copy lifts only the selected rows from the instance.
     table.selected_row = 3; table.selected_column = len_col;
     verify(table.edit_event(decode_input("v"), area)); verify(table.visual);
     table.selected_row = 6; verify(table.edit_event(decode_input("y"), area));
     verify(!table.visual && table.audio_clipboard.peaks.len() == 8);
+    verify(table.audio_clipboard_offset == 10 && table.audio_clipboard_length == 60000);
     let intact: SequenceTrack = table.tracks[3];
     verify(intact.instances.len() == 1 && intact.instances[0].clip.peaks.len() == 8);
     // Visual whole-instance cut: d removes the intersecting instance entirely.

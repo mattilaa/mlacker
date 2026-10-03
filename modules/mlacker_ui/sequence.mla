@@ -179,8 +179,13 @@ impl AudioInstance {
     }
     pub fn duration(self: AudioInstance) -> i64 {
         if self.length_ticks > 0 { return wide(self.length_ticks); }
-        if self.clip.frames_per_row > 0 { return self.clip.frames * 15000 / self.clip.frames_per_row; }
-        return wide(i32(self.clip.peaks.len())) * 15000;
+        var end: i64 = self.clip.frames;
+        if self.frame_end > self.offset_frames && self.frame_end < end { end = self.frame_end; }
+        let frames: i64 = end > self.offset_frames ? end - self.offset_frames : 0;
+        if self.clip.frames_per_row > 0 && self.clip.frames > 0 { return frames * 15000 / self.clip.frames_per_row; }
+        let offset_rows: i64 = self.clip.frames_per_row > 0 ? self.offset_frames / self.clip.frames_per_row : 0;
+        let rows: i64 = self.clip.peaks.len() > offset_rows ? self.clip.peaks.len() - offset_rows : 0;
+        return rows * 15000;
     }
 }
 pub struct SequenceTrack {
@@ -311,6 +316,9 @@ pub struct SequenceTable : Table {
     var clipboard: list<TableRow>; var clipboard_kinds: list<str8>; var paste_error: bool;
     var clipboard_rows: bool; var clipboard_spacing: i32;
     var audio_clipboard: AudioClip;
+    /// A visual audio copy keeps the shared source and records only its initial
+    /// playback window, allowing pasted LEN to expand within that source.
+    var audio_clipboard_offset: i64; var audio_clipboard_length: i32;
     /// Automation column headers, owned here and replaced by rebuild_columns.
     var column_titles: list<str8>;
     /// CC values marked with Ctrl+V for a curve: one automation column (track
@@ -854,23 +862,29 @@ pub fn import_audio(self: &mut Self, path: str8, bpm: i32, area: Rect) -> bool {
     let inserted: bool = self.insert_audio(clip, area); clip.release(); return inserted;
 }
 pub fn insert_audio(self: &mut Self, source: &AudioClip, area: Rect) -> bool {
+    return self.insert_audio_window(source, 0, 0, area);
+}
+fn insert_audio_window(self: &mut Self, source: &AudioClip, offset_frames: i64, length_ticks: i32, area: Rect) -> bool {
     let index: i32 = self.active_track(); if index < 0 { self.error = "Select an AUDIO track first"; return false; }
     var track: SequenceTrack = self.tracks[index];
     if !track.audio { self.error = "Select an AUDIO track first"; return false; }
     var clip: AudioClip = AudioClip {}; clip = source;
     if clip.peaks.len() == 0 { self.error = "Sample is empty"; return false; }
     let row: i32 = self.selected_row < 0 ? 0 : self.selected_row;
-    let count: i32 = row + i32(clip.peaks.len());
+    let rows: i32 = length_ticks > 0 ? i32((wide(length_ticks) + 14999) / 15000) : i32(clip.peaks.len());
+    let count: i32 = row + rows;
     if count > 16384 { self.error = "Audio exceeds 16384 pattern rows"; return false; }
+    let candidate_duration: i64 = length_ticks > 0 ? wide(length_ticks) : wide(rows) * 15000;
     let instances: list<AudioInstance> = track.instances;
     for instance in instances {
-        if wide(row) * 15000 < wide(instance.start_row) * 15000 + instance.duration() && count > instance.start_row {
+        if wide(row) * 15000 < wide(instance.start_row) * 15000 + instance.duration() &&
+                wide(row) * 15000 + candidate_duration > wide(instance.start_row) * 15000 {
             self.error = "Audio overlaps another instance"; return false;
         }
     }
     let insert: bool = track.instances.len() == 0;
     let column: i32 = self.audio_waveform_column(index);
-    track.instances.push(AudioInstance { clip: clip.copy(), start_row: row });
+    track.instances.push(AudioInstance { clip: clip.copy(), start_row: row, offset_frames: offset_frames, length_ticks: length_ticks });
     self.replace_track(index, track);
     if insert {
         var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
@@ -936,6 +950,7 @@ pub fn copy_audio(self: &mut Self) -> bool {
     let offset: i64 = wide(self.selected_row - instance.start_row);
     let tail: AudioClip = instance.clip.slice_tail(offset);
     self.audio_clipboard.release(); self.audio_clipboard = tail;
+    self.audio_clipboard_offset = 0; self.audio_clipboard_length = 0;
     self.error = ""; return true;
 }
 /// Cut the audio at the cursor row: the tail (cursor row to the end) is moved to
@@ -951,6 +966,7 @@ pub fn cut_audio(self: &mut Self, area: Rect) -> bool {
     let offset: i64 = wide(self.selected_row - instance.start_row);
     let tail: AudioClip = instance.clip.slice_tail(offset);
     self.audio_clipboard.release(); self.audio_clipboard = tail;
+    self.audio_clipboard_offset = 0; self.audio_clipboard_length = 0;
     if offset <= 0 { self.remove_audio_under_cursor(); self.reconcile(area); self.error = ""; return true; }
     self.revision = self.revision + 1;
     var kept: list<AudioInstance> = [];
@@ -977,11 +993,10 @@ pub fn cut_audio(self: &mut Self, area: Rect) -> bool {
 pub fn paste_audio(self: &mut Self, area: Rect) -> bool {
     if self.audio_clipboard.peaks.len() == 0 { self.error = "Clipboard is empty"; return false; }
     var clip: AudioClip = AudioClip {}; clip = self.audio_clipboard;
-    return self.insert_audio(clip, area);
+    return self.insert_audio_window(clip, self.audio_clipboard_offset, self.audio_clipboard_length, area);
 }
-/// Visual-selection copy/cut of the first whole instance intersecting the
-/// selected row range. Reuses the cursor-based copy_audio/cut_audio by parking
-/// the cursor on the instance start (offset 0 = whole clip).
+/// Visual-selection copy of the selected rows from the first intersecting
+/// instance. Visual cut retains its whole-instance behavior.
 pub fn visual_audio_copy(self: &mut Self, cut: bool, area: Rect) -> bool {
     let index: i32 = self.active_track();
     if index < 0 || !self.tracks[index].audio { self.visual = false; return false; }
@@ -995,10 +1010,27 @@ pub fn visual_audio_copy(self: &mut Self, cut: bool, area: Rect) -> bool {
         if instance.start_row <= b && end >= a { hit = i32(i); break; }
     }
     if hit < 0 { self.visual = false; self.error = "No audio in the selection"; return false; }
+    if !cut {
+        let instance: AudioInstance = track.instances[hit];
+        let first: i32 = a > instance.start_row ? a : instance.start_row;
+        let span: i32 = i32((instance.duration() + 14999) / 15000);
+        let instance_last: i32 = instance.start_row + span - 1;
+        let last: i32 = b < instance_last ? b : instance_last;
+        let fpr: i64 = instance.clip.frames_per_row > 0 ? instance.clip.frames_per_row : 1;
+        let rendered: AudioClip = instance.render_clip();
+        let from: i64 = rendered.offset + wide(first - instance.start_row) * fpr;
+        var to: i64 = rendered.offset + wide(last - instance.start_row + 1) * fpr;
+        let render_end: i64 = rendered.offset + rendered.frames; if to > render_end { to = render_end; }
+        if to <= from { self.visual = false; self.visual_rows = false; self.error = "Audio selection is empty"; return false; }
+        let ticks: i64 = ((to - from) * 15000 + fpr - 1) / fpr;
+        self.audio_clipboard.release(); self.audio_clipboard = instance.clip.copy();
+        self.audio_clipboard_offset = from; self.audio_clipboard_length = i32(ticks);
+        self.visual = false; self.visual_rows = false; self.selected_row = first;
+        self.reconcile(area); self.error = ""; return true;
+    }
     self.selected_row = track.instances[hit].start_row;
     self.visual = false; self.visual_rows = false;
-    if cut { return self.cut_audio(area); }
-    let ok: bool = self.copy_audio(); self.reconcile(area); return ok;
+    return self.cut_audio(area);
 }
 /// Move the instance under the cursor by one row (delta -1 up, +1 down) with
 /// pattern bounds and overlap checks, following it with the cursor.
@@ -1534,6 +1566,7 @@ pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
     for i in 0..128 { notes.push(clone(self.notes[i])); }
     copy.rows = rows; copy.tracks = tracks; copy.notes = notes;
     copy.audio_clipboard = self.audio_clipboard.copy();
+    copy.audio_clipboard_offset = self.audio_clipboard_offset; copy.audio_clipboard_length = self.audio_clipboard_length;
     copy.rebuild_columns(); return copy;
 }
 /// One matrix row's worth of this pattern: `count` rows starting at `start`,
@@ -2535,7 +2568,12 @@ fn commit(self: &mut Self, value: str8) -> bool {
             if hit < 0 { self.error = "Set LEN at the start of an audio instance"; return false; }
             let instance: AudioInstance = track.instances[hit];
             if instance.start_row != self.selected_row { self.error = "Set LEN at the start of an audio instance"; return false; }
-            let natural: i64 = instance.clip.frames_per_row > 0 ? instance.clip.frames * 15000 / instance.clip.frames_per_row : wide(i32(instance.clip.peaks.len())) * 15000;
+            var source_end: i64 = instance.clip.frames;
+            if instance.frame_end > instance.offset_frames && instance.frame_end < source_end { source_end = instance.frame_end; }
+            let available_frames: i64 = source_end > instance.offset_frames ? source_end - instance.offset_frames : 0;
+            let natural: i64 = instance.clip.frames_per_row > 0 && instance.clip.frames > 0
+                ? available_frames * 15000 / instance.clip.frames_per_row
+                : wide(i32(instance.clip.peaks.len())) * 15000;
             let duration: i64 = value == "" ? natural : ticks;
             if duration > natural + 149 { self.error = "LEN exceeds the sample duration"; return false; }
             let end: i64 = wide(instance.start_row) * 15000 + duration;
@@ -2548,7 +2586,7 @@ fn commit(self: &mut Self, value: str8) -> bool {
             }
             for i in 0..track.instances.len() {
                 var next: AudioInstance = track.instances[i];
-                if i == hit { next.length_ticks = i32(duration > natural ? natural : duration); }
+                if i == hit { next.length_ticks = i32(duration); }
                 updated.push(next);
             }
             track.instances = updated; self.replace_track(index, track);
@@ -2824,13 +2862,15 @@ pub fn erase_visual(self: &mut Self, area: Rect) -> void {
     let saved: list<TableRow> = self.clipboard; let kinds: list<str8> = self.clipboard_kinds;
     let whole: bool = self.clipboard_rows; let spacing: i32 = self.clipboard_spacing;
     var audio: AudioClip = AudioClip {}; audio = self.audio_clipboard;
+    let audio_offset: i64 = self.audio_clipboard_offset; let audio_length: i32 = self.audio_clipboard_length;
     self.clipboard = []; self.clipboard_kinds = []; self.audio_clipboard = AudioClip {};
+    self.audio_clipboard_offset = 0; self.audio_clipboard_length = 0;
     let track: i32 = self.active_track();
     if track >= 0 && self.tracks[track].audio { self.visual_audio_copy(true, area); }
     else { self.copy_visual(true, area); }
     self.clear_clipboard(); self.audio_clipboard.release();
     self.clipboard = saved; self.clipboard_kinds = kinds; self.clipboard_rows = whole; self.clipboard_spacing = spacing;
-    self.audio_clipboard = audio;
+    self.audio_clipboard = audio; self.audio_clipboard_offset = audio_offset; self.audio_clipboard_length = audio_length;
 }
 pub fn paste_visual(self: &mut Self, area: Rect) -> void { self.apply_clipboard(false, area); }
 fn apply_clipboard(self: &mut Self, erase: bool, area: Rect) -> void {
