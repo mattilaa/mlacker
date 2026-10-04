@@ -74,7 +74,10 @@ def main():
         frame = send(b"\t\r")  # CPU cores choices come from the OS
         assert b"1 core (no worker threads)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
         send(b"j\r")  # All cores -> 1 core
-        frame = send(b"\t\r")
+        # Applying can span multiple animation/repaint ticks under CI load.
+        # Wait for the completed configuration instead of sampling a fixed
+        # 250 ms window that may contain only the button press frame.
+        frame = send_until(b"\t\r", b"Settings applied. Audio disabled.")
         assert b"Settings applied. Audio disabled." in frame
         frame = send(F1 + b"jjjj\r")
         assert b"MIDI input adapter" in frame and b"Disabled" in frame and b"512 frames" in frame and b"96 kHz" in frame
