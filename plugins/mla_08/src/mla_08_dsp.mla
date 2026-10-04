@@ -1,0 +1,957 @@
+/// \file mla_08_dsp.mla
+/// \brief C-ABI bridge: a TR-808 style analog drum machine.
+///
+/// One `M08` per plug-in instance, heap-allocated with `calloc` and handed to
+/// the C++ VST3 layer as an opaque pointer. The C++ side maps MIDI keys to the
+/// sixteen instruments and calls `mla08_trigger`; this file synthesizes them.
+///
+/// The voices follow the 808's circuits. Their constants were measured from
+/// recordings of a TR-808, several per instrument (the bass drum at six
+/// Tone and six Decay settings, the snare at four Tone and four Snappy settings,
+/// the toms at three tunings, the open hat at three decays, the cymbal at two):
+///
+/// - **Bass drum.** A bridged-T resonator rung by a trigger pulse. Here a
+///   `Resonator` (a decaying coupled-form sine) rings at 49 Hz. Its pitch rises
+///   with its amplitude (up to about 54 Hz just after a hit, settling to 49 Hz
+///   as it fades, so longer decays glide longer), and the trigger kicks it up
+///   to about 300 Hz for the first few milliseconds. The 0.9 ms trigger pulse
+///   leaks into the output through a low-pass that Tone opens from 80 Hz to
+///   1.3 kHz, then a coupling high-pass; the sum is clipped with a hard knee,
+///   as on the recordings. Decay sets the ring's time constant, 14 ms to
+///   0.36 s (measured at six knob positions).
+/// - **Snare drum.** Two resonators, 175.5 Hz (tau 27 ms) and 336 Hz (tau
+///   8 ms); Tone crossfades from the low one to the high one. Snappy adds
+///   white noise band-passed around 2.5 kHz (tau 31 ms).
+/// - **Toms and congas.** Resonators with a fast pitch kick at the trigger.
+///   The toms add noise from below their pitch to about 400 Hz. Tuning moves
+///   each over about a major third.
+/// - **Rim shot and claves.** Rim shot: 456 Hz and 1.83 kHz rings, high-passed
+///   and overdriven. Claves: a 2.53 kHz ring.
+/// - **Hand clap and maracas.** Clap: noise band-passed around 1 kHz, struck
+///   by four sawtooth bursts 10 ms apart, the last running into a long tail.
+///   Maracas: high-passed noise on a 20 ms swell.
+/// - **Metal.** Six free-running square-wave oscillators (325.2, 417.9,
+///   546.8, 564.8, 793.0 and 849.6 Hz, band-limited with PolyBLEP; fitted to
+///   the partials of the recordings) feed the cymbal and both hi-hats. The
+///   cowbell takes the 564.8 and 849.6 Hz pair through a band-pass. The
+///   cymbal has three bands with envelopes fitted to the recordings; Tone
+///   balances the low band against the two high ones. The closed hat chokes
+///   the open one.
+/// - **Accent** scales a hit's level; a harder bass drum hit also rings
+///   higher, as on the 808.
+///
+/// Parameter indexes for `mla08_set` are listed there. Knobs are 0..1, as on
+/// the panel; the C++ side maps levels to linear gains.
+
+mod dsp::detail;
+use dsp::detail::expf;
+use dsp::detail::logf;
+use dsp::detail::sinf;
+use dsp::detail::cosf;
+use dsp::detail::tanf;
+use dsp::detail::tanhf;
+
+extern fn calloc(count: i64, size: i64) -> ptr<M08>;
+extern fn free(block: ptr<M08>) -> void;
+extern fn exp2f(value: f32) -> f32;
+extern fn sqrtf(value: f32) -> f32;
+extern fn fabsf(value: f32) -> f32;
+extern fn powf(base: f32, exponent: f32) -> f32;
+
+/// Instruments (`mla08_trigger`), in the 808's panel order, then the
+/// alternates its switches select (conga, claves, maracas).
+fn bass_drum() -> i32 { return 0; }
+fn snare_drum() -> i32 { return 1; }
+fn low_tom() -> i32 { return 2; }
+fn mid_tom() -> i32 { return 3; }
+fn high_tom() -> i32 { return 4; }
+fn rim_shot() -> i32 { return 5; }
+fn hand_clap() -> i32 { return 6; }
+fn cowbell() -> i32 { return 7; }
+fn cymbal() -> i32 { return 8; }
+fn open_hat() -> i32 { return 9; }
+fn closed_hat() -> i32 { return 10; }
+fn low_conga() -> i32 { return 11; }
+fn mid_conga() -> i32 { return 12; }
+fn high_conga() -> i32 { return 13; }
+fn claves() -> i32 { return 14; }
+fn maracas() -> i32 { return 15; }
+
+/// Below this an envelope counts as finished (-100 dB).
+fn silent() -> f32 { return 0.00001f; }
+
+fn pi() -> f32 { return 3.14159265358979323846f; }
+
+fn sclamp(value: f32, low: f32, high: f32) -> f32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+fn smax(a: f32, b: f32) -> f32 { return a > b ? a : b; }
+fn smin(a: f32, b: f32) -> f32 { return a < b ? a : b; }
+
+/// Per-sample multiplier of an exponential decay with time constant `seconds`.
+fn decay_coef(seconds: f32, rate: f32) -> f32 {
+    let samples: f32 = seconds * rate;
+    if samples < 1.0f { return 0.0f; }
+    return expf(-1.0f / samples);
+}
+
+/// One-pole low-pass coefficient for `hz`.
+fn lp_coef(hz: f32, rate: f32) -> f32 {
+    return 1.0f - expf(-2.0f * pi() * sclamp(hz, 1.0f, rate * 0.45f) / rate);
+}
+
+/// Geometric interpolation through six values at knob 0, 0.2, .. 1.
+fn knob6(k: f32, v0: f32, v1: f32, v2: f32, v3: f32, v4: f32, v5: f32) -> f32 {
+    let x: f32 = sclamp(k, 0.0f, 1.0f) * 5.0f;
+    var a: f32 = v0;
+    var b: f32 = v1;
+    var f: f32 = x;
+    if x >= 4.0f { a = v4; b = v5; f = x - 4.0f; }
+    else if x >= 3.0f { a = v3; b = v4; f = x - 3.0f; }
+    else if x >= 2.0f { a = v2; b = v3; f = x - 2.0f; }
+    else if x >= 1.0f { a = v1; b = v2; f = x - 1.0f; }
+    return a * expf(f * logf(b / a));
+}
+
+/// Geometric interpolation through three values at knob 0, 0.5, 1.
+fn knob3(k: f32, v0: f32, v1: f32, v2: f32) -> f32 {
+    let x: f32 = sclamp(k, 0.0f, 1.0f) * 2.0f;
+    if x >= 1.0f { return v1 * expf((x - 1.0f) * logf(v2 / v1)); }
+    return v0 * expf(x * logf(v1 / v0));
+}
+
+/// A two-stage exponential decay rate: `early` until `left` samples have
+/// passed, then the faster `late`. The 808's hat envelopes close faster at
+/// their end, which this follows.
+struct Decay { var early: f32; var late: f32; var left: f32; };
+
+impl Decay {
+    fn new() -> Decay { return Decay { early: 0.0f, late: 0.0f, left: 0.0f }; }
+
+    /// Time constants and the hold before the late stage, in seconds.
+    fn start(self: &mut Self, early: f32, late: f32, hold: f32, rate: f32) -> void {
+        self.early = decay_coef(early, rate);
+        self.late = decay_coef(late, rate);
+        self.left = hold * rate;
+    }
+
+    /// This sample's multiplier.
+    fn next(self: &mut Self) -> f32 {
+        if self.left > 0.0f { self.left = self.left - 1.0f; return self.early; }
+        return self.late;
+    }
+}
+
+/// A decaying sine, the bridged-T resonator of the 808's tonal voices: a
+/// coupled-form oscillator whose state (c, s) rotates by the frequency and
+/// shrinks by the damping every sample. Rotation keeps the amplitude while
+/// the frequency sweeps, so pitch envelopes do not change the decay.
+struct Resonator { var c: f32; var s: f32; };
+
+impl Resonator {
+    fn new() -> Resonator { return Resonator { c: 0.0f, s: 0.0f }; }
+    fn reset(self: &mut Self) -> void { self.c = 0.0f; self.s = 0.0f; }
+
+    /// Ring at amplitude `level`, continuing from the current output so a
+    /// retrigger never clicks (a fresh hit starts at zero, rising). A softer
+    /// hit on a louder ring keeps the ring's level.
+    fn strike(self: &mut Self, level: f32) -> void {
+        let amp: f32 = smax(level, fabsf(self.s));
+        let s0: f32 = self.s;
+        let c0: f32 = sqrtf(smax(amp * amp - s0 * s0, 0.0f));
+        self.c = self.c < 0.0f && fabsf(s0) > 0.0f ? -c0 : c0;
+    }
+
+    /// One sample at `hz` with per-sample damping `damp`.
+    fn tick(self: &mut Self, hz: f32, damp: f32, rate: f32) -> f32 {
+        let w: f32 = 2.0f * pi() * sclamp(hz, 1.0f, rate * 0.45f) / rate;
+        let cw: f32 = cosf(w);
+        let sw: f32 = sinf(w);
+        let c: f32 = (self.c * cw - self.s * sw) * damp;
+        let s: f32 = (self.c * sw + self.s * cw) * damp;
+        self.c = c;
+        self.s = s;
+        return s;
+    }
+
+    fn amplitude(self: Resonator) -> f32 { return sqrtf(self.c * self.c + self.s * self.s); }
+}
+
+/// Topology-preserving state-variable filter (Cytomic, A. Simper).
+struct Svf { var ic1: f32; var ic2: f32; var a1: f32; var a2: f32; var a3: f32; var k: f32; };
+
+impl Svf {
+    fn new() -> Svf { return Svf { ic1: 0.0f, ic2: 0.0f, a1: 0.0f, a2: 0.0f, a3: 0.0f, k: 1.41421356f }; }
+    fn reset(self: &mut Self) -> void { self.ic1 = 0.0f; self.ic2 = 0.0f; }
+    fn configure(self: &mut Self, cutoff_hz: f32, q: f32, rate: f32) -> void {
+        let g: f32 = tanf(pi() * sclamp(cutoff_hz, 10.0f, rate * 0.45f) / rate);
+        self.k = 1.0f / q;
+        self.a1 = 1.0f / (1.0f + g * (g + self.k));
+        self.a2 = g * self.a1;
+        self.a3 = g * self.a2;
+    }
+    /// `mode` 0 low-pass, 1 high-pass, 2 band-pass (peak gain 1).
+    fn process(self: &mut Self, input: f32, mode: i32) -> f32 {
+        let v3: f32 = input - self.ic2;
+        let v1: f32 = self.a1 * self.ic1 + self.a2 * v3;
+        let v2: f32 = self.ic2 + self.a2 * self.ic1 + self.a3 * v3;
+        self.ic1 = 2.0f * v1 - self.ic1;
+        self.ic2 = 2.0f * v2 - self.ic2;
+        if mode == 0 { return v2; }
+        if mode == 1 { return input - self.k * v1 - v2; }
+        return self.k * v1;
+    }
+}
+
+/// PolyBLEP residual for a step at phase 0 of a saw/square.
+fn blep(t: f32, dt: f32) -> f32 {
+    if t < dt { let x: f32 = t / dt; return x + x - x * x - 1.0f; }
+    if t > 1.0f - dt { let x: f32 = (t - 1.0f) / dt; return x * x + x + x + 1.0f; }
+    return 0.0f;
+}
+
+/// One of the six square oscillators of the metal bank.
+struct Square { var phase: f32; var hz: f32; };
+
+impl Square {
+    fn tick(self: &mut Self, rate: f32) -> f32 {
+        let dt: f32 = smin(self.hz / rate, 0.45f);
+        self.phase = self.phase + dt;
+        if self.phase >= 1.0f { self.phase = self.phase - 1.0f; }
+        var half: f32 = self.phase + 0.5f;
+        if half >= 1.0f { half = half - 1.0f; }
+        let naive: f32 = self.phase < 0.5f ? 1.0f : -1.0f;
+        return naive + blep(self.phase, dt) - blep(half, dt);
+    }
+}
+
+/// A resonant voice (toms, congas, claves): a ring with a pitch kick at the
+/// trigger, and optionally noise on its own decay, band-limited from below
+/// the pitch to about 400 Hz.
+struct Ring {
+    var ring: Resonator;
+    var hz: f32;
+    var damp: f32;
+    var kick: f32;
+    var kick_coef: f32;
+    var depth: f32;
+    var noise: f32;
+    var noise_coef: f32;
+    var noise_level: f32;
+    var noise_hp: Svf;
+    var noise_lp: Svf;
+    var noise_lp2: Svf;
+};
+
+impl Ring {
+    fn new() -> Ring {
+        return Ring { ring: Resonator::new(), hz: 100.0f, damp: 0.0f, kick: 0.0f, kick_coef: 0.0f, depth: 0.0f,
+                      noise: 0.0f, noise_coef: 0.0f, noise_level: 0.0f,
+                      noise_hp: Svf::new(), noise_lp: Svf::new(), noise_lp2: Svf::new() };
+    }
+
+    /// Decay time constant, the kick's depth (a frequency ratio above 1) and
+    /// time constant, and the noise level and decay.
+    fn setup(self: &mut Self, tau: f32, depth: f32, kick_tau: f32, noise_level: f32, noise_tau: f32, rate: f32) -> void {
+        self.damp = decay_coef(tau, rate);
+        self.depth = depth;
+        self.kick_coef = decay_coef(kick_tau, rate);
+        self.noise_level = noise_level;
+        self.noise_coef = decay_coef(noise_tau, rate);
+    }
+
+    fn retune(self: &mut Self, hz: f32, rate: f32) -> void {
+        self.hz = hz;
+        self.noise_hp.configure(hz * 0.7f, 0.70710678f, rate);
+        // The noise tops out around 400 Hz on every tom.
+        self.noise_lp.configure(300.0f + 0.6f * hz, 0.70710678f, rate);
+        self.noise_lp2.configure(600.0f + 1.2f * hz, 0.70710678f, rate);
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.ring.reset(); self.noise = 0.0f; self.kick = 0.0f;
+        self.noise_hp.reset(); self.noise_lp.reset(); self.noise_lp2.reset();
+    }
+
+    fn strike(self: &mut Self, level: f32) -> void {
+        self.ring.strike(level);
+        self.kick = 1.0f;
+        self.noise = smax(self.noise, level * self.noise_level);
+    }
+
+    fn active(self: Ring) -> bool { return self.ring.amplitude() > silent() || self.noise > silent(); }
+
+    fn tick(self: &mut Self, white: f32, rate: f32) -> f32 {
+        let hz: f32 = self.hz * (1.0f + self.depth * self.kick);
+        self.kick = self.kick * self.kick_coef;
+        var out: f32 = self.ring.tick(hz, self.damp, rate);
+        if self.noise > silent() {
+            let n: f32 = self.noise_lp2.process(self.noise_lp.process(self.noise_hp.process(white, 1), 0), 0);
+            out = out + n * self.noise;
+            self.noise = self.noise * self.noise_coef;
+        }
+        return out;
+    }
+}
+
+/// A hi-hat filter: a 4th-order high-pass, then a resonant band-pass mixed
+/// with some of the high-passed signal.
+struct HatFilter { var hp: Svf; var hp2: Svf; var bp: Svf; var broad: f32; };
+
+impl HatFilter {
+    fn new() -> HatFilter { return HatFilter { hp: Svf::new(), hp2: Svf::new(), bp: Svf::new(), broad: 0.5f }; }
+    fn reset(self: &mut Self) -> void { self.hp.reset(); self.hp2.reset(); self.bp.reset(); }
+    fn configure(self: &mut Self, highpass: f32, band: f32, q: f32, broad: f32, rate: f32) -> void {
+        self.hp.configure(highpass, 0.70710678f, rate);
+        self.hp2.configure(highpass, 0.70710678f, rate);
+        self.bp.configure(band, q, rate);
+        self.broad = broad;
+    }
+    fn process(self: &mut Self, input: f32) -> f32 {
+        let high: f32 = self.hp2.process(self.hp.process(input, 1), 1);
+        return self.bp.process(high, 2) + self.broad * high;
+    }
+}
+
+/// The whole machine.
+struct M08 {
+    var rate: f32;
+
+    // --- Settings ----------------------------------------------------------
+    /// Instrument levels (linear). The 808 shares a level knob between each
+    /// tom and its conga, the rim shot and claves, and the clap and maracas.
+    var level_bd: f32;
+    var level_sd: f32;
+    var level_lt: f32;
+    var level_mt: f32;
+    var level_ht: f32;
+    var level_rs: f32;
+    var level_cp: f32;
+    var level_cb: f32;
+    var level_cy: f32;
+    var level_oh: f32;
+    var level_ch: f32;
+    /// Knobs, 0..1.
+    var bd_tone: f32;
+    var bd_decay: f32;
+    var sd_tone: f32;
+    var snappy: f32;
+    var lt_tune: f32;
+    var mt_tune: f32;
+    var ht_tune: f32;
+    var cy_tone: f32;
+    var cy_decay: f32;
+    var oh_decay: f32;
+    /// Accent amount 0..1 (0 = none, 1 = +9 dB).
+    var accent: f32;
+    /// 0: two levels (velocity above 100 accents); 1: velocity scales the level.
+    var dynamics: i32;
+    var output_target: f32;
+    var output_gain: f32;
+
+    // --- Bass drum ---------------------------------------------------------
+    var bd: Resonator;
+    /// The ring's extra early swing, decaying in a few milliseconds.
+    var bd_body: Resonator;
+    var bd_damp: f32;
+    var bd_body_damp: f32;
+    var bd_kick: f32;
+    var bd_kick_coef: f32;
+    /// The ring's amplitude, lagged; it sets the pitch.
+    var bd_track: f32;
+    var bd_track_coef: f32;
+    /// Trigger pulse: samples left and level, then its low-pass (Tone) and
+    /// coupling high-pass.
+    var bd_pulse_left: f32;
+    var bd_pulse: f32;
+    var bd_pulse_samples: f32;
+    var bd_lp: f32;
+    var bd_lp_coef: f32;
+    var bd_hp_x: f32;
+    var bd_hp_y: f32;
+    var bd_hp_coef: f32;
+    /// Clip level, following the hit's level (a little under, so accents
+    /// drive the clip a bit harder).
+    var bd_clip: f32;
+
+    // --- Snare -------------------------------------------------------------
+    var sd_low: Resonator;
+    var sd_high: Resonator;
+    var sd_low_damp: f32;
+    var sd_high_damp: f32;
+    var sd_noise: f32;
+    var sd_noise_decay: Decay;
+    var sd_hp: Svf;
+    var sd_lp: Svf;
+
+    // --- Toms, congas, claves ------------------------------------------------
+    var lt: Ring;
+    var mt: Ring;
+    var ht: Ring;
+    var lc: Ring;
+    var mc: Ring;
+    var hc: Ring;
+    var cl: Ring;
+
+    // --- Rim shot ------------------------------------------------------------
+    var rs_low: Resonator;
+    var rs_high: Resonator;
+    var rs_low_damp: f32;
+    var rs_high_damp: f32;
+    var rs_hp: Svf;
+    var rs_gain: f32;
+
+    // --- Clap and maracas ------------------------------------------------------
+    var cp_bp: Svf;
+    var cp_hp: Svf;
+    /// The tail is darker than the bursts.
+    var cp_lp: Svf;
+    /// Samples since the clap's hit (negative: idle), its burst and its tail.
+    var cp_time: f32;
+    var cp_burst: f32;
+    var cp_burst_coef: f32;
+    var cp_level: f32;
+    var cp_tail: f32;
+    var cp_tail_decay: Decay;
+    var ma_hp: Svf;
+    var ma_time: f32;
+    var ma_env: f32;
+    var ma_level: f32;
+    var ma_rise_coef: f32;
+    var ma_fall_coef: f32;
+
+    // --- Metal -------------------------------------------------------------
+    var sq1: Square;
+    var sq2: Square;
+    var sq3: Square;
+    var sq4: Square;
+    var sq5: Square;
+    var sq6: Square;
+    var cb_bp: Svf;
+    var cb_hp: Svf;
+    var cb_fast: f32;
+    var cb_slow: f32;
+    var cb_fast_coef: f32;
+    var cb_slow_coef: f32;
+    /// Cymbal: low, mid and high bands, each a fast and a slow part.
+    var cy_low_hp: Svf;
+    var cy_low_hp2: Svf;
+    var cy_low_lp: Svf;
+    var cy_mid_hp: Svf;
+    var cy_mid_hp2: Svf;
+    var cy_mid_lp: Svf;
+    var cy_high_hp: Svf;
+    var cy_high_hp2: Svf;
+    var cy_low: f32;
+    var cy_mid_fast: f32;
+    var cy_mid: f32;
+    var cy_high_fast: f32;
+    var cy_high: f32;
+    var cy_low_coef: f32;
+    var cy_mid_coef: f32;
+    var cy_high_coef: f32;
+    var cy_fast_coef: f32;
+    var oh_filter: HatFilter;
+    var ch_filter: HatFilter;
+    var oh_env: f32;
+    var oh_decay_env: Decay;
+    var oh_choked: bool;
+    var choke_coef: f32;
+    var ch_env: f32;
+    var ch_decay_env: Decay;
+
+    var seed: i64;
+};
+
+impl M08 {
+    fn new(sample_rate: f32) -> M08 {
+        let rate: f32 = sclamp(sample_rate, 8000.0f, 384000.0f);
+        var m: M08 = M08 {
+            rate: rate,
+            level_bd: 1.0f, level_sd: 1.0f, level_lt: 1.0f, level_mt: 1.0f, level_ht: 1.0f, level_rs: 1.0f,
+            level_cp: 1.0f, level_cb: 1.0f, level_cy: 1.0f, level_oh: 1.0f, level_ch: 1.0f,
+            bd_tone: 0.5f, bd_decay: 0.5f, sd_tone: 0.5f, snappy: 0.5f,
+            lt_tune: 0.5f, mt_tune: 0.5f, ht_tune: 0.5f, cy_tone: 0.5f, cy_decay: 0.5f, oh_decay: 0.5f,
+            accent: 0.5f, dynamics: 0, output_target: 1.0f, output_gain: 1.0f,
+            bd: Resonator::new(), bd_body: Resonator::new(), bd_damp: 0.0f, bd_body_damp: 0.0f,
+            bd_kick: 0.0f, bd_kick_coef: 0.0f, bd_track: 0.0f, bd_track_coef: 0.0f,
+            bd_pulse_left: 0.0f, bd_pulse: 0.0f, bd_pulse_samples: 1.0f, bd_lp: 0.0f, bd_lp_coef: 0.0f,
+            bd_hp_x: 0.0f, bd_hp_y: 0.0f, bd_hp_coef: 0.0f, bd_clip: 1.25f,
+            sd_low: Resonator::new(), sd_high: Resonator::new(), sd_low_damp: 0.0f, sd_high_damp: 0.0f,
+            sd_noise: 0.0f, sd_noise_decay: Decay::new(), sd_hp: Svf::new(), sd_lp: Svf::new(),
+            lt: Ring::new(), mt: Ring::new(), ht: Ring::new(), lc: Ring::new(), mc: Ring::new(), hc: Ring::new(),
+            cl: Ring::new(),
+            rs_low: Resonator::new(), rs_high: Resonator::new(), rs_low_damp: 0.0f, rs_high_damp: 0.0f,
+            rs_hp: Svf::new(), rs_gain: 1.0f,
+            cp_bp: Svf::new(), cp_hp: Svf::new(), cp_lp: Svf::new(), cp_time: -1.0f, cp_burst: 0.0f, cp_burst_coef: 0.0f,
+            cp_level: 0.0f, cp_tail: 0.0f, cp_tail_decay: Decay::new(),
+            ma_hp: Svf::new(), ma_time: -1.0f, ma_env: 0.0f, ma_level: 0.0f, ma_rise_coef: 0.0f, ma_fall_coef: 0.0f,
+            sq1: Square { phase: 0.00f, hz: 325.2f }, sq2: Square { phase: 0.31f, hz: 417.9f },
+            sq3: Square { phase: 0.57f, hz: 546.8f }, sq4: Square { phase: 0.12f, hz: 564.8f },
+            sq5: Square { phase: 0.83f, hz: 793.0f }, sq6: Square { phase: 0.44f, hz: 849.6f },
+            cb_bp: Svf::new(), cb_hp: Svf::new(), cb_fast: 0.0f, cb_slow: 0.0f, cb_fast_coef: 0.0f, cb_slow_coef: 0.0f,
+            cy_low_hp: Svf::new(), cy_low_hp2: Svf::new(), cy_low_lp: Svf::new(),
+            cy_mid_hp: Svf::new(), cy_mid_hp2: Svf::new(), cy_mid_lp: Svf::new(),
+            cy_high_hp: Svf::new(), cy_high_hp2: Svf::new(),
+            cy_low: 0.0f, cy_mid_fast: 0.0f, cy_mid: 0.0f, cy_high_fast: 0.0f, cy_high: 0.0f,
+            cy_low_coef: 0.0f, cy_mid_coef: 0.0f, cy_high_coef: 0.0f, cy_fast_coef: 0.0f,
+            oh_filter: HatFilter::new(), ch_filter: HatFilter::new(),
+            oh_env: 0.0f, oh_decay_env: Decay::new(), oh_choked: false, choke_coef: 0.0f,
+            ch_env: 0.0f, ch_decay_env: Decay::new(),
+            seed: 8080808
+        };
+        m.configure();
+        return m;
+    }
+
+    /// Coefficients that depend only on the sample rate.
+    fn configure(self: &mut Self) -> void {
+        let r: f32 = self.rate;
+        self.bd_body_damp = decay_coef(0.0074f, r);
+        self.bd_kick_coef = decay_coef(0.0027f, r);
+        self.bd_track_coef = 1.0f - decay_coef(0.02f, r);
+        self.bd_pulse_samples = smax(1.0f, 0.0009f * r);
+        self.bd_hp_coef = expf(-2.0f * pi() * 136.0f / r);
+
+        self.sd_low_damp = decay_coef(0.0275f, r);
+        self.sd_high_damp = decay_coef(0.008f, r);
+        self.sd_hp.configure(1800.0f, 0.8f, r);
+        self.sd_lp.configure(9000.0f, 0.55f, r);
+
+        // Toms: decay, kick depth and time, noise level and decay.
+        self.lt.setup(0.087f, 1.6f, 0.0016f, 0.75f, 0.13f, r);
+        self.mt.setup(0.055f, 1.6f, 0.0014f, 0.75f, 0.095f, r);
+        self.ht.setup(0.040f, 1.6f, 0.0012f, 0.75f, 0.10f, r);
+        self.lc.setup(0.075f, 1.2f, 0.0010f, 0.0f, 0.01f, r);
+        self.mc.setup(0.037f, 1.0f, 0.0009f, 0.0f, 0.01f, r);
+        self.hc.setup(0.034f, 0.8f, 0.0008f, 0.0f, 0.01f, r);
+        self.cl.setup(0.0051f, 0.0f, 0.001f, 0.0f, 0.01f, r);
+        self.cl.retune(2534.0f, r);
+
+        self.rs_low_damp = decay_coef(0.003f, r);
+        self.rs_high_damp = decay_coef(0.0025f, r);
+        self.rs_hp.configure(300.0f, 0.7f, r);
+
+        self.cp_bp.configure(1050.0f, 1.3f, r);
+        self.cp_hp.configure(300.0f, 0.7f, r);
+        self.cp_lp.configure(3500.0f, 0.70710678f, r);
+        self.cp_burst_coef = decay_coef(0.0026f, r);
+        self.ma_hp.configure(6500.0f, 0.8f, r);
+        self.ma_rise_coef = decay_coef(0.006f, r);
+        self.ma_fall_coef = decay_coef(0.002f, r);
+
+        self.cb_bp.configure(900.0f, 4.0f, r);
+        self.cb_hp.configure(1500.0f, 0.70710678f, r);
+        self.cb_fast_coef = decay_coef(0.005f, r);
+        self.cb_slow_coef = decay_coef(0.094f, r);
+
+        // Bands: 1.8 .. 4.5 kHz, 4.5 .. 9 kHz and above 9 kHz.
+        self.cy_low_hp.configure(1800.0f, 0.70710678f, r);
+        self.cy_low_hp2.configure(1800.0f, 0.70710678f, r);
+        self.cy_low_lp.configure(4500.0f, 0.70710678f, r);
+        self.cy_mid_hp.configure(4500.0f, 0.70710678f, r);
+        self.cy_mid_hp2.configure(4500.0f, 0.70710678f, r);
+        self.cy_mid_lp.configure(9000.0f, 0.70710678f, r);
+        self.cy_high_hp.configure(9000.0f, 0.70710678f, r);
+        self.cy_high_hp2.configure(9000.0f, 0.70710678f, r);
+        self.cy_fast_coef = decay_coef(0.054f, r);
+        self.oh_filter.configure(6000.0f, 7300.0f, 2.5f, 0.6f, r);
+        self.ch_filter.configure(7000.0f, 7300.0f, 3.0f, 1.4f, r);
+        self.choke_coef = decay_coef(0.003f, r);
+        self.configure_knobs();
+    }
+
+    /// Coefficients that follow the knobs.
+    fn configure_knobs(self: &mut Self) -> void {
+        let r: f32 = self.rate;
+        // Decay: the ring's time constant at knob 0, 0.2, .. 1.
+        self.bd_damp = decay_coef(knob6(self.bd_decay, 0.0142f, 0.042f, 0.106f, 0.175f, 0.286f, 0.36f), r);
+        // Tone: the trigger pulse's low-pass, 81 Hz .. 1.29 kHz.
+        self.bd_lp_coef = lp_coef(81.0f * expf(self.bd_tone * 2.77f), r);
+        // Tuning: the three recorded settings per drum at knob 0, 0.5, 1.
+        self.lt.retune(knob3(self.lt_tune, 81.0f, 88.0f, 103.0f), r);
+        self.mt.retune(knob3(self.mt_tune, 118.0f, 126.0f, 146.0f), r);
+        self.ht.retune(knob3(self.ht_tune, 168.0f, 181.0f, 210.0f), r);
+        let lc: f32 = knob3(self.lt_tune, 1.0f, 1.077f, 1.25f);
+        let mc: f32 = knob3(self.mt_tune, 1.0f, 1.077f, 1.25f);
+        let hc: f32 = knob3(self.ht_tune, 1.0f, 1.077f, 1.25f);
+        self.lc.retune(177.4f * lc, r);
+        self.mc.retune(248.0f * mc, r);
+        self.hc.retune(370.9f * hc, r);
+        // Cymbal decay: the slow parts' time constants (recorded at 0.2 and 0.4).
+        let s: f32 = expf((self.cy_decay - 0.2f) * 1.27f);
+        self.cy_low_coef = decay_coef(1.12f * s, r);
+        self.cy_mid_coef = decay_coef(0.65f * s, r);
+        self.cy_high_coef = decay_coef(0.55f * s, r);
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.bd.reset(); self.bd_body.reset(); self.bd_kick = 0.0f; self.bd_track = 0.0f;
+        self.bd_pulse_left = 0.0f; self.bd_lp = 0.0f; self.bd_hp_x = 0.0f; self.bd_hp_y = 0.0f;
+        self.sd_low.reset(); self.sd_high.reset(); self.sd_noise = 0.0f; self.sd_hp.reset(); self.sd_lp.reset();
+        self.lt.reset(); self.mt.reset(); self.ht.reset(); self.lc.reset(); self.mc.reset(); self.hc.reset();
+        self.cl.reset();
+        self.rs_low.reset(); self.rs_high.reset(); self.rs_hp.reset();
+        self.cp_bp.reset(); self.cp_hp.reset(); self.cp_lp.reset(); self.cp_time = -1.0f; self.cp_burst = 0.0f; self.cp_tail = 0.0f;
+        self.ma_hp.reset(); self.ma_time = -1.0f; self.ma_env = 0.0f;
+        self.cb_bp.reset(); self.cb_hp.reset(); self.cb_fast = 0.0f; self.cb_slow = 0.0f;
+        self.cy_low_hp.reset(); self.cy_low_hp2.reset(); self.cy_low_lp.reset();
+        self.cy_mid_hp.reset(); self.cy_mid_hp2.reset(); self.cy_mid_lp.reset();
+        self.cy_high_hp.reset(); self.cy_high_hp2.reset();
+        self.cy_low = 0.0f; self.cy_mid_fast = 0.0f; self.cy_mid = 0.0f; self.cy_high_fast = 0.0f; self.cy_high = 0.0f;
+        self.oh_filter.reset(); self.ch_filter.reset();
+        self.oh_env = 0.0f; self.ch_env = 0.0f; self.oh_choked = false;
+        self.output_gain = self.output_target;
+    }
+
+    fn white(self: &mut Self) -> f32 {
+        self.seed = (self.seed * 1103515245 + 12345) % 2147483648;
+        return f32(self.seed) / 1073741824.0f - 1.0f;
+    }
+
+    /// Accent amount 0..1 a hit at velocity 0..1 gets.
+    fn accent_of(self: M08, velocity: f32) -> f32 {
+        let v: f32 = sclamp(velocity, 0.0f, 1.0f);
+        if self.dynamics == 1 { return v * self.accent; }
+        return v > 100.5f / 127.0f ? self.accent : 0.0f;
+    }
+
+    /// Hit level for velocity 0..1: accent adds up to +9 dB; in Velocity
+    /// mode, velocity also scales the level.
+    fn hit_gain(self: M08, velocity: f32) -> f32 {
+        let v: f32 = sclamp(velocity, 0.0f, 1.0f);
+        if self.dynamics == 1 { return v * v * exp2f(self.accent * 1.5f); }
+        return exp2f(self.accent_of(v) * 1.5f);
+    }
+
+    /// Strike instrument `which` (0..15) at velocity 0..1.
+    fn trigger(self: &mut Self, which: i32, velocity: f32) -> void {
+        let gain: f32 = self.hit_gain(velocity);
+        if gain <= 0.0f { return; }
+        let r: f32 = self.rate;
+        if which == bass_drum() {
+            self.bd.strike(gain);
+            self.bd_body.strike(0.36f * gain);
+            self.bd_kick = 1.0f;
+            self.bd_track = smax(self.bd_track, self.bd.amplitude());
+            self.bd_pulse = 1.7f * gain;
+            self.bd_pulse_left = self.bd_pulse_samples;
+            self.bd_clip = 1.25f * powf(gain, 0.8f);
+        } else if which == snare_drum() {
+            // Tone crossfades the 175 Hz ring (left) into the 336 Hz one
+            // (right): -20 dB .. +16 dB high against low.
+            let t: f32 = sclamp(self.sd_tone, 0.0f, 1.0f);
+            let ratio: f32 = expf((-20.0f + 36.0f * t) * 0.11512925f);
+            let norm: f32 = 1.0f / sqrtf(1.0f + ratio * ratio);
+            self.sd_low.strike(gain * norm);
+            self.sd_high.strike(gain * norm * ratio * 1.6f);
+            self.sd_noise_decay.start(0.031f, 0.031f, 0.005f, r);
+            self.sd_noise = smax(self.sd_noise, gain * 2.7f * powf(sclamp(self.snappy, 0.0f, 1.0f), 1.1f));
+        } else if which == low_tom() { self.lt.strike(gain); }
+        else if which == mid_tom() { self.mt.strike(gain); }
+        else if which == high_tom() { self.ht.strike(gain); }
+        else if which == low_conga() { self.lc.strike(gain); }
+        else if which == mid_conga() { self.mc.strike(gain); }
+        else if which == high_conga() { self.hc.strike(gain); }
+        else if which == claves() { self.cl.strike(gain); }
+        else if which == rim_shot() {
+            self.rs_low.strike(gain);
+            self.rs_high.strike(0.6f * gain);
+            self.rs_gain = gain;
+        } else if which == hand_clap() {
+            self.cp_time = 0.0f;
+            self.cp_level = gain;
+            self.cp_tail_decay.start(0.05f, 0.18f, 0.06f, r);
+        } else if which == maracas() {
+            self.ma_time = 0.0f;
+            self.ma_level = gain;
+        } else if which == cowbell() {
+            self.cb_fast = smax(self.cb_fast, 0.85f * gain);
+            self.cb_slow = smax(self.cb_slow, 0.15f * gain);
+        } else if which == cymbal() {
+            // Tone balances the low band against the mid and high ones.
+            let t: f32 = sclamp(self.cy_tone, 0.0f, 1.0f);
+            let low: f32 = 1.6f - 1.2f * t;
+            let high: f32 = 0.4f + 1.2f * t;
+            // Band levels fitted to the recordings.
+            self.cy_low = smax(self.cy_low, gain * low * 0.63f);
+            self.cy_mid_fast = smax(self.cy_mid_fast, gain * high * 5.2f);
+            self.cy_mid = smax(self.cy_mid, gain * high * 2.3f);
+            self.cy_high_fast = smax(self.cy_high_fast, gain * high * 6.9f);
+            self.cy_high = smax(self.cy_high, gain * high * 1.8f);
+        } else if which == open_hat() {
+            // Decay: recorded at knob 0, 0.5 and 1.
+            let k: f32 = self.oh_decay;
+            self.oh_decay_env.start(knob3(k, 0.056f, 0.37f, 0.27f), 0.013f, knob3(k, 0.07f, 0.3f, 0.66f), r);
+            self.oh_env = smax(self.oh_env, gain);
+            self.oh_choked = false;
+        } else if which == closed_hat() {
+            self.ch_decay_env.start(0.2f, 0.015f, 0.004f, r);
+            self.ch_env = smax(self.ch_env, gain);
+            // The closed hat cuts the open one.
+            self.oh_choked = true;
+        }
+    }
+
+    fn bd_active(self: M08) -> bool {
+        return self.bd.amplitude() > silent() || self.bd_body.amplitude() > silent() || self.bd_pulse_left > 0.0f
+            || fabsf(self.bd_lp) > silent() || fabsf(self.bd_hp_y) > silent();
+    }
+
+    /// Bass drum: the ring, its pitch following its amplitude, plus the
+    /// trigger pulse through Tone, clipped with a hard knee.
+    fn bass(self: &mut Self) -> f32 {
+        let r: f32 = self.rate;
+        let amp: f32 = self.bd.amplitude();
+        self.bd_track = self.bd_track + (amp - self.bd_track) * self.bd_track_coef;
+        let hz: f32 = 49.1f * (1.0f + 0.14f * smax(self.bd_track - 0.128f, 0.0f)) * (1.0f + 4.93f * self.bd_kick);
+        self.bd_kick = self.bd_kick * self.bd_kick_coef;
+        let ring: f32 = self.bd.tick(hz, self.bd_damp, r) + self.bd_body.tick(hz, self.bd_body_damp, r);
+        var pulse: f32 = 0.0f;
+        if self.bd_pulse_left > 0.0f { pulse = self.bd_pulse; self.bd_pulse_left = self.bd_pulse_left - 1.0f; }
+        self.bd_lp = self.bd_lp + (pulse - self.bd_lp) * self.bd_lp_coef;
+        // Coupling high-pass at 136 Hz.
+        let hp: f32 = 0.5f * (1.0f + self.bd_hp_coef) * (self.bd_lp - self.bd_hp_x) + self.bd_hp_coef * self.bd_hp_y;
+        self.bd_hp_x = self.bd_lp;
+        self.bd_hp_y = hp;
+        let x: f32 = ring + hp;
+        // Hard-knee clip: x / (1 + |x / clip|^6)^(1/6).
+        let u: f32 = fabsf(x) / self.bd_clip;
+        let u2: f32 = u * u;
+        return x / powf(1.0f + u2 * u2 * u2, 0.16666667f);
+    }
+
+    fn sd_active(self: M08) -> bool {
+        return self.sd_low.amplitude() > silent() || self.sd_high.amplitude() > silent() || self.sd_noise > silent();
+    }
+
+    fn snare(self: &mut Self) -> f32 {
+        let r: f32 = self.rate;
+        var out: f32 = self.sd_low.tick(175.5f, self.sd_low_damp, r) + self.sd_high.tick(336.0f, self.sd_high_damp, r);
+        if self.sd_noise > silent() {
+            let n: f32 = self.sd_lp.process(self.sd_hp.process(self.white(), 1), 0);
+            out = out + n * self.sd_noise;
+            self.sd_noise = self.sd_noise * self.sd_noise_decay.next();
+        }
+        return out;
+    }
+
+    fn rs_active(self: M08) -> bool { return self.rs_low.amplitude() > silent() || self.rs_high.amplitude() > silent(); }
+
+    /// Rim shot: two rings, high-passed and driven nearly square, so the hit
+    /// holds its level and then stops (about 20 ms).
+    fn rim(self: &mut Self) -> f32 {
+        let r: f32 = self.rate;
+        let x: f32 = self.rs_low.tick(455.6f, self.rs_low_damp, r) + self.rs_high.tick(1825.6f, self.rs_high_damp, r);
+        return tanhf(20.0f * self.rs_hp.process(x, 1) / self.rs_gain) * self.rs_gain;
+    }
+
+    fn cp_active(self: M08) -> bool { return self.cp_time >= 0.0f; }
+
+    /// Hand clap: four sawtooth bursts (0, 9.5, 21.5, 31.5 ms), the last
+    /// running into the tail.
+    fn clap(self: &mut Self) -> f32 {
+        let r: f32 = self.rate;
+        let t: f32 = self.cp_time;
+        let ms: f32 = 1000.0f / r;
+        // A burst starts on the sample its time falls in.
+        let now: f32 = t * ms;
+        let next: f32 = (t + 1.0f) * ms;
+        if (now <= 0.0f && next > 0.0f) || (now <= 9.5f && next > 9.5f) || (now <= 21.5f && next > 21.5f) {
+            self.cp_burst = self.cp_level;
+        }
+        if now <= 31.5f && next > 31.5f { self.cp_burst = self.cp_level; self.cp_tail = self.cp_level * 0.35f; }
+        let n: f32 = self.cp_bp.process(self.cp_hp.process(self.white(), 1), 2);
+        let out: f32 = n * self.cp_burst + self.cp_lp.process(n, 0) * self.cp_tail;
+        self.cp_burst = self.cp_burst * self.cp_burst_coef;
+        if now > 31.5f { self.cp_tail = self.cp_tail * self.cp_tail_decay.next(); }
+        self.cp_time = t + 1.0f;
+        if now > 40.0f && self.cp_tail < silent() { self.cp_time = -1.0f; }
+        return out;
+    }
+
+    fn ma_active(self: M08) -> bool { return self.ma_time >= 0.0f; }
+
+    /// Maracas: high-passed noise swelling over 20 ms, then cut.
+    fn maraca(self: &mut Self) -> f32 {
+        let ms: f32 = self.ma_time * 1000.0f / self.rate;
+        if ms < 20.0f { self.ma_env = self.ma_level + (self.ma_env - self.ma_level) * self.ma_rise_coef; }
+        else { self.ma_env = self.ma_env * self.ma_fall_coef; }
+        let out: f32 = self.ma_hp.process(self.white(), 1) * self.ma_env;
+        self.ma_time = self.ma_time + 1.0f;
+        if ms > 20.0f && self.ma_env < silent() { self.ma_time = -1.0f; self.ma_env = 0.0f; }
+        return out;
+    }
+
+    fn metal_active(self: M08) -> bool {
+        return self.cb_fast + self.cb_slow > silent()
+            || self.cy_low + self.cy_mid_fast + self.cy_mid + self.cy_high_fast + self.cy_high > silent()
+            || self.oh_env > silent() || self.ch_env > silent();
+    }
+
+    /// The metal bank through the cowbell, cymbal and hi-hat paths.
+    fn metallic(self: &mut Self) -> f32 {
+        let r: f32 = self.rate;
+        let s1: f32 = self.sq1.tick(r);
+        let s2: f32 = self.sq2.tick(r);
+        let s3: f32 = self.sq3.tick(r);
+        let s4: f32 = self.sq4.tick(r);
+        let s5: f32 = self.sq5.tick(r);
+        let s6: f32 = self.sq6.tick(r);
+        let bank: f32 = (s1 + s2 + s3 + s4 + s5 + s6) * 0.17f;
+        var out: f32 = 0.0f;
+
+        let cb_env: f32 = self.cb_fast + self.cb_slow;
+        if cb_env > silent() {
+            // A narrow band at 900 Hz, plus a little of the squares' edges.
+            let pair: f32 = (s4 + s6) * 0.5f;
+            let b: f32 = self.cb_bp.process(pair, 2) + 0.12f * self.cb_hp.process(pair, 1);
+            out = out + b * cb_env * self.level_cb * 1.75f;
+            self.cb_fast = self.cb_fast * self.cb_fast_coef;
+            self.cb_slow = self.cb_slow * self.cb_slow_coef;
+        }
+
+        let cy_env: f32 = self.cy_low + self.cy_mid_fast + self.cy_mid + self.cy_high_fast + self.cy_high;
+        if cy_env > silent() {
+            let low: f32 = self.cy_low_lp.process(self.cy_low_hp2.process(self.cy_low_hp.process(bank, 1), 1), 0);
+            let mid: f32 = self.cy_mid_lp.process(self.cy_mid_hp2.process(self.cy_mid_hp.process(bank, 1), 1), 0);
+            let high: f32 = self.cy_high_hp2.process(self.cy_high_hp.process(bank, 1), 1);
+            out = out + (low * self.cy_low + mid * (self.cy_mid_fast + self.cy_mid)
+                       + high * (self.cy_high_fast + self.cy_high)) * self.level_cy * 0.52f;
+            self.cy_low = self.cy_low * self.cy_low_coef;
+            self.cy_mid = self.cy_mid * self.cy_mid_coef;
+            self.cy_high = self.cy_high * self.cy_high_coef;
+            self.cy_mid_fast = self.cy_mid_fast * self.cy_fast_coef;
+            self.cy_high_fast = self.cy_high_fast * self.cy_fast_coef;
+        }
+
+        if self.oh_env > silent() {
+            out = out + self.oh_filter.process(bank) * self.oh_env * self.level_oh * 2.9f;
+            let d: f32 = self.oh_decay_env.next();
+            self.oh_env = self.oh_env * (self.oh_choked ? self.choke_coef : d);
+        }
+        if self.ch_env > silent() {
+            out = out + self.ch_filter.process(bank) * self.ch_env * self.level_ch * 2.0f;
+            self.ch_env = self.ch_env * self.ch_decay_env.next();
+        }
+        return out;
+    }
+
+    fn rings_active(self: M08) -> bool {
+        return self.lt.active() || self.mt.active() || self.ht.active() || self.lc.active() || self.mc.active()
+            || self.hc.active() || self.cl.active();
+    }
+
+    fn active(self: M08) -> bool {
+        return self.bd_active() || self.sd_active() || self.rings_active() || self.rs_active() || self.cp_active()
+            || self.ma_active() || self.metal_active();
+    }
+
+    fn process(self: &mut Self, out_right: ptr<f32>) -> f32 {
+        let r: f32 = self.rate;
+        self.output_gain = self.output_gain + (self.output_target - self.output_gain) * 0.002f;
+        var mix: f32 = 0.0f;
+        if self.bd_active() { mix = mix + self.bass() * self.level_bd * 0.56f; }
+        else { self.bd.reset(); self.bd_body.reset(); }
+        if self.sd_active() { mix = mix + self.snare() * self.level_sd * 0.37f; }
+        else { self.sd_low.reset(); self.sd_high.reset(); }
+        if self.rings_active() {
+            // The toms' noise shares one white source.
+            let n: f32 = self.white();
+            if self.lt.active() { mix = mix + self.lt.tick(n, r) * self.level_lt * 0.68f; }
+            if self.mt.active() { mix = mix + self.mt.tick(n, r) * self.level_mt * 0.7f; }
+            if self.ht.active() { mix = mix + self.ht.tick(n, r) * self.level_ht * 0.7f; }
+            if self.lc.active() { mix = mix + self.lc.tick(n, r) * self.level_lt * 0.7f; }
+            if self.mc.active() { mix = mix + self.mc.tick(n, r) * self.level_mt * 0.7f; }
+            if self.hc.active() { mix = mix + self.hc.tick(n, r) * self.level_ht * 0.7f; }
+            if self.cl.active() { mix = mix + self.cl.tick(n, r) * self.level_rs * 0.72f; }
+        }
+        if self.rs_active() { mix = mix + self.rim() * self.level_rs * 0.7f; }
+        else { self.rs_low.reset(); self.rs_high.reset(); }
+        if self.cp_active() { mix = mix + self.clap() * self.level_cp * 2.4f; }
+        if self.ma_active() { mix = mix + self.maraca() * self.level_cp * 0.31f; }
+        // The oscillators keep turning, so the next hit starts mid-cycle
+        // like on the free-running hardware.
+        let metal: f32 = self.metallic();
+        mix = mix + metal;
+        let out: f32 = mix * self.output_gain;
+        unsafe { *out_right = out; }
+        return out;
+    }
+}
+
+// --- C ABI -------------------------------------------------------------------
+
+/// @brief Allocate an instance for a sample rate (8 kHz .. 384 kHz).
+fn mla08_create(sample_rate: f32) -> ptr<M08> {
+    let handle: ptr<M08> = calloc(1, size_of(M08));
+    unsafe { *handle = M08::new(sample_rate); }
+    return handle;
+}
+
+/// @brief Release an instance created by `mla08_create`.
+fn mla08_destroy(handle: ptr<M08>) { free(handle); }
+
+/// @brief Silence every voice and clear filters; settings stay.
+fn mla08_reset(handle: ptr<M08>) { unsafe { (*handle).reset(); } }
+
+/// @brief Strike instrument `which` (0 BD, 1 SD, 2 LT, 3 MT, 4 HT, 5 RS,
+/// 6 CP, 7 CB, 8 CY, 9 OH, 10 CH, 11 LC, 12 MC, 13 HC, 14 CL, 15 MA) at
+/// velocity 0..1.
+fn mla08_trigger(handle: ptr<M08>, which: i32, velocity: f32) {
+    unsafe { (*handle).trigger(which, velocity); }
+}
+
+/// @brief 1 while any voice sounds, else 0.
+fn mla08_active(handle: ptr<M08>) -> i32 {
+    unsafe { return (*handle).active() ? 1 : 0; }
+}
+
+/// @brief Set one parameter:
+/// 0 output gain (linear), 1 accent 0..1, 2 dynamics (0 accent, 1 velocity),
+/// 3..13 levels (linear: BD SD LT MT HT RS CP CB CY OH CH),
+/// knobs 0..1: 14 BD tone, 15 BD decay, 16 SD tone, 17 SD snappy,
+/// 18 LT tuning, 19 MT tuning, 20 HT tuning, 21 CY tone, 22 CY decay,
+/// 23 OH decay.
+fn mla08_set(handle: ptr<M08>, index: i32, value: f32) {
+    unsafe {
+        let k: f32 = sclamp(value, 0.0f, 1.0f);
+        let level: f32 = smax(value, 0.0f);
+        if index == 0 {
+            (*handle).output_target = level;
+            // Glide only while something sounds.
+            if !(*handle).active() { (*handle).output_gain = (*handle).output_target; }
+        }
+        else if index == 1 { (*handle).accent = k; }
+        else if index == 2 { (*handle).dynamics = value > 0.5f ? 1 : 0; }
+        else if index == 3 { (*handle).level_bd = level; }
+        else if index == 4 { (*handle).level_sd = level; }
+        else if index == 5 { (*handle).level_lt = level; }
+        else if index == 6 { (*handle).level_mt = level; }
+        else if index == 7 { (*handle).level_ht = level; }
+        else if index == 8 { (*handle).level_rs = level; }
+        else if index == 9 { (*handle).level_cp = level; }
+        else if index == 10 { (*handle).level_cb = level; }
+        else if index == 11 { (*handle).level_cy = level; }
+        else if index == 12 { (*handle).level_oh = level; }
+        else if index == 13 { (*handle).level_ch = level; }
+        else if index == 14 { (*handle).bd_tone = k; (*handle).configure_knobs(); }
+        else if index == 15 { (*handle).bd_decay = k; (*handle).configure_knobs(); }
+        else if index == 16 { (*handle).sd_tone = k; }
+        else if index == 17 { (*handle).snappy = k; }
+        else if index == 18 { (*handle).lt_tune = k; (*handle).configure_knobs(); }
+        else if index == 19 { (*handle).mt_tune = k; (*handle).configure_knobs(); }
+        else if index == 20 { (*handle).ht_tune = k; (*handle).configure_knobs(); }
+        else if index == 21 { (*handle).cy_tone = k; }
+        else if index == 22 { (*handle).cy_decay = k; (*handle).configure_knobs(); }
+        else if index == 23 { (*handle).oh_decay = k; }
+    }
+}
+
+/// @brief Process one sample: stereo out (left returned, right through `out_right`).
+fn mla08_process(handle: ptr<M08>, out_right: ptr<f32>) -> f32 {
+    unsafe { return (*handle).process(out_right); }
+}
