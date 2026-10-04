@@ -31,8 +31,9 @@ def main():
             expect(frame, b"Spectrum / Master", b"100Hz", b"1kHz", b"HP", b"EQ1", b"EQ4", b"Master")
             # Defaults: 20 Hz high-pass, bands at 100/500/2.5k/8k Hz, Q 1, unity volume.
             expect(frame, b"20 ", b"100 ", b"500 ", b"2.5k", b"8.0k", b"Q1.0", b"100%")
-            # Focus the analyzer pane; EQ1 gain up two 0.1 dB steps, then 1 dB.
-            frame = tui.send(b"\t\t" + UP + UP, 0.5)
+            # Opening the analyzer focuses its pane; EQ1 gain up two 0.1 dB
+            # steps, then 1 dB.
+            frame = tui.send(UP + UP, 0.5)
             expect(frame, b"+0.2")
             expect(tui.send(b"K", 0.4), b"+1.2")
             # Shift+E switches the EQ out and back in, keeping the band.
