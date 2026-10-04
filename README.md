@@ -6,8 +6,8 @@ and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
 (imported as `mlacker_ui::*`); the VST3 effects, the Mla Drum and Mla Sampler
 instruments, the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
 own carrier synth), [Mla Speech](plugins/mla_speech) (an Atari ST style
-speech synthesizer that says a pattern's comment texts) and
-[Mla 06](plugins/mla_06) (a synthesized TR-606 style drum machine) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+speech synthesizer that says a pattern's comment texts),
+[Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run
