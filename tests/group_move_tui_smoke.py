@@ -10,6 +10,7 @@ from session_tui_smoke import F1, Terminal
 AUDIO = F1 + b"lllll"
 ADD_GROUP = AUDIO + b"j" * 8 + b"\r"
 MOVE_TO_GROUP = AUDIO + b"j" * 10 + b"\r"
+TOGGLE_FULLSCREEN = AUDIO + b"j" * 11 + b"\r"
 VIEW_AUDIO = F1 + b"lljj\r"  # focuses the Audio list
 SAVE_PROJECT = F1 + b"jjjlj\r"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "audio" / "stereo_tone.wav"
@@ -71,9 +72,29 @@ def main():
             frame = tui.send(MOVE_TO_GROUP)
             expect(frame, b"(No group)")
             expect(tui.send(b"k\r", 1.0), b"Moved 1 sample(s) out of their groups; Saved project:")
+            # The sample editor opens full screen by default, hiding the
+            # lower pane; the Audio menu turns that off for the project.
+            expect(tui.send(AUDIO), b"[x] Always open sample editor full screen")
+            tui.send(b"\x1b")
+            frame = expect(tui.send(VIEW_AUDIO + b"s", 0.6), b"Sample editor")
+            assert b"Inspector" not in frame, frame[-5000:]
+            tui.send(b"\x1b", 0.6)
+            expect(tui.send(TOGGLE_FULLSCREEN), b"opens in the Pattern pane")
+            expect(tui.send(VIEW_AUDIO + b"s", 0.6), b"Sample editor", b"Inspector")
+            tui.send(b"\x1b", 0.6)
+            expect(tui.send(b"\x13", 0.9), b"Saved project:")
             assert (project / "Audio" / "stereo_tone.wav").is_file()
             assert not (project / "Audio" / "Drums" / "stereo_tone.wav").exists()
             assert (project / "Audio" / "Drums" / "Kicks").is_dir()  # empty groups keep their folders
+        finally:
+            tui.close()
+
+        # The project keeps the editor setting.
+        tui = Terminal(str(project), cwd=directory)
+        try:
+            expect(tui.read(1.2), b"Opened project:")
+            expect(tui.send(AUDIO), b"[ ] Always open sample editor full screen")
+            tui.send(b"\x1b")
         finally:
             tui.close()
     print("PASS: move to group: picker, notice with Don't ask (kept in the project), files moved on save")

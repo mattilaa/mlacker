@@ -52,7 +52,9 @@ pub enum Action : i32 {
     PlaceMatrixPattern = 121, PasteMatrixCell = 122, LoadSamplerSlot = 123, ClearSamplerSlot = 124,
     RouteSamplerOutput = 125, EditSamplerSample = 126, SaveSamplerSlot = 127, LoadSamplerSlotPreset = 128,
     // Audio > Move to group: the group chosen, then (in a project) confirmed.
-    ApplyAudioGroupMove = 183
+    ApplyAudioGroupMove = 183,
+    // Audio > Always open sample editor full screen.
+    ToggleEditorFullscreen = 184
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).

@@ -95,8 +95,9 @@ pub struct SessionView {
     /// `master_saved`: a nested struct is not default-initialized.
     var spectrum: bool; var spectrum_detail: i32; var spectrum_fps: i32{30};
     var master_saved: bool; var master: MasterBus;
-    /// Project option: Audio > Move to group saves the project without asking.
-    var move_unasked: bool;
+    /// Project options: Audio > Move to group saves the project without
+    /// asking; the sample editor opens full screen.
+    var move_unasked: bool; var editor_fullscreen: bool{true};
 };
 /// Plugin preset outcome. Kit presets (MLAPRE 1.1) also carry sampler pads:
 /// `pads[i]` is loaded from `clips[i]`; the caller owns the clips.
@@ -884,7 +885,7 @@ impl SessionCodec {
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
         // Project options (written last, so everything before it is too).
-        let optioned: bool = !self.reading && self.root != "" && view.move_unasked;
+        let optioned: bool = !self.reading && self.root != "" && (view.move_unasked || !view.editor_fullscreen);
         // Audio-list groups (written, perhaps empty, whenever PROJECT_OPTIONS
         // follows).
         let grouped: bool = !self.reading && (library.audio.groups.len() > 0 || optioned);
@@ -1423,6 +1424,9 @@ impl SessionCodec {
         if options_extension && !self.failed {
             let tag: str8 = self.text("PROJECT_OPTIONS"); if tag != "PROJECT_OPTIONS" { self.failed = true; } if self.reading { free(tag); }
             state.move_unasked = self.flag(state.move_unasked);
+            // Full-screen editor came later: a file ending before it opens
+            // the editor full screen.
+            if !self.reading || self.reader.remaining() > 0 { state.editor_fullscreen = self.flag(state.editor_fullscreen); }
         }
         if self.reading { library.audio.rebuild(); }
         if state.editor_slot > 32 {
