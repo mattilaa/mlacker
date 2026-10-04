@@ -550,6 +550,10 @@ pub fn run() -> i32 {
     // Matrix playback: the merged table of the playing row, and which row it is.
     var song_playing: bool = false; var song_row: i32 = -1;
     var song_table: SequenceTable = SequenceTable {};
+    // Pattern playback with another pattern chosen meanwhile: a copy of the
+    // playing pattern (`play_pattern`) that runs to its end before the chosen
+    // one (the active pattern) starts.
+    var pattern_held: bool = false; var held_table: SequenceTable = SequenceTable {};
     // Matrix recording: the pattern armed with Shift+R in the matrix (0 when
     // none), whether a take is running into it, the pattern time where the
     // take began, and the track the take armed itself (-1 when it was armed).
@@ -1107,7 +1111,7 @@ pub fn run() -> i32 {
         // Faders, sends, inserts and output channels belong to the pattern that
         // is playing. While the matrix runs, that is the merged song row, not
         // whatever pattern the sidebar happens to have selected.
-        midi.sync_volumes(song_playing ? song_table : library.table);
+        midi.sync_volumes(song_playing ? song_table : (pattern_held ? held_table : library.table));
         let midi_active: bool = midi.poll(now);
         // Virtual keyboard notes whose keys stopped repeating end now; its
         // notes join the MIDI input for step entry and recording.
@@ -1159,14 +1163,37 @@ pub fn run() -> i32 {
         if transport.midi_received != midi_active { transport.midi_received = midi_active; dirty = true; }
         if cpu_meter.update(now) { transport.cpu_percent = cpu_meter.percent; dirty = true; }
         let ui_steps: i64 = (now - ui_clock) / 10; ui_clock = ui_clock + ui_steps * 10;
-        if play_pattern != library.active_id {
-            mixer.expanded = []; mixer.selected_send = -1; mixer.send_track = -1;
-            transport.playing = false; mixer.levels = []; play_pattern = library.active_id;
-            transport.row = library.table.selected_row < 0 ? 0 : library.table.selected_row; transport.phase = 0;
-            transport.elapsed_ms = i32(wide(transport.row) * 15000 / wide(transport.bpm));
+        // Back on the pattern that is still playing: it simply plays on.
+        if pattern_held && play_pattern == library.active_id {
+            held_table.release(); held_table = SequenceTable {}; pattern_held = false;
+            free(message); message = format!("Playing pattern {}: {}", library.active_id, library.active_name()); dirty = true;
         }
-        // Editing a moving row would otherwise commit to a different row.
-        if library.table.editing || library.table.visual || library.renaming || dialog.active || question.active || paste_error.active || settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || curve_dialog.active { transport.playing = false; }
+        if play_pattern != library.active_id {
+            mixer.expanded = []; mixer.selected_send = -1; mixer.send_track = -1; mixer.levels = [];
+            if pattern_held {
+                // Already queued behind the playing pattern; this one replaces it.
+                free(message); message = format!("Pattern {} plays next", library.active_id); dirty = true;
+            } else if transport.playing && !song_playing && !transport.recording && library.index_of(play_pattern) >= 0 {
+                // Choosing another pattern queues it: the playing one runs to
+                // its end from a copy, then the chosen one starts on row 0.
+                let entry: PatternEntry = library.patterns[library.index_of(play_pattern)];
+                held_table = entry.data.copy_pattern(); pattern_held = true;
+                free(message); message = format!("Pattern {} plays next", library.active_id); dirty = true;
+            } else if song_playing && !matrix_recording {
+                // The matrix plays its own rows; the editor just shows another pattern.
+                play_pattern = library.active_id;
+            } else {
+                transport.playing = false; play_pattern = library.active_id;
+                transport.row = library.table.selected_row < 0 ? 0 : library.table.selected_row; transport.phase = 0;
+                transport.elapsed_ms = i32(wide(transport.row) * 15000 / wide(transport.bpm));
+            }
+        }
+        // Editing a cell, a visual selection or a rename keeps playing: the
+        // editor cursor just stops following the transport (see `cursor_held`)
+        // so an edit never commits to a moving row. A queued pattern is not the
+        // one playing, so its length and the truncation question are free too.
+        let cursor_held: bool = library.table.editing || library.table.visual;
+        if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || curve_dialog.active { transport.playing = false; }
         if library.table.recording_track >= 0 {
             let armed: SequenceTrack = library.table.tracks[library.table.recording_track];
             if !armed.record_armed { transport.playing = false; }
@@ -1238,8 +1265,9 @@ pub fn run() -> i32 {
                         mixer_table.release(); mixer_table = library.merge_song_row(song_row, terminal_bounds(), true);
                     }
                     prepared_table = SequenceTable {}; prepared_mixer = SequenceTable {}; prepared_row = -1;
-                    // The editor, sidebar and mixer move to the row that plays.
-                    if follow_matrix && !matrix_recording { if library.follow_pattern(library.song_row_pattern(song_row)) { play_pattern = library.active_id; } }
+                    // The editor, sidebar and mixer move to the row that plays,
+                    // unless an edit or a selection is open in the editor.
+                    if follow_matrix && !matrix_recording && !cursor_held { if library.follow_pattern(library.song_row_pattern(song_row)) { play_pattern = library.active_id; } }
                     // Notes still sounding from the last row end at their own
                     // length: dropping them left their note-offs unsent.
                     upcoming.carry_voices(note_playback);
@@ -1250,8 +1278,24 @@ pub fn run() -> i32 {
                 playback_dirty = true; dirty = true;
             }
         }
+        else if pattern_held {
+            let previous: i32 = transport.row;
+            if transport.advance(now, i32(held_table.rows.len())) { playback_dirty = true; }
+            if transport.playing && transport.row < previous {
+                // The playing pattern ended: the queued one starts on row 0.
+                held_table.release(); held_table = SequenceTable {}; pattern_held = false;
+                play_pattern = library.active_id;
+                var upcoming: NotePlayback = NotePlayback { start_row: 0 };
+                upcoming.carry_voices(note_playback);
+                note_playback = upcoming;
+                midi.restart_samples(0);
+                if !cursor_held { library.table.selected_row = transport.row; }
+                free(message); message = format!("Playing pattern {}: {}", library.active_id, library.active_name());
+                playback_dirty = true; dirty = true;
+            }
+        }
         else if transport.advance(now, i32(library.table.rows.len())) {
-            if transport.row >= 0 { library.table.selected_row = transport.row; }
+            if transport.row >= 0 && !cursor_held { library.table.selected_row = transport.row; }
             playback_dirty = true;
         } else if !transport.playing {
             let cursor: i32 = library.table.selected_row < 0 ? 0 : library.table.selected_row;
@@ -1282,7 +1326,7 @@ pub fn run() -> i32 {
                 for note in notes { if note.kind == 1 { if library.table.record_note(note.note, note.velocity) { dirty = true; } } }
             }
         }
-        if !midi.sample_playback(song_playing ? song_table : library.table, transport.ticks, transport.playing && transport.count_in == 0, transport.bpm) {
+        if !midi.sample_playback(song_playing ? song_table : (pattern_held ? held_table : library.table), transport.ticks, transport.playing && transport.count_in == 0, transport.bpm) {
             transport.playing = false; free(message); message = clone("Cannot prepare sample playback (maximum 256 placements per pattern)"); dirty = true;
         }
         midi.sync_transport(transport.bpm, transport.ticks, transport.playing && transport.count_in == 0);
@@ -1334,9 +1378,15 @@ pub fn run() -> i32 {
         let ahead: i64 = midi.lookahead_ticks(transport.bpm);
         note_playback.lookahead = ahead;
         // A matrix row followed by another one sends nothing past its end.
-        note_playback.once = song_playing && library.next_song_row(song_row) != song_row;
-        note_playback.update(song_playing ? song_table : library.table, transport.ticks, transport.playing && transport.count_in == 0);
-        midi.sequencer_events(note_playback.events, song_playing ? song_table : library.table);
+        // So does a pattern with another one queued behind it.
+        note_playback.once = song_playing ? library.next_song_row(song_row) != song_row : pattern_held;
+        note_playback.update(song_playing ? song_table : (pattern_held ? held_table : library.table), transport.ticks, transport.playing && transport.count_in == 0);
+        midi.sequencer_events(note_playback.events, song_playing ? song_table : (pattern_held ? held_table : library.table));
+        if pattern_held && (!transport.playing || song_playing) {
+            // Stopped (or the matrix took over) before the queued pattern began.
+            held_table.release(); held_table = SequenceTable {}; pattern_held = false;
+            play_pattern = library.active_id;
+        }
         if prepared_row >= 0 {
             // The next row sends its first notes ahead before the change.
             let running: bool = song_playing && transport.playing && transport.count_in == 0;
@@ -1369,7 +1419,7 @@ pub fn run() -> i32 {
         let following_channels: bool = follow_matrix && song_playing && mixer_table.tracks.len() > 0;
         if following_channels {
             if mixer.update(mixer_table, transport.row, i32(transport.phase), transport.playing, delta) { playback_dirty = true; }
-        } else if mixer.update(library.table, transport.row, i32(transport.phase), transport.playing, delta) { playback_dirty = true; }
+        } else if mixer.update(library.table, transport.row, i32(transport.phase), transport.playing && !pattern_held, delta) { playback_dirty = true; }
         let meter_delta: i32 = i32(now - master_meter_clock);
         if meter_delta >= 1000 / frame_rate.fps {
             if instrument_editor.sync(midi.output) { dirty = true; }
@@ -3289,7 +3339,8 @@ pub fn run() -> i32 {
             }
             else if command == Action::RemovePattern { library.remove_active(panes[0].bounds.inset(1)); }
             else if command == Action::SetPatternLength {
-                transport.playing = false;
+                // A queued pattern is not the one playing; it can change length.
+                if !pattern_held { transport.playing = false; }
                 bpm_dialog.open_pattern_length(i32(library.table.rows.len()));
             }
             else if command == Action::SampleViewNormal || command == Action::SampleViewGrainy { sample.grainy = command == Action::SampleViewGrainy; }
@@ -3514,7 +3565,7 @@ pub fn run() -> i32 {
     midi.release();
     settings.release();
     free(session_path); free(request_path);
-    instrument_editor.release(); sample_editor.release(); sample_dialog.release(); piano.release(); picker.release(); outputs.release(); group_picker.release(); song_table.release(); mixer_table.release(); free(preset_path); free(preview_path);
+    instrument_editor.release(); sample_editor.release(); sample_dialog.release(); piano.release(); picker.release(); outputs.release(); group_picker.release(); song_table.release(); held_table.release(); mixer_table.release(); free(preset_path); free(preview_path);
     free(group_target); free(group_prompt); free(move_note); group_dialog.release(); free(alert_text);
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
     sidebar_clipboard.release();

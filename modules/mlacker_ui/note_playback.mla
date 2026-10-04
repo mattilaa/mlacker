@@ -182,7 +182,11 @@ impl NotePlayback {
         self.running = true;
         let period: i64 = wide(i32(table.rows.len())) * 15000;
         var horizon: i64 = tick + (self.lookahead > 0 ? self.lookahead : 0);
-        if self.once && horizon > self.epoch + period - 1 { horizon = self.epoch + period - 1; }
+        // The end of the pass in progress: a pattern that already looped and
+        // is now followed by another one still plays out its current pass.
+        var pass: i64 = self.epoch;
+        if tick > self.epoch { pass = self.epoch + (tick - self.epoch) / period * period; }
+        if self.once && horizon > pass + period - 1 { horizon = pass + period - 1; }
         if horizon < self.horizon { horizon = self.horizon; }
         while true {
             var event_tick: i64 = horizon + 1;
