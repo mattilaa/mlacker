@@ -47,6 +47,9 @@ mod mlacker_ui::pattern_picker;
 use mlacker_ui::pattern_picker::PatternPicker;
 mod mlacker_ui::output_picker;
 use mlacker_ui::output_picker::OutputPicker;
+mod mlacker_ui::group_move;
+use mlacker_ui::group_move::GroupPicker;
+use mlacker_ui::group_move::MoveNotice;
 use mlacker_ui::song_matrix::SongMatrix;
 mod mlacker_ui::sample_editor;
 mod mlacker_ui::name_dialog;
@@ -115,6 +118,7 @@ use mlacker_ui::session::PresetResult;
 use mlacker_ui::session::SessionView;
 use mlacker_ui::session::is_project_path;
 use mlacker_ui::session::project_folder;
+use mlacker_ui::session::project_group_folder;
 use mlacker_ui::midi_controller::MidiController;
 use std::env::detail::__env_args;
 use std::strbuf::clone;
@@ -242,7 +246,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                 menu_item(bounce.second_pass ? "[x] Bounce second pass (seamless loop)" : "[ ] Bounce second pass (seamless loop)", Action::ToggleBounceSecondPass, true, keymap),
                                 menu_item("Make track clips destructive", Action::MakeAudioDestructive, true, keymap),
                                 menu_item("Add group", Action::AddAudioGroup, true, keymap),
-                                menu_item("Remove group", Action::RemoveAudioGroup, true, keymap)] },
+                                menu_item("Remove group", Action::RemoveAudioGroup, true, keymap),
+                                menu_item("Move to group", Action::MoveAudioToGroup, true, keymap)] },
                     Menu {title: "Instrument", items: [
                                 menu_item("Add instrument", Action::AddInstrument, plugins, keymap),
                                 menu_item("Open VST3 editor", Action::OpenPluginEditor, plugins, keymap),
@@ -528,6 +533,13 @@ pub fn run() -> i32 {
     // kind 1 = the instrument a MIDI track plays, 2 = the audio channel this
     // track feeds.
     var outputs: OutputPicker = OutputPicker::new();
+    // Audio > Move to group: the destination picker, the samples it moves,
+    // and the notice that a project is saved with the move (unless the
+    // project's "Don't ask this again" is set).
+    var group_picker: GroupPicker = GroupPicker::new(); var move_notice: MoveNotice = MoveNotice::new();
+    var move_targets: list<i32> = []; var move_unasked: bool = false; var move_confirmed: bool = false;
+    // What the move did, shown with the outcome of the save that follows it.
+    var move_note: str8 = clone("");
     var output_kind: i32 = 0; var output_track: i32 = -1;
     // Route plugin outputs: kind 3 picks an aux bus of the track's instrument,
     // kind 4 where `aux_bus` goes.
@@ -588,7 +600,8 @@ pub fn run() -> i32 {
                     sample: sample.visible, sample_grainy: sample.grainy, sample_wave: sample.wave, sample_zoom: sample.zoom,
                     editor: instrument_editor.active, editor_slot: i32(instrument_editor.slot), editor_selected: instrument_editor.selected, editor_scroll: instrument_editor.scroll,
                     spectrum: spectrum.visible, spectrum_detail: spectrum.detail, spectrum_fps: spectrum.fps, master: spectrum.bus,
-                    master_saved: spectrum.visible || spectrum.detail != 0 || spectrum.fps != 30 || !spectrum.bus.is_default() };
+                    master_saved: spectrum.visible || spectrum.detail != 0 || spectrum.fps != 30 || !spectrum.bus.is_default(),
+                    move_unasked: move_unasked };
                 var serializer: SessionCodec = SessionCodec {};
                 if session_request == 4 {
                     let saved: result<str8, str8> = serializer.save_project(request_path, library, view, midi);
@@ -630,7 +643,7 @@ pub fn run() -> i32 {
                             let v: SessionView = data.view;
                             transport = TransportStatus { bpm: v.bpm, beats_per_bar: v.beats, beat_unit: v.unit, row: v.row, phase: v.phase,
                                 ticks: wide(v.row) * 15000 + v.phase, elapsed_ms: i32((wide(v.row) * 15000 + v.phase) / wide(v.bpm)) };
-                            focus.selected = v.pane;
+                            focus.selected = v.pane; move_unasked = v.move_unasked;
                             mixer = Mixer { visible: v.mixer, grainy: v.meter_grainy, bus_focus: v.effect_focus, selected_effect: v.effect_selected };
                             mixer.update_effects(midi.output, midi.effects, 0);
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
@@ -655,7 +668,9 @@ pub fn run() -> i32 {
                     }
                 }
             }
-            free(message); message = clone(session_status);
+            free(message);
+            message = move_note != "" ? format!("{}; {}", move_note, session_status) : clone(session_status);
+            free(move_note); move_note = clone("");
             // A failed save or open says so in a dialog, not only on the status line.
             if session_failed {
                 free(alert_text); alert_text = clone(session_status);
@@ -1372,6 +1387,8 @@ pub fn run() -> i32 {
                 if prompt.active && prompt.pressed_button >= 0 { action = prompt.tick(); dirty = true; }
                 else if picker.active && picker.pressed_button >= 0 { action = picker.tick(); dirty = true; }
                 else if outputs.active && outputs.pressed_button >= 0 { action = outputs.tick(); dirty = true; }
+                else if group_picker.active && group_picker.pressed_button >= 0 { action = group_picker.tick(); dirty = true; }
+                else if move_notice.active && move_notice.pressed_button >= 0 { action = move_notice.tick(); dirty = true; }
                 else if piano.active && piano.pressed_button >= 0 { action = piano.tick(); dirty = true; }
                 else if sample_editor.active && sample_editor.pressing() { action = sample_editor.tick(); dirty = true; }
                 else if clip_save.active && clip_save.pressed_button >= 0 { action = clip_save.tick(); dirty = true; }
@@ -1523,7 +1540,7 @@ pub fn run() -> i32 {
         }
         let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
         focus.reconcile(panes);
-        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
+        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || group_picker.active || move_notice.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
         if curve_pending {
             curve_pending = false;
             let written: i32 = library.table.apply_curve(curve_dialog.selected);
@@ -1602,6 +1619,8 @@ pub fn run() -> i32 {
             clash_question.paint(surface, area, Theme::dark_blue());
             picker.paint(surface, area, Theme::dark_blue());
             outputs.paint(surface, area, Theme::dark_blue());
+            group_picker.paint(surface, area, Theme::dark_blue());
+            move_notice.paint(surface, area, Theme::dark_blue());
             library.table.paint_track_dialog(surface, area, Theme::dark_blue(), prompt);
             library.paint_rename(surface, area, Theme::dark_blue(), prompt);
             bpm_dialog.paint(surface, area, Theme::dark_blue());
@@ -1681,7 +1700,7 @@ pub fn run() -> i32 {
             let sample_pane: bool = focus.selected == 2 && sample.visible && library.table.audio_under_cursor() &&
                 !sampler.visible && !keyboard.visible && !spectrum.visible && menus.active < 0 &&
                 !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
-                !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
+                !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active &&
                 !paste_error.active && !library.renaming && !library.table.editing && !sample_editor.active && !sample_dialog.active &&
                 !piano.active && !clip_save.active && !group_dialog.active && !group_question.active && !(instrument_editor.active && instrument_editor.focused);
             if paste_error.active { paste_error.on_event(event); dirty = true; }
@@ -1699,6 +1718,22 @@ pub fn run() -> i32 {
                 // A button press completes in the UI tick above; Esc cancels here.
                 group_question.on_event(event);
                 if !group_question.active { free(message); message = clone("Cancelled."); }
+                dirty = true;
+            }
+            else if group_picker.active {
+                group_picker.on_event(event);
+                if !group_picker.active {
+                    if group_picker.result == 2 { move_targets = []; free(message); message = clone("Cancelled."); }
+                    else { move_confirmed = false; command = Action::ApplyAudioGroupMove; }
+                }
+                dirty = true;
+            }
+            else if move_notice.active {
+                move_notice.on_event(event);
+                if !move_notice.active {
+                    if move_notice.result == 2 { move_targets = []; free(message); message = clone("Cancelled."); }
+                    else { move_unasked = move_unasked || move_notice.dont_ask; move_confirmed = true; command = Action::ApplyAudioGroupMove; }
+                }
                 dirty = true;
             }
             else if clip_save.active {
@@ -1849,7 +1884,7 @@ pub fn run() -> i32 {
             else if ((event.code == 16 && event.modifiers == 1) || (event.code == 112 && event.modifiers == 5)) &&
                     focus.selected == 0 && library.audio_mode && menus.active < 0 &&
                     !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
-                    !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
+                    !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active &&
                     !paste_error.active && !library.renaming && !sample_editor.active && !sample_dialog.active && !piano.active {
                 let index: i32 = library.audio.selected_sample();
                 let replay: bool = preview_sample != index || !midi.previewing();
@@ -1872,11 +1907,11 @@ pub fn run() -> i32 {
             else if ((event.code == 16 && event.modifiers == 1) || (event.code == 112 && event.modifiers == 5) ||
                      (event.code == 32 && event.modifiers == 5)) && matrix.visible && menus.active < 0 &&
                     !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
-                    !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active &&
+                    !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active &&
                     !paste_error.active && !library.renaming && !sample_editor.active && !sample_dialog.active && !sample_pane {
                 song_request = song_playing ? 2 : 1; dirty = true;
             }
-            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !bpm_dialog.active && !sample_editor.active && !sample_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
+            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !bpm_dialog.active && !sample_editor.active && !sample_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active && !paste_error.active && !library.renaming && !library.table.editing {
                 // In the song matrix, Space plays the matrix from the cursor
                 // row, every lane mixed, like Ctrl+P; it stops whatever plays.
                 // Elsewhere it plays the selected pattern.
@@ -1887,7 +1922,7 @@ pub fn run() -> i32 {
             // Tab / Shift+Tab cycle every pane of the main view: sidebar,
             // pattern, inspector/mixer, the FX bus, and the VST3 editor.
             else if event.kind == InputKind::Menu && event.key == Key::Toggle && menus.active < 0 &&
-                    !sample_editor.active && !sample_dialog.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !paste_error.active && !library.renaming && !library.table.editing {
+                    !sample_editor.active && !sample_dialog.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active && !paste_error.active && !library.renaming && !library.table.editing {
                 let has_bus: bool = panes[2].visible() && mixer.visible && !keyboard.visible && !sampler.visible && midi.effects.len() > 0;
                 let has_editor: bool = panes[1].visible() && instrument_editor.active;
                 var stop: i32 = focus.selected == 0 ? 0 : (focus.selected == 1 ? 1 : (mixer.bus_focus && has_bus ? 3 : 2));
@@ -2859,6 +2894,42 @@ pub fn run() -> i32 {
                     }
                 }
             }
+            else if command == Action::MoveAudioToGroup {
+                // The marked samples, or the selected one.
+                let ids: list<i32> = library.audio.view.targets(); move_targets = [];
+                for id in ids { if id > 0 { move_targets.push(id - 1); } }
+                free(message);
+                if move_targets.len() == 0 { message = clone("Select a sample (Space marks several) in the Audio list first (View > Audio)"); }
+                else if library.audio.groups.len() == 0 { move_targets = []; message = clone("No groups yet: add one with Audio > Add group"); }
+                else {
+                    group_picker.title = move_targets.len() == 1 ? "Move to group" : format!("Move {} samples to group", move_targets.len());
+                    group_picker.open(library.audio.groups, library.audio.group_of(move_targets[0]));
+                    focus.set_menu_active(true);
+                    message = clone("Choose the group; (No group) moves the audio out of its group");
+                }
+            }
+            else if command == Action::ApplyAudioGroupMove {
+                // In a saved project the move is saved at once (files move to
+                // the group's folder), after a notice unless turned off.
+                if project_open && session_path != "" && !move_unasked && !move_confirmed {
+                    move_notice.open(); focus.set_menu_active(true);
+                } else {
+                    let group: str8 = clone(group_picker.chosen());
+                    let folder: str8 = project_group_folder(group);
+                    transport.playing = false;
+                    let moved: i32 = library.move_samples_to_group(move_targets, group, project_open ? session_path : "", folder);
+                    move_targets = []; move_confirmed = false;
+                    free(message);
+                    let place: str8 = group == "" ? clone("out of their groups") : format!("to {}", group);
+                    message = format!("Moved {} sample(s) {}", moved, place); free(place);
+                    if moved > 0 { library.show_audio(); playback_dirty = true; }
+                    if moved > 0 && project_open && session_path != "" {
+                        free(move_note); move_note = clone(message);
+                        free(request_path); request_path = clone(session_path); session_request = 4;
+                    }
+                    free(folder); free(group);
+                }
+            }
             else if command == Action::MakeAudioDestructive {
                 transport.playing = false;
                 let count: i32 = library.make_audio_track_destructive(panes[1].bounds.inset(1));
@@ -3382,6 +3453,11 @@ pub fn run() -> i32 {
                     if !outputs.active && outputs.result == 2 { free(message); message = clone("Cancelled."); }
                     dirty = true;
                 }
+                else if group_picker.active || move_notice.active {
+                    if group_picker.active { group_picker.on_event(event); } else { move_notice.on_event(event); }
+                    if !group_picker.active && !move_notice.active { move_targets = []; free(message); message = clone("Cancelled."); }
+                    dirty = true;
+                }
                 else if clash_question.active {
                     clash_question.on_event(event); dirty = true;
                 }
@@ -3430,8 +3506,8 @@ pub fn run() -> i32 {
     midi.release();
     settings.release();
     free(session_path); free(request_path);
-    instrument_editor.release(); sample_editor.release(); sample_dialog.release(); piano.release(); picker.release(); outputs.release(); song_table.release(); mixer_table.release(); free(preset_path); free(preview_path);
-    free(group_target); free(group_prompt); group_dialog.release(); free(alert_text);
+    instrument_editor.release(); sample_editor.release(); sample_dialog.release(); piano.release(); picker.release(); outputs.release(); group_picker.release(); song_table.release(); mixer_table.release(); free(preset_path); free(preview_path);
+    free(group_target); free(group_prompt); free(move_note); group_dialog.release(); free(alert_text);
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
     sidebar_clipboard.release();
     library.release(); dialog.release(); bpm_dialog.release(); free(message);

@@ -196,6 +196,11 @@ are accepted. Unsupported major or minor versions fail closed.
     a plain session puts generated slices (`kick.wav/kick.wav - 1`) in a group
     named after their original, and a project takes each sample's group from
     its folder.
+22. Optional `PROJECT_OPTIONS` extension follows `AUDIO_GROUPS`, in project
+    sessions only: a flag (0 or 1) set when Audio > Move to group saves the
+    project without asking first ("Don't ask this again"). It is written when
+    the flag is set, and it requires the preceding tags (`AUDIO_GROUPS` is then
+    written even without groups).
 
 The active pattern is serialized from the live editor, not its older library
 snapshot. Audio placements reference the embedded sample list; plugin assignments

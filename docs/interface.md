@@ -33,6 +33,18 @@ Kicks inside Drums, empty groups included. A folder drops an audio extension
 from its group's name (group `illusion.wav` is the folder `illusion`), so it
 never clashes with a sample file such as `Audio/illusion.wav`.
 
+**Audio → Move to group** moves the selected sample, or every sample marked with
+Space, into a group, to another group, or out of its group: pick the group in
+the list (subgroups are indented below their parents; **(No group)** is the top
+level) and press OK. Every pattern placement keeps playing the moved sample. In
+a saved project a notice first says that the move changes the project's
+`Audio/` folders, so the project must be saved: OK moves the samples and saves
+the project, which moves their files into the group's folder (`Audio/Drums/` for
+Drums), and Cancel moves nothing. Tick **Don't ask this again** (Shift+Up, then
+Space) to move and save without the notice from then on; the project keeps that
+choice. Outside a project the samples only change group, and the files go to
+the group folders when the session is first saved as a project.
+
 **Audio → Make track clips destructive** crops every placement in the selected
 AUDIO track to its current source-frame window and replaces it with that
 independent sample. The new samples are named `SampleAudio.aif - 1`,

@@ -95,6 +95,8 @@ pub struct SessionView {
     /// `master_saved`: a nested struct is not default-initialized.
     var spectrum: bool; var spectrum_detail: i32; var spectrum_fps: i32{30};
     var master_saved: bool; var master: MasterBus;
+    /// Project option: Audio > Move to group saves the project without asking.
+    var move_unasked: bool;
 };
 /// Plugin preset outcome. Kit presets (MLAPRE 1.1) also carry sampler pads:
 /// `pads[i]` is loaded from `clips[i]`; the caller owns the clips.
@@ -225,6 +227,30 @@ fn audio_stem(name: str8) -> str8 {
     let ext: str8 = std::strbuf::sub(name, dot, std::strbuf::len(name) - dot);
     let known: bool = ext == ".wav" || ext == ".WAV" || ext == ".aif" || ext == ".AIF" || ext == ".aiff" || ext == ".AIFF"; free(ext);
     return known ? std::strbuf::sub(name, 0, dot) : clone(name);
+}
+/// Owned project folder of Audio-list group `group`, relative to the project
+/// ("Audio" for none, "Audio/Drums/Kicks" for "Drums/Kicks",
+/// "Audio/Drums/loop" for "Drums/loop.wav").
+pub fn project_group_folder(group: str8) -> str8 {
+    var folder: str8 = clone("Audio");
+    var rest: str8 = clone(group);
+    while rest != "" {
+        let slash: i64 = std::strbuf::find(rest, "/");
+        let part: str8 = slash < 0 ? clone(rest) : std::strbuf::sub(rest, 0, slash);
+        let tail: str8 = slash < 0 ? clone("") : std::strbuf::sub(rest, slash + 1, std::strbuf::len(rest) - slash - 1);
+        // Sample files always end in .wav, so a folder without an audio
+        // extension never clashes with one: group "illusion.wav" (named
+        // after its clip) is the folder "illusion", beside illusion.wav.
+        var bare: str8 = audio_stem(part); free(part);
+        var stem: str8 = audio_stem(bare);
+        while stem != bare { free(bare); bare = stem; stem = audio_stem(bare); }
+        free(stem);
+        let safe: str8 = file_safe(bare); free(bare);
+        if safe != "" { let deeper: str8 = format!("{}/{}", folder, safe); free(folder); folder = deeper; }
+        free(safe); free(rest); rest = tail;
+    }
+    free(rest);
+    return folder;
 }
 /// True for a group path of non-empty components that are not "." or "..".
 fn group_path_valid(path: str8) -> bool {
@@ -570,28 +596,10 @@ impl SessionCodec {
         if !self.failed && self.problem == "" { self.problem = problem; } else { free(problem); }
         self.failed = true;
     }
-    /// Owned project folder of Audio-list group `group` ("Audio" for none,
-    /// "Audio/Drums/Kicks" for "Drums/Kicks", "Audio/Drums/loop" for
-    /// "Drums/loop.wav"), created when saving.
+    /// Owned project folder of Audio-list group `group` (see
+    /// project_group_folder), created when saving.
     fn group_folder(self: &mut Self, group: str8) -> str8 {
-        var folder: str8 = clone("Audio");
-        var rest: str8 = clone(group);
-        while rest != "" {
-            let slash: i64 = std::strbuf::find(rest, "/");
-            let part: str8 = slash < 0 ? clone(rest) : std::strbuf::sub(rest, 0, slash);
-            let tail: str8 = slash < 0 ? clone("") : std::strbuf::sub(rest, slash + 1, std::strbuf::len(rest) - slash - 1);
-            // Sample files always end in .wav, so a folder without an audio
-            // extension never clashes with one: group "illusion.wav" (named
-            // after its clip) is the folder "illusion", beside illusion.wav.
-            var bare: str8 = audio_stem(part); free(part);
-            var stem: str8 = audio_stem(bare);
-            while stem != bare { free(bare); bare = stem; stem = audio_stem(bare); }
-            free(stem);
-            let safe: str8 = file_safe(bare); free(bare);
-            if safe != "" { let deeper: str8 = format!("{}/{}", folder, safe); free(folder); folder = deeper; }
-            free(safe); free(rest); rest = tail;
-        }
-        free(rest);
+        let folder: str8 = project_group_folder(group);
         if !self.reading && !self.failed && folder != "Audio" {
             let full: str8 = format!("{}/{}", self.root, folder);
             let made: result<i32, str8> = std::fs::mkdir_p(full);
@@ -875,8 +883,11 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
-        // Audio-list groups (written last, so everything before it is too).
-        let grouped: bool = !self.reading && library.audio.groups.len() > 0;
+        // Project options (written last, so everything before it is too).
+        let optioned: bool = !self.reading && self.root != "" && view.move_unasked;
+        // Audio-list groups (written, perhaps empty, whenever PROJECT_OPTIONS
+        // follows).
+        let grouped: bool = !self.reading && (library.audio.groups.len() > 0 || optioned);
         // Sample properties of audio placements (frame end, tempo sync),
         // written (perhaps without properties) whenever AUDIO_GROUPS follows.
         let propertied: bool = !self.reading && (library.has_audio_properties() || grouped);
@@ -1406,6 +1417,12 @@ impl SessionCodec {
                 if group != "" { library.audio.set_group(i32(i), group); }
                 free(group);
             }
+        }
+        // Optional PROJECT_OPTIONS extension: flags of a project session.
+        let options_extension: bool = self.reading ? self.reader.remaining() > 0 : optioned;
+        if options_extension && !self.failed {
+            let tag: str8 = self.text("PROJECT_OPTIONS"); if tag != "PROJECT_OPTIONS" { self.failed = true; } if self.reading { free(tag); }
+            state.move_unasked = self.flag(state.move_unasked);
         }
         if self.reading { library.audio.rebuild(); }
         if state.editor_slot > 32 {
