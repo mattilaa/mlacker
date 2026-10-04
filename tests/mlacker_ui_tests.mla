@@ -4603,6 +4603,75 @@ fn audio_take_records_the_live_input_onto_an_armed_audio_track() {
     block.close(); output.close(); clip.release(); table.release();
 }
 
+#[test]
+fn audio_input_monitor_plays_the_live_input_through_its_track() {
+    let opened: result<AudioController, str8> = AudioController::new(8000, 128);
+    let output: AudioController = opened.unwrap();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(1024); let block: PcmBlock = allocated.unwrap();
+    verify(output.input_monitor(0, true) == -1 && output.input_monitor(65, true) == -1);
+    // Not monitored: the input is silent on the output.
+    var loud: f32 = 0.0f;
+    for _b in 0..4 {
+        var chunk: list<f32> = []; for _i in 0..1024 { chunk.push(0.5f); }
+        verify(output.input_feed(chunk, 1, 8000) == 0);
+        verify(output.process(block, 1024) == 0);
+        if block.left(1000) > loud { loud = block.left(1000); }
+    }
+    verify(loud == 0.0f);
+    // Track 1 monitors it: the input plays through its fader.
+    verify(output.input_monitor(1, true) == 0);
+    for _b in 0..4 {
+        var chunk: list<f32> = []; for _i in 0..1024 { chunk.push(0.5f); }
+        output.input_feed(chunk, 1, 8000); output.process(block, 1024);
+    }
+    // The track carries the input at full level (peak 0.5); the output has
+    // the controller's master gain (0.25) on top, as clips do.
+    verify(output.track_peak(0, 0) == 500 && block.left(1000) == 0.125f && block.right(1000) == 0.125f);
+    output.track_volume(0, 0, 50);
+    var chunk: list<f32> = []; for _i in 0..1024 { chunk.push(0.5f); }
+    output.input_feed(chunk, 1, 8000); output.process(block, 1024);
+    verify(output.track_peak(0, 0) == 250 && block.left(1000) == 0.0625f);
+    // Off again: silence.
+    verify(output.input_monitor(1, false) == 0);
+    var rest: list<f32> = []; for _i in 0..1024 { rest.push(0.5f); }
+    output.input_feed(rest, 1, 8000); output.process(block, 1024);
+    verify(block.left(1000) == 0.0f);
+    block.close(); output.close();
+}
+
+#[test]
+fn input_and_record_arming_show_in_the_track_header() {
+    var table: SequenceTable = SequenceTable::new();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    table.create_track_kind(false, true, area);
+    table.create_track_kind(false, true, area);
+    let first: i32 = i32(table.tracks.len()) - 2; let second: i32 = first + 1;
+    // Only AUDIO tracks take the input.
+    verify(!table.set_input_armed(0, true));
+    verify(table.set_input_armed(first, true));
+    verify(table.set_record_armed(first, true) && table.set_record_armed(second, true));
+    let armed: list<i32> = table.armed_audio_tracks();
+    verify(armed.len() == 2 && armed[0] == first && armed[1] == second);
+    let surface: Surface = Surface::new(120, 20); let theme: Theme = Theme::dark_blue();
+    table.paint(surface, area, theme); table.paint_arm_marks(surface, area, theme);
+    // In the header row, at the right edge of each track's columns: A and R
+    // for the first track, R for the second.
+    let group: TableGroup = table.groups[first];
+    var width: i32 = 0; for c in group.first..group.first + group.count { width = width + table.column_width(i32(c)); }
+    let right: i32 = table.column_x(group.first) + width - 1;
+    let r_cell: Cell = surface.cell(right, 0); let a_cell: Cell = surface.cell(right - 1, 0);
+    verify(r_cell.glyph == 82 && r_cell.background == 0xC02030 && a_cell.glyph == 65 && a_cell.background == 0xC02030);
+    let other: TableGroup = table.groups[second];
+    var other_width: i32 = 0; for c in other.first..other.first + other.count { other_width = other_width + table.column_width(i32(c)); }
+    let other_right: i32 = table.column_x(other.first) + other_width - 1;
+    let only_r: Cell = surface.cell(other_right, 0); let beside: Cell = surface.cell(other_right - 1, 0);
+    verify(only_r.glyph == 82 && beside.glyph != 65);
+    // A take is placed on every armed AUDIO track.
+    let take: AudioTake = AudioTake::begin_all(armed, 3);
+    verify(take.track == first && take.tracks.len() == 2 && take.row == 3);
+    surface.release(); table.release();
+}
+
 mod mlacker_ui::bounce;
 use mlacker_ui::bounce::Bounce;
 

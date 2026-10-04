@@ -677,6 +677,13 @@ impl AudioSystem {
             }
         }
         for fx in 0..self.effects.len() { let effect: EffectChannel = self.effects[fx]; self.output.effect_volume(fx, effect.volume); }
+        // Input-armed AUDIO tracks play the live input through their channel
+        // (PCM track t + 1), so through their inserts, fader and output.
+        for t in 0..64 {
+            var on: bool = false;
+            if t < table.tracks.len() { let track: SequenceTrack = table.tracks[t]; on = track.audio && track.input_armed; }
+            self.output.input_monitor(t + 1, on);
+        }
     }
     pub fn add_effect(self: &mut Self) -> bool {
         if self.effects.len() >= 8 { return false; }

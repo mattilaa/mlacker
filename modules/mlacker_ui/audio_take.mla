@@ -1,12 +1,13 @@
 /// \file audio_take.mla
-/// \brief Recording the live audio input onto an armed AUDIO track.
+/// \brief Recording the live audio input onto the armed AUDIO tracks.
 ///
-/// A take begins when the transport starts with an AUDIO track armed. Once
-/// the count-in is over and sequencer ticks map to audio frames, `capture`
-/// asks the audio runtime to record from the frame where the take's first
-/// row plays (the runtime shifts that by the devices' latency, so the take
-/// lines up with what was heard), then drains the recording each frame. When
-/// the transport stops, `finish` turns it into a clip.
+/// A take begins when the transport starts with AUDIO tracks armed, and it
+/// is placed on every one of them. Once the count-in is over and sequencer
+/// ticks map to audio frames, `capture` asks the audio runtime to record from
+/// the frame where the take's first row plays (the runtime shifts that by the
+/// devices' latency, so the take lines up with what was heard), then drains
+/// the recording each frame. When the transport stops, `finish` turns it into
+/// a clip.
 
 mod std::audio::controller;
 mod mlacker_ui::audio_clip;
@@ -16,8 +17,10 @@ use std::strbuf::clone;
 use std::strbuf::free;
 
 pub struct AudioTake {
-    /// AUDIO track the take records into; -1 when no take runs.
+    /// The first AUDIO track the take records into; -1 when no take runs.
     var track: i32{-1};
+    /// Every AUDIO track the take is placed on (`track` first).
+    var tracks: list<i32>;
     /// Pattern row the take starts on.
     var row: i32;
     /// True once the runtime records (after the count-in).
@@ -33,7 +36,11 @@ impl AudioTake {
 
     /// Arm a take on AUDIO track `track` from pattern row `row`.
     pub fn begin(track: i32, row: i32) -> AudioTake {
-        return AudioTake { track: track, row: row < 0 ? 0 : row, started: false, samples: [], rate: 0, overruns: 0 };
+        return AudioTake { track: track, tracks: [track], row: row < 0 ? 0 : row, started: false, samples: [], rate: 0, overruns: 0 };
+    }
+    /// Arm a take on every AUDIO track in `tracks` (not empty) from row `row`.
+    pub fn begin_all(tracks: list<i32>, row: i32) -> AudioTake {
+        return AudioTake { track: tracks[0], tracks: tracks, row: row < 0 ? 0 : row, started: false, samples: [], rate: 0, overruns: 0 };
     }
 
     /// Start recording at output frame `frame` (where row `row` plays) once,

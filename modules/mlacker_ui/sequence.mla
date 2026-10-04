@@ -237,7 +237,12 @@ pub struct SequenceTrack {
     /// One column per automated parameter, after the note lines.
     var automation: list<AutomationSlot>;
     var volume: i32{100}; var pan: i32;
+    /// Armed for recording (Shift+R in the pattern or the mixer, a red R).
     var record_armed: bool;
+    /// AUDIO tracks: the live audio input plays through the track (its
+    /// inserts, fader, sends and output) while armed (Shift+A, a red A).
+    /// Transient, like `record_armed`.
+    var input_armed: bool;
     var sends: list<i32>;
     var inserts: list<i32>;
     var audio: bool;
@@ -536,6 +541,46 @@ pub fn set_record_armed(self: &mut Self, index: i32, armed: bool) -> bool {
     if index < 0 || index >= self.tracks.len() { return false; }
     var track: SequenceTrack = self.tracks[index];
     track.record_armed = armed; self.replace_track(index, track); return true;
+}
+/// Arm or disarm AUDIO track `index` for the live input. False for any
+/// other track.
+pub fn set_input_armed(self: &mut Self, index: i32, armed: bool) -> bool {
+    if index < 0 || index >= self.tracks.len() { return false; }
+    var track: SequenceTrack = self.tracks[index];
+    if !track.audio { return false; }
+    track.input_armed = armed; self.replace_track(index, track); return true;
+}
+/// Every AUDIO track armed for recording, in order.
+pub fn armed_audio_tracks(self: SequenceTable) -> list<i32> {
+    var armed: list<i32> = [];
+    for i in 0..self.tracks.len() { let track: SequenceTrack = self.tracks[i]; if track.audio && track.record_armed { armed.push(i32(i)); } }
+    return armed;
+}
+/// A red A (input armed) and R (record armed) in the top right corner of
+/// each armed track's header, as the mixer shows R.
+pub fn paint_arm_marks(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+    if self.groups.len() == 0 || area.height < 1 { return; }
+    let body: Rect = self.body(area);
+    let frozen: i32 = self.frozen_width() > body.width ? body.width : self.frozen_width();
+    for i in 0..self.tracks.len() {
+        if i >= self.groups.len() { break; }
+        let track: SequenceTrack = self.tracks[i];
+        if !track.input_armed && !track.record_armed { continue; }
+        let group: TableGroup = self.groups[i];
+        var width: i32 = 0;
+        for c in group.first..group.first + group.count { if c < self.columns.len() { width = width + self.column_width(i32(c)); } }
+        var x: i32 = self.column_x(group.first) + width - 1;
+        // Right to left: R, then A.
+        var marks: list<i32> = [];
+        if track.record_armed { marks.push(82); }
+        if track.input_armed { marks.push(65); }
+        for mark in marks {
+            if x >= frozen && x < body.width && x >= self.column_x(group.first) {
+                surface.put(body.x + x, area.y, Cell { glyph: mark, foreground: 0xFFFFFF, background: 0xC02030 });
+            }
+            x = x - 1;
+        }
+    }
 }
 /// Mute or unmute track `index` (as Track > Mute does for the cursor track).
 pub fn set_muted(self: &mut Self, index: i32, muted: bool) -> bool {
@@ -1646,7 +1691,7 @@ pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
     }
     var tracks: list<SequenceTrack> = []; let source_tracks: list<SequenceTrack> = self.tracks;
     for track in source_tracks {
-        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, aux_outputs: track.aux_outputs, input: track.input, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
+        tracks.push(SequenceTrack { name: clone(track.name), muted: track.muted, volume: track.volume, pan: track.pan, record_armed: track.record_armed, input_armed: track.input_armed, sends: track.copy_sends(), inserts: track.inserts, audio: track.audio, output: track.output, aux_outputs: track.aux_outputs, input: track.input, instrument: track.instrument, instrument_id: track.instrument_id, note_lines: track.note_lines, instances: track.copy_audio(), zoom_stage: track.zoom_stage,
             comment: track.comment, automation: track.copy_automation() });
     }
     var notes: array<str8, 128> = {};
