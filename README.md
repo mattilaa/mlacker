@@ -1022,7 +1022,8 @@ plugin PCM peaks, after the instrument fader and before the master chain. PCM
 meters share the meter style, update rate, and smooth decay. Tracks using the
 same loaded instance display the same cached stereo output readings.
 
-`Shift+R` in Mixer arms the selected track (red `R`). MIDI and Instrument tracks
+`Shift+R` in Mixer, or in the Pattern view on the cursor's track, arms the
+track (a red `R` in the mixer strip and in the track's header). MIDI and Instrument tracks
 record MIDI, and AUDIO tracks record the audio input (see
 [Recording audio](#recording-audio)). Press
 Space to record from the selected row; press Space again to stop and enter the
@@ -1092,23 +1093,31 @@ The **Audio** menu sets how a bounce ends and starts:
 
 #### Recording audio
 
-An armed AUDIO track (`Shift+R` in Mixer) records the audio input chosen in
-**File → Settings → Audio input**. Press Space to play the pattern from the
-selected row. After the count-in (with **Play metronome** on), the take
-starts at that row. Press Space again to stop. The take becomes a sample,
-`Recording N.wav`, in the Audio list, placed on the armed track at the row
-where it started. If it would overlap a clip already there, it stays in the
-Audio list only. Sessions save it like any other sample.
+An armed AUDIO track (`Shift+R` in the Pattern view or the Mixer) records the
+audio input chosen in **File → Settings → Audio input**. Press Space to play
+the pattern from the selected row. After the count-in (with **Play
+metronome** on), the take starts at that row. Press Space again to stop. The
+take becomes a sample, `Recording N.wav`, in the Audio list, placed on every
+armed AUDIO track at the row where it started. A track where it would overlap
+a clip already there is skipped (the message names it); the take stays in the
+Audio list. Sessions save it like any other sample.
+
+`Shift+A` in the Pattern view arms the cursor's AUDIO track for the input (a
+red `A` in its header, beside the `R`): the input then plays through that
+track, its inserts, fader, sends and output channel, so you hear it processed
+while you play or record. Several tracks can take the input at once. Input
+arming only monitors; it records only with `R` armed too. Both arms are
+transient: a loaded session starts with them off.
 
 The take is shifted by the latency CoreAudio reports for the output and input
 devices, plus mlacker's input buffering, so it lines up with what you heard
 while playing along. The pattern keeps looping during a long take (audio takes
-do not extend it), and the take runs on across the loops. Only the first armed
-AUDIO track records, and a MIDI take on an armed MIDI or Instrument track can
-run at the same time. mlacker does not monitor the input itself. Use your
-interface's direct monitoring, or route the input into an instrument (see
-[Instrument inputs](#instrument-inputs)) to hear it processed. If Space reports
-that the armed track needs an audio input, choose one in Settings first.
+do not extend it), and the take runs on across the loops. A MIDI take on an
+armed MIDI or Instrument track can run at the same time. To hear the input,
+arm the track with `Shift+A`, use your interface's direct monitoring, or route
+the input into an instrument (see [Instrument inputs](#instrument-inputs)). If
+Space reports that the armed track needs an audio input, choose one in Settings
+first.
 
 ### Output channels
 
