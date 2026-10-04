@@ -36,7 +36,9 @@
 ///   cowbell takes the 564.8 and 849.6 Hz pair through a band-pass. The
 ///   cymbal has three bands with envelopes fitted to the recordings; Tone
 ///   balances the low band against the two high ones. The closed hat chokes
-///   the open one.
+///   the open one. The metal filters run all the time and the hats and
+///   cymbal rise over about 0.7 ms (Attack), as on the recordings, so a hit
+///   does not click.
 /// - **Accent** scales a hit's level; a harder bass drum hit also rings
 ///   higher, as on the 808.
 ///
@@ -144,6 +146,33 @@ impl Decay {
         return self.late;
     }
 }
+
+/// A linear attack ramp for the metal voices. The recordings rise over
+/// about 0.7 ms rather than starting at full level.
+struct Attack { var level: f32; var step: f32; };
+
+impl Attack {
+    fn new() -> Attack { return Attack { level: 1.0f, step: 1.0f }; }
+
+    /// A hit raises an envelope from `old_env` to `new_env`: start the ramp
+    /// from the level that is sounding now, so a retrigger never drops out,
+    /// and rise to full over `seconds`.
+    fn strike(self: &mut Self, old_env: f32, new_env: f32, seconds: f32, rate: f32) -> void {
+        self.level = new_env > 0.0f ? sclamp(old_env * self.level / new_env, 0.0f, 1.0f) : 1.0f;
+        self.step = 1.0f / smax(1.0f, seconds * rate);
+    }
+
+    /// This sample's gain.
+    fn next(self: &mut Self) -> f32 {
+        let g: f32 = self.level;
+        if self.level < 1.0f { self.level = smin(1.0f, self.level + self.step); }
+        return g;
+    }
+}
+
+/// Attack time for knob 0..1: 0.05 ms .. 10 ms, 0.7 ms (the recordings) at
+/// the centre.
+fn attack_seconds(k: f32) -> f32 { return 0.00005f * expf(sclamp(k, 0.0f, 1.0f) * 5.2983174f); }
 
 /// A decaying sine, the bridged-T resonator of the 808's tonal voices: a
 /// coupled-form oscillator whose state (c, s) rotates by the frequency and
@@ -345,6 +374,14 @@ struct M08 {
     var cy_tone: f32;
     var cy_decay: f32;
     var oh_decay: f32;
+    /// Additions to the 808's panel: closed hat decay, hat tones (moving
+    /// their filters) and the metal voices' attack times.
+    var ch_decay: f32;
+    var ch_tone: f32;
+    var oh_tone: f32;
+    var ch_attack: f32;
+    var oh_attack: f32;
+    var cy_attack: f32;
     /// Accent amount 0..1 (0 = none, 1 = +9 dB).
     var accent: f32;
     /// 0: two levels (velocity above 100 accents); 1: velocity scales the level.
@@ -442,10 +479,18 @@ struct M08 {
     var cy_low_lp: Svf;
     var cy_mid_hp: Svf;
     var cy_mid_hp2: Svf;
+    var cy_mid_hp3: Svf;
+    var cy_mid_hp4: Svf;
     var cy_mid_lp: Svf;
     var cy_high_hp: Svf;
     var cy_high_hp2: Svf;
+    var cy_high_hp3: Svf;
+    var cy_high_lp: Svf;
     var cy_low: f32;
+    /// The low band swells in over about 0.1 s: this is how far it is below
+    /// its level.
+    var cy_swell: f32;
+    var cy_swell_coef: f32;
     var cy_mid_fast: f32;
     var cy_mid: f32;
     var cy_high_fast: f32;
@@ -454,6 +499,7 @@ struct M08 {
     var cy_mid_coef: f32;
     var cy_high_coef: f32;
     var cy_fast_coef: f32;
+    var cy_attack_env: Attack;
     var oh_filter: HatFilter;
     var ch_filter: HatFilter;
     var oh_env: f32;
@@ -462,6 +508,8 @@ struct M08 {
     var choke_coef: f32;
     var ch_env: f32;
     var ch_decay_env: Decay;
+    var oh_attack_env: Attack;
+    var ch_attack_env: Attack;
 
     var seed: i64;
 };
@@ -475,6 +523,7 @@ impl M08 {
             level_cp: 1.0f, level_cb: 1.0f, level_cy: 1.0f, level_oh: 1.0f, level_ch: 1.0f,
             bd_tone: 0.5f, bd_decay: 0.5f, sd_tone: 0.5f, snappy: 0.5f,
             lt_tune: 0.5f, mt_tune: 0.5f, ht_tune: 0.5f, cy_tone: 0.5f, cy_decay: 0.5f, oh_decay: 0.5f,
+            ch_decay: 0.5f, ch_tone: 0.5f, oh_tone: 0.5f, ch_attack: 0.5f, oh_attack: 0.5f, cy_attack: 0.5f,
             accent: 0.5f, dynamics: 0, output_target: 1.0f, output_gain: 1.0f,
             bd: Resonator::new(), bd_body: Resonator::new(), bd_damp: 0.0f, bd_body_damp: 0.0f,
             bd_kick: 0.0f, bd_kick_coef: 0.0f, bd_track: 0.0f, bd_track_coef: 0.0f,
@@ -494,13 +543,14 @@ impl M08 {
             sq5: Square { phase: 0.83f, hz: 793.0f }, sq6: Square { phase: 0.44f, hz: 849.6f },
             cb_bp: Svf::new(), cb_hp: Svf::new(), cb_fast: 0.0f, cb_slow: 0.0f, cb_fast_coef: 0.0f, cb_slow_coef: 0.0f,
             cy_low_hp: Svf::new(), cy_low_hp2: Svf::new(), cy_low_lp: Svf::new(),
-            cy_mid_hp: Svf::new(), cy_mid_hp2: Svf::new(), cy_mid_lp: Svf::new(),
-            cy_high_hp: Svf::new(), cy_high_hp2: Svf::new(),
-            cy_low: 0.0f, cy_mid_fast: 0.0f, cy_mid: 0.0f, cy_high_fast: 0.0f, cy_high: 0.0f,
+            cy_mid_hp: Svf::new(), cy_mid_hp2: Svf::new(), cy_mid_hp3: Svf::new(), cy_mid_hp4: Svf::new(), cy_mid_lp: Svf::new(),
+            cy_high_hp: Svf::new(), cy_high_hp2: Svf::new(), cy_high_hp3: Svf::new(), cy_high_lp: Svf::new(),
+            cy_low: 0.0f, cy_swell: 0.0f, cy_swell_coef: 0.0f, cy_mid_fast: 0.0f, cy_mid: 0.0f, cy_high_fast: 0.0f, cy_high: 0.0f,
             cy_low_coef: 0.0f, cy_mid_coef: 0.0f, cy_high_coef: 0.0f, cy_fast_coef: 0.0f,
+            cy_attack_env: Attack::new(),
             oh_filter: HatFilter::new(), ch_filter: HatFilter::new(),
             oh_env: 0.0f, oh_decay_env: Decay::new(), oh_choked: false, choke_coef: 0.0f,
-            ch_env: 0.0f, ch_decay_env: Decay::new(),
+            ch_env: 0.0f, ch_decay_env: Decay::new(), oh_attack_env: Attack::new(), ch_attack_env: Attack::new(),
             seed: 8080808
         };
         m.configure();
@@ -548,18 +598,21 @@ impl M08 {
         self.cb_fast_coef = decay_coef(0.005f, r);
         self.cb_slow_coef = decay_coef(0.094f, r);
 
-        // Bands: 1.8 .. 4.5 kHz, 4.5 .. 9 kHz and above 9 kHz.
-        self.cy_low_hp.configure(1800.0f, 0.70710678f, r);
-        self.cy_low_hp2.configure(1800.0f, 0.70710678f, r);
-        self.cy_low_lp.configure(4500.0f, 0.70710678f, r);
-        self.cy_mid_hp.configure(4500.0f, 0.70710678f, r);
-        self.cy_mid_hp2.configure(4500.0f, 0.70710678f, r);
-        self.cy_mid_lp.configure(9000.0f, 0.70710678f, r);
+        // Bands: 2.2 .. 5.5 kHz, 5.5 .. 12 kHz and 9 .. 14 kHz.
+        self.cy_low_hp.configure(2200.0f, 0.70710678f, r);
+        self.cy_low_hp2.configure(2200.0f, 0.70710678f, r);
+        self.cy_low_lp.configure(5500.0f, 0.70710678f, r);
+        self.cy_mid_hp.configure(5500.0f, 0.70710678f, r);
+        self.cy_mid_hp2.configure(5500.0f, 0.70710678f, r);
+        self.cy_mid_hp3.configure(5500.0f, 0.70710678f, r);
+        self.cy_mid_hp4.configure(5500.0f, 0.70710678f, r);
+        self.cy_mid_lp.configure(12000.0f, 0.70710678f, r);
         self.cy_high_hp.configure(9000.0f, 0.70710678f, r);
         self.cy_high_hp2.configure(9000.0f, 0.70710678f, r);
+        self.cy_high_hp3.configure(9000.0f, 0.70710678f, r);
+        self.cy_high_lp.configure(14000.0f, 0.70710678f, r);
         self.cy_fast_coef = decay_coef(0.054f, r);
-        self.oh_filter.configure(6000.0f, 7300.0f, 2.5f, 0.6f, r);
-        self.ch_filter.configure(7000.0f, 7300.0f, 3.0f, 1.4f, r);
+        self.cy_swell_coef = decay_coef(0.05f, r);
         self.choke_coef = decay_coef(0.003f, r);
         self.configure_knobs();
     }
@@ -586,6 +639,11 @@ impl M08 {
         self.cy_low_coef = decay_coef(1.12f * s, r);
         self.cy_mid_coef = decay_coef(0.65f * s, r);
         self.cy_high_coef = decay_coef(0.55f * s, r);
+        // Hat tones move each hat's filters by up to 3/4 octave either way.
+        let oh: f32 = exp2f((self.oh_tone - 0.5f) * 1.5f);
+        let ch: f32 = exp2f((self.ch_tone - 0.5f) * 1.5f);
+        self.oh_filter.configure(6000.0f * oh, 7300.0f * oh, 2.5f, 0.6f, r);
+        self.ch_filter.configure(7000.0f * ch, 7300.0f * ch, 3.0f, 1.4f, r);
     }
 
     fn reset(self: &mut Self) -> void {
@@ -599,9 +657,9 @@ impl M08 {
         self.ma_hp.reset(); self.ma_time = -1.0f; self.ma_env = 0.0f;
         self.cb_bp.reset(); self.cb_hp.reset(); self.cb_fast = 0.0f; self.cb_slow = 0.0f;
         self.cy_low_hp.reset(); self.cy_low_hp2.reset(); self.cy_low_lp.reset();
-        self.cy_mid_hp.reset(); self.cy_mid_hp2.reset(); self.cy_mid_lp.reset();
-        self.cy_high_hp.reset(); self.cy_high_hp2.reset();
-        self.cy_low = 0.0f; self.cy_mid_fast = 0.0f; self.cy_mid = 0.0f; self.cy_high_fast = 0.0f; self.cy_high = 0.0f;
+        self.cy_mid_hp.reset(); self.cy_mid_hp2.reset(); self.cy_mid_hp3.reset(); self.cy_mid_hp4.reset(); self.cy_mid_lp.reset();
+        self.cy_high_hp.reset(); self.cy_high_hp2.reset(); self.cy_high_hp3.reset(); self.cy_high_lp.reset();
+        self.cy_low = 0.0f; self.cy_swell = 0.0f; self.cy_mid_fast = 0.0f; self.cy_mid = 0.0f; self.cy_high_fast = 0.0f; self.cy_high = 0.0f;
         self.oh_filter.reset(); self.ch_filter.reset();
         self.oh_env = 0.0f; self.ch_env = 0.0f; self.oh_choked = false;
         self.output_gain = self.output_target;
@@ -676,21 +734,32 @@ impl M08 {
             let t: f32 = sclamp(self.cy_tone, 0.0f, 1.0f);
             let low: f32 = 1.6f - 1.2f * t;
             let high: f32 = 0.4f + 1.2f * t;
+            let old: f32 = self.cy_low + self.cy_mid_fast + self.cy_mid + self.cy_high_fast + self.cy_high;
             // Band levels fitted to the recordings.
-            self.cy_low = smax(self.cy_low, gain * low * 0.63f);
-            self.cy_mid_fast = smax(self.cy_mid_fast, gain * high * 5.2f);
-            self.cy_mid = smax(self.cy_mid, gain * high * 2.3f);
-            self.cy_high_fast = smax(self.cy_high_fast, gain * high * 6.9f);
-            self.cy_high = smax(self.cy_high, gain * high * 1.8f);
+            // A fresh hit swells in from 9 dB down; a retrigger keeps the swell.
+            if old < silent() { self.cy_swell = 0.65f; }
+            self.cy_low = smax(self.cy_low, gain * low * 0.88f);
+            self.cy_mid_fast = smax(self.cy_mid_fast, gain * high * 12.9f);
+            self.cy_mid = smax(self.cy_mid, gain * high * 2.86f);
+            self.cy_high_fast = smax(self.cy_high_fast, gain * high * 5.8f);
+            self.cy_high = smax(self.cy_high, gain * high * 0.96f);
+            self.cy_attack_env.strike(old, self.cy_low + self.cy_mid_fast + self.cy_mid + self.cy_high_fast + self.cy_high,
+                                      attack_seconds(self.cy_attack), r);
         } else if which == open_hat() {
             // Decay: recorded at knob 0, 0.5 and 1.
             let k: f32 = self.oh_decay;
             self.oh_decay_env.start(knob3(k, 0.056f, 0.37f, 0.27f), 0.013f, knob3(k, 0.07f, 0.3f, 0.66f), r);
+            let old: f32 = self.oh_env;
             self.oh_env = smax(self.oh_env, gain);
+            self.oh_attack_env.strike(old, self.oh_env, attack_seconds(self.oh_attack), r);
             self.oh_choked = false;
         } else if which == closed_hat() {
-            self.ch_decay_env.start(0.2f, 0.015f, 0.004f, r);
+            // CH Decay: 0.25x .. 4x the recorded 15 ms (after a 4 ms hold).
+            let d: f32 = exp2f((self.ch_decay - 0.5f) * 4.0f);
+            self.ch_decay_env.start(0.2f, 0.015f * d, 0.004f * d, r);
+            let old: f32 = self.ch_env;
             self.ch_env = smax(self.ch_env, gain);
+            self.ch_attack_env.strike(old, self.ch_env, attack_seconds(self.ch_attack), r);
             // The closed hat cuts the open one.
             self.oh_choked = true;
         }
@@ -804,11 +873,22 @@ impl M08 {
         let bank: f32 = (s1 + s2 + s3 + s4 + s5 + s6) * 0.17f;
         var out: f32 = 0.0f;
 
+        // The filters run all the time, like the hardware's: a hit then only
+        // opens an envelope, instead of striking a resting filter with the
+        // squares' edges (a click).
+        // Cowbell: a narrow band at 900 Hz, plus a little of the squares' edges.
+        let pair: f32 = (s4 + s6) * 0.5f;
+        let b: f32 = self.cb_bp.process(pair, 2) + 0.12f * self.cb_hp.process(pair, 1);
+        let low: f32 = self.cy_low_lp.process(self.cy_low_hp2.process(self.cy_low_hp.process(bank, 1), 1), 0);
+        let mid: f32 = self.cy_mid_lp.process(self.cy_mid_hp4.process(self.cy_mid_hp3.process(
+            self.cy_mid_hp2.process(self.cy_mid_hp.process(bank, 1), 1), 1), 1), 0);
+        let high: f32 = self.cy_high_lp.process(self.cy_high_hp3.process(
+            self.cy_high_hp2.process(self.cy_high_hp.process(bank, 1), 1), 1), 0);
+        let oh: f32 = self.oh_filter.process(bank);
+        let ch: f32 = self.ch_filter.process(bank);
+
         let cb_env: f32 = self.cb_fast + self.cb_slow;
         if cb_env > silent() {
-            // A narrow band at 900 Hz, plus a little of the squares' edges.
-            let pair: f32 = (s4 + s6) * 0.5f;
-            let b: f32 = self.cb_bp.process(pair, 2) + 0.12f * self.cb_hp.process(pair, 1);
             out = out + b * cb_env * self.level_cb * 1.75f;
             self.cb_fast = self.cb_fast * self.cb_fast_coef;
             self.cb_slow = self.cb_slow * self.cb_slow_coef;
@@ -816,12 +896,10 @@ impl M08 {
 
         let cy_env: f32 = self.cy_low + self.cy_mid_fast + self.cy_mid + self.cy_high_fast + self.cy_high;
         if cy_env > silent() {
-            let low: f32 = self.cy_low_lp.process(self.cy_low_hp2.process(self.cy_low_hp.process(bank, 1), 1), 0);
-            let mid: f32 = self.cy_mid_lp.process(self.cy_mid_hp2.process(self.cy_mid_hp.process(bank, 1), 1), 0);
-            let high: f32 = self.cy_high_hp2.process(self.cy_high_hp.process(bank, 1), 1);
-            out = out + (low * self.cy_low + mid * (self.cy_mid_fast + self.cy_mid)
-                       + high * (self.cy_high_fast + self.cy_high)) * self.level_cy * 0.52f;
+            out = out + (low * self.cy_low * (1.0f - self.cy_swell) + mid * (self.cy_mid_fast + self.cy_mid)
+                       + high * (self.cy_high_fast + self.cy_high)) * self.cy_attack_env.next() * self.level_cy * 0.26f;
             self.cy_low = self.cy_low * self.cy_low_coef;
+            self.cy_swell = self.cy_swell * self.cy_swell_coef;
             self.cy_mid = self.cy_mid * self.cy_mid_coef;
             self.cy_high = self.cy_high * self.cy_high_coef;
             self.cy_mid_fast = self.cy_mid_fast * self.cy_fast_coef;
@@ -829,12 +907,12 @@ impl M08 {
         }
 
         if self.oh_env > silent() {
-            out = out + self.oh_filter.process(bank) * self.oh_env * self.level_oh * 2.9f;
+            out = out + oh * self.oh_env * self.oh_attack_env.next() * self.level_oh * 2.9f;
             let d: f32 = self.oh_decay_env.next();
             self.oh_env = self.oh_env * (self.oh_choked ? self.choke_coef : d);
         }
         if self.ch_env > silent() {
-            out = out + self.ch_filter.process(bank) * self.ch_env * self.level_ch * 2.0f;
+            out = out + ch * self.ch_env * self.ch_attack_env.next() * self.level_ch * 2.0f;
             self.ch_env = self.ch_env * self.ch_decay_env.next();
         }
         return out;
@@ -915,7 +993,8 @@ fn mla08_active(handle: ptr<M08>) -> i32 {
 /// 3..13 levels (linear: BD SD LT MT HT RS CP CB CY OH CH),
 /// knobs 0..1: 14 BD tone, 15 BD decay, 16 SD tone, 17 SD snappy,
 /// 18 LT tuning, 19 MT tuning, 20 HT tuning, 21 CY tone, 22 CY decay,
-/// 23 OH decay.
+/// 23 OH decay, 24 CH decay, 25 CH tone, 26 OH tone, 27 CH attack,
+/// 28 OH attack, 29 CY attack.
 fn mla08_set(handle: ptr<M08>, index: i32, value: f32) {
     unsafe {
         let k: f32 = sclamp(value, 0.0f, 1.0f);
@@ -948,6 +1027,12 @@ fn mla08_set(handle: ptr<M08>, index: i32, value: f32) {
         else if index == 21 { (*handle).cy_tone = k; }
         else if index == 22 { (*handle).cy_decay = k; (*handle).configure_knobs(); }
         else if index == 23 { (*handle).oh_decay = k; }
+        else if index == 24 { (*handle).ch_decay = k; }
+        else if index == 25 { (*handle).ch_tone = k; (*handle).configure_knobs(); }
+        else if index == 26 { (*handle).oh_tone = k; (*handle).configure_knobs(); }
+        else if index == 27 { (*handle).ch_attack = k; }
+        else if index == 28 { (*handle).oh_attack = k; }
+        else if index == 29 { (*handle).cy_attack = k; }
     }
 }
 

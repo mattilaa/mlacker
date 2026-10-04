@@ -47,7 +47,8 @@ constexpr int32 kBlock = 256;
 
 // Parameter IDs (see plugin.cpp).
 constexpr ParamID kOutput = 100, kAccent = 101, kDynamics = 102, kBdTone = 104, kBdDecay = 105, kSdTone = 107,
-                  kSdSnappy = 108, kLtTuning = 110, kCyDecay = 120, kOhDecay = 122, kChLevel = 123;
+                  kSdSnappy = 108, kLtTuning = 110, kCyDecay = 120, kOhDecay = 122, kChLevel = 123,
+                  kChDecay = 124, kChTone = 125, kOhTone = 126, kChAttack = 127, kOhAttack = 128, kCyAttack = 129;
 
 // One General MIDI key per instrument.
 constexpr int kBD = 36, kRS = 37, kSD = 38, kCP = 39, kLT = 45, kMT = 47, kHT = 50, kCH = 42, kOH = 46, kCY = 49,
@@ -462,6 +463,35 @@ void testMetal(const std::string &path)
     std::printf("decays: oh %.3f .. %.3f s, cy %.2f .. %.2f s\n", ohShort, ohLong, cyShort, cyLong);
     CHECK(ohShort > 0.07 && ohShort < 0.15 && ohLong > 0.6 && ohLong < 0.85);
     CHECK(cyLong > cyShort * 2.0);
+    // CH Decay, and the hats' Tone moving their filters.
+    const double chShort = length40(hit(path, kCH, 100.0f / 127.0f, 1.0, {{kChDecay, 0.0}}).left);
+    const double chLong = length40(hit(path, kCH, 100.0f / 127.0f, 1.0, {{kChDecay, 1.0}}).left);
+    const double chDark = zeroCrossingHz(hit(path, kCH, 100.0f / 127.0f, 0.2, {{kChTone, 0.0}}).left, 0, 1440);
+    const double chBright = zeroCrossingHz(hit(path, kCH, 100.0f / 127.0f, 0.2, {{kChTone, 1.0}}).left, 0, 1440);
+    const double ohDark = zeroCrossingHz(hit(path, kOH, 100.0f / 127.0f, 0.2, {{kOhTone, 0.0}}).left, 0, 1440);
+    const double ohBright = zeroCrossingHz(hit(path, kOH, 100.0f / 127.0f, 0.2, {{kOhTone, 1.0}}).left, 0, 1440);
+    std::printf("hat knobs: ch %.3f .. %.3f s; tone ch %.0f .. %.0f Hz, oh %.0f .. %.0f Hz\n", chShort, chLong, chDark,
+                chBright, ohDark, ohBright);
+    CHECK(chLong > chShort * 5.0);
+    CHECK(chBright > chDark * 1.5 && ohBright > ohDark * 1.5);
+}
+
+void testMetalAttack(const std::string &path)
+{
+    // The hats and cymbal rise like the recordings (about 0.7 ms) instead of
+    // starting at full level: the first 0.1 ms stays well below the peak.
+    // Attack lengthens the rise.
+    for(int key : {kCH, kOH, kCY}) {
+        const Stereo out = hit(path, key, 100.0f / 127.0f, 0.1);
+        const double first = peak(out.left, 0, 5), top = peak(out.left, 0, 2400);
+        std::printf("onset on key %d: first 0.1 ms %.3f of the peak\n", key, first / top);
+        CHECK(first < top * 0.15);
+    }
+    for(const auto &knob : {std::pair<int, ParamID>{kCH, kChAttack}, {kOH, kOhAttack}, {kCY, kCyAttack}}) {
+        const Stereo fast = hit(path, knob.first, 100.0f / 127.0f, 0.1, {{knob.second, 0.0}});
+        const Stereo slow = hit(path, knob.first, 100.0f / 127.0f, 0.1, {{knob.second, 1.0}});
+        CHECK(rms(slow.left, 0, 96) < rms(fast.left, 0, 96) * 0.3);
+    }
 }
 
 void testDynamics(const std::string &path)
@@ -570,6 +600,7 @@ int main(int argc, char **argv)
     testSnare(path);
     testTuning(path);
     testMetal(path);
+    testMetalAttack(path);
     testDynamics(path);
     testRetrigger(path);
     testState(path);

@@ -10,7 +10,9 @@
 // The controls are the 808's panel: Accent, and per instrument Level plus
 // Tone, Decay, Snappy or Tuning where the 808 has them. As on the 808, each
 // tom shares its knobs with the conga of the same pitch, the rim shot its
-// level with the claves and the hand clap its level with the maracas.
+// level with the claves and the hand clap its level with the maracas. Beyond
+// the 808's panel, the hats get Tone (and the closed hat Decay) and the hats
+// and cymbal an Attack.
 //
 // The synthesis is MLang: `src/mla_08_dsp.mla`. This file declares the buses,
 // maps keys to instruments, schedules hits sample-accurately, maps VST3
@@ -76,9 +78,16 @@ enum ParamId : ParamID {
     kOhLevelParam,
     kOhDecayParam,
     kChLevelParam,
+    // Additions to the 808's panel.
+    kChDecayParam,
+    kChToneParam,
+    kOhToneParam,
+    kChAttackParam,
+    kOhAttackParam,
+    kCyAttackParam,
 };
 
-constexpr ParamID kFirstParam = kOutputParam, kLastParam = kChLevelParam;
+constexpr ParamID kFirstParam = kOutputParam, kLastParam = kCyAttackParam;
 constexpr int kNumParams = kLastParam - kFirstParam + 1;
 
 static int indexOf(ParamID id)
@@ -96,6 +105,7 @@ enum DspIndex : int32_t {
     kDspLevelCY, kDspLevelOH, kDspLevelCH,
     kDspBdTone, kDspBdDecay, kDspSdTone, kDspSnappy, kDspLtTuning, kDspMtTuning, kDspHtTuning,
     kDspCyTone, kDspCyDecay, kDspOhDecay,
+    kDspChDecay, kDspChTone, kDspOhTone, kDspChAttack, kDspOhAttack, kDspCyAttack,
 };
 
 // General MIDI drum keys; -1 is silent.
@@ -183,6 +193,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         addLevel(kOhLevelParam, STR16("OH Level"));
         addKnob(kOhDecayParam, STR16("OH Decay"));
         addLevel(kChLevelParam, STR16("CH Level"));
+        addKnob(kChDecayParam, STR16("CH Decay"));
+        addKnob(kChToneParam, STR16("CH Tone"));
+        addKnob(kOhToneParam, STR16("OH Tone"));
+        addKnob(kChAttackParam, STR16("CH Attack"));
+        addKnob(kOhAttackParam, STR16("OH Attack"));
+        addKnob(kCyAttackParam, STR16("CY Attack"));
         return kResultOk;
     }
 
@@ -390,6 +406,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             case kOhLevelParam: set(kDspLevelOH, gainFromNorm(n)); break;
             case kOhDecayParam: set(kDspOhDecay, n); break;
             case kChLevelParam: set(kDspLevelCH, gainFromNorm(n)); break;
+            case kChDecayParam: set(kDspChDecay, n); break;
+            case kChToneParam: set(kDspChTone, n); break;
+            case kOhToneParam: set(kDspOhTone, n); break;
+            case kChAttackParam: set(kDspChAttack, n); break;
+            case kOhAttackParam: set(kDspOhAttack, n); break;
+            case kCyAttackParam: set(kDspCyAttack, n); break;
             default: break;
         }
     }

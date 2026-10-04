@@ -4,7 +4,8 @@ A VST3 drum machine instrument in the style of the Roland TR-808 Rhythm
 Composer (subcategory `Instrument|Drum`). It has the 808's sixteen analog
 voices: bass drum, snare drum, low, mid and high tom and conga, rim shot,
 claves, hand clap, maracas, cowbell, cymbal, and open and closed hi-hat. They
-are synthesized, not sampled. The controls are the 808's panel knobs.
+are synthesized, not sampled. The controls are the 808's panel knobs, plus
+Tone and Decay for the hats and Attack for the hats and cymbal.
 
 The synthesis is MLang: `src/mla_08_dsp.mla`. The C++ layer (`src/plugin.cpp`)
 declares the buses, maps keys to instruments, schedules hits
@@ -97,14 +98,23 @@ the extra level at full velocity.
   frequencies are fitted to the partials of the recordings. The cowbell takes
   the 564.8 and 849.6 Hz pair through a narrow band-pass at 900 Hz, with a fast
   and a slow decay.
-- **Cymbal.** Three bands (1.8 to 4.5 kHz, 4.5 to 9 kHz, above 9 kHz), each
+- **Cymbal.** Three bands (2.2 to 5.5 kHz, 5.5 to 12 kHz, 9 to 14 kHz), each
   with its own envelope fitted to the recordings. The high bands start bright
-  and drop within about 0.1 s. The low band rings on (time constant 1.1 s at
-  the recorded setting). **Decay** scales the bands' ring. **Tone** balances
-  the low band against the two high ones.
+  and drop within about 0.1 s. The low band swells in over about 0.1 s and
+  rings on (time constant 1.1 s at the recorded setting). The high bands use
+  steep (6th and 8th order) high-passes, so the squares' low partials stay
+  out. **Decay** scales the bands' ring. **Tone** balances the low band
+  against the two high ones.
 - **Hi-hats.** A 4th-order high-pass and a band at 7.3 kHz. The closed hat
   decays in about 70 ms and chokes the open hat. The open hat's **Decay**
   sets how long it rings before it closes: about 0.1 to 0.7 s.
+- **Beyond the 808's panel.** **CH Decay** scales the closed hat's decay
+  (0.25x to 4x; 20 ms to 0.3 s, 40 dB down). **CH Tone** and **OH Tone** move
+  each hat's filters by up to 3/4 octave either way. **CH Attack**, **OH
+  Attack** and **CY Attack** set the rise from 0.05 ms to 10 ms; the centre,
+  0.7 ms, is the recordings' rise. The metal filters run all the time, as on
+  the hardware, so a hit opens an envelope instead of striking a resting
+  filter with the squares' edges.
 
 Retriggering a ringing drum continues its waveform from where it is, so fast
 rolls do not click. A softer hit on a louder ring keeps the ring's level.
@@ -137,6 +147,12 @@ rolls do not click. A softer hit on a louder ring keeps the ring's level.
 | 121 | OH Level     | -60 .. +6 dB | |
 | 122 | OH Decay     | 0..1 | |
 | 123 | CH Level     | -60 .. +6 dB | |
+| 124 | CH Decay     | 0..1 | 0.25x .. 4x. Not on the 808. |
+| 125 | CH Tone      | 0..1 | Filters down/up 3/4 octave. Not on the 808. |
+| 126 | OH Tone      | 0..1 | Filters down/up 3/4 octave. Not on the 808. |
+| 127 | CH Attack    | 0..1 | 0.05 .. 10 ms (0.7 ms centred). Not on the 808. |
+| 128 | OH Attack    | 0..1 | As CH Attack. Not on the 808. |
+| 129 | CY Attack    | 0..1 | As CH Attack. Not on the 808. |
 
 The knobs are 0..1, centred by default. Parameter IDs are stable, and new
 parameters are appended. The output is mono, on both channels.
@@ -172,6 +188,8 @@ classes and checks rendered audio:
 - tom and conga tuning, with the shared knobs; the claves' pitch
 - the cowbell's oscillator pair; the hats' brightness, the closed hat
   choking the open hat, and the open hat and cymbal decays
+- CH Decay and the hats' Tone; the hats' and cymbal's attack (no step at the
+  onset) and the Attack knobs
 - accent and velocity dynamics
 - click-free fast rolls
 - state round trips
