@@ -111,7 +111,7 @@ def main():
             send(b"\x15" + path.encode() + b"\r")
             until(lambda s: "WAVE" in s and "Add audio" not in s)
             # Zoom in from the focused Sample pane, then hand the keys back.
-            send(b"s\t" + b"+" * 4 + b"\x1b[Z")
+            send(b"s" + b"+" * 4 + b"\x1b[Z")
             before = until(lambda s: " Sample ─" in s)
             send(b" ")
             followed = until(lambda s: "PLAY" in s and " Sample ─" in s and

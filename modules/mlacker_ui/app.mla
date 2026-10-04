@@ -424,6 +424,9 @@ pub fn run() -> i32 {
     // -1 is the normal split; 1 and 2 expand that pane around the protected
     // View sidebar and virtual piano.
     var fullscreen_pane: i32 = -1; var view_pane_visible: bool = true;
+    // The pane focused (and the fullscreen pane) before the sample editor
+    // opened; they come back when the editor closes.
+    var sample_editor_return: i32 = -1; var sample_editor_fullscreen: i32 = -1;
     var input: InputDecoder = InputDecoder::new();
     var dialog: OpenSessionDialog = OpenSessionDialog::new();
     var adding_audio: bool = false;
@@ -1515,6 +1518,9 @@ pub fn run() -> i32 {
         if paste_error.active && paste_error.pressed_button >= 0 { paste_error.tick(); dirty = true; }
         let area: Rect = terminal_bounds();
         let viewport: Viewport = menus.viewport(area);
+        if !sample_editor.active && sample_editor_return >= 0 {
+            focus.selected = sample_editor_return; fullscreen_pane = sample_editor_fullscreen; sample_editor_return = -1;
+        }
         let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
         focus.reconcile(panes);
         focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
@@ -2264,7 +2270,10 @@ pub fn run() -> i32 {
                         let track: SequenceTrack = library.table.tracks[library.table.active_track()];
                         let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
                         let rc: AudioClip = instance.render_clip(); sample.reset_selection(rc.frames);
-                    }
+                        // The opened Sample pane takes the focus.
+                        if fullscreen_pane == 1 { fullscreen_pane = -1; }
+                        focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false;
+                    } else if focus.selected == 2 { focus.selected = 1; }
                     dirty = true;
                 }
             } else if event.modifiers == 5 && event.code == 121 &&
@@ -2487,7 +2496,7 @@ pub fn run() -> i32 {
                     free(message); message = sidebar_clipboard.error == "" ? format!("Duplicated {} list item(s)", count) : format!("Duplicated {}: {}", count, sidebar_clipboard.error);
                     playback_dirty = true; dirty = true;
                 }
-                else if library.audio_mode && event.code == 101 && event.modifiers == 1 { command = Action::EditSample; }
+                else if library.audio_mode && (event.code == 101 || event.code == 115) && event.modifiers == 1 { command = Action::EditSample; }
                 else if library.on_event(event, panes[0].bounds.inset(1)) { dirty = true; }
                 if library.share_request > 0 {
                     share_id = library.share_request; library.share_request = 0;
@@ -2754,6 +2763,9 @@ pub fn run() -> i32 {
                     sample_editor.open(clip, used);
                     sample_editor.select(sampler.loop_range_start(midi.output, target, clip.frames), sampler.loop_range_end(midi.output, target, clip.frames));
                     editing_sampler_slot = target; editing_sampler_pad = sampler.slot;
+                    sample_editor_return = focus.selected; sample_editor_fullscreen = fullscreen_pane;
+                    if fullscreen_pane == 2 { fullscreen_pane = -1; }
+                    focus.selected = 1;
                     free(message); message = format!("Editing slot {}'s sample, its loop selected: x trims to it, Ctrl+S saves", sampler.slot + 1);
                 }
             }
@@ -2765,6 +2777,10 @@ pub fn run() -> i32 {
                     transport.playing = false;
                     let clip: AudioClip = library.audio.samples[index];
                     sample_editor.open(clip, index);
+                    // The editor covers the Pattern pane, which takes the focus.
+                    sample_editor_return = focus.selected; sample_editor_fullscreen = fullscreen_pane;
+                    if fullscreen_pane == 2 { fullscreen_pane = -1; }
+                    focus.selected = 1;
                     free(message); message = clone("Editing a copy: Ctrl+S saves it as a new clip");
                 }
             }

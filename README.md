@@ -965,8 +965,8 @@ extension).
 
 ### Sample editing
 
-**Audio → Edit sample (destructive)**, or `e` in the Audio list, opens the selected
-sample in an editor over the Pattern view. Edits work on a copy with 16 undo
+**Audio → Edit sample (destructive)**, or `s` (or `e`) in the Audio list, opens the
+selected sample in an editor over the Pattern view and focuses it. Edits work on a copy with 16 undo
 steps; nothing changes in the session until you save.
 
 The editor uses the same keys as the Sample pane (`s` over a clip in the
