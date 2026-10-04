@@ -1875,6 +1875,31 @@ pub fn replace_clip(self: &mut Self, old: &AudioClip, edited: &AudioClip) -> i32
     if count > 0 { self.revision = self.revision + 1; }
     return count;
 }
+/// Give every placement of `old` the path `source`, keeping the rest of the
+/// placement. Returns how many were renamed.
+pub fn rename_clip_source(self: &mut Self, old: &AudioClip, source: str8) -> i32 {
+    var before: AudioClip = AudioClip {}; before = old;
+    var count: i32 = 0;
+    for t in 0..self.tracks.len() {
+        var track: SequenceTrack = self.tracks[t];
+        if !track.audio { continue; }
+        var changed: bool = false; var updated: list<AudioInstance> = [];
+        for i in 0..track.instances.len() {
+            var next: AudioInstance = AudioInstance {}; next = track.instances[i];
+            if next.clip.source == before.source && next.clip.frames == before.frames && next.clip.frames_per_row == before.frames_per_row {
+                free(next.clip.source); next.clip.source = clone(source);
+                changed = true; count = count + 1;
+            }
+            updated.push(next);
+        }
+        if changed { track.instances = updated; self.replace_track(i32(t), track); }
+    }
+    if self.audio_clipboard.peaks.len() > 0 && self.audio_clipboard.source == before.source && self.audio_clipboard.frames == before.frames {
+        free(self.audio_clipboard.source); self.audio_clipboard.source = clone(source);
+    }
+    if count > 0 { self.revision = self.revision + 1; }
+    return count;
+}
 fn replace_track(self: &mut Self, index: i32, value: SequenceTrack) -> void {
     var tracks: list<SequenceTrack> = [];
     for i in 0..self.tracks.len() { tracks.push(i == index ? value : self.tracks[i]); }

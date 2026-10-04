@@ -31,7 +31,7 @@ pub enum Action : i32 {
     // Audio
     AddAudio = 60, ReverseClip = 102, MoveClipUp = 103, MoveClipDown = 104,
     TrimClip = 105, SliceClip = 106, EditSample = 107, RemoveAudio = 120,
-    MakeAudioDestructive = 178, AddAudioGroup = 179, RemoveAudioGroup = 180,
+    MakeAudioDestructive = 178, AddAudioGroup = 179, RemoveAudioGroup = 180, MoveAudioToGroup = 182,
     // Instrument
     LoadMasterPlugin = 91, UnloadMasterPlugin = 92, AddInstrument = 93,
     OpenPluginEditor = 94, RemoveInstrument = 95, SaveMidiLearn = 97, LoadMidiLearn = 98,
@@ -50,7 +50,11 @@ pub enum Action : i32 {
     // Sampler pane's Enter / Backspace / o / E / W / R on a slot.
     LoadInsert = 115, RemoveInsert = 116, ApplyOutputChannel = 31, ApplyPadChoice = 119,
     PlaceMatrixPattern = 121, PasteMatrixCell = 122, LoadSamplerSlot = 123, ClearSamplerSlot = 124,
-    RouteSamplerOutput = 125, EditSamplerSample = 126, SaveSamplerSlot = 127, LoadSamplerSlotPreset = 128
+    RouteSamplerOutput = 125, EditSamplerSample = 126, SaveSamplerSlot = 127, LoadSamplerSlotPreset = 128,
+    // Audio > Move to group: the group chosen, then (in a project) confirmed.
+    ApplyAudioGroupMove = 183,
+    // Audio > Always open sample editor full screen.
+    ToggleEditorFullscreen = 184
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).

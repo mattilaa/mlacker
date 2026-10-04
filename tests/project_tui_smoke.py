@@ -76,10 +76,13 @@ def main():
             assert b"Open project (.mlaproj)" in tui.send(OPEN_PROJECT)
             frame = tui.send(b"\x15" + os.fsencode(moved) + b"\r", 0.9)
             assert b"Missing or unreadable audio file: Audio/stereo_tone.wav" in frame, frame[-5000:]
-            tui.send(b"\r")  # dismiss the error
+            # Let the error dialog's button animation finish before sending a
+            # function key; otherwise a loaded CI runner can deliver it while
+            # the modal still owns input.
+            tui.send(b"\r", 1.0)  # dismiss the error
             # File > New project: confirm, then the new empty session is
             # saved as a project straight away.
-            assert b"Start a new project?" in tui.send(NEW_PROJECT)
+            assert b"Start a new project?" in tui.send_until(NEW_PROJECT, b"Start a new project?")
             frame = tui.send(b"\r", 0.9)
             assert b"Save project (.mlaproj)" in frame and b"Untitled.mlaproj" in frame, frame[-5000:]
             frame = tui.send(b"\x15" + os.fsencode(Path(directory) / "Fresh") + b"\r", 0.9)

@@ -279,7 +279,7 @@ dialog or text field has the keyboard.
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
 | Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
-| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass, Make track clips destructive, Add group, Remove group |
+| Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass, Make track clips destructive, Add group, Remove group, Move to group, Always open sample editor full screen |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
 | Record | Play metronome, Extend pattern when playing, Metronome ▸, Bounce selection to sample |
@@ -965,8 +965,11 @@ extension).
 
 ### Sample editing
 
-**Audio → Edit sample (destructive)**, or `e` in the Audio list, opens the selected
-sample in an editor over the Pattern view. Edits work on a copy with 16 undo
+**Audio → Edit sample (destructive)**, or `s` (or `e`) in the Audio list, opens the
+selected sample in an editor over the Pattern view and focuses it. The editor
+opens full screen (beside the View pane) while **Audio → Always open sample
+editor full screen** is ticked, the default; untick it to open the editor in the
+Pattern pane. A project keeps this setting. Edits work on a copy with 16 undo
 steps; nothing changes in the session until you save.
 
 The editor uses the same keys as the Sample pane (`s` over a clip in the

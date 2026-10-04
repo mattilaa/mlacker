@@ -862,6 +862,45 @@ impl PatternLibrary {
         old.release();
         return count;
     }
+    /// Audio > Move to group: put samples `indices` in group `group` ("" for
+    /// none). A sample stored in project folder `root` (its path is below
+    /// `root`/Audio/) gets the path of its file in the group's project folder
+    /// `folder` ("Audio/Drums" for "Drums"), where saving the project writes
+    /// it; every placement takes the new path. Returns how many samples moved.
+    pub fn move_samples_to_group(self: &mut Self, indices: list<i32>, group: str8, root: str8, folder: str8) -> i32 {
+        let audio_dir: str8 = format!("{}/Audio/", root);
+        var moved: i32 = 0; var last: i32 = -1;
+        for index in indices {
+            if index < 0 || index >= self.audio.samples.len() { continue; }
+            let current: str8 = self.audio.group_of(index);
+            if current == group { continue; }
+            let old: AudioClip = self.audio.samples[index];
+            if root != "" && std::strbuf::starts_with(old.source, audio_dir) == 1 {
+                let name: str8 = base_name(old.source);
+                let source: str8 = format!("{}/{}/{}", root, folder, name); free(name);
+                if source != old.source {
+                    self.table.rename_clip_source(old, source);
+                    let entries: list<PatternEntry> = self.patterns; var next: list<PatternEntry> = [];
+                    for item in entries {
+                        var entry: PatternEntry = PatternEntry {}; entry = item;
+                        entry.data.rename_clip_source(old, source); next.push(entry);
+                    }
+                    self.patterns = next;
+                    free(old.source);
+                    var renamed: AudioClip = AudioClip {}; renamed = old; renamed.source = source;
+                    let samples: list<AudioClip> = self.audio.samples; var kept: list<AudioClip> = [];
+                    for i in 0..samples.len() { kept.push(i == index ? renamed : samples[i]); }
+                    self.audio.samples = kept;
+                } else { free(source); }
+            }
+            self.audio.set_group(index, group);
+            moved = moved + 1; last = index;
+        }
+        free(audio_dir);
+        self.audio.view.marks = [];
+        if last >= 0 { self.audio.reveal_sample(last); } else { self.audio.rebuild(); }
+        return moved;
+    }
     pub fn insert_selected_audio(self: &mut Self, area: Rect) -> bool {
         let index: i32 = self.audio.selected_sample();
         if index < 0 || index >= self.audio.samples.len() { self.error = "Select a loaded sample"; return false; }

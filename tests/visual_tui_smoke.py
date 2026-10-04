@@ -6,9 +6,16 @@ F1 = b"\x1bOP"
 
 
 class VisualTerminal(Terminal):
+    @staticmethod
+    def latest(frame):
+        return frame.rsplit(b"[F1]File  [F2]Edit ", 1)[-1]
+
     def read(self, seconds=0.35):
         # Button presses include animation frames before the final repaint.
-        return super().read(seconds).rsplit(b"[F1]File  [F2]Edit ", 1)[-1]
+        return self.latest(super().read(seconds))
+
+    def send_until(self, keys, needle, timeout=10.0):
+        return self.latest(super().send_until(keys, needle, timeout))
 
 
 def main():
@@ -26,7 +33,10 @@ def main():
         assert b"Cannot paste selection" in frame, frame[-5000:]
         frame = tui.send(b"\r", 0.6)
         assert b"Cannot paste selection" not in frame, frame[-5000:]
-        frame = tui.send(b"hjp")  # matching NOTE in the following row
+        # Under a loaded CI runner the three key events can span more than the
+        # default fixed read window. Wait for the pasted row, not an earlier
+        # cursor-movement repaint.
+        frame = tui.send_until(b"hjp", b"002 C-4")  # matching NOTE in the following row
         assert b"Cannot paste selection" not in frame and frame.count(b"C-4") >= 2, frame[-5000:]
         frame = tui.send(b"vlkd")  # clear both rows, not delete pattern rows
         assert b"C-4" not in frame and b"003" in frame, frame[-5000:]

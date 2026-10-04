@@ -1,0 +1,171 @@
+mod tui::dialog;
+mod mlacker_ui::audio_library;
+use tui::dialog::Dialog;
+use tui::button::PushButton;
+use tui::focus::PaneFocus;
+use tui::layout::Alignment;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use tui::menu::Key;
+use mlacker_ui::audio_library::group_name;
+use mlacker_ui::audio_library::group_parent;
+use std::strbuf::free;
+use std::strbuf::clone;
+
+/// Audio > Move to group: the destination for the selected (or marked)
+/// samples. Row 0 is "No group", then the groups as a tree, subgroups
+/// indented below their parents. result: 1 = chose `chosen()`, 2 = cancelled.
+pub struct GroupPicker : Dialog {
+    /// Owned group paths in row order ("" for no group) and their labels,
+    /// and every group path as given to `open`.
+    var paths: list<str8>; var labels: list<str8>; var all: list<str8>;
+    var selected: i32;
+};
+impl GroupPicker {
+    pub fn new() -> GroupPicker {
+        return GroupPicker { title: "Move to group", width: 52, height: 20,
+            focus: PaneFocus::new(0), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
+    }
+    /// List `groups` (borrowed paths), selecting `current`.
+    pub fn open(self: &mut Self, groups: list<str8>, current: str8) -> void {
+        self.release();
+        for group in groups { self.all.push(clone(group)); }
+        self.paths.push(clone("")); self.labels.push(clone("(No group)"));
+        self.add_children("", 0);
+        self.selected = 0;
+        for i in 0..self.paths.len() { let path: str8 = self.paths[i]; if path == current { self.selected = i32(i); } }
+        self.reset_buttons(); self.focus.selected = 0; self.active = true;
+    }
+    /// Rows for `parent`'s child groups in name order, each followed by its own.
+    fn add_children(self: &mut Self, parent: str8, depth: i32) -> void {
+        var children: list<i32> = [];
+        for i in 0..self.all.len() {
+            let up: str8 = group_parent(self.all[i]);
+            if up == parent {
+                var at: i64 = 0;
+                while at < children.len() && std::strbuf::compare(self.all[children[at]], self.all[i]) < 0 { at = at + 1; }
+                var next: list<i32> = [];
+                for c in 0..children.len() { if c == at { next.push(i32(i)); } next.push(children[c]); }
+                if at == children.len() { next.push(i32(i)); }
+                children = next;
+            }
+            free(up);
+        }
+        let indent: str8 = std::strbuf::repeat("  ", wide(depth));
+        for g in children {
+            let path: str8 = clone(self.all[g]); let name: str8 = group_name(path);
+            self.paths.push(clone(path)); self.labels.push(format!("{}{}", indent, name)); free(name);
+            self.add_children(path, depth + 1); free(path);
+        }
+        free(indent);
+    }
+    /// The chosen group path (borrowed; "" for no group).
+    pub fn chosen(self: GroupPicker) -> str8 {
+        if self.selected < 0 || self.selected >= self.paths.len() { return ""; }
+        return self.paths[self.selected];
+    }
+    pub fn on_event(self: &mut Self, event: InputEvent) -> void {
+        if event.kind == InputKind::Pane {
+            if event.key == Key::Down { self.focus.selected = 3; }
+            if event.key == Key::Up { self.focus.selected = 0; }
+            return;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 { self.active = false; self.result = 2; self.pressed_button = -1; return; }
+        if event.kind == InputKind::Menu && event.key == Key::Toggle { self.focus.selected = self.focus.selected == 0 ? 3 : 0; return; }
+        if self.focus.selected == 3 { self.on_button_event(event); return; }
+        if event.kind != InputKind::Menu { return; }
+        if event.key == Key::Up { self.selected = self.selected > 0 ? self.selected - 1 : 0; return; }
+        if event.key == Key::Down {
+            let last: i32 = i32(self.paths.len()) - 1;
+            self.selected = self.selected < last ? self.selected + 1 : last; return;
+        }
+        if event.key == Key::Enter { self.active = false; self.result = 1; }
+    }
+    /// Call once per 10ms UI tick; returns a completed button action, which
+    /// the caller replays as its key (see dialog_buttons::button_key).
+    pub fn tick(self: &mut Self) -> i32 {
+        let action: i32 = self.tick_buttons();
+        if action != 0 { self.focus.selected = 0; }
+        return action;
+    }
+    pub fn paint(self: GroupPicker, surface: Surface, area: Rect, theme: Theme) -> void {
+        if !self.active { return; }
+        let body: Rect = self.paint_frame(surface, area, theme);
+        if body.height < 1 { return; }
+        let rows: i32 = body.height;
+        let start: i32 = self.selected >= rows ? self.selected - rows + 1 : 0;
+        for line in 0..rows {
+            let index: i32 = start + i32(line);
+            if index >= self.labels.len() { break; }
+            let row: Rect = Rect::new(body.x, body.y + i32(line), body.width, 1);
+            let background: i32 = index == self.selected ? theme.selection : theme.panel;
+            surface.fill(row, Cell { glyph: 32, foreground: theme.foreground, background: background });
+            surface.text(row, self.labels[index], theme.foreground, background);
+        }
+    }
+    pub fn release(self: &mut Self) -> void {
+        let paths: list<str8> = self.paths; for path in paths { free(path); }
+        let labels: list<str8> = self.labels; for label in labels { free(label); }
+        let all: list<str8> = self.all; for path in all { free(path); }
+        self.paths = []; self.labels = []; self.all = [];
+    }
+}
+
+/// Asked before moving samples between groups in a saved project: the move
+/// changes the project's Audio folders, so the project is saved with it.
+/// Pane 0 is the "Don't ask this again" check box (Space toggles it), pane 3
+/// the buttons. result: 1 = OK, 2 = cancelled.
+pub struct MoveNotice : Dialog { var dont_ask: bool; };
+impl MoveNotice {
+    pub fn new() -> MoveNotice {
+        return MoveNotice { title: "Move to group", width: 64, height: 13,
+            focus: PaneFocus::new(3), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
+    }
+    pub fn open(self: &mut Self) -> void {
+        self.dont_ask = false; self.reset_buttons(); self.focus.selected = 3; self.active = true;
+    }
+    pub fn on_event(self: &mut Self, event: InputEvent) -> void {
+        if !self.active { return; }
+        if event.kind == InputKind::Pane {
+            if event.key == Key::Down { self.focus.selected = 3; }
+            if event.key == Key::Up { self.focus.selected = 0; }
+            return;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 { self.active = false; self.result = 2; self.pressed_button = -1; return; }
+        if self.focus.selected == 0 {
+            if event.kind == InputKind::Menu && (event.key == Key::Toggle || event.key == Key::Down) { self.focus.selected = 3; return; }
+            if event.code == 32 && event.modifiers == 1 { self.dont_ask = !self.dont_ask; return; }
+            if event.kind == InputKind::Menu && event.key == Key::Enter { self.active = false; self.result = 1; }
+            return;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Up { self.focus.selected = 0; return; }
+        // Tab past the last button reaches the check box.
+        if event.kind == InputKind::Menu && event.key == Key::Toggle && self.button_selected == i32(self.buttons.len()) - 1 { self.focus.selected = 0; return; }
+        self.on_button_event(event);
+    }
+    /// Call once per 10ms UI tick; returns a completed button action, which
+    /// the caller replays as its key (Enter answers OK from the check box).
+    pub fn tick(self: &mut Self) -> i32 {
+        let action: i32 = self.tick_buttons();
+        if action != 0 { self.focus.selected = 0; }
+        return action;
+    }
+    pub fn paint(self: MoveNotice, surface: Surface, area: Rect, theme: Theme) -> void {
+        if !self.active { return; }
+        let body: Rect = self.paint_frame(surface, area, theme);
+        if body.height < 5 { return; }
+        let lines: list<str8> = ["Moving audio to another group moves its files to that",
+            "group's folder in the project, so the project must be",
+            "saved. OK moves the audio and saves the project."];
+        for i in 0..lines.len() {
+            surface.text(Rect::new(body.x + 1, body.y + i32(i), body.width - 2, 1), lines[i], theme.foreground, theme.panel);
+        }
+        let check: Rect = Rect::new(body.x + 1, body.y + 4, body.width - 2, 1);
+        surface.text(check, self.dont_ask ? "[x] Don't ask this again" : "[ ] Don't ask this again",
+            theme.foreground, self.focus.selected == 0 ? theme.selection : theme.panel);
+    }
+}

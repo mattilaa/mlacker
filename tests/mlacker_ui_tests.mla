@@ -52,6 +52,7 @@ use mlacker_ui::session::SessionData;
 use mlacker_ui::session::SessionView;
 use mlacker_ui::session::is_project_path;
 use mlacker_ui::session::project_folder;
+use mlacker_ui::session::project_group_folder;
 use mlacker_ui::audio_controller::AudioSystem;
 use std::audio::PcmBlock;
 use std::testing::verify_eq;
@@ -1774,6 +1775,53 @@ fn tui_audio_groups_saved_in_sessions_and_projects() {
     project.release();
     library.release(); kick.release(); pad.release(); std::fs::remove_tree(directory);
     free(empty_folder); free(pad_file); free(kick_file); free(folder); free(target); free(path); free(directory);
+}
+
+#[test]
+fn tui_audio_move_to_group_updates_project_paths_and_placements() {
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var library: PatternLibrary = PatternLibrary::new();
+    library.table.create_track_kind(false, true, area);
+    verify(library.audio.add_group("", "Drums") && library.audio.add_group("Drums", "Kicks"));
+    let kick: AudioClip = test_clip("/s/kick.wav", 1, 40);
+    let pad: AudioClip = test_clip("/s/pad.wav", 1, 30);
+    verify(library.audio.add_clip(kick.copy()) == 0 && library.audio.add_clip(pad.copy()) == 1);
+    library.table.selected_row = 0; verify(library.table.insert_audio(kick, area));
+    let folder: str8 = project_group_folder("Drums/Kicks"); verify(folder == "Audio/Drums/Kicks");
+    // Outside a project only the group changes; paths stay.
+    verify(library.move_samples_to_group([0, 1], "Drums/Kicks", "", folder) == 2);
+    verify(same(library.audio.group_of(0), "Drums/Kicks") && same(library.audio.group_of(1), "Drums/Kicks"));
+    let unchanged: AudioClip = library.audio.samples[0]; verify(unchanged.source == "/s/kick.wav");
+    // Already there: nothing moves.
+    verify(library.move_samples_to_group([0], "Drums/Kicks", "", folder) == 0);
+    // Save as a project and reopen: the samples are project files.
+    let directory: str8 = clone("/private/tmp/mlacker-move-group-test-XXXXXX"); mkdtemp(directory);
+    let target: str8 = format!("{}/Moving", directory);
+    var codec: SessionCodec = SessionCodec {}; var audio: AudioSystem = AudioSystem {};
+    let saved: result<str8, str8> = codec.save_project(target, library, SessionView { move_unasked: true, editor_fullscreen: false }, audio); verify(saved.is_ok());
+    let root: str8 = saved.unwrap();
+    let opened: result<SessionData, str8> = SessionCodec::load_project(root); verify(opened.is_ok());
+    var project: SessionData = opened.unwrap();
+    // The project keeps its "Don't ask this again" and editor setting.
+    verify(project.view.move_unasked && !project.view.editor_fullscreen);
+    // Out of the group: the sample's path and its placement follow the file
+    // to Audio/, and the next save writes it there.
+    let top: str8 = project_group_folder("");
+    verify(project.library.move_samples_to_group([0], "", root, top) == 1);
+    let moved: AudioClip = project.library.audio.samples[0];
+    let expected: str8 = format!("{}/Audio/kick.wav", root); verify(moved.source == expected);
+    let track: SequenceTrack = project.library.table.tracks[project.library.table.active_track()];
+    let instance: AudioInstance = track.instances[0]; verify(instance.clip.source == expected);
+    verify(project.library.sample_usage(0) == 1);
+    let resaved: result<str8, str8> = codec.save_project(root, project.library, SessionView {}, audio); verify(resaved.is_ok());
+    let again: str8 = resaved.unwrap();
+    let kick_file: str8 = format!("{}/Audio/kick.wav", again); let old_file: str8 = format!("{}/Audio/Drums/Kicks/kick.wav", again);
+    verify(std::fs::file_exists(kick_file) == 1 && std::fs::file_exists(old_file) == 0);
+    let reopened: result<SessionData, str8> = SessionCodec::load_project(again); verify(reopened.is_ok());
+    var final: SessionData = reopened.unwrap();
+    verify(!final.view.move_unasked && final.view.editor_fullscreen && same(final.library.audio.group_of(0), "") && same(final.library.audio.group_of(1), "Drums/Kicks"));
+    final.release(); project.release(); library.release(); kick.release(); pad.release(); std::fs::remove_tree(directory);
+    free(old_file); free(kick_file); free(again); free(expected); free(top); free(root); free(target); free(directory); free(folder);
 }
 
 #[test]

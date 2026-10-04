@@ -358,10 +358,8 @@ def main():
                 zoomed = read_frame(1)
                 assert b"WAVE" in zoomed and b"WAVE x2" not in zoomed  # no waveform zoom
                 os.write(master, b"s")
-                assert b" Sample " in read_frame(1)
+                assert b" Sample " in read_frame(2)  # s focuses the Sample pane
                 # The focused Sample pane zooms with +/-.
-                os.write(master, b"\t")
-                read_frame(2)
                 os.write(master, b"+" * 15)
                 assert b"1 frames/px" in read_frame(2)
                 os.write(master, b"-")
@@ -383,9 +381,7 @@ def main():
                 os.write(master, b"=")
                 assert b" Sample " in read_frame(2)
                 os.write(master, b"s")
-                assert b" Inspector " in read_frame(2)
-                os.write(master, b"\x1b[Z")
-                read_frame(1)
+                assert b" Inspector " in read_frame(1)  # closing hands focus back to the Pattern
                 os.write(master, F1 + b"ll")
                 read_frame(None)
                 os.write(master, b"jjjjl\r")
@@ -396,7 +392,9 @@ def main():
                 read_frame(1)
                 if path == aif_path:
                     os.write(master, b"s")
-                    assert b" Sample " in read_frame(1)
+                    assert b" Sample " in read_frame(2)
+                    os.write(master, b"\x1b[Z")
+                    read_frame(1)
                     os.write(master, b"G")
                     assert b" Inspector " in read_frame(1)  # cursor past short clip
                     os.write(master, b"gg")
