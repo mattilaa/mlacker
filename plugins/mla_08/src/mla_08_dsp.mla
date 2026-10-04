@@ -28,7 +28,8 @@
 /// - **Rim shot and claves.** Rim shot: 456 Hz and 1.83 kHz rings, high-passed
 ///   and overdriven. Claves: a 2.53 kHz ring.
 /// - **Hand clap and maracas.** Clap: noise band-passed around 1 kHz, struck
-///   by four sawtooth bursts 10 ms apart, the last running into a long tail.
+///   by four sharp bursts 10 ms apart. The last, the main hit, adds a crack
+///   and a bright layer over a long, noisy tail that darkens as it fades.
 ///   Maracas: high-passed noise on a 20 ms swell.
 /// - **Metal.** Six free-running square-wave oscillators (325.2, 417.9,
 ///   546.8, 564.8, 793.0 and 849.6 Hz, band-limited with PolyBLEP; fitted to
@@ -444,8 +445,20 @@ struct M08 {
     // --- Clap and maracas ------------------------------------------------------
     var cp_bp: Svf;
     var cp_hp: Svf;
-    /// The tail is darker than the bursts.
-    var cp_lp: Svf;
+    /// The tail darkens as it fades: a bright, high-passed layer opens with
+    /// the last burst and fades fast, over a darker tail (one-pole low-pass).
+    var cp_lp: f32;
+    var cp_lp_coef: f32;
+    var cp_bright_hp: Svf;
+    var cp_bright_lp: Svf;
+    /// The bursts sit higher than the tail.
+    var cp_burst_bp: Svf;
+    /// The last burst, the clap's main hit, starts with a broadband crack.
+    var cp_crack: f32;
+    var cp_crack_lp: f32;
+    var cp_crack_lp_coef: f32;
+    var cp_bright: f32;
+    var cp_bright_coef: f32;
     /// Samples since the clap's hit (negative: idle), its burst and its tail.
     var cp_time: f32;
     var cp_burst: f32;
@@ -535,7 +548,8 @@ impl M08 {
             cl: Ring::new(),
             rs_low: Resonator::new(), rs_high: Resonator::new(), rs_low_damp: 0.0f, rs_high_damp: 0.0f,
             rs_hp: Svf::new(), rs_gain: 1.0f,
-            cp_bp: Svf::new(), cp_hp: Svf::new(), cp_lp: Svf::new(), cp_time: -1.0f, cp_burst: 0.0f, cp_burst_coef: 0.0f,
+            cp_bp: Svf::new(), cp_hp: Svf::new(), cp_lp: 0.0f, cp_lp_coef: 0.0f,
+            cp_bright_hp: Svf::new(), cp_bright_lp: Svf::new(), cp_burst_bp: Svf::new(), cp_crack: 0.0f, cp_crack_lp: 0.0f, cp_crack_lp_coef: 0.0f, cp_bright: 0.0f, cp_bright_coef: 0.0f, cp_time: -1.0f, cp_burst: 0.0f, cp_burst_coef: 0.0f,
             cp_level: 0.0f, cp_tail: 0.0f, cp_tail_decay: Decay::new(),
             ma_hp: Svf::new(), ma_time: -1.0f, ma_env: 0.0f, ma_level: 0.0f, ma_rise_coef: 0.0f, ma_fall_coef: 0.0f,
             sq1: Square { phase: 0.00f, hz: 325.2f }, sq2: Square { phase: 0.31f, hz: 417.9f },
@@ -585,10 +599,15 @@ impl M08 {
         self.rs_high_damp = decay_coef(0.0025f, r);
         self.rs_hp.configure(300.0f, 0.7f, r);
 
-        self.cp_bp.configure(1050.0f, 1.3f, r);
-        self.cp_hp.configure(300.0f, 0.7f, r);
-        self.cp_lp.configure(3500.0f, 0.70710678f, r);
-        self.cp_burst_coef = decay_coef(0.0026f, r);
+        self.cp_bp.configure(1050.0f, 2.0f, r);
+        self.cp_hp.configure(500.0f, 0.7f, r);
+        self.cp_lp_coef = lp_coef(2500.0f, r);
+        self.cp_bright_hp.configure(2000.0f, 0.70710678f, r);
+        self.cp_bright_lp.configure(4000.0f, 0.70710678f, r);
+        self.cp_burst_bp.configure(1300.0f, 1.0f, r);
+        self.cp_crack_lp_coef = lp_coef(9000.0f, r);
+        self.cp_bright_coef = decay_coef(0.025f, r);
+        self.cp_burst_coef = decay_coef(0.0018f, r);
         self.ma_hp.configure(6500.0f, 0.8f, r);
         self.ma_rise_coef = decay_coef(0.006f, r);
         self.ma_fall_coef = decay_coef(0.002f, r);
@@ -653,7 +672,8 @@ impl M08 {
         self.lt.reset(); self.mt.reset(); self.ht.reset(); self.lc.reset(); self.mc.reset(); self.hc.reset();
         self.cl.reset();
         self.rs_low.reset(); self.rs_high.reset(); self.rs_hp.reset();
-        self.cp_bp.reset(); self.cp_hp.reset(); self.cp_lp.reset(); self.cp_time = -1.0f; self.cp_burst = 0.0f; self.cp_tail = 0.0f;
+        self.cp_bp.reset(); self.cp_hp.reset(); self.cp_lp = 0.0f; self.cp_bright_hp.reset(); self.cp_bright_lp.reset(); self.cp_burst_bp.reset(); self.cp_crack = 0.0f; self.cp_crack_lp = 0.0f; self.cp_bright = 0.0f;
+        self.cp_time = -1.0f; self.cp_burst = 0.0f; self.cp_tail = 0.0f;
         self.ma_hp.reset(); self.ma_time = -1.0f; self.ma_env = 0.0f;
         self.cb_bp.reset(); self.cb_hp.reset(); self.cb_fast = 0.0f; self.cb_slow = 0.0f;
         self.cy_low_hp.reset(); self.cy_low_hp2.reset(); self.cy_low_lp.reset();
@@ -820,8 +840,11 @@ impl M08 {
 
     fn cp_active(self: M08) -> bool { return self.cp_time >= 0.0f; }
 
-    /// Hand clap: four sawtooth bursts (0, 9.5, 21.5, 31.5 ms), the last
-    /// running into the tail.
+    /// Hand clap: four sharp bursts (0, 9.5, 21.5, 31.5 ms) of noise
+    /// band-passed around 1.3 kHz, decaying in 1.8 ms. The last one is the
+    /// main hit: it opens a short broadband crack, a bright layer (2 .. 4 kHz
+    /// and up, fading in 25 ms) and the tail (around 1 kHz, gently low-passed
+    /// so it stays noisy up top), so the clap darkens as it fades.
     fn clap(self: &mut Self) -> f32 {
         let r: f32 = self.rate;
         let t: f32 = self.cp_time;
@@ -830,11 +853,31 @@ impl M08 {
         let now: f32 = t * ms;
         let next: f32 = (t + 1.0f) * ms;
         if (now <= 0.0f && next > 0.0f) || (now <= 9.5f && next > 9.5f) || (now <= 21.5f && next > 21.5f) {
-            self.cp_burst = self.cp_level;
+            self.cp_burst = self.cp_level * 1.4f;
         }
-        if now <= 31.5f && next > 31.5f { self.cp_burst = self.cp_level; self.cp_tail = self.cp_level * 0.35f; }
-        let n: f32 = self.cp_bp.process(self.cp_hp.process(self.white(), 1), 2);
-        let out: f32 = n * self.cp_burst + self.cp_lp.process(n, 0) * self.cp_tail;
+        if now <= 31.5f && next > 31.5f {
+            self.cp_burst = self.cp_level;
+            self.cp_bright = self.cp_level * 0.4f;
+            self.cp_crack = self.cp_level * 0.4f;
+            self.cp_tail = self.cp_level * 0.5f;
+        }
+        let w: f32 = self.white();
+        // The filters run every sample, so each layer only needs its level.
+        let h: f32 = self.cp_hp.process(w, 1);
+        let n: f32 = self.cp_bp.process(h, 2);
+        self.cp_lp = self.cp_lp + (n - self.cp_lp) * self.cp_lp_coef;
+        var out: f32 = self.cp_burst_bp.process(h, 2) * self.cp_burst + self.cp_lp * self.cp_tail;
+        let high: f32 = self.cp_bright_hp.process(w, 1);
+        let b: f32 = self.cp_bright_lp.process(high, 0);
+        self.cp_crack_lp = self.cp_crack_lp + (high - self.cp_crack_lp) * self.cp_crack_lp_coef;
+        if self.cp_crack > silent() {
+            out = out + self.cp_crack_lp * self.cp_crack;
+            self.cp_crack = self.cp_crack * self.cp_burst_coef;
+        }
+        if self.cp_bright > silent() {
+            out = out + b * self.cp_bright;
+            self.cp_bright = self.cp_bright * self.cp_bright_coef;
+        }
         self.cp_burst = self.cp_burst * self.cp_burst_coef;
         if now > 31.5f { self.cp_tail = self.cp_tail * self.cp_tail_decay.next(); }
         self.cp_time = t + 1.0f;
@@ -949,7 +992,7 @@ impl M08 {
         }
         if self.rs_active() { mix = mix + self.rim() * self.level_rs * 0.7f; }
         else { self.rs_low.reset(); self.rs_high.reset(); }
-        if self.cp_active() { mix = mix + self.clap() * self.level_cp * 2.4f; }
+        if self.cp_active() { mix = mix + self.clap() * self.level_cp * 1.23f; }
         if self.ma_active() { mix = mix + self.maraca() * self.level_cp * 0.31f; }
         // The oscillators keep turning, so the next hit starts mid-cycle
         // like on the free-running hardware.

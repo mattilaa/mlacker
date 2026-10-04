@@ -89,9 +89,11 @@ the extra level at full velocity.
 - **Rim shot and claves.** Rim shot: 456 Hz and 1.83 kHz rings, high-passed
   and driven nearly square, so the hit holds and then stops after about 20 ms.
   Claves: a 2.53 kHz ring.
-- **Hand clap and maracas.** Clap: noise band-passed around 1 kHz, struck by
-  four sawtooth bursts at 0, 9.5, 21.5 and 31.5 ms, the last one running into
-  a longer, darker tail. Maracas: noise high-passed at 6.5 kHz that swells for
+- **Hand clap and maracas.** Clap: four sharp bursts of noise band-passed
+  around 1.3 kHz, at 0, 9.5, 21.5 and 31.5 ms, each decaying in 1.8 ms. The
+  last one is the main hit. It adds a short broadband crack and a bright layer
+  that fades in about 25 ms, over a tail around 1 kHz that stays noisy up top.
+  So the clap starts crisp and darkens as it fades, as on the recording. Maracas: noise high-passed at 6.5 kHz that swells for
   20 ms and then stops.
 - **Metal.** Six free-running square-wave oscillators feed the cymbal and both
   hats: 325.2, 417.9, 546.8, 564.8, 793.0 and 849.6 Hz, band-limited. These
