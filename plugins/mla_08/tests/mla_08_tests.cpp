@@ -48,7 +48,8 @@ constexpr int32 kBlock = 256;
 // Parameter IDs (see plugin.cpp).
 constexpr ParamID kOutput = 100, kAccent = 101, kDynamics = 102, kBdTone = 104, kBdDecay = 105, kSdTone = 107,
                   kSdSnappy = 108, kLtTuning = 110, kCyDecay = 120, kOhDecay = 122, kChLevel = 123,
-                  kChDecay = 124, kChTone = 125, kOhTone = 126, kChAttack = 127, kOhAttack = 128, kCyAttack = 129;
+                  kChDecay = 124, kChTone = 125, kOhTone = 126, kChAttack = 127, kOhAttack = 128, kCyAttack = 129,
+                  kCpDecay = 130;
 
 // One General MIDI key per instrument.
 constexpr int kBD = 36, kRS = 37, kSD = 38, kCP = 39, kLT = 45, kMT = 47, kHT = 50, kCH = 42, kOH = 46, kCY = 49,
@@ -476,6 +477,18 @@ void testMetal(const std::string &path)
     CHECK(chBright > chDark * 1.5 && ohBright > ohDark * 1.5);
 }
 
+void testClapDecay(const std::string &path)
+{
+    // CP Decay scales the clap's tail; the bursts stay.
+    const Stereo shortClap = hit(path, kCP, 100.0f / 127.0f, 4.0, {{kCpDecay, 0.0}});
+    const Stereo longClap = hit(path, kCP, 100.0f / 127.0f, 4.0, {{kCpDecay, 1.0}});
+    const double a = length40(shortClap.left), b = length40(longClap.left);
+    std::printf("clap decay: %.3f .. %.3f s\n", a, b);
+    CHECK(b > a * 4.0);
+    CHECK(a > 0.03);
+    CHECK(rms(shortClap.left, 0, 1440) > rms(longClap.left, 0, 1440) * 0.8);
+}
+
 void testMetalAttack(const std::string &path)
 {
     // The hats and cymbal rise like the recordings (about 0.7 ms) instead of
@@ -601,6 +614,7 @@ int main(int argc, char **argv)
     testTuning(path);
     testMetal(path);
     testMetalAttack(path);
+    testClapDecay(path);
     testDynamics(path);
     testRetrigger(path);
     testState(path);

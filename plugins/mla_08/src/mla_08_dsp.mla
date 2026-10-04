@@ -383,6 +383,8 @@ struct M08 {
     var ch_attack: f32;
     var oh_attack: f32;
     var cy_attack: f32;
+    /// Clap tail length, 0..1 (0.25x .. 4x the recording).
+    var cp_decay: f32;
     /// Accent amount 0..1 (0 = none, 1 = +9 dB).
     var accent: f32;
     /// 0: two levels (velocity above 100 accents); 1: velocity scales the level.
@@ -536,7 +538,7 @@ impl M08 {
             level_cp: 1.0f, level_cb: 1.0f, level_cy: 1.0f, level_oh: 1.0f, level_ch: 1.0f,
             bd_tone: 0.5f, bd_decay: 0.5f, sd_tone: 0.5f, snappy: 0.5f,
             lt_tune: 0.5f, mt_tune: 0.5f, ht_tune: 0.5f, cy_tone: 0.5f, cy_decay: 0.5f, oh_decay: 0.5f,
-            ch_decay: 0.5f, ch_tone: 0.5f, oh_tone: 0.5f, ch_attack: 0.5f, oh_attack: 0.5f, cy_attack: 0.5f,
+            ch_decay: 0.5f, ch_tone: 0.5f, oh_tone: 0.5f, ch_attack: 0.5f, oh_attack: 0.5f, cy_attack: 0.5f, cp_decay: 0.5f,
             accent: 0.5f, dynamics: 0, output_target: 1.0f, output_gain: 1.0f,
             bd: Resonator::new(), bd_body: Resonator::new(), bd_damp: 0.0f, bd_body_damp: 0.0f,
             bd_kick: 0.0f, bd_kick_coef: 0.0f, bd_track: 0.0f, bd_track_coef: 0.0f,
@@ -742,7 +744,9 @@ impl M08 {
         } else if which == hand_clap() {
             self.cp_time = 0.0f;
             self.cp_level = gain;
-            self.cp_tail_decay.start(0.05f, 0.18f, 0.06f, r);
+            // CP Decay scales the tail: 0.25x .. 4x the recorded one.
+            let d: f32 = exp2f((self.cp_decay - 0.5f) * 4.0f);
+            self.cp_tail_decay.start(0.05f * d, 0.18f * d, 0.06f * d, r);
         } else if which == maracas() {
             self.ma_time = 0.0f;
             self.ma_level = gain;
@@ -1037,7 +1041,7 @@ fn mla08_active(handle: ptr<M08>) -> i32 {
 /// knobs 0..1: 14 BD tone, 15 BD decay, 16 SD tone, 17 SD snappy,
 /// 18 LT tuning, 19 MT tuning, 20 HT tuning, 21 CY tone, 22 CY decay,
 /// 23 OH decay, 24 CH decay, 25 CH tone, 26 OH tone, 27 CH attack,
-/// 28 OH attack, 29 CY attack.
+/// 28 OH attack, 29 CY attack, 30 CP decay.
 fn mla08_set(handle: ptr<M08>, index: i32, value: f32) {
     unsafe {
         let k: f32 = sclamp(value, 0.0f, 1.0f);
@@ -1076,6 +1080,7 @@ fn mla08_set(handle: ptr<M08>, index: i32, value: f32) {
         else if index == 27 { (*handle).ch_attack = k; }
         else if index == 28 { (*handle).oh_attack = k; }
         else if index == 29 { (*handle).cy_attack = k; }
+        else if index == 30 { (*handle).cp_decay = k; }
     }
 }
 

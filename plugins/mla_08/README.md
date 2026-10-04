@@ -93,7 +93,9 @@ the extra level at full velocity.
   around 1.3 kHz, at 0, 9.5, 21.5 and 31.5 ms, each decaying in 1.8 ms. The
   last one is the main hit. It adds a short broadband crack and a bright layer
   that fades in about 25 ms, over a tail around 1 kHz that stays noisy up top.
-  So the clap starts crisp and darkens as it fades, as on the recording. Maracas: noise high-passed at 6.5 kHz that swells for
+  So the clap starts crisp and darkens as it fades, as on the recording.
+  **CP Decay** (not on the 808) scales the tail from 0.25x to 4x; the bursts
+  stay. Maracas: noise high-passed at 6.5 kHz that swells for
   20 ms and then stops.
 - **Metal.** Six free-running square-wave oscillators feed the cymbal and both
   hats: 325.2, 417.9, 546.8, 564.8, 793.0 and 849.6 Hz, band-limited. These
@@ -155,6 +157,7 @@ rolls do not click. A softer hit on a louder ring keeps the ring's level.
 | 127 | CH Attack    | 0..1 | 0.05 .. 10 ms (0.7 ms centred). Not on the 808. |
 | 128 | OH Attack    | 0..1 | As CH Attack. Not on the 808. |
 | 129 | CY Attack    | 0..1 | As CH Attack. Not on the 808. |
+| 130 | CP Decay     | 0..1 | Clap tail 0.25x .. 4x. Not on the 808. |
 
 The knobs are 0..1, centred by default. Parameter IDs are stable, and new
 parameters are appended. The output is mono, on both channels.
@@ -190,7 +193,7 @@ classes and checks rendered audio:
 - tom and conga tuning, with the shared knobs; the claves' pitch
 - the cowbell's oscillator pair; the hats' brightness, the closed hat
   choking the open hat, and the open hat and cymbal decays
-- CH Decay and the hats' Tone; the hats' and cymbal's attack (no step at the
+- CP Decay; CH Decay and the hats' Tone; the hats' and cymbal's attack (no step at the
   onset) and the Attack knobs
 - accent and velocity dynamics
 - click-free fast rolls

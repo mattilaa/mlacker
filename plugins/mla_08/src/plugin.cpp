@@ -11,8 +11,8 @@
 // Tone, Decay, Snappy or Tuning where the 808 has them. As on the 808, each
 // tom shares its knobs with the conga of the same pitch, the rim shot its
 // level with the claves and the hand clap its level with the maracas. Beyond
-// the 808's panel, the hats get Tone (and the closed hat Decay) and the hats
-// and cymbal an Attack.
+// the 808's panel, the hats get Tone (and the closed hat Decay), the hats
+// and cymbal an Attack, and the clap a Decay.
 //
 // The synthesis is MLang: `src/mla_08_dsp.mla`. This file declares the buses,
 // maps keys to instruments, schedules hits sample-accurately, maps VST3
@@ -85,9 +85,10 @@ enum ParamId : ParamID {
     kChAttackParam,
     kOhAttackParam,
     kCyAttackParam,
+    kCpDecayParam,
 };
 
-constexpr ParamID kFirstParam = kOutputParam, kLastParam = kCyAttackParam;
+constexpr ParamID kFirstParam = kOutputParam, kLastParam = kCpDecayParam;
 constexpr int kNumParams = kLastParam - kFirstParam + 1;
 
 static int indexOf(ParamID id)
@@ -106,6 +107,7 @@ enum DspIndex : int32_t {
     kDspBdTone, kDspBdDecay, kDspSdTone, kDspSnappy, kDspLtTuning, kDspMtTuning, kDspHtTuning,
     kDspCyTone, kDspCyDecay, kDspOhDecay,
     kDspChDecay, kDspChTone, kDspOhTone, kDspChAttack, kDspOhAttack, kDspCyAttack,
+    kDspCpDecay,
 };
 
 // General MIDI drum keys; -1 is silent.
@@ -199,6 +201,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         addKnob(kChAttackParam, STR16("CH Attack"));
         addKnob(kOhAttackParam, STR16("OH Attack"));
         addKnob(kCyAttackParam, STR16("CY Attack"));
+        addKnob(kCpDecayParam, STR16("CP Decay"));
         return kResultOk;
     }
 
@@ -412,6 +415,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             case kChAttackParam: set(kDspChAttack, n); break;
             case kOhAttackParam: set(kDspOhAttack, n); break;
             case kCyAttackParam: set(kDspCyAttack, n); break;
+            case kCpDecayParam: set(kDspCpDecay, n); break;
             default: break;
         }
     }
