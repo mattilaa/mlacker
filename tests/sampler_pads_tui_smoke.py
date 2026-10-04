@@ -140,12 +140,12 @@ def main():
             tui.send(b"\x1b", 0.6)
 
             # Device changes rebuild every instrument; pads must be re-sent.
-            expect(tui.send_until(F1 + b"jjjjjjjj\r", b"Master output (AUHAL)"), b"Master output (AUHAL)")  # File > Settings
-            tui.send(b"\rk\r")
-            tui.send(b"\t\rk\r")
+            expect(tui.send_until(F1 + b"jjjj\r", b"Audio output (AUHAL)"), b"Audio output (AUHAL)")  # File > Settings
+            tui.send(b"\rk\r")  # Audio output -> Disabled
+            tui.send(b"\t\t\rjjj\r")  # past the audio input; Device default -> 96 kHz
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
-            tui.send(b"\t\rjjj\r")  # Device default -> 96 kHz
-            frame = expect(tui.send(b"\t\t\t\r", 0.8), b"Settings applied")  # past CPU cores and audio input
+            tui.send(b"\t\t\rk\r")  # past the master headroom; MIDI -> Disabled
+            frame = expect(tui.send(b"\t\t\r", 0.8), b"Settings applied")  # past CPU cores to OK
             assert b"sampler pads" not in frame, frame[-4000:]
 
             # A cancelled pad file dialog must not capture the next file dialog.
@@ -153,7 +153,7 @@ def main():
             tui.send(PAD_FROM_FILE)
             expect(tui.send(b"\r"), b"Load sample for pad 2")
             tui.send(b"\x1b", 0.6)
-            expect(tui.send(F1 + b"jjjjj\r"), b"Save session (.mlack)")
+            expect(tui.send(F1 + b"jjljjj\r"), b"Save session (.mlack)")  # File > Session > Save session as
             frame = expect(tui.send(b"\x15" + bytes(path) + b"\r", 0.7), b"Saved:")
             assert b"Pad 2:" not in frame, frame[-4000:]
 
@@ -179,7 +179,7 @@ def main():
             frame = expect(tui.send(b"l\r", 0.8), b"track assignments cleared")
 
             # Sessions are single-open: Space must not mark there.
-            expect(tui.send(F1 + b"j\r"), b"Open session")
+            expect(tui.send(F1 + b"jjl\r"), b"Open session")  # File > Session > Open session
             tui.send(b"\t")
             frame = tui.send(b" ")
             assert b"Marked" not in frame, frame[-4000:]

@@ -192,9 +192,10 @@ session at startup:
 build/cmake/bin/mlacker "my song.mlack"
 ```
 
-**File → Save session** (or Ctrl+S) saves to the current filename; the first save
-asks for a `.mlack` path. **Save session as** chooses another path. **Open session**
-loads a `.mlack` file. **New session** confirms before resetting to an empty editor.
+**File → Session → Save session** (or Ctrl+S) saves to the current filename; the
+first save asks for a `.mlack` path. **Save session as** chooses another path.
+**Open session** loads a `.mlack` file. **File → New session** confirms before
+resetting to an empty editor.
 Saving stops the sequencer; loading always restores a stopped transport.
 
 ## Projects (.mlaproj)
@@ -211,9 +212,10 @@ My song.mlaproj/
                      Master / Effect N / Insert N - <name>.mlafxpre
 ```
 
-**File → Save project** consolidates the samples and plugin presets into the
-folder (the first save asks for a name; `.mlaproj` is appended when missing),
-and **Save project as** picks another folder. While a project is open, Ctrl+S
+**File → Project → Save project** consolidates the samples and plugin presets
+into the folder (the first save asks for a name; `.mlaproj` is appended when
+missing), and **Save project as** picks another folder. **File → New project**
+confirms, starts an empty session and asks where to save it as a project. While a project is open, Ctrl+S
 and **Save session** save the project in place. **Open project** opens a
 `.mlaproj` folder, and so does passing one on the command line:
 
@@ -272,7 +274,7 @@ dialog or text field has the keyboard.
 
 | Menu | Contents |
 |------|----------|
-| File | New / Open session / Open project / Recent sessions ▸ / Save session / Save session as / Save project / Save project as / Settings / Quit |
+| File | New session, New project, Session ▸ (Open session, Recent sessions ▸, Save session, Save session as), Project ▸ (Open project, Save project, Save project as), Settings, Quit |
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
@@ -1226,7 +1228,10 @@ To the right are the controls: **HP** (a 24 dB/octave high-pass, 20 Hz by
 default so inaudible rumble never reaches the output), **EQ1–EQ4** (peaking
 bands at 100 Hz, 500 Hz, 2.5 kHz and 8 kHz, ±12 dB, each with its own Q) and
 **Master** with the volume slider (0–150%, 100% unity) beside the master L/R
-meters. With the pane focused:
+meters. After the master bus comes the master headroom (**File → Settings**,
+-12 dB by default): a single track at 100% reads that far down on the master,
+which leaves room as tracks add up. If the master meter still clips, turn the
+master volume down here. With the pane focused:
 
 | Key | Action |
 |---|---|
@@ -1427,7 +1432,11 @@ preallocated, with sample offsets preserved by the native audio event queue.
 
 ### Master slot
 
-1. Select MIDI input, master output, buffer size, and sample rate in **File → Settings**.
+1. Select the audio output and input, sample rate, buffer size, master headroom,
+   MIDI input and CPU cores in **File → Settings** (in that order).
+   **Master headroom** is a fixed gain after the master bus, 0 to -24 dB, -12 dB
+   by default: a track at full level reads that far down on the master meter.
+   The Mastering view's master volume trims on top of it.
    Buffer choices are 32–4096 frames (samples per channel), default 128.
    Smaller buffers reduce latency; larger buffers allow more processing time.
    Sample rates are Device default, 44.1, 48, and 96 kHz. The explicit rate sets

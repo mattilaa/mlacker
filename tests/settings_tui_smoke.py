@@ -16,7 +16,7 @@ F1 = b"\x1bOP"
 def main():
     master, slave = os.openpty()
     before = termios.tcgetattr(slave)
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 80, 0, 0))
     env = dict(os.environ, TERM="xterm-256color", MLANG_TUI_NO_HARDWARE="1")
     env.pop("NO_COLOR", None)
     process = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=slave, stderr=slave, env=env)
@@ -46,34 +46,39 @@ def main():
 
     try:
         assert b"Settings" in read_for(1)
-        # Saves are disabled: New -> Open session -> Open project -> Recent -> Settings.
-        frame = send_until(b"jjjj\r", b"Master output (AUHAL)")
-        assert b"MIDI input adapter" in frame and b"Master output (AUHAL)" in frame
+        # File: New session, New project, Session >, Project >, Settings.
+        frame = send_until(b"jjjj\r", b"Audio output (AUHAL)")
+        assert b"Audio output (AUHAL)" in frame and b"Audio input (AUHAL)" in frame
         frame = send(b"\r")
         assert b"Disabled" in frame and b"System default" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
         # Escape closes only the popup, the next Escape cancels the dialog.
         frame = send(b"\x1b")
-        assert b"MIDI input adapter" in frame
+        assert b"Audio output (AUHAL)" in frame
         frame = send(b"\x1b")
-        assert b"MIDI input adapter" not in frame and b"Patterns" in frame
-        # Reopen and select disabled MIDI/output, with no device access on apply.
+        assert b"Audio output (AUHAL)" not in frame and b"Patterns" in frame
+        # Reopen and walk the fields top to bottom: output, input, sample
+        # rate, buffer, headroom, MIDI, cores. Disabled output and MIDI apply
+        # without device access.
         send(F1 + b"jjjj\r")
-        send(b"\rk\r")
-        send(b"\t\rk\r")
-        frame = send(b"\t\rjj\r")  # 128 -> 512 frames
-        assert b"512 frames" in frame
-        send(b"\t\rjjj\r")  # Device default -> 96 kHz
-        frame = send(b"\t\r")  # CPU cores choices come from the OS
-        assert b"1 core (no worker threads)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
-        send(b"j\r")  # All cores -> 1 core
+        send(b"\rk\r")  # Output: System default -> Disabled
         frame = send(b"\t\r")  # Audio input: Disabled, System default, then the devices
         assert b"AUHAL - System default" in frame
         send(b"\x1b")
+        send(b"\t\rjjj\r")  # Device default -> 96 kHz
+        frame = send(b"\t\rjj\r")  # 128 -> 512 frames
+        assert b"512 frames" in frame
+        frame = send(b"\t\r")  # Master headroom, -12 dB by default
+        assert b"-12 dB (default)" in frame and b"0 dB (none)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
+        send(b"k\r")  # -12 -> -9 dB
+        send(b"\t\rk\r")  # MIDI: System default -> Disabled
+        frame = send(b"\t\r")  # CPU cores choices come from the OS
+        assert b"1 core (no worker threads)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
+        send(b"j\r")  # All cores -> 1 core
         frame = send(b"\t\r")
         assert b"Settings applied. Audio disabled." in frame
         frame = send(F1 + b"jjjj\r")
         assert b"MIDI input adapter" in frame and b"Disabled" in frame and b"512 frames" in frame and b"96 kHz" in frame
-        assert b"1 core (no worker threads)" in frame
+        assert b"-9 dB" in frame and b"1 core (no worker threads)" in frame
         # Resize with an expanded dropdown, exercising clipping and overlay.
         send(b"\r")
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 30, 0, 0))

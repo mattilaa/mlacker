@@ -21,8 +21,10 @@ def main():
             assert item in frame, (key, frame[-3000:])
         # Items with a keymap shortcut show it right-aligned, at least three
         # cells after the menu's longest label.
-        frame = tui.send(KEYS[0])
+        tui.send(KEYS[0])
+        frame = tui.send(b"jjl")  # File > Session
         assert re.search(rb"Save session {3,}<C-s>", frame), frame[-3000:]
+        tui.send(b"\x1b")
         frame = tui.send(KEYS[2])
         for label, key in ((rb"Patterns", rb"<C-S-F1>"), (rb"Audio", rb"<C-S-F2>"), (rb"Instruments", rb"<C-S-F3>"),
                            (rb"Song matrix", rb"<S-m>"), (rb"Show spectrum analyzer", rb"<C-S-m>"),

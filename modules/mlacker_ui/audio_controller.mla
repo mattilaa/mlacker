@@ -217,7 +217,7 @@ impl AudioSystem {
         if input_id < -2 { return "Invalid audio input"; }
         if self.output.handle == 0 {
             self.input_id = -2;
-            return input_id == -2 ? "" : "Audio input needs audio enabled (Settings > Master output)";
+            return input_id == -2 ? "" : "Audio input needs audio enabled (Settings > Audio output)";
         }
         if self.output.input_open(input_id) != 0 { self.input_id = -2; return __mlang_std_audio_last_error(); }
         self.input_id = input_id; return "";

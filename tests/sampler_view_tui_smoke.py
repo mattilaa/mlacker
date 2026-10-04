@@ -20,7 +20,7 @@ from session_tui_smoke import Terminal
 # The menu bar opens with F1.
 F1 = b"\x1bOP"
 BACKSPACE = b"\x7f"
-SAVE_SESSION = F1 + b"jjjjj\r"
+SAVE_SESSION = F1 + b"jjljjj\r"  # File > Session > Save session as
 
 
 def write_wav(path, value):

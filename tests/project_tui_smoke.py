@@ -8,8 +8,9 @@ from pathlib import Path
 
 from session_tui_smoke import F1, Terminal
 
-SAVE_PROJECT = F1 + b"j" * 6 + b"\r"
-OPEN_PROJECT = F1 + b"jj\r"
+SAVE_PROJECT = F1 + b"jjjlj\r"  # File > Project > Save project
+OPEN_PROJECT = F1 + b"jjjl\r"  # File > Project > Open project
+NEW_PROJECT = F1 + b"j\r"  # File > New project
 EDIT_INSTRUMENT = F1 + b"llllll" + b"j\r"
 EDIT_EFFECT = F1 + b"lllllll" + b"jj\r"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "audio" / "stereo_tone.wav"
@@ -75,9 +76,18 @@ def main():
             assert b"Open project (.mlaproj)" in tui.send(OPEN_PROJECT)
             frame = tui.send(b"\x15" + os.fsencode(moved) + b"\r", 0.9)
             assert b"Missing or unreadable audio file: Audio/stereo_tone.wav" in frame, frame[-5000:]
+            tui.send(b"\r")  # dismiss the error
+            # File > New project: confirm, then the new empty session is
+            # saved as a project straight away.
+            assert b"Start a new project?" in tui.send(NEW_PROJECT)
+            frame = tui.send(b"\r", 0.9)
+            assert b"Save project (.mlaproj)" in frame and b"Untitled.mlaproj" in frame, frame[-5000:]
+            frame = tui.send(b"\x15" + os.fsencode(Path(directory) / "Fresh") + b"\r", 0.9)
+            assert b"Saved project:" in frame, frame[-5000:]
         finally:
             tui.close()
-    print("PASS: project save with Audio/ and Presets/, in-place resave, relocated open, missing-file error")
+        assert (Path(directory) / "Fresh.mlaproj" / "Project.mlack").is_file()
+    print("PASS: project save with Audio/ and Presets/, in-place resave, relocated open, missing-file error, new project")
 
 
 if __name__ == "__main__":

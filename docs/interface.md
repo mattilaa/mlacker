@@ -270,8 +270,9 @@ the worker, not on a real-time audio callback. Shutdown signals and joins the
 worker before releasing shared storage. Hardware-independent decoder, threaded
 handoff, overflow, and indicator tests live in `tests/midi_tests.mla`.
 
-File → Settings selects the MIDI input adapter and AUHAL master output device.
-Both offer System default and Disabled. Enter opens a dropdown, j/k or arrows
+File → Settings lists the AUHAL audio output and input together, then the
+sample rate, buffer size, master headroom (-12 dB by default), MIDI input
+adapter and CPU cores. The devices offer System default and Disabled. Enter opens a dropdown, j/k or arrows
 browse, Enter commits its choice, and Escape cancels the popup. A second Escape
 cancels Settings. Tab or Shift+Tab moves between fields and the centered
 OK/Cancel buttons. Only OK applies choices. Device choices last for this run;

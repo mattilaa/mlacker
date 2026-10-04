@@ -25,20 +25,39 @@ use tui::input::*;
 use tui::menu::Key;
 use std::strbuf::clone;
 use std::strbuf::free;
+mod mlacker_ui::spectrum;
+use mlacker_ui::spectrum::headroom_choices;
+use mlacker_ui::spectrum::default_headroom_db;
 
+/// File > Settings. Fields top to bottom: the audio output and input, the
+/// sample rate, buffer size and master headroom, then MIDI and the CPU cores.
 pub struct SettingsDialog : Dialog {
     var midi: DropDown; var output: DropDown; var buffer: DropDown; var rate: DropDown;
     /// Live audio input (AUHAL): -2 disabled, -1 system default, else an
     /// input device index. Instruments can take it as their input.
     var input: DropDown;
+    /// The fixed gain after the master bus, in dB (0 = none, -12 default).
+    var headroom: DropDown;
     /// Render threads (0 = every core), read from and applied to the audio
     /// runtime directly: the cap takes effect without reopening the device.
     var cores: DropDown; var core_label: str8;
     var error: str8;
 };
+
+/// Field indexes, in the order they are shown and Tab visits them.
+fn field_output() -> i32 { return 0; }
+fn field_input() -> i32 { return 1; }
+fn field_rate() -> i32 { return 2; }
+fn field_buffer() -> i32 { return 3; }
+fn field_headroom() -> i32 { return 4; }
+fn field_midi() -> i32 { return 5; }
+fn field_cores() -> i32 { return 6; }
+/// The buttons follow the last field.
+pub fn settings_buttons() -> i32 { return 7; }
+
 impl SettingsDialog {
     pub fn new() -> SettingsDialog {
-        return SettingsDialog { title: "Settings", width: 64, height: 26,
+        return SettingsDialog { title: "Settings", width: 64, height: 28,
             error: clone(""), core_label: clone(""), focus: PaneFocus::new(0), button_alignment: Alignment::Center,
             buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
     }
@@ -52,6 +71,16 @@ impl SettingsDialog {
         self.open_devices(midi_id, output_id, frames, rate, -2);
     }
     pub fn open_devices(self: &mut Self, midi_id: i64, output_id: i64, frames: i64, rate: i64, input_id: i64) -> void {
+        self.open_settings(midi_id, output_id, frames, rate, input_id, default_headroom_db());
+    }
+    pub fn open_settings(self: &mut Self, midi_id: i64, output_id: i64, frames: i64, rate: i64, input_id: i64, headroom_db: i32) -> void {
+        var audio_items: list<DropDownItem> = [DropDownItem { id: -2, label: clone("Disabled") }, DropDownItem { id: -1, label: clone("AUHAL - System default") }];
+        let audio_count: i64 = std::audio::output_device_count();
+        for id in 0..audio_count {
+            audio_items.push(DropDownItem { id: id, label: format!("AUHAL - {}", std::audio::output_device_name(id)) });
+        }
+        self.output.set_items(audio_items, output_id);
+        for item in audio_items { free(item.label); }
         var input_items: list<DropDownItem> = [DropDownItem { id: -2, label: clone("Disabled") }, DropDownItem { id: -1, label: clone("AUHAL - System default") }];
         let input_count: i64 = std::audio::input_device_count();
         for id in 0..input_count {
@@ -70,6 +99,15 @@ impl SettingsDialog {
         }
         self.buffer.set_items(buffer_items, frames);
         for item in buffer_items { free(item.label); }
+        var headroom_items: list<DropDownItem> = [];
+        let choices: list<i32> = headroom_choices();
+        for i in 0..choices.len() {
+            let db: i32 = choices[i];
+            let label: str8 = db == 0 ? clone("0 dB (none)") : (db == default_headroom_db() ? format!("{} dB (default)", db) : format!("{} dB", db));
+            headroom_items.push(DropDownItem { id: wide(db), label: label });
+        }
+        self.headroom.set_items(headroom_items, wide(headroom_db));
+        for item in headroom_items { free(item.label); }
         var midi_items: list<DropDownItem> = [DropDownItem { id: -2, label: clone("Disabled") }, DropDownItem { id: -1, label: clone("System default") }];
         let midi_count: i64 = std::midi::input_count();
         for id in 0..midi_count {
@@ -77,13 +115,6 @@ impl SettingsDialog {
         }
         self.midi.set_items(midi_items, midi_id);
         for item in midi_items { free(item.label); }
-        var audio_items: list<DropDownItem> = [DropDownItem { id: -2, label: clone("Disabled") }, DropDownItem { id: -1, label: clone("AUHAL - System default") }];
-        let audio_count: i64 = std::audio::output_device_count();
-        for id in 0..audio_count {
-            audio_items.push(DropDownItem { id: id, label: format!("AUHAL - {}", std::audio::output_device_name(id)) });
-        }
-        self.output.set_items(audio_items, output_id);
-        for item in audio_items { free(item.label); }
         self.open_cores(AudioController::render_thread_limit());
         free(self.error); self.error = clone("");
         self.reset_buttons(); self.focus.selected = 0; self.active = true;
@@ -108,64 +139,78 @@ impl SettingsDialog {
     pub fn fail(self: &mut Self, error: str8) -> void {
         free(self.error); self.error = clone(error); self.active = true; self.reset_buttons();
     }
+    fn cancel_popups(self: &mut Self) -> void {
+        self.output.cancel(); self.input.cancel(); self.rate.cancel(); self.buffer.cancel(); self.headroom.cancel();
+        self.midi.cancel(); self.cores.cancel();
+    }
     pub fn on_event(self: &mut Self, event: InputEvent) -> void {
         if self.pressed_button >= 0 { return; }
         if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
-            self.midi.cancel(); self.output.cancel(); self.buffer.cancel(); self.rate.cancel(); self.cores.cancel(); self.input.cancel();
-            // Fields top to bottom: MIDI 0, output 1, buffer 2, rate 4, cores 5, input 6, then buttons 3.
+            self.cancel_popups();
+            // Fields top to bottom, then the buttons, wrapping around.
             let back: bool = (event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left)) || event.modifiers == 2;
-            if back { self.focus.selected = self.focus.selected == 0 ? 3 : (self.focus.selected == 3 ? 6 : (self.focus.selected == 4 ? 2 : self.focus.selected - 1)); }
-            else { self.focus.selected = self.focus.selected == 3 ? 0 : (self.focus.selected == 2 ? 4 : (self.focus.selected == 6 ? 3 : self.focus.selected + 1)); }
+            let count: i32 = settings_buttons() + 1;
+            self.focus.selected = (self.focus.selected + (back ? count - 1 : 1)) % count;
             return;
         }
-        if self.focus.selected == 0 { if self.midi.on_event(event) { return; } }
-        if self.focus.selected == 1 { if self.output.on_event(event) { return; } }
-        if self.focus.selected == 2 { if self.buffer.on_event(event) { return; } }
-        if self.focus.selected == 4 { if self.rate.on_event(event) { return; } }
-        if self.focus.selected == 5 { if self.cores.on_event(event) { return; } }
-        if self.focus.selected == 6 { if self.input.on_event(event) { return; } }
+        let f: i32 = self.focus.selected;
+        if f == field_output() { if self.output.on_event(event) { return; } }
+        if f == field_input() { if self.input.on_event(event) { return; } }
+        if f == field_rate() { if self.rate.on_event(event) { return; } }
+        if f == field_buffer() { if self.buffer.on_event(event) { return; } }
+        if f == field_headroom() { if self.headroom.on_event(event) { return; } }
+        if f == field_midi() { if self.midi.on_event(event) { return; } }
+        if f == field_cores() { if self.cores.on_event(event) { return; } }
         if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
             self.active = false; self.result = 2; return;
         }
-        if self.focus.selected == 3 { self.on_button_event(event); }
+        if f == settings_buttons() { self.on_button_event(event); }
     }
     pub fn tick(self: &mut Self) -> void {
         let action: i32 = self.tick_buttons();
         if action == 1 || action == 2 { self.active = false; self.result = action; }
     }
+    /// Field `index`'s row: its label is the line above it.
+    fn field_row(body: Rect, index: i32) -> Rect {
+        let y: i32 = 1 + index * 3;
+        return Rect::new(body.x + 1, body.y + y, body.width - 2, body.height > y ? 1 : 0);
+    }
+    fn label(surface: Surface, body: Rect, index: i32, text: str8, theme: Theme) -> void {
+        let y: i32 = index * 3;
+        if body.height > y { surface.text(Rect::new(body.x, body.y + y, body.width, 1), text, theme.foreground, theme.panel); }
+    }
     pub fn paint(self: SettingsDialog, surface: Surface, viewport: Rect, theme: Theme) -> void {
         if !self.active { return; }
         let body: Rect = self.paint_frame(surface, viewport, theme);
-        let midi_row: Rect = Rect::new(body.x + 1, body.y + 1, body.width - 2, body.height > 1 ? 1 : 0);
-        let output_row: Rect = Rect::new(body.x + 1, body.y + 4, body.width - 2, body.height > 4 ? 1 : 0);
-        let buffer_row: Rect = Rect::new(body.x + 1, body.y + 7, body.width - 2, body.height > 7 ? 1 : 0);
-        let rate_row: Rect = Rect::new(body.x + 1, body.y + 10, body.width - 2, body.height > 10 ? 1 : 0);
-        let cores_row: Rect = Rect::new(body.x + 1, body.y + 13, body.width - 2, body.height > 13 ? 1 : 0);
-        let input_row: Rect = Rect::new(body.x + 1, body.y + 16, body.width - 2, body.height > 16 ? 1 : 0);
-        surface.text(body, "MIDI input adapter", theme.foreground, theme.panel);
-        if body.height > 3 { surface.text(Rect::new(body.x, body.y + 3, body.width, 1), "Master output (AUHAL)", theme.foreground, theme.panel); }
-        self.midi.paint(surface, midi_row, theme, self.focus.selected == 0);
-        self.output.paint(surface, output_row, theme, self.focus.selected == 1);
-        if body.height > 6 { surface.text(Rect::new(body.x, body.y + 6, body.width, 1), "Buffer size (samples per channel)", theme.foreground, theme.panel); }
-        self.buffer.paint(surface, buffer_row, theme, self.focus.selected == 2);
-        if body.height > 9 { surface.text(Rect::new(body.x, body.y + 9, body.width, 1), "Sample rate", theme.foreground, theme.panel); }
-        self.rate.paint(surface, rate_row, theme, self.focus.selected == 4);
-        if body.height > 12 { surface.text(Rect::new(body.x, body.y + 12, body.width, 1), self.core_label, theme.foreground, theme.panel); }
-        self.cores.paint(surface, cores_row, theme, self.focus.selected == 5);
-        if body.height > 15 { surface.text(Rect::new(body.x, body.y + 15, body.width, 1), "Audio input (AUHAL)", theme.foreground, theme.panel); }
-        self.input.paint(surface, input_row, theme, self.focus.selected == 6);
-        if body.height > 18 { surface.text(Rect::new(body.x, body.y + 18, body.width, 1), "Buffer size is a request; device size may differ.", theme.muted, theme.panel); }
-        if body.height > 19 { surface.text(Rect::new(body.x, body.y + 19, body.width, 1), self.error, theme.accent, theme.panel); }
+        let f: i32 = self.focus.selected;
+        SettingsDialog::label(surface, body, field_output(), "Audio output (AUHAL)", theme);
+        SettingsDialog::label(surface, body, field_input(), "Audio input (AUHAL)", theme);
+        SettingsDialog::label(surface, body, field_rate(), "Sample rate", theme);
+        SettingsDialog::label(surface, body, field_buffer(), "Buffer size (a request; the device may differ)", theme);
+        SettingsDialog::label(surface, body, field_headroom(), "Master headroom (a full-level track reads this far down)", theme);
+        SettingsDialog::label(surface, body, field_midi(), "MIDI input adapter", theme);
+        SettingsDialog::label(surface, body, field_cores(), self.core_label, theme);
+        self.output.paint(surface, SettingsDialog::field_row(body, field_output()), theme, f == field_output());
+        self.input.paint(surface, SettingsDialog::field_row(body, field_input()), theme, f == field_input());
+        self.rate.paint(surface, SettingsDialog::field_row(body, field_rate()), theme, f == field_rate());
+        self.buffer.paint(surface, SettingsDialog::field_row(body, field_buffer()), theme, f == field_buffer());
+        self.headroom.paint(surface, SettingsDialog::field_row(body, field_headroom()), theme, f == field_headroom());
+        self.midi.paint(surface, SettingsDialog::field_row(body, field_midi()), theme, f == field_midi());
+        self.cores.paint(surface, SettingsDialog::field_row(body, field_cores()), theme, f == field_cores());
+        let error_y: i32 = settings_buttons() * 3;
+        if body.height > error_y { surface.text(Rect::new(body.x, body.y + error_y, body.width, 1), self.error, theme.accent, theme.panel); }
         // Overlays are last, so they cover labels, fields and buttons.
-        self.midi.paint_popup(surface, midi_row, viewport, theme);
-        self.output.paint_popup(surface, output_row, viewport, theme);
-        self.buffer.paint_popup(surface, buffer_row, viewport, theme);
-        self.rate.paint_popup(surface, rate_row, viewport, theme);
-        self.cores.paint_popup(surface, cores_row, viewport, theme);
-        self.input.paint_popup(surface, input_row, viewport, theme);
+        self.output.paint_popup(surface, SettingsDialog::field_row(body, field_output()), viewport, theme);
+        self.input.paint_popup(surface, SettingsDialog::field_row(body, field_input()), viewport, theme);
+        self.rate.paint_popup(surface, SettingsDialog::field_row(body, field_rate()), viewport, theme);
+        self.buffer.paint_popup(surface, SettingsDialog::field_row(body, field_buffer()), viewport, theme);
+        self.headroom.paint_popup(surface, SettingsDialog::field_row(body, field_headroom()), viewport, theme);
+        self.midi.paint_popup(surface, SettingsDialog::field_row(body, field_midi()), viewport, theme);
+        self.cores.paint_popup(surface, SettingsDialog::field_row(body, field_cores()), viewport, theme);
     }
     pub fn release(self: &mut Self) -> void {
         self.midi.release(); self.output.release(); self.buffer.release(); self.rate.release(); self.cores.release(); self.input.release();
+        self.headroom.release();
         free(self.core_label); free(self.error);
     }
 }

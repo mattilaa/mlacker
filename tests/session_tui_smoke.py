@@ -161,7 +161,7 @@ def main():
             assert path.read_bytes() == closed_editor, "Preset load changed MIDI learn or failed to restore parameters"
             bad = Path(directory) / "bad.mlack"
             bad.write_bytes(saved[:20])
-            assert b"Open session" in tui.send(F1 + b"j\r")
+            assert b"Open session" in tui.send(F1 + b"jjl\r")
             frame = tui.send(b"\x15" + os.fsencode(bad) + b"\r", 0.6)
             assert b"truncated" in frame and b"Instrument: 1" in frame, frame[-5000:]
         finally:
@@ -176,12 +176,12 @@ def main():
             frame = tui.send(F1 + b"llllll" + b"j\r")
             assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.25" in frame, frame[-5000:]
             tui.send(b"\x1b")
-            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjjjjj\r", b"MIDI input adapter")
-            tui.send(b"\rk\r")
-            tui.send(b"\t\rk\r")
+            assert b"Audio output (AUHAL)" in tui.send_until(F1 + b"jjjj\r", b"Audio output (AUHAL)")
+            tui.send(b"\rk\r")  # Audio output -> Disabled
+            tui.send(b"\t\t\rjjj\r")  # past the audio input; Device default -> 96 kHz
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
-            tui.send(b"\t\rjjj\r")  # Device default -> 96 kHz
-            frame = tui.send(b"\t\t\t\r", 0.6)  # past CPU cores and audio input
+            tui.send(b"\t\t\rk\r")  # past the master headroom; MIDI -> Disabled
+            frame = tui.send(b"\t\t\r", 0.6)  # past CPU cores to OK
             assert b"Settings applied. Audio disabled." in frame, frame[-5000:]
             frame = tui.send(F1 + b"llllll" + b"j\r")
             assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.25" in frame, frame[-5000:]
@@ -220,12 +220,12 @@ def main():
             assert b"Opened:" in frame, frame[-5000:]
             tui.send(b"\x13", 0.6)
             assert master_path.read_bytes() == master_saved, "Master plugin state changed on reload"
-            assert b"MIDI input adapter" in tui.send_until(F1 + b"jjjjjjjj\r", b"MIDI input adapter")
-            tui.send(b"\rk\r")
-            tui.send(b"\t\rk\r")
+            assert b"Audio output (AUHAL)" in tui.send_until(F1 + b"jjjj\r", b"Audio output (AUHAL)")
+            tui.send(b"\rk\r")  # Audio output -> Disabled
+            tui.send(b"\t\t\rjjj\r")  # past the audio input; Device default -> 96 kHz
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
-            tui.send(b"\t\rjjj\r")  # Device default -> 96 kHz
-            frame = tui.send(b"\t\t\t\r", 0.6)  # past CPU cores and audio input
+            tui.send(b"\t\t\rk\r")  # past the master headroom; MIDI -> Disabled
+            frame = tui.send(b"\t\t\r", 0.6)  # past CPU cores to OK
             assert b"Settings applied. Audio disabled." in frame, frame[-5000:]
             tui.send(b"\x13", 0.6)
             assert master_path.read_bytes() == master_saved, "Master plugin state changed on output replacement"

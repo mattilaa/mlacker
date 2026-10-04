@@ -5,7 +5,7 @@ pub enum Action : i32 {
     None = 0,
     // File
     NewSession = 1, OpenSession = 2, SaveSession = 3, SaveSessionAs = 96,
-    OpenProject = 164, SaveProject = 165, SaveProjectAs = 166,
+    OpenProject = 164, SaveProject = 165, SaveProjectAs = 166, NewProject = 181,
     RecentBlueHour = 8, TemplateAmbient = 9, TemplateDance = 10,
     Settings = 90, Quit = 99,
     // Edit

@@ -27,6 +27,7 @@ use mlacker_ui::mixer::Mixer;
 mod mlacker_ui::spectrum;
 use mlacker_ui::spectrum::SpectrumView;
 use mlacker_ui::spectrum::MasterBus;
+use mlacker_ui::spectrum::default_headroom_db;
 mod mlacker_ui::patterns;
 use mlacker_ui::patterns::PatternLibrary;
 use mlacker_ui::patterns::SongCover;
@@ -137,19 +138,22 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
     var bar: MenuBar = MenuBar::new([
                     Menu {title: "File", items: [
                                 menu_item("New session", Action::NewSession, true, keymap),
-                                menu_item("Open session", Action::OpenSession, true, keymap),
-                                menu_item("Open project", Action::OpenProject, true, keymap),
-                                MenuItem::submenu("Recent sessions", [
-                                                menu_item("Blue hour", Action::RecentBlueHour, true, keymap),
-                                                MenuItem::submenu("Templates", [
-                                                                menu_item("Ambient", Action::TemplateAmbient, true, keymap),
-                                                                menu_item("Dance", Action::TemplateDance, true, keymap)
-                                                        ])
-                                        ]),
-                                menu_item("Save session", Action::SaveSession, !fixture, keymap),
-                                menu_item("Save session as", Action::SaveSessionAs, !fixture, keymap),
-                                menu_item("Save project", Action::SaveProject, !fixture, keymap),
-                                menu_item("Save project as", Action::SaveProjectAs, !fixture, keymap),
+                                menu_item("New project", Action::NewProject, true, keymap),
+                                MenuItem::submenu("Session", [
+                                                menu_item("Open session", Action::OpenSession, true, keymap),
+                                                MenuItem::submenu("Recent sessions", [
+                                                                menu_item("Blue hour", Action::RecentBlueHour, true, keymap),
+                                                                MenuItem::submenu("Templates", [
+                                                                                menu_item("Ambient", Action::TemplateAmbient, true, keymap),
+                                                                                menu_item("Dance", Action::TemplateDance, true, keymap)
+                                                                        ])
+                                                        ]),
+                                                menu_item("Save session", Action::SaveSession, !fixture, keymap),
+                                                menu_item("Save session as", Action::SaveSessionAs, !fixture, keymap)]),
+                                MenuItem::submenu("Project", [
+                                                menu_item("Open project", Action::OpenProject, true, keymap),
+                                                menu_item("Save project", Action::SaveProject, !fixture, keymap),
+                                                menu_item("Save project as", Action::SaveProjectAs, !fixture, keymap)]),
                                 menu_item("Settings", Action::Settings, true, keymap),
                                 menu_item("Quit", Action::Quit, true, keymap)] },
                     Menu {title: "Edit", items: [
@@ -552,6 +556,11 @@ pub fn run() -> i32 {
     var previous_height: i32 = 0;
     var escape_ticks: i32 = 0;
     var confirm_track_action: Action = Action::None;
+    // File > New project: after the new empty session is in place, the Save
+    // project chooser opens (queued_command runs on a replayed empty event).
+    var new_project_pending: bool = false; var queued_command: Action = Action::None;
+    // File > Settings > Master headroom (dB): the fixed gain after the master bus.
+    var master_headroom: i32 = default_headroom_db();
     var last_processor_errors: i64 = 0;
     var prev_sample_row: i32 = -1;
     let no_hardware: str8 = __env_get_var("MLANG_TUI_NO_HARDWARE");
@@ -651,6 +660,10 @@ pub fn run() -> i32 {
                 paste_error.question = alert_text; paste_error.open(); focus.set_menu_active(true);
             }
             free(session_status);
+            if new_project_pending {
+                new_project_pending = false;
+                if session_request == 3 && !session_failed { queued_command = Action::SaveProjectAs; replay = InputEvent {}; replay_pending = true; }
+            }
             session_request = 0; menus.dismiss(); dirty = true;
         }
         if sidebar_remove.len() > 0 && remove_request == 0 && remove_pending == 0 && !remove_question.active {
@@ -1346,7 +1359,7 @@ pub fn run() -> i32 {
             master_meter_clock = now;
         }
         // Pushes the master bus to a new controller, then analyses at its own rate.
-        if spectrum.update(midi.output, now, spectrum_area) { playback_dirty = true; }
+        if spectrum.update(midi.output, master_headroom, now, spectrum_area) { playback_dirty = true; }
         if playback_dirty && frame_rate.ready(now) { dirty = true; }
         if sample.visible && !library.table.audio_under_cursor() { sample.visible = false; dirty = true; }
         prompt.follow(library.renaming ? 1 : (library.table.editing && library.table.edit_mode > 0 ? 2 : 0));
@@ -1367,6 +1380,8 @@ pub fn run() -> i32 {
                 if !settings.active && settings.result == 1 {
                     // The core cap applies to running audio from its next block.
                     AudioController::set_render_threads(settings.cores.selected_id() < 0 ? 0 : settings.cores.selected_id());
+                    // The headroom reaches the output on the next spectrum sync.
+                    master_headroom = i32(settings.headroom.selected_id() > 0 ? 0 : settings.headroom.selected_id());
                     let applied: result<i32, str8> = midi.configure_audio(settings.midi.selected_id(), settings.output.selected_id(), settings.buffer.selected_id(), settings.rate.selected_id(), library.audio.samples);
                     let input_error: str8 = applied.is_err() ? "" : midi.set_input(settings.input.selected_id());
                     if applied.is_err() { settings.fail(applied.unwrap_err()); }
@@ -1477,7 +1492,11 @@ pub fn run() -> i32 {
                         }
                         confirm_track_action = Action::None;
                         free(message); message = clone("Track action finished.");
-                    } else {free(message); message = clone(question.result == 1 ? "New session confirmed." : "New session cancelled."); if question.result == 1 && !fixture { session_request = 3; } }
+                    } else {
+                        let what: str8 = new_project_pending ? "New project" : "New session";
+                        free(message); message = format!("{} {}.", what, question.result == 1 ? "confirmed" : "cancelled");
+                        if question.result == 1 && !fixture { session_request = 3; } else { new_project_pending = false; }
+                    }
                 }
             }
         }
@@ -2481,14 +2500,19 @@ pub fn run() -> i32 {
                     share_question.open(); focus.set_menu_active(true); dirty = true;
                 }
             }
+            if command == Action::None && queued_command != Action::None { command = queued_command; queued_command = Action::None; }
             if command != Action::None { dirty = true; pattern_action = Action::None; }
             if command != Action::None && command != Action::LoadInsert { adding_insert_track = -1; }
             if command == Action::Quit { running = false; }
             else if command == Action::Settings {
-                transport.playing = false; settings.open_devices(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate, midi.input_id); focus.set_menu_active(true);
+                transport.playing = false; settings.open_settings(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate, midi.input_id, master_headroom); focus.set_menu_active(true);
             }
-            else if command == Action::NewSession {
-                question.title = "New session"; question.question = "Start a new session?";
+            else if command == Action::NewSession || command == Action::NewProject {
+                // A new project is a new session that is saved as a .mlaproj
+                // folder right away.
+                new_project_pending = command == Action::NewProject;
+                question.title = new_project_pending ? "New project" : "New session";
+                question.question = new_project_pending ? "Start a new project?" : "Start a new session?";
                 confirm_track_action = Action::None; question.open(); focus.set_menu_active(true);
             }
             else if (command == Action::SaveSession || command == Action::SaveProject) && session_path != "" && (project_open || command == Action::SaveSession) {

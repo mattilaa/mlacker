@@ -497,7 +497,7 @@ def main():
         # Escape from the grandchild closes every menu and restores pane 2.
         os.write(master, F1)
         read_frame(None)
-        os.write(master, b"jjjl")
+        os.write(master, b"jjljl")  # File > Session > Recent sessions
         cascade = read_frame(None)
         assert b"Recent sessions" in cascade and b"Blue hour" in cascade and b">" in cascade
         os.write(master, b"jl")
@@ -510,10 +510,10 @@ def main():
         os.write(master, b"\x1b")
         closed = read_frame(2)
         assert b"Blue hour" not in closed and b"Ambient" not in closed
-        # File -> Open session creates a modal browser, not a status-only action.
+        # File -> Session -> Open session creates a modal browser, not a status-only action.
         os.write(master, F1)
         read_frame(None)
-        os.write(master, b"j\r")
+        os.write(master, b"jjl\r")
         browser = read_frame(None, 1)
         assert b"Open session" in browser and b"Path: " in browser
         assert b"Directories" in browser and b"Files" in browser
@@ -543,7 +543,7 @@ def main():
                     return frame
             raise AssertionError(f"missing {marker!r}")
 
-        os.write(master, F1 + b"j\r")
+        os.write(master, F1 + b"jjl\r")
         read_frame(None, 1)
         os.write(master, b"\x15qhjk-does-not-exist.session\r")
         frame_containing(b"inaccessible")
@@ -553,7 +553,7 @@ def main():
         os.write(master, b"\x15" + os.path.join(fixture_dir, "qhjk session.session").encode() + b"\r")
         frame_containing(b"Selected:")
         # Cancellation restores pane focus and small viewports remain usable.
-        os.write(master, F1 + b"j\r")
+        os.write(master, F1 + b"jjl\r")
         read_frame(None, 1)
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 6, 12, 0, 0))
         read_until(b"\x1b[0m")

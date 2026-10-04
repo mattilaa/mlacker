@@ -9,6 +9,8 @@ use tui::surface::*;
 use tui::theme::*;
 use tui::meter::VuMeter;
 use std::audio::controller::AudioController;
+use std::audio::controller::AudioEvent;
+use std::audio::controller::AudioEventKind;
 use std::math::log;
 use std::math::exp;
 use std::strbuf::free;
@@ -17,6 +19,7 @@ use std::strbuf::clone;
 /// Master bus settings: pushed to the controller and saved with a session.
 /// Band gains are tenths of a dB, Qs hundredths, the high-pass 0 when off.
 /// `eq_on` switches the high-pass and bands in or out; volume always applies.
+/// After it comes the master headroom (File > Settings), a fixed gain.
 pub struct MasterBus {
     var hp_hz: i32{20}; var volume: i32{100}; var eq_on: bool{true};
     var hz0: i32{100}; var hz1: i32{500}; var hz2: i32{2500}; var hz3: i32{8000};
@@ -65,6 +68,18 @@ impl MasterBus {
     }
 }
 
+/// Master headroom choices (File > Settings), in dB; -12 dB by default.
+pub fn default_headroom_db() -> i32 { return -12; }
+pub fn headroom_choices() -> list<i32> { return [0, -3, -6, -9, -12, -15, -18, -24]; }
+
+/// Set the fixed gain after the master bus: `db` of headroom, so a track at
+/// full level reads `db` below it on the master.
+pub fn apply_headroom(output: AudioController, db: i32) -> void {
+    if output.handle == 0 { return; }
+    let gain: f64 = exp(f64(db > 0 ? 0 : db) * log(10.0) / 20.0);
+    output.post(AudioEvent { kind: AudioEventKind::MasterGain, gain: gain }, 0);
+}
+
 /// Spectrum analyzer with the master bus controls, shown in the mixer's pane.
 /// Detail 0 draws one bar per column with eighth-block tops, 1 two Braille
 /// bars per column, 2 wide bars. Levels are dBFS, tilted +3 dB/octave around
@@ -77,6 +92,8 @@ pub struct SpectrumView {
     var selected: i32{1}; var part: i32;
     var levels: list<f64>; var peaks: list<f64>;
     var clock: i64; var applied: i64;
+    /// The headroom last pushed to `applied`.
+    var headroom: i32;
 };
 
 fn spectrum_clamp(value: i32, low: i32, high: i32) -> i32 { return value < low ? low : (value > high ? high : value); }
@@ -151,13 +168,16 @@ impl SpectrumView {
         return width;
     }
     /// Push the bus whenever the controller changed (new device or session).
-    pub fn sync(self: &mut Self, output: AudioController) -> void {
+    /// The master headroom too, when it changed.
+    pub fn sync(self: &mut Self, output: AudioController, headroom_db: i32) -> void {
         // A fresh controller has seen no changes, even at a reused address.
-        if output.handle != 0 && (output.handle != self.applied || output.master_changes() == 0) { self.bus.apply(output); self.applied = output.handle; }
+        let fresh: bool = output.handle != 0 && (output.handle != self.applied || output.master_changes() == 0);
+        if fresh { self.bus.apply(output); self.applied = output.handle; }
+        if output.handle != 0 && (fresh || headroom_db != self.headroom) { apply_headroom(output, headroom_db); self.headroom = headroom_db; }
     }
     /// Analyse at the update rate; true when the picture changed.
-    pub fn update(self: &mut Self, output: AudioController, now: i64, area: Rect) -> bool {
-        self.sync(output);
+    pub fn update(self: &mut Self, output: AudioController, headroom_db: i32, now: i64, area: Rect) -> bool {
+        self.sync(output, headroom_db);
         if !self.visible || output.handle == 0 { return false; }
         let elapsed: i64 = now - self.clock;
         if elapsed < wide(1000 / (self.fps < 1 ? 1 : self.fps)) { return false; }
