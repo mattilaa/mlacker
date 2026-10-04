@@ -2,6 +2,7 @@
 
 Usage: python3 mlacker/tests/pattern_queue_tui_smoke.py mlacker/build/cmake/bin/mlacker
 """
+import re
 from session_tui_smoke import Terminal, F1
 
 
@@ -60,7 +61,9 @@ def main():
     finally:
         tui.close()
     matrix_clone_editing()
-    print("PASS: a pattern change queues the next pattern; the matrix plays on, also while a clone is edited")
+    cursor_stays_put()
+    print("PASS: a pattern change queues the next pattern; the matrix plays on, also while a clone is edited;"
+          " moving the cursor during playback keeps it put until Esc")
 
 
 def matrix_clone_editing():
@@ -93,6 +96,46 @@ def matrix_clone_editing():
         assert b"Editing:" in frame[-6000:] and b"Pattern / 3" in frame[-8000:], frame[-4000:]
         frame = tui.send(b"\x1b", .4)
         assert b"STOP" not in frame and b"Pattern / 3" in frame, frame[-4000:]
+    finally:
+        tui.close()
+
+
+# Row labels down the pattern pane's left edge, past the first screen of rows.
+LATER_ROWS = re.compile(rb"\xe2\x94\x82(0[3-5]\d) ")
+
+
+def cursor_stays_put():
+    """j/k/h/l while the pattern plays stop the cursor following until Esc."""
+    tui = Terminal()
+    try:
+        tui.read(.8)
+        tui.send(b"\x1b")
+        tui.send(b"\x02\x15400\r")           # 64 rows take 2.4 s
+        assert b"002" in tui.send(F1 + b"llll\r")  # a pattern with tracks to edit
+        tui.send(F1 + b"ll\r")                 # View > Patterns
+        tui.send(b"\t", .3)                    # the pattern pane, cursor on row 000
+        # Following, the editor scrolls down with the playing row.
+        tui.send(b" ", .05)
+        frame = tui.read(1.6)
+        assert b"PLAY" in frame and LATER_ROWS.search(frame), frame[-4000:]
+        tui.send(b" ", .4)
+        tui.send(b"gg", .3)
+        # Moving the cursor while playing leaves it there.
+        tui.send(b" ", .05)
+        frame = tui.send(b"j", .2)
+        assert b"Esc follows playback again" in frame and b"STOP" not in frame, frame[-4000:]
+        frame = tui.read(1.6)
+        assert b"PLAY" in frame and not LATER_ROWS.search(frame), frame[-4000:]
+        # An edit opened and cancelled there keeps the cursor put.
+        assert b"Editing:" in tui.send(b"\r", .3)
+        frame = tui.send(b"\x1b", .3) + tui.read(1.2)
+        assert b"Editing:" not in frame[-3000:] and not LATER_ROWS.search(frame), frame[-4000:]
+        # Esc follows playback again.
+        frame = tui.send(b"\x1b", .3)
+        assert b"Cursor follows playback" in frame, frame[-4000:]
+        frame += tui.read(2.6)
+        assert b"PLAY" in frame and LATER_ROWS.search(frame), frame[-4000:]
+        assert b"STOP" in tui.send(b" ", .4)
     finally:
         tui.close()
 

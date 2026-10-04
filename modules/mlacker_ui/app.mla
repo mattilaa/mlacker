@@ -554,6 +554,9 @@ pub fn run() -> i32 {
     // playing pattern (`play_pattern`) that runs to its end before the chosen
     // one (the active pattern) starts.
     var pattern_held: bool = false; var held_table: SequenceTable = SequenceTable {};
+    // Moving the pattern cursor while the pattern plays leaves it where it
+    // is, for changes in place, until Esc makes it follow playback again.
+    var follow_paused: bool = false;
     // Matrix recording: the pattern armed with Shift+R in the matrix (0 when
     // none), whether a take is running into it, the pattern time where the
     // take began, and the track the take armed itself (-1 when it was armed).
@@ -1192,7 +1195,7 @@ pub fn run() -> i32 {
         // editor cursor just stops following the transport (see `cursor_held`)
         // so an edit never commits to a moving row. A queued pattern is not the
         // one playing, so its length and the truncation question are free too.
-        let cursor_held: bool = library.table.editing || library.table.visual;
+        let cursor_held: bool = library.table.editing || library.table.visual || follow_paused;
         if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || curve_dialog.active { transport.playing = false; }
         if library.table.recording_track >= 0 {
             let armed: SequenceTrack = library.table.tracks[library.table.recording_track];
@@ -1382,6 +1385,7 @@ pub fn run() -> i32 {
         note_playback.once = song_playing ? library.next_song_row(song_row) != song_row : pattern_held;
         note_playback.update(song_playing ? song_table : (pattern_held ? held_table : library.table), transport.ticks, transport.playing && transport.count_in == 0);
         midi.sequencer_events(note_playback.events, song_playing ? song_table : (pattern_held ? held_table : library.table));
+        if follow_paused && (!transport.playing || song_playing) { follow_paused = false; }
         if pattern_held && (!transport.playing || song_playing) {
             // Stopped (or the matrix took over) before the queued pattern began.
             held_table.release(); held_table = SequenceTable {}; pattern_held = false;
@@ -2559,7 +2563,15 @@ pub fn run() -> i32 {
                     dirty = true;
                 } else if !library.table.editing && (library.table.group_detail_rows > 0 || (event.code == 102 && event.modifiers == 1)) {
                     command = library.table.insert_event(event, panes[1].bounds.inset(1)); dirty = true;
-                } else { if library.table.edit_event(event, panes[1].bounds.inset(1)) { dirty = true; } }
+                } else {
+                    let navigation: bool = (event.modifiers == 1 && (event.code == 104 || event.code == 106 || event.code == 107 || event.code == 108)) ||
+                        (event.kind == InputKind::Menu && (event.key == Key::Up || event.key == Key::Down || event.key == Key::Left || event.key == Key::Right));
+                    if navigation && transport.playing && !song_playing && !library.table.editing && !follow_paused {
+                        follow_paused = true;
+                        free(message); message = clone("Cursor stays put while playing: Esc follows playback again");
+                    }
+                    if library.table.edit_event(event, panes[1].bounds.inset(1)) { dirty = true; }
+                }
             } else if focus.selected == 0 {
                 if (event.code == 14 && event.modifiers == 1) || (event.code == 110 && event.modifiers == 5) {
                     if library.audio_mode { library.audio.view.toggle_mark(); }
@@ -3543,6 +3555,11 @@ pub fn run() -> i32 {
                 }
                 else if library.table.editing || (library.table.visual && menus.active < 0 && focus.selected == 1) {
                     library.table.edit_event(event, panes[1].bounds.inset(1)); dirty = true;
+                }
+                else if follow_paused && menus.active < 0 && focus.selected == 1 && !matrix.visible {
+                    follow_paused = false;
+                    if !pattern_held && transport.row >= 0 { library.table.selected_row = transport.row; }
+                    free(message); message = clone("Cursor follows playback"); dirty = true;
                 }
                 else if event.kind == InputKind::Menu {
                     menus.on_key(event.key);
