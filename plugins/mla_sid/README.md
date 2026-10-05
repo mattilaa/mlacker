@@ -197,14 +197,33 @@ stable, and new parameters are appended.
    channel (track index mod 16), and channel *n* plays voice *n* mod 3, so the
    three tracks play the three voices.
 
-`examples/mlasidtest.mlaproj` is a short C64-style tune. Instrument 1 (a
-6581 in Channels mode) plays a pulse lead with vibrato and a pulse-width
-sweep, a filtered sawtooth bass and drums on its three voices, from the
-Lead, Bass and Drums tracks. The Drums track builds each hit from register
-CCs: CC 38 ($D412) switches voice 3 from noise to triangle within the row,
-and CC 39 ($D413) sets each drum's decay. Instrument 2 (an 8580 in Arp mode)
-arpeggiates the chords, with a CC 74 filter sweep. It expects the plug-in in
+Two example projects use it. They expect the plug-in in
 `~/.local/plugins/VST3` (`./build.sh --plugins --install`).
+
+- `examples/mlasidtest.mlaproj` is a short C64-style tune in the pattern list
+  (A minor, 125 BPM): nine patterns, each holding all the parts. Instrument 1
+  (a 6581 in Channels mode) plays the Lead, Bass and Drums tracks on its
+  three voices; instrument 2 (an 8580 in Arp mode) arpeggiates the chords.
+- `examples/mlasidmatrix.mlaproj` is made for the song matrix (**Shift+M**).
+  Each lane is one part with its own Mla SID: **L1** Drums, **L2** Bass,
+  **L3** Arpeggio, **L4** Lead. Every pattern is the same four bars (Am F C
+  G), so any variation fits any row, and every pattern sets its instrument's
+  whole sound with CCs on its first row (waveform, pulse width, envelope,
+  filter, vibrato, PW sweep, glide). Swapping one cell changes that part's
+  notes and sound while the other lanes play on:
+
+  | Lane | Variations |
+  |------|------------|
+  | L1 Drums | Hats Intro, Beat A, Beat B, Beat Half, Beat Electro, Beat End |
+  | L2 Bass | Bass Saw (octaves), Bass Pulse (syncopated, resonant), Bass Long (whole notes, slow resonant saw), Bass Walk (walking pulse) |
+  | L3 Arpeggio | Arp Soft (triangle), Arp Pulse (cutoff sweep), Arp Sweep (resonant band-pass), Arp High (sawtooth an octave up, high-pass) |
+  | L4 Lead | Lead A (pulse with vibrato and PW sweep), Lead B Saw (sawtooth with glide), Lead C Noise (16th arpeggios, noise attacks), Lead D Flute (triangle, slow attack, deep vibrato) |
+
+Both show off register CCs. The drums are one SID voice whose waveform and
+decay are written per hit: a kick is noise for one 1/64 step, then triangle
+(`64 8 . .` in the voice's Control register CC), and the hats are noise with
+a short or long decay (Attack/Decay register CC). Noise attacks on lead
+notes work the same way (`64 32 . .`), and CC 74 sweeps the filters.
 
 ## Build and test
 
