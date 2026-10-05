@@ -9,6 +9,8 @@ import tempfile
 import termios
 import time
 
+from tui_sync import finish_frame, wait_consumed
+
 # The menu bar opens with F1; Tab cycles panes.
 F1 = b"\x1bOP"
 
@@ -20,17 +22,24 @@ def main():
     env.pop("NO_COLOR", None)
     process = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=slave, stderr=slave, env=env)
 
+    # Output read while waiting for the app to take keys; read_for starts with it.
+    drained = bytearray()
+
     def read_for(seconds=0.3):
-        data = bytearray()
+        data = bytearray(drained)
+        drained.clear()
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             ready, _, _ = select.select([master], [], [], min(0.05, max(0, deadline - time.monotonic())))
             if ready:
                 data.extend(os.read(master, 65536))
+        # A window ending inside a repaint would hide that repaint's last rows.
+        finish_frame(master, data)
         return bytes(data)
 
     def send(keys, seconds=0.3):
         os.write(master, keys)
+        wait_consumed(master, slave, drained)  # the read window starts once the app has the keys
         return read_for(seconds)
 
     try:

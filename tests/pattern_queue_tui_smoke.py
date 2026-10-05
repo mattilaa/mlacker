@@ -6,6 +6,11 @@ import re
 from session_tui_smoke import Terminal, F1
 
 
+def last_frame(frame):
+    """The last repaint in the output, from its menu bar on."""
+    return frame.rsplit(b"[F1]File", 1)[-1]
+
+
 def main():
     tui = Terminal()
     try:
@@ -20,15 +25,16 @@ def main():
         tui.send(F1 + b"ll\r")
         tui.send(b"k")
         assert b"PLAY" in tui.send(b" ")
-        # Choosing 002 keeps playing and queues it.
-        frame = tui.send(b"j", .1)
+        # Choosing 002 keeps playing and queues it (until 001 ends, 0.6 s).
+        frame = tui.send_until(b"j", b"Pattern 2 plays next", timeout=3)
         assert b"Pattern 2 plays next" in frame, frame[-4000:]
         assert b"STOP" not in frame, frame[-4000:]
         frame = tui.send_until(b"", b"Playing pattern 2")
         assert b"Playing pattern 2" in frame and b"STOP" not in frame, frame[-4000:]
         # Queued again and back before it starts: the playing one plays on.
-        tui.send(b"k", .05)
-        frame = tui.send(b"j", .05)
+        # One write, so a slow runner cannot let 002 end between the keys;
+        # playback repaints the old status too, so look at the last frame.
+        frame = last_frame(tui.send(b"kj", .3))
         assert b"Playing pattern 2" in frame and b"STOP" not in frame, frame[-4000:]
         # A pattern made on the fly is queued, and working on it keeps playing.
         frame = tui.send(F1 + b"llll\r", .2)

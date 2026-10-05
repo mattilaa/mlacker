@@ -11,6 +11,8 @@ import termios
 import time
 from pathlib import Path
 
+from tui_sync import finish_frame, wait_consumed
+
 # The menu bar opens with F1; Tab cycles panes.
 F1 = b"\x1bOP"
 
@@ -22,32 +24,41 @@ class Terminal:
         env = dict(os.environ, TERM="xterm-256color", MLANG_TUI_NO_HARDWARE="1")
         env.pop("MLACKER_DEMO", None)
         env.pop("NO_COLOR", None)
+        # Output read while waiting for the app to take keys; the next read
+        # starts with it.
+        self.pending = bytearray()
         self.process = subprocess.Popen([os.path.abspath(sys.argv[1]), *args], stdin=self.slave, stdout=self.slave, stderr=self.slave, env=env, cwd=cwd)
 
     def read(self, seconds=0.35):
-        data = bytearray()
+        data, self.pending = self.pending, bytearray()
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             if select.select([self.master], [], [], 0.03)[0]:
                 data.extend(os.read(self.master, 65536))
+        # A window ending inside a repaint would hide that repaint's last rows.
+        finish_frame(self.master, data)
         return re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data)
 
-    def send(self, keys, seconds=0.35):
+    def write(self, keys):
+        """Send keys; return once the app has read them, so a loaded machine
+        does not eat into the read window that follows."""
         os.write(self.master, keys)
+        wait_consumed(self.master, self.slave, self.pending)
+
+    def send(self, keys, seconds=0.35):
+        self.write(keys)
         return self.read(seconds)
 
     def send_until(self, keys, needle, timeout=10.0):
         """Send keys and read until needle appears. For screens that can take longer
         than a fixed read window, e.g. Settings, whose first open enumerates the
         CoreAudio/CoreMIDI devices."""
-        os.write(self.master, keys)
-        data = bytearray()
+        self.write(keys)
+        data, self.pending = self.pending, bytearray()
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while needle not in re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data) and time.monotonic() < deadline:
             if select.select([self.master], [], [], 0.03)[0]:
                 data.extend(os.read(self.master, 65536))
-                if needle in re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data):
-                    break
         return re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data) + self.read(0.2)
 
     def close(self):
