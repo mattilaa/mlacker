@@ -206,8 +206,9 @@ Two example projects use it. They expect the plug-in in
   three voices; instrument 2 (an 8580 in Arp mode) arpeggiates the chords.
 - `examples/mlasidmatrix.mlaproj` is made for the song matrix (**Shift+M**).
   Each lane is one part with its own Mla SID: **L1** Drums, **L2** Bass,
-  **L3** Arpeggio, **L4** Lead. Every pattern is the same four bars (Am F C
-  G), so any variation fits any row, and every pattern sets its instrument's
+  **L3** Arpeggio, **L4** Lead. Every pattern is the same four bars (Am9,
+  Fmaj7, Cadd9, Gadd9: stacked fifths with added tones; the bass plays root,
+  fifth and octave), so any variation fits any row, and every pattern sets its instrument's
   whole sound with CCs on its first row (waveform, pulse width, envelope,
   filter, vibrato, PW sweep, glide). Swapping one cell changes that part's
   notes and sound while the other lanes play on:
@@ -219,7 +220,17 @@ Two example projects use it. They expect the plug-in in
   | L3 Arpeggio | Arp Soft (triangle), Arp Pulse (cutoff sweep), Arp Sweep (resonant band-pass), Arp High (sawtooth an octave up, high-pass) |
   | L4 Lead | Lead A (pulse with vibrato and PW sweep), Lead B Saw (sawtooth with glide), Lead C Noise (16th arpeggios, noise attacks), Lead D Flute (triangle, slow attack, deep vibrato) |
 
-Both show off register CCs. The drums are one SID voice whose waveform and
+- `examples/mlasidturbo.mlaproj` is a racing-game title intro in the style of
+  late-80s C64 arcade conversions (an original tune, E minor, 140 BPM), also
+  for the matrix. Everything is Mla SID, the drums included. Lanes: **L1**
+  Drums (Start, Drive, Drive Fill with toms, Half Time, Finish), **L2** Bass
+  (Run: 16th-note octaves, Fifths, Hold), **L3** Arpeggio (one-frame chords
+  in stacked fifths: Fast, Bright, Soft), **L4** Lead (Theme, Answer, Hold,
+  and Sync Theme on its own instrument: a sawtooth hard-synced 16 semitones
+  above its source voice) and **L5** FX (Engine Riser: noise gliding up over
+  four bars; Pass By: a car flashing past).
+
+The examples show off register CCs. The drums are one SID voice whose waveform and
 decay are written per hit: a kick is noise for one 1/64 step, then triangle
 (`64 8 . .` in the voice's Control register CC), and the hats are noise with
 a short or long decay (Attack/Decay register CC). Noise attacks on lead
