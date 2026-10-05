@@ -50,7 +50,16 @@ jobs:
         run: ./build.sh --all -j 3
 
       - name: Test mlacker and plugins
+        id: tests
         run: ./build.sh --all --test -j 3
+
+      # Only after failed tests: rerun each failure on its own and after each
+      # earlier test, to tell regressions, flaky tests and test interference
+      # apart. The report lands in the job summary.
+      - name: Diagnose test failures
+        if: failure() && steps.tests.outcome == 'failure'
+        timeout-minutes: 60
+        run: ./tests/diagnose_test_failures.sh
 
       - name: Upload test logs
         if: failure()
@@ -58,7 +67,9 @@ jobs:
         with:
           name: test-logs
           path: |
+            build/diagnose/
             build/cmake/Testing/Temporary/
+            build/plugins/Testing/Temporary/
             plugins/*/build/cmake/Testing/Temporary/
           if-no-files-found: ignore
           retention-days: 14

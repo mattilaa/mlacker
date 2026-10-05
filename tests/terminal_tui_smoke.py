@@ -44,8 +44,9 @@ def main():
         pending_output = data[end:]
         return data[:end]
 
-    def read_frame(expected_pane, dialog_pane=None, table_cell=None, table_text=None, pattern_grainy=False):
-        frame = read_until(b"\x1b[0m")
+    def read_frame(expected_pane, dialog_pane=None, table_cell=None, table_text=None, pattern_grainy=False, frame=None):
+        if frame is None:
+            frame = read_until(b"\x1b[0m")
         # Inspect rendered border colors, not application debug/status text.
         x = y = 0
         foreground = None
@@ -483,14 +484,16 @@ def main():
             question = read_frame(None)
             assert b"Start a new session?" in question and b"Cancel" in question
             os.write(master, answer)
-            pressed = read_frame(None)
-            assert b"Start a new session?" in pressed
-            # The modal remains visible during the press animation.
+            # The modal remains visible during the press animation, keeping
+            # focus out of the view. A loaded runner can stall long enough for
+            # the UI clock to run the whole animation before the next paint, so
+            # the first frame may already show the modal closed.
             while True:
                 frame = read_until(b"\x1b[0m")
                 if b"Start a new session?" not in frame:
                     assert status in frame
                     break
+                read_frame(None, frame=frame)
         # Cascades remain beside their ancestors. h closes only one level;
         # Escape from the grandchild closes every menu and restores pane 2.
         os.write(master, F1)
