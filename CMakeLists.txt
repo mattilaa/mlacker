@@ -117,6 +117,8 @@ add_test(NAME record_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE
 set_tests_properties(record_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
 add_test(NAME patterns_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/patterns_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(patterns_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
+add_test(NAME pattern_queue_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/pattern_queue_tui_smoke.py" "$<TARGET_FILE:mlacker>")
+set_tests_properties(pattern_queue_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
 add_test(NAME effects_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/effects_tui_smoke.py" "$<TARGET_FILE:mlacker>" "$<TARGET_BUNDLE_DIR:MlackerTestInstrument>" "$<TARGET_BUNDLE_DIR:MlackerTestEffect>")
 set_tests_properties(effects_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME menu_shortcuts_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/menu_shortcuts_tui_smoke.py" "$<TARGET_FILE:mlacker>")

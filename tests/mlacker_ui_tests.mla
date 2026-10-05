@@ -4550,6 +4550,29 @@ fn tui_prepared_matrix_row_plays_like_a_fresh_one() {
     next.release();
 }
 
+#[test]
+fn tui_looped_pattern_plays_its_last_pass_once() {
+    // A pattern already looping gets another one queued behind it: its
+    // current pass still plays, and nothing past that pass is sent ahead.
+    var table: SequenceTable = playback_test_table(16, 4, "C-2", "");
+    let period: i64 = 16 * 15000;
+    var playback: NotePlayback = NotePlayback { start_row: 0 };
+    playback.lookahead = 30000;
+    var tick: i64 = 0;
+    while tick < period { playback.update(table, tick, true); tick = tick + 5000; }
+    playback.once = true;
+    var played: bool = false; var past: bool = false;
+    while tick < 2 * period {
+        playback.update(table, tick, true);
+        if has_note_on(playback, period + 60000) { played = true; }
+        let events: list<NoteEvent> = playback.events;
+        for event in events { if event.tick >= 2 * period { past = true; } }
+        tick = tick + 5000;
+    }
+    verify(played && !past);
+    table.release();
+}
+
 fn has_note_on(source: &NotePlayback, tick: i64) -> bool {
     var playback: NotePlayback = NotePlayback {}; playback = source;
     let events: list<NoteEvent> = playback.events;
