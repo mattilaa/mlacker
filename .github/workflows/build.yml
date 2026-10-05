@@ -52,6 +52,13 @@ jobs:
       - name: Test mlacker and plugins
         run: ./build.sh --all --test -j 3
 
+      - name: Repeat the timing-sensitive TUI tests
+        if: always()
+        run: |
+          for i in $(seq 1 10); do
+            ctest --test-dir build/cmake -R "^(visual_tui|terminal_tui)$" 2>&1 | grep -E "Test +#" | sed "s/^/REPEAT $i /"
+          done
+
       - name: Upload test logs
         if: failure()
         uses: actions/upload-artifact@v4

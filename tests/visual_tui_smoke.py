@@ -31,8 +31,11 @@ def main():
         assert b"OK" in frame and b"Cancel" not in frame, frame[-5000:]
         frame = tui.send(b"jklh")
         assert b"Cannot paste selection" in frame, frame[-5000:]
-        frame = tui.send(b"\r", 0.6)
-        assert b"Cannot paste selection" not in frame, frame[-5000:]
+        # OK closes the modal after its press animation; keys sent before the
+        # pattern repaints without it would still go to the modal. A partial
+        # repaint lacks the modal text too, so wait for the pattern rows.
+        frame = tui.send_until(b"\r", b"Inspector")
+        assert b"Cannot paste selection" not in frame and b"ROW NOTE" in frame, frame[-5000:]
         # Under a loaded CI runner the three key events can span more than the
         # default fixed read window. Wait for the pasted row, not an earlier
         # cursor-movement repaint.
