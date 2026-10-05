@@ -764,6 +764,30 @@ int main(int argc, char **argv) {
         CHECK(__mlang_std_audio_controller_close(d) == 0);
         std::puts("PASS: Mla 08 plays its kit from instrument notes");
     }
+    // Mla SID plays notes from an instrument track, sample-accurately, and
+    // an instrument CC writes a SID register: CC 44 is $D418 (Mode/Vol), so
+    // CC 44 = 0 turns the volume to 0.
+    if(const char *sid = std::getenv("MLA_SID_VST3")) {
+        int64_t d = __mlang_std_audio_controller_new(48000, 128);
+        CHECK(__mlang_std_audio_controller_load_instrument(d, 1, sid) == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla SID") == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        const int64_t at = __mlang_std_audio_controller_info(d, 2) + 64;
+        CHECK(__mlang_std_audio_controller_post(d, 2, 6, 0, 57, 100, 3, at + 32, 1, 1) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        double before = 0, after = 0;
+        for(int f = 0; f < 96; ++f) before = std::max(before, std::fabs(static_cast<double>(__mlang_std_audio_pcm_block_sample(b, f, 0))));
+        for(int f = 96; f < 256; ++f) after = std::max(after, std::fabs(static_cast<double>(__mlang_std_audio_pcm_block_sample(b, f, 0))));
+        CHECK(before < 1e-6 && after > 1e-3);
+        const int64_t later = __mlang_std_audio_controller_info(d, 2);
+        CHECK(__mlang_std_audio_controller_post(d, 2, 9, 0, 44, 0, 3, later, 1, 1) == 0);
+        for(int block = 0; block < 40; ++block) CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        double rest = 0;
+        for(int f = 0; f < 256; ++f) rest = std::max(rest, std::fabs(static_cast<double>(__mlang_std_audio_pcm_block_sample(b, f, 0))));
+        CHECK(rest < 1e-3);
+        CHECK(__mlang_std_audio_controller_close(d) == 0);
+        std::puts("PASS: Mla SID plays notes and takes register CCs");
+    }
     // Mla Sampler has ten output buses: Main, Out 2-8, Send A and Send B.
     // Its aux buses follow the main output until routed to master, a PCM
     // track's channel, an aux effect channel's input or nowhere.
