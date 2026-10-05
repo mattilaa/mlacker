@@ -757,6 +757,18 @@ impl PatternLibrary {
         }
         return merged;
     }
+    /// What `merge_song_row` reads for a row, folded into one number: the
+    /// pattern and slice each lane plays, and the matrix row length. It
+    /// changes when a cell of the row is placed, cleared, looped or split.
+    pub fn song_row_signature(self: PatternLibrary, row: i32) -> i64 {
+        var hash: i64 = wide(self.matrix_steps);
+        for l in 0..self.song_lanes() {
+            let cover: SongCover = self.song_cover(row, i32(l));
+            hash = (hash * 1000003 + wide(cover.id)) % 1099511627776;
+            hash = (hash * 1000003 + wide(cover.offset)) % 1099511627776;
+        }
+        return hash;
+    }
     /// Next matrix row holding at least one pattern, wrapping. -1 when empty.
     pub fn next_song_row(self: PatternLibrary, row: i32) -> i32 {
         for step in 1..self.song.len() + 1 {

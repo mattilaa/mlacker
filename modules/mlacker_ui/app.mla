@@ -550,6 +550,9 @@ pub fn run() -> i32 {
     // Matrix playback: the merged table of the playing row, and which row it is.
     var song_playing: bool = false; var song_row: i32 = -1;
     var song_table: SequenceTable = SequenceTable {};
+    // The playing row's cells when it was merged (`song_row_signature`): a row
+    // that repeats itself is merged again at its end once they change.
+    var song_signature: i64 = -1;
     // Pattern playback with another pattern chosen meanwhile: a copy of the
     // playing pattern (`play_pattern`) that runs to its end before the chosen
     // one (the active pattern) starts.
@@ -792,6 +795,7 @@ pub fn run() -> i32 {
                 }
                 song_table = library.merge_song_row(song_row, terminal_bounds(), false);
                 mixer_table.release(); mixer_table = library.merge_song_row(song_row, terminal_bounds(), true);
+                song_signature = library.song_row_signature(song_row);
                 if follow_matrix && !matrix_recording { if library.follow_pattern(library.song_row_pattern(song_row)) { play_pattern = library.active_id; } }
                 if song_table.rows.len() == 0 {
                     song_playing = false; song_row = -1; message = clone("Matrix row is empty");
@@ -1196,7 +1200,9 @@ pub fn run() -> i32 {
         // so an edit never commits to a moving row. A queued pattern is not the
         // one playing, so its length and the truncation question are free too.
         let cursor_held: bool = library.table.editing || library.table.visual || follow_paused;
-        if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || curve_dialog.active { transport.playing = false; }
+        // Placing a pattern in the matrix (its picker and the clash question)
+        // keeps playing too; the change is heard when its row next starts.
+        if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || outputs.active || curve_dialog.active { transport.playing = false; }
         if library.table.recording_track >= 0 {
             let armed: SequenceTrack = library.table.tracks[library.table.recording_track];
             if !armed.record_armed { transport.playing = false; }
@@ -1241,6 +1247,8 @@ pub fn run() -> i32 {
             }
         }
         transport.recording = library.table.recording_track >= 0 || audio_take.active();
+        // The matrix changed the cells of the row that plays.
+        var song_stale: bool = song_playing && library.song_row_signature(song_row) != song_signature;
         if song_playing {
             let previous: i32 = transport.row;
             if transport.advance(now, i32(song_table.rows.len())) { playback_dirty = true; }
@@ -1248,7 +1256,8 @@ pub fn run() -> i32 {
                 // The row finished: move to the next matrix row holding patterns.
                 let next: i32 = library.next_song_row(song_row);
                 if next < 0 { song_playing = false; transport.playing = false; }
-                else if next != song_row {
+                // A row repeating itself starts afresh when its cells changed.
+                else if next != song_row || song_stale {
                     song_row = next;
                     var upcoming: NotePlayback = NotePlayback { start_row: 0 };
                     // A take edits only the pattern the rows leave out.
@@ -1268,6 +1277,7 @@ pub fn run() -> i32 {
                         mixer_table.release(); mixer_table = library.merge_song_row(song_row, terminal_bounds(), true);
                     }
                     prepared_table = SequenceTable {}; prepared_mixer = SequenceTable {}; prepared_row = -1;
+                    song_signature = library.song_row_signature(song_row); song_stale = false;
                     // The editor, sidebar and mixer move to the row that plays,
                     // unless an edit or a selection is open in the editor.
                     if follow_matrix && !matrix_recording && !cursor_held { if library.follow_pattern(library.song_row_pattern(song_row)) { play_pattern = library.active_id; } }
@@ -1382,7 +1392,8 @@ pub fn run() -> i32 {
         note_playback.lookahead = ahead;
         // A matrix row followed by another one sends nothing past its end.
         // So does a pattern with another one queued behind it.
-        note_playback.once = song_playing ? library.next_song_row(song_row) != song_row : pattern_held;
+        // A row whose cells changed ends its pass too, to start again merged.
+        note_playback.once = song_playing ? (library.next_song_row(song_row) != song_row || song_stale) : pattern_held;
         note_playback.update(song_playing ? song_table : (pattern_held ? held_table : library.table), transport.ticks, transport.playing && transport.count_in == 0);
         midi.sequencer_events(note_playback.events, song_playing ? song_table : (pattern_held ? held_table : library.table));
         if follow_paused && (!transport.playing || song_playing) { follow_paused = false; }
@@ -1410,7 +1421,7 @@ pub fn run() -> i32 {
             let quiet: bool = due < 0 || due - transport.ticks >= 40 * wide(transport.bpm);
             let closing: bool = boundary - transport.ticks <= 30000 + 2 * ahead;
             let next: i32 = library.next_song_row(song_row);
-            if (quiet || closing) && next >= 0 && next != song_row && boundary > transport.ticks {
+            if (quiet || closing) && next >= 0 && (next != song_row || song_stale) && boundary > transport.ticks {
                 prepared_row = next; prepared_revision = library.table.revision;
                 prepared_table = library.merge_song_row(next, terminal_bounds(), false);
                 prepared_mixer = library.merge_song_row(next, terminal_bounds(), true);

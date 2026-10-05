@@ -61,8 +61,10 @@ def main():
     finally:
         tui.close()
     matrix_clone_editing()
+    matrix_cell_change()
     cursor_stays_put()
-    print("PASS: a pattern change queues the next pattern; the matrix plays on, also while a clone is edited;"
+    print("PASS: a pattern change queues the next pattern; the matrix plays on, also while a clone is edited"
+          " and while a matrix cell gets another pattern;"
           " moving the cursor during playback keeps it put until Esc")
 
 
@@ -96,6 +98,33 @@ def matrix_clone_editing():
         assert b"Editing:" in frame[-6000:] and b"Pattern / 3" in frame[-8000:], frame[-4000:]
         frame = tui.send(b"\x1b", .4)
         assert b"STOP" not in frame and b"Pattern / 3" in frame, frame[-4000:]
+    finally:
+        tui.close()
+
+
+def matrix_cell_change():
+    """Placing another pattern in the playing matrix row keeps it playing."""
+    tui = Terminal()
+    try:
+        tui.read(.8)
+        tui.send(b"\x1b")
+        tui.send(b"\x02\x15400\r")
+        assert b"002" in tui.send(F1 + b"llll\r")
+        tui.send(F1 + b"ll\r")                   # View > Patterns
+        assert b"Song matrix" in tui.send(b"\tM", .6)
+        tui.send(b"\r", .6); tui.send(b"j", .3); tui.send(b"\r", .6)     # row 1: 001
+        frame = tui.send(b"\x10", .9)
+        assert b"Playing the matrix" in frame and b"PLAY" in frame, frame[-4000:]
+        # The picker is open while the row repeats: still playing.
+        frame = tui.send(b"\r", .6)
+        assert b"STOP" not in frame, frame[-4000:]
+        tui.send(b"j", .3)                       # 002:
+        frame = tui.send(b"\r", .6)
+        assert b"Row 1 lane 1: pattern 2" in frame and b"STOP" not in frame, frame[-4000:]
+        # The row (64 rows at 400 BPM is 2.4 s) starts again with 002.
+        frame = tui.read(3.0)
+        assert b"PLAY" in frame[frame.rfind(b"BPM 400"):] and b"STOP" not in frame, frame[-4000:]
+        assert b"Matrix stopped" in tui.send(b" ", .6)
     finally:
         tui.close()
 
