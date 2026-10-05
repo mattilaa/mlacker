@@ -492,6 +492,9 @@ int32_t load(const char *path, double rate, int32_t frames,
 }
 } // namespace
 
+// mlacker's version for `mlacker --version`, as an owned (malloc'd) str8.
+extern "C" char* mlacker_version() { return strdup(MLACKER_VERSION); }
+
 extern "C" void mlacker_install_vst3_host() {
     PluginContextFactory::instance().setPluginContext(&application);
     // SDK diagnostics must not corrupt the terminal screen.

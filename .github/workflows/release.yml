@@ -2,9 +2,14 @@ name: Release
 
 # Builds the macOS installer (.pkg) with mlacker, the Mla VST3 plugins and the
 # MLang toolchain from MLang's main branch, and attaches it to a GitHub
-# Release. A pushed v* tag (git tag v0.3.0 && git push origin v0.3.0) makes a
-# published release (a pre-release for v0.3.0-rc1 and the like); a manual run
-# makes a draft release for its version.
+# Release.
+#
+# Versions are v<major>.<minor>.<patch>[.<build>]: the VERSION file holds
+# MAJOR.MINOR.PATCH (PATCH counts new features and bug fixes), and a build
+# number is appended when enabled. A pushed tag matching VERSION
+# (git tag v0.2.0 && git push origin v0.2.0, or v0.2.0.7 with build 7) makes
+# a published release; a manual run makes a draft release, with the run
+# number as build number when "build number" is ticked.
 #
 # Unsigned unless these repository secrets exist:
 #   MACOS_CERTIFICATES_P12           base64 .p12 with the Developer ID
@@ -21,9 +26,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
-      version:
-        description: Version (e.g. 0.3.0); makes a draft release v<version>
-        required: true
+      build_number:
+        description: Append the run number as build number (v<VERSION>.<run>)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -49,15 +55,36 @@ jobs:
       - name: Version
         id: version
         env:
-          INPUT_VERSION: ${{ github.event.inputs.version }}
+          BUILD_NUMBER_INPUT: ${{ github.event.inputs.build_number }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            version="${INPUT_VERSION#v}"
-          else
-            version="${GITHUB_REF_NAME#v}"
+          base=$(head -1 VERSION)
+          manifest=$(sed -n 's/^version = "\(.*\)"$/\1/p' mlang.toml | head -1)
+          if [ "$manifest" != "$base" ]; then
+            echo "::error::mlang.toml has version $manifest but VERSION has $base"
+            exit 1
           fi
+          build=""
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            [ "$BUILD_NUMBER_INPUT" = "true" ] && build="$GITHUB_RUN_NUMBER"
+          else
+            if ! echo "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+              echo "::error::Tag $GITHUB_REF_NAME is not v<major>.<minor>.<patch>[.<build>]"
+              exit 1
+            fi
+            tag_version="${GITHUB_REF_NAME#v}"
+            tag_base=$(echo "$tag_version" | cut -d. -f1-3)
+            if [ "$tag_base" != "$base" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match VERSION ($base)"
+              exit 1
+            fi
+            build=$(echo "$tag_version" | cut -s -d. -f4)
+          fi
+          version="$base${build:+.$build}"
+          # CMake and build_pkg.sh append the build number from here on.
+          echo "MLACKER_BUILD_NUMBER=$build" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "mlacker $version" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install MLang build dependencies
         run: |
@@ -158,8 +185,6 @@ jobs:
           } > "$notes"
           flags=""
           [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && flags="--draft"
-          # v0.3.0-rc1 and the like are pre-releases.
-          case "$VERSION" in *-*) flags="$flags --prerelease" ;; esac
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" build/release/*.pkg --clobber
           else

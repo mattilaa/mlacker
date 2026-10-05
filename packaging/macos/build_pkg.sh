@@ -3,7 +3,7 @@
 # subprojects/mlang and the Mla VST3 plugins, from a finished build:
 #
 #   MLACKER_STATIC_OPENSSL=1 ./build.sh --all     # MLANG_TOOLCHAIN="yes"
-#   packaging/macos/build_pkg.sh --version 0.3.0
+#   packaging/macos/build_pkg.sh
 #
 # The installer installs for the current user. Parts can be left out in its
 # Customize step; the chosen ones unpack into a staging folder, and the last
@@ -18,7 +18,8 @@
 # built with MLACKER_STATIC_OPENSSL=1.
 #
 # Options:
-#   --version V     Package version (default 0.0.0)
+#   --version V     Package version, MAJOR.MINOR.PATCH[.BUILD] (default: the
+#                   VERSION file, plus .$MLACKER_BUILD_NUMBER when that is set)
 #   --out DIR       Output directory (default build/release)
 # Environment:
 #   MLACKER_BIN                      mlacker binary (default build/cmake/bin/mlacker)
@@ -34,7 +35,7 @@ cd "$(dirname "$0")/../.."
 root=$(pwd)
 here="$root/packaging/macos"
 
-version="0.0.0"
+version="$(head -1 "$root/VERSION")${MLACKER_BUILD_NUMBER:+.$MLACKER_BUILD_NUMBER}"
 out="build/release"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -44,6 +45,9 @@ while [ $# -gt 0 ]; do
         *) echo "build_pkg.sh: unknown option $1" >&2; exit 2 ;;
     esac
 done
+
+echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' ||
+    { echo "build_pkg.sh: version must be MAJOR.MINOR.PATCH[.BUILD], not '$version'" >&2; exit 2; }
 
 mlang_root="$root/subprojects/mlang"
 mlang_build="$mlang_root/build"

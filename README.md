@@ -195,14 +195,19 @@ CurrentUserHomeDirectory`) uses the defaults, or the answers in
 `~/.config/mlacker/installer.conf` (`MLANG_PREFIX=`, `BIN_DIR=`, `PLUGIN_DIR=`,
 `ADD_TO_PATH=yes|no`).
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the
-package and creates the release (a pre-release for tags like `v0.3.0-rc1`; a
-manual run makes a draft). To build the package locally:
+Versions are `v<major>.<minor>.<patch>[.<build>]`: `VERSION` holds
+`MAJOR.MINOR.PATCH` (PATCH counts new features and bug fixes; keep `version` in
+`mlang.toml` the same), and a fourth build part is appended when a build number
+is enabled (`MLACKER_BUILD_NUMBER`); `mlacker --version` prints it. Pushing a tag that matches `VERSION`, such as
+`v0.2.0` or `v0.2.0.7` (build 7), runs `.github/workflows/release.yml`, which
+builds the package and creates the release; a manual run makes a draft, with
+the run number as build number if you tick "build number". To build the
+package locally:
 
 ```sh
-rm -rf build/cmake                            # the option is read on first configure
+rm -rf build/cmake                            # the options are read on first configure
 MLACKER_STATIC_OPENSSL=1 ./build.sh --all     # with MLANG_TOOLCHAIN="yes"
-packaging/macos/build_pkg.sh --version 0.3.0  # -> build/release/
+packaging/macos/build_pkg.sh                  # -> build/release/mlacker-0.2.0-macos-arm64.pkg
 ```
 
 ## Sessions (.mlack 1.2)

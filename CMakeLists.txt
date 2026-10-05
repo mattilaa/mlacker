@@ -1,5 +1,22 @@
 cmake_minimum_required(VERSION 3.19)
-project(mlacker VERSION 0.1.0 LANGUAGES C CXX OBJCXX)
+# Version: MAJOR.MINOR.PATCH from VERSION (PATCH counts new features and bug
+# fixes), with a fourth BUILD part when a build number is enabled through
+# MLACKER_BUILD_NUMBER (cache variable or environment of the first configure).
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" MLACKER_BASE_VERSION LIMIT_COUNT 1)
+if(NOT MLACKER_BASE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION must hold MAJOR.MINOR.PATCH, not '${MLACKER_BASE_VERSION}'")
+endif()
+set(MLACKER_BUILD_NUMBER "$ENV{MLACKER_BUILD_NUMBER}" CACHE STRING
+    "Build number appended as a fourth version part (empty: none)")
+set(MLACKER_VERSION "${MLACKER_BASE_VERSION}")
+if(NOT MLACKER_BUILD_NUMBER STREQUAL "")
+    if(NOT MLACKER_BUILD_NUMBER MATCHES "^[0-9]+$")
+        message(FATAL_ERROR "MLACKER_BUILD_NUMBER must be a number, not '${MLACKER_BUILD_NUMBER}'")
+    endif()
+    string(APPEND MLACKER_VERSION ".${MLACKER_BUILD_NUMBER}")
+endif()
+project(mlacker VERSION ${MLACKER_VERSION} LANGUAGES C CXX OBJCXX)
+message(STATUS "mlacker ${MLACKER_VERSION}")
 if(NOT APPLE)
     message(FATAL_ERROR "mlacker currently requires macOS AUHAL")
 endif()
@@ -44,6 +61,7 @@ add_library(mlacker_host STATIC src/vst3_host.cpp
     "${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_mac.mm")
 target_include_directories(mlacker_host PUBLIC "${MLANG_ROOT}/stdlib/include")
 target_compile_options(mlacker_host PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+target_compile_definitions(mlacker_host PRIVATE MLACKER_VERSION="${MLACKER_VERSION}")
 target_link_libraries(mlacker_host PUBLIC sdk_hosting "${MLANG_ROOT}/build/libmlang_std.a" OpenSSL::SSL OpenSSL::Crypto
     "-framework Cocoa" "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox"
     "-framework AudioUnit" "-framework CoreMIDI" "-framework AVFoundation" "-framework CoreGraphics" "-framework ImageIO")
