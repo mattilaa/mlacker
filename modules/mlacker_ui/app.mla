@@ -3579,14 +3579,15 @@ pub fn run() -> i32 {
         sleep_ms(frame_rate.sleep_ms(now_ms()));
     }
     note_playback.update(library.table, transport.ticks, false);
-    midi.release();
-    settings.release();
+    free_objs(midi, settings);
     free(session_path); free(request_path);
-    instrument_editor.release(); sample_editor.release(); sample_dialog.release(); piano.release(); picker.release(); outputs.release(); group_picker.release(); song_table.release(); held_table.release(); mixer_table.release(); free(preset_path); free(preview_path);
+    free_objs(instrument_editor, sample_editor, sample_dialog, piano, picker,
+              outputs, group_picker, song_table, held_table, mixer_table);
+    free(preset_path); free(preview_path);
     free(group_target); free(group_prompt); free(move_note); group_dialog.release(); free(alert_text);
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
     sidebar_clipboard.release();
-    library.release(); dialog.release(); bpm_dialog.release(); free(message);
+    free_objs(library, dialog, bpm_dialog); free(message);
     terminal.finish();
     return 0;
 }

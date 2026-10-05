@@ -1,0 +1,735 @@
+/// \file mla_sid_dsp.mla
+/// \brief C-ABI bridge: a MOS 6581/8580 SID sound chip.
+///
+/// One `Sid` per plug-in instance, heap-allocated with `calloc` and handed to
+/// the C++ VST3 layer as an opaque pointer. This file is the chip: the C++
+/// side is the "player routine" that turns MIDI into register writes
+/// (`mlasid_poke`), as a C64 music player does on every video frame.
+///
+/// The chip follows the SID's logic (after reSID's description of it):
+///
+/// - **Oscillators.** Three 24-bit phase accumulators clocked at the C64's
+///   clock (985248 Hz PAL, 1022727 Hz NTSC); FREQ is added every cycle.
+///   Triangle (with ring modulation: the triangle's MSB XORed with the
+///   source voice's), sawtooth, pulse (12-bit width) and noise (a 23-bit
+///   LFSR clocked by accumulator bit 19). Combined waveforms AND their
+///   outputs; noise combined with another waveform writes the AND back into
+///   the LFSR, which locks up (silent noise) until TEST is set, as on the
+///   chip. Hard sync resets a voice when its source's MSB rises. TEST holds
+///   the accumulator at zero and forces the pulse high.
+/// - **Envelopes.** The SID's ADSR: an 8-bit counter stepped by a 15-bit
+///   rate counter (the 16 attack periods; decay and release three times
+///   longer), with the exponential decay steps at counter values 93, 54, 26,
+///   14 and 6, sustain compared at 17 x the nibble, and the "ADSR bug": a
+///   shorter rate period than the counter has reached waits for the 15-bit
+///   counter to wrap (up to 33 ms), and an attack started at level $FF wraps
+///   to $00 and freezes. Hard restart avoids both, as C64 players do: it
+///   clears the rate counter on gate-on, and an attack from $FF is complete.
+/// - **Filter.** A 12 dB/octave state-variable filter (LP, BP, HP summed),
+///   11-bit cutoff and 4-bit resonance. The 6581's cutoff follows its
+///   measured, non-linear curve (with the jump at FC 1024), its voices sit on
+///   a DC offset that thumps with the envelope, its mixer has a DC offset that
+///   makes volume writes click (the "$D418 digi" trick), and its filter input
+///   saturates. The 8580's cutoff is near linear, its resonance stronger, and
+///   it has no DC offsets.
+/// - **Output.** The oscillators, filter and mixer run at 8x the sample rate
+///   (about 384 kHz) and are decimated through an 8th-order Butterworth
+///   low-pass at 20 kHz, keeping the naive waveforms' aliasing low. The
+///   output is AC-coupled at 16 Hz like the C64's audio output.
+
+mod dsp::detail;
+use dsp::detail::expf;
+use dsp::detail::sinf;
+use dsp::detail::cosf;
+use dsp::detail::tanf;
+
+extern fn calloc(count: i64, size: i64) -> ptr<Sid>;
+extern fn free(block: ptr<Sid>) -> void;
+extern fn sqrtf(value: f32) -> f32;
+extern fn fabsf(value: f32) -> f32;
+
+fn pi() -> f32 { return 3.14159265358979323846f; }
+
+fn sclamp(value: f32, low: f32, high: f32) -> f32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+fn iclamp(value: i32, low: i32, high: i32) -> i32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+fn smin(a: f32, b: f32) -> f32 { return a < b ? a : b; }
+
+/// The accumulator is kept as 24.16 fixed point (the SID's 24 bits above 16
+/// fractional ones), so FREQ times a non-integer number of cycles per
+/// sub-sample adds exactly.
+fn acc_mask() -> i64 { return 0xFFFFFFFFFF; }
+/// Accumulator bit 23 (the MSB) and bit 19 (noise clock) in that format.
+fn acc_msb() -> i64 { return 0x8000000000; }
+fn acc_bit19() -> i64 { return 0x0800000000; }
+
+fn pal_clock() -> f64 { return 985248.0; }
+fn ntsc_clock() -> f64 { return 1022727.0; }
+
+/// Envelope rate periods in cycles for the 16 attack values (decay and
+/// release use the same counter periods; their exponential steps make them
+/// three times longer).
+fn rate_period(rate: i32) -> i32 {
+    switch rate {
+    case 0: { return 9; }
+    case 1: { return 32; }
+    case 2: { return 63; }
+    case 3: { return 95; }
+    case 4: { return 149; }
+    case 5: { return 220; }
+    case 6: { return 267; }
+    case 7: { return 313; }
+    case 8: { return 392; }
+    case 9: { return 977; }
+    case 10: { return 1954; }
+    case 11: { return 3126; }
+    case 12: { return 3907; }
+    case 13: { return 11720; }
+    case 14: { return 19532; }
+    default: { return 31251; }
+    }
+}
+
+/// The SID's ADSR envelope generator.
+struct Envelope {
+    /// The 8-bit envelope level.
+    var counter: i32;
+    /// 0 attack, 1 decay/sustain, 2 release.
+    var state: i32;
+    var rate_counter: i32;
+    var period: i32;
+    var exp_counter: i32;
+    var exp_period: i32;
+    var hold_zero: bool;
+    var gate: bool;
+    var attack: i32;
+    var decay: i32;
+    var sustain: i32;
+    var release: i32;
+};
+
+impl Envelope {
+    fn new() -> Envelope {
+        return Envelope {
+            counter: 0, state: 2, rate_counter: 0, period: rate_period(0), exp_counter: 0, exp_period: 1,
+            hold_zero: true, gate: false, attack: 0, decay: 0, sustain: 0, release: 0
+        };
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.counter = 0; self.state = 2; self.rate_counter = 0; self.exp_counter = 0; self.exp_period = 1;
+        self.hold_zero = true; self.gate = false; self.period = rate_period(self.release);
+    }
+
+    fn write_ad(self: &mut Self, value: i32) -> void {
+        self.attack = (value >> 4) & 15;
+        self.decay = value & 15;
+        if self.state == 0 { self.period = rate_period(self.attack); }
+        else if self.state == 1 { self.period = rate_period(self.decay); }
+    }
+
+    fn write_sr(self: &mut Self, value: i32) -> void {
+        self.sustain = (value >> 4) & 15;
+        self.release = value & 15;
+        if self.state == 2 { self.period = rate_period(self.release); }
+    }
+
+    fn write_gate(self: &mut Self, gate: bool, hard_restart: bool) -> void {
+        if !self.gate && gate {
+            self.state = 0;
+            self.period = rate_period(self.attack);
+            self.hold_zero = false;
+            if hard_restart {
+                self.rate_counter = 0;
+                self.exp_counter = 0;
+                // On the chip, an attack that starts at $FF wraps the counter
+                // to $00 and freezes it there (a gate toggled off and on
+                // before the release has stepped). Players avoid that; so
+                // does hard restart: the attack is already complete.
+                if self.counter == 0xFF {
+                    self.state = 1;
+                    self.period = rate_period(self.decay);
+                }
+            }
+        } else if self.gate && !gate {
+            self.state = 2;
+            self.period = rate_period(self.release);
+        }
+        self.gate = gate;
+    }
+
+    /// The exponential counter's period follows the level, giving decay and
+    /// release their curve. Reaching zero freezes the envelope.
+    fn update_exp(self: &mut Self) -> void {
+        let c: i32 = self.counter;
+        if c == 0xFF { self.exp_period = 1; }
+        else if c == 0x5D { self.exp_period = 2; }
+        else if c == 0x36 { self.exp_period = 4; }
+        else if c == 0x1A { self.exp_period = 8; }
+        else if c == 0x0E { self.exp_period = 16; }
+        else if c == 0x06 { self.exp_period = 30; }
+        else if c == 0x00 { self.exp_period = 1; self.hold_zero = true; }
+    }
+
+    /// One rate counter period has passed.
+    fn step(self: &mut Self) -> void {
+        if self.state != 0 {
+            self.exp_counter = self.exp_counter + 1;
+            if self.exp_counter < self.exp_period { return; }
+        }
+        self.exp_counter = 0;
+        if self.hold_zero { return; }
+        if self.state == 0 {
+            self.counter = (self.counter + 1) & 0xFF;
+            if self.counter == 0xFF {
+                self.state = 1;
+                self.period = rate_period(self.decay);
+            }
+        } else if self.state == 1 {
+            if self.counter != self.sustain * 17 { self.counter = (self.counter - 1) & 0xFF; }
+        } else {
+            self.counter = (self.counter - 1) & 0xFF;
+        }
+        self.update_exp();
+    }
+
+    /// Run `cycles` clock cycles. The 15-bit rate counter counts up to the
+    /// period; past it (after a write lowered the period) it counts on to
+    /// 0x7FFF and wraps first: the ADSR bug.
+    fn clock(self: &mut Self, cycles: i32) -> void {
+        var n: i32 = cycles;
+        while n > 0 {
+            var distance: i32 = 0;
+            if self.rate_counter < self.period { distance = self.period - self.rate_counter; }
+            else { distance = 0x8000 - self.rate_counter + self.period; }
+            if n < distance {
+                self.rate_counter = (self.rate_counter + n) & 0x7FFF;
+                return;
+            }
+            n = n - distance;
+            self.rate_counter = 0;
+            self.step();
+        }
+    }
+}
+
+/// One SID oscillator with its waveform generator.
+struct Osc {
+    var acc: i64;
+    /// Accumulator increment per sub-sample (FREQ x cycles, 24.16).
+    var inc: i64;
+    var freq: i32;
+    /// 12-bit pulse width.
+    var pw: i32;
+    /// The control register: NOISE PULSE SAW TRI TEST RING SYNC GATE.
+    var ctrl: i32;
+    var lfsr: i32;
+    /// The MSB rose during this sub-sample, `since` (0..1) of it ago.
+    var rising: bool;
+    var since: f64;
+    /// Last 12-bit waveform output (OSC3 reads its top 8 bits).
+    var out: i32;
+};
+
+impl Osc {
+    fn new() -> Osc {
+        return Osc { acc: 0, inc: 0, freq: 0, pw: 0, ctrl: 0, lfsr: 0x7FFFF8, rising: false, since: 0.0, out: 0 };
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.acc = 0; self.lfsr = 0x7FFFF8; self.rising = false; self.since = 0.0; self.out = 0;
+    }
+
+    fn retune(self: &mut Self, cycles_per_sub: f64) -> void {
+        let inc: i64 = f64(self.freq) * cycles_per_sub * 65536.0;
+        self.inc = inc;
+    }
+
+    fn write_ctrl(self: &mut Self, value: i32) -> void {
+        let was_test: bool = (self.ctrl & 8) != 0;
+        self.ctrl = value & 0xFF;
+        if (self.ctrl & 8) != 0 {
+            self.acc = 0;
+            self.lfsr = 0x7FFFF8;
+        } else if was_test {
+            self.lfsr = 0x7FFFF8;
+        }
+    }
+
+    fn advance(self: &mut Self) -> void {
+        self.rising = false;
+        if (self.ctrl & 8) != 0 { return; }
+        let prev: i64 = self.acc;
+        self.acc = (self.acc + self.inc) & acc_mask();
+        if (prev & acc_msb()) == 0 && (self.acc & acc_msb()) != 0 {
+            self.rising = true;
+            self.since = f64(self.acc - acc_msb()) / f64(self.inc);
+        }
+        if (prev & acc_bit19()) == 0 && (self.acc & acc_bit19()) != 0 {
+            let s: i32 = self.lfsr;
+            self.lfsr = ((s << 1) | (((s >> 22) ^ (s >> 17)) & 1)) & 0x7FFFFF;
+        }
+    }
+
+    /// Hard sync: restart as the source's MSB rose `since` of a sub-sample ago.
+    fn sync(self: &mut Self, since: f64) -> void {
+        let acc: i64 = f64(self.inc) * since;
+        self.acc = acc & acc_mask();
+    }
+
+    fn noise(self: Osc) -> i32 {
+        let s: i32 = self.lfsr;
+        return ((s & 0x400000) >> 11) | ((s & 0x100000) >> 10) | ((s & 0x010000) >> 7) | ((s & 0x002000) >> 5)
+             | ((s & 0x000800) >> 4) | ((s & 0x000080) >> 1) | ((s & 0x000010) << 1) | ((s & 0x000004) << 2);
+    }
+
+    /// The 12-bit waveform output; `source_acc` is the ring/sync source's
+    /// accumulator.
+    fn wave(self: &mut Self, source_acc: i64) -> i32 {
+        let select: i32 = (self.ctrl >> 4) & 15;
+        if select == 0 { self.out = 0; return 0; }
+        let a: i32 = i32((self.acc >> 16) & 0xFFFFFF);
+        var out: i32 = 0xFFF;
+        if (select & 1) != 0 {
+            var msb: i32 = a & 0x800000;
+            if (self.ctrl & 4) != 0 && (source_acc & acc_msb()) != 0 { msb = msb ^ 0x800000; }
+            out = out & (((msb != 0 ? ~a : a) >> 11) & 0xFFF);
+        }
+        if (select & 2) != 0 { out = out & (a >> 12); }
+        if (select & 4) != 0 {
+            if (self.ctrl & 8) == 0 && (a >> 12) < self.pw { out = 0; }
+        }
+        if (select & 8) != 0 {
+            out = out & self.noise();
+            if select != 8 {
+                // The combined output pulls the LFSR's output taps low.
+                var keep: i32 = 0x7FFFFF;
+                if (out & 0x800) == 0 { keep = keep & ~0x400000; }
+                if (out & 0x400) == 0 { keep = keep & ~0x100000; }
+                if (out & 0x200) == 0 { keep = keep & ~0x010000; }
+                if (out & 0x100) == 0 { keep = keep & ~0x002000; }
+                if (out & 0x080) == 0 { keep = keep & ~0x000800; }
+                if (out & 0x040) == 0 { keep = keep & ~0x000080; }
+                if (out & 0x020) == 0 { keep = keep & ~0x000010; }
+                if (out & 0x010) == 0 { keep = keep & ~0x000004; }
+                self.lfsr = self.lfsr & keep;
+            }
+        }
+        self.out = out;
+        return out;
+    }
+}
+
+/// A transposed direct form II biquad.
+struct Biquad { var b0: f32; var b1: f32; var b2: f32; var a1: f32; var a2: f32; var z1: f32; var z2: f32; };
+
+impl Biquad {
+    fn new() -> Biquad { return Biquad { b0: 1.0f, b1: 0.0f, b2: 0.0f, a1: 0.0f, a2: 0.0f, z1: 0.0f, z2: 0.0f }; }
+    fn reset(self: &mut Self) -> void { self.z1 = 0.0f; self.z2 = 0.0f; }
+    fn lowpass(self: &mut Self, hz: f32, q: f32, rate: f32) -> void {
+        let w: f32 = 2.0f * pi() * hz / rate;
+        let cw: f32 = cosf(w);
+        let alpha: f32 = sinf(w) / (2.0f * q);
+        let a0: f32 = 1.0f + alpha;
+        self.b0 = (1.0f - cw) * 0.5f / a0;
+        self.b1 = (1.0f - cw) / a0;
+        self.b2 = self.b0;
+        self.a1 = -2.0f * cw / a0;
+        self.a2 = (1.0f - alpha) / a0;
+    }
+    /// The state a constant input `x` settles to (unity gain at DC).
+    fn settle(self: &mut Self, x: f32) -> void {
+        self.z1 = x - self.b0 * x;
+        self.z2 = self.b2 * x - self.a2 * x;
+    }
+    fn process(self: &mut Self, x: f32) -> f32 {
+        let y: f32 = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        return y;
+    }
+}
+
+/// Linear interpolation between two (FC, Hz) points of a cutoff curve.
+fn segment(fc: f32, x0: f32, y0: f32, x1: f32, y1: f32) -> f32 {
+    return y0 + (y1 - y0) * (fc - x0) / (x1 - x0);
+}
+
+/// The 6581's cutoff curve (reSID's measured points). It is flat at the
+/// bottom, rises steeply, and drops back at FC 1024 where bit 10 switches.
+fn cutoff_6581(fc: i32) -> f32 {
+    let x: f32 = f32(fc);
+    if fc < 128 { return segment(x, 0.0f, 220.0f, 128.0f, 230.0f); }
+    if fc < 256 { return segment(x, 128.0f, 230.0f, 256.0f, 250.0f); }
+    if fc < 384 { return segment(x, 256.0f, 250.0f, 384.0f, 300.0f); }
+    if fc < 512 { return segment(x, 384.0f, 300.0f, 512.0f, 420.0f); }
+    if fc < 640 { return segment(x, 512.0f, 420.0f, 640.0f, 780.0f); }
+    if fc < 768 { return segment(x, 640.0f, 780.0f, 768.0f, 1600.0f); }
+    if fc < 832 { return segment(x, 768.0f, 1600.0f, 832.0f, 2300.0f); }
+    if fc < 896 { return segment(x, 832.0f, 2300.0f, 896.0f, 3200.0f); }
+    if fc < 960 { return segment(x, 896.0f, 3200.0f, 960.0f, 4300.0f); }
+    if fc < 992 { return segment(x, 960.0f, 4300.0f, 992.0f, 5000.0f); }
+    if fc < 1008 { return segment(x, 992.0f, 5000.0f, 1008.0f, 5400.0f); }
+    if fc < 1016 { return segment(x, 1008.0f, 5400.0f, 1016.0f, 5700.0f); }
+    if fc < 1024 { return segment(x, 1016.0f, 5700.0f, 1023.0f, 6000.0f); }
+    if fc < 1032 { return segment(x, 1024.0f, 4600.0f, 1032.0f, 4800.0f); }
+    if fc < 1056 { return segment(x, 1032.0f, 4800.0f, 1056.0f, 5300.0f); }
+    if fc < 1088 { return segment(x, 1056.0f, 5300.0f, 1088.0f, 6000.0f); }
+    if fc < 1120 { return segment(x, 1088.0f, 6000.0f, 1120.0f, 6600.0f); }
+    if fc < 1152 { return segment(x, 1120.0f, 6600.0f, 1152.0f, 7200.0f); }
+    if fc < 1280 { return segment(x, 1152.0f, 7200.0f, 1280.0f, 9500.0f); }
+    if fc < 1408 { return segment(x, 1280.0f, 9500.0f, 1408.0f, 12000.0f); }
+    if fc < 1536 { return segment(x, 1408.0f, 12000.0f, 1536.0f, 14500.0f); }
+    if fc < 1664 { return segment(x, 1536.0f, 14500.0f, 1664.0f, 16000.0f); }
+    if fc < 1792 { return segment(x, 1664.0f, 16000.0f, 1792.0f, 17100.0f); }
+    if fc < 1920 { return segment(x, 1792.0f, 17100.0f, 1920.0f, 17700.0f); }
+    return segment(x, 1920.0f, 17700.0f, 2047.0f, 18000.0f);
+}
+
+/// The 8580's near-linear cutoff curve (reSID's points), from about 30 Hz.
+fn cutoff_8580(fc: i32) -> f32 {
+    let x: f32 = f32(fc);
+    var hz: f32 = 0.0f;
+    if fc < 128 { hz = segment(x, 0.0f, 0.0f, 128.0f, 800.0f); }
+    else if fc < 256 { hz = segment(x, 128.0f, 800.0f, 256.0f, 1600.0f); }
+    else if fc < 384 { hz = segment(x, 256.0f, 1600.0f, 384.0f, 2500.0f); }
+    else if fc < 512 { hz = segment(x, 384.0f, 2500.0f, 512.0f, 3300.0f); }
+    else if fc < 640 { hz = segment(x, 512.0f, 3300.0f, 640.0f, 4100.0f); }
+    else if fc < 768 { hz = segment(x, 640.0f, 4100.0f, 768.0f, 4800.0f); }
+    else if fc < 896 { hz = segment(x, 768.0f, 4800.0f, 896.0f, 5600.0f); }
+    else if fc < 1024 { hz = segment(x, 896.0f, 5600.0f, 1024.0f, 6500.0f); }
+    else if fc < 1152 { hz = segment(x, 1024.0f, 6500.0f, 1152.0f, 7500.0f); }
+    else if fc < 1280 { hz = segment(x, 1152.0f, 7500.0f, 1280.0f, 8400.0f); }
+    else if fc < 1408 { hz = segment(x, 1280.0f, 8400.0f, 1408.0f, 9200.0f); }
+    else if fc < 1536 { hz = segment(x, 1408.0f, 9200.0f, 1536.0f, 9800.0f); }
+    else if fc < 1664 { hz = segment(x, 1536.0f, 9800.0f, 1664.0f, 10500.0f); }
+    else if fc < 1792 { hz = segment(x, 1664.0f, 10500.0f, 1792.0f, 11000.0f); }
+    else if fc < 1920 { hz = segment(x, 1792.0f, 11000.0f, 1920.0f, 11700.0f); }
+    else { hz = segment(x, 1920.0f, 11700.0f, 2047.0f, 12500.0f); }
+    return hz < 30.0f ? 30.0f : hz;
+}
+
+/// The whole chip.
+struct Sid {
+    var rate: f32;
+    /// Sub-samples per output sample.
+    var os: i32;
+    var clock: f64;
+    var cycles_per_sample: f64;
+    var cycles_per_sub: f64;
+    var cycle_frac: f64;
+    /// 0: MOS 6581, 1: MOS 8580.
+    var model: i32;
+    var hard_restart: bool;
+
+    var v1: Osc;
+    var v2: Osc;
+    var v3: Osc;
+    var e1: Envelope;
+    var e2: Envelope;
+    var e3: Envelope;
+    /// Extra per-voice gain (velocity), 1 on the chip.
+    var level1: f32;
+    var level2: f32;
+    var level3: f32;
+
+    // --- Filter and mixer registers -----------------------------------------
+    var fc: i32;
+    var res: i32;
+    /// RES/FILT's routing bits: FILT1..3 (bits 0..2), FILTEX (bit 3).
+    var filt: i32;
+    /// MODE/VOL's top nibble: LP 0x10, BP 0x20, HP 0x40, 3OFF 0x80.
+    var mode: i32;
+    var vol: i32;
+
+    // --- Filter state (TPT state-variable filter at the sub-sample rate) ----
+    var ic1: f32;
+    var ic2: f32;
+    var fa1: f32;
+    var fa2: f32;
+    var fa3: f32;
+    var fk: f32;
+
+    // --- Output ---------------------------------------------------------------
+    var d1: Biquad;
+    var d2: Biquad;
+    var d3: Biquad;
+    var d4: Biquad;
+    var hp_x: f32;
+    var hp_y: f32;
+    var hp_coef: f32;
+    var output_target: f32;
+    var output_gain: f32;
+    /// Samples the output has been silent with every envelope at zero.
+    var quiet: i32;
+};
+
+impl Sid {
+    fn new(sample_rate: f32) -> Sid {
+        let rate: f32 = sclamp(sample_rate, 8000.0f, 384000.0f);
+        var s: Sid = Sid {
+            rate: rate, os: 1, clock: pal_clock(), cycles_per_sample: 0.0, cycles_per_sub: 0.0, cycle_frac: 0.0,
+            model: 0, hard_restart: true,
+            v1: Osc::new(), v2: Osc::new(), v3: Osc::new(),
+            e1: Envelope::new(), e2: Envelope::new(), e3: Envelope::new(),
+            level1: 1.0f, level2: 1.0f, level3: 1.0f,
+            fc: 0, res: 0, filt: 0, mode: 0, vol: 0,
+            ic1: 0.0f, ic2: 0.0f, fa1: 0.0f, fa2: 0.0f, fa3: 0.0f, fk: 1.41421356f,
+            d1: Biquad::new(), d2: Biquad::new(), d3: Biquad::new(), d4: Biquad::new(),
+            hp_x: 0.0f, hp_y: 0.0f, hp_coef: 0.0f,
+            output_target: 1.0f, output_gain: 1.0f, quiet: 0
+        };
+        // About 384 kHz inside: 8x at 44.1/48 kHz, 4x at 96 kHz.
+        let ratio: f32 = 384000.0f / rate + 0.5f;
+        s.os = iclamp(i32(ratio), 1, 16);
+        let inner: f32 = rate * f32(s.os);
+        // 8th-order Butterworth low-pass for the decimation.
+        let edge: f32 = smin(20000.0f, rate * 0.45f);
+        s.d1.lowpass(edge, 0.50979558f, inner);
+        s.d2.lowpass(edge, 0.60134489f, inner);
+        s.d3.lowpass(edge, 0.89997622f, inner);
+        s.d4.lowpass(edge, 2.56291545f, inner);
+        s.hp_coef = expf(-2.0f * pi() * 16.0f / rate);
+        s.set_clock(pal_clock());
+        s.configure_filter();
+        return s;
+    }
+
+    fn set_clock(self: &mut Self, clock: f64) -> void {
+        self.clock = clock;
+        self.cycles_per_sample = clock / f64(self.rate);
+        self.cycles_per_sub = self.cycles_per_sample / f64(self.os);
+        self.v1.retune(self.cycles_per_sub);
+        self.v2.retune(self.cycles_per_sub);
+        self.v3.retune(self.cycles_per_sub);
+    }
+
+    fn configure_filter(self: &mut Self) -> void {
+        let inner: f32 = self.rate * f32(self.os);
+        var hz: f32 = self.model == 0 ? cutoff_6581(self.fc) : cutoff_8580(self.fc);
+        hz = smin(hz, inner * 0.45f);
+        // Q from 0.707 to 1.707 (6581) or 2.2 (8580) over the resonance nibble.
+        let q: f32 = 0.70710678f + f32(self.res) / 15.0f * (self.model == 0 ? 1.0f : 1.5f);
+        let g: f32 = tanf(pi() * hz / inner);
+        self.fk = 1.0f / q;
+        self.fa1 = 1.0f / (1.0f + g * (g + self.fk));
+        self.fa2 = g * self.fa1;
+        self.fa3 = g * self.fa2;
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.v1.reset(); self.v2.reset(); self.v3.reset();
+        self.e1.reset(); self.e2.reset(); self.e3.reset();
+        self.ic1 = 0.0f; self.ic2 = 0.0f;
+        self.d1.reset(); self.d2.reset(); self.d3.reset(); self.d4.reset();
+        self.hp_x = 0.0f; self.hp_y = 0.0f; self.cycle_frac = 0.0;
+        self.output_gain = self.output_target;
+        self.quiet = 0;
+    }
+
+    /// Start the output filters at the steady state of a silent chip, so the
+    /// 6581's mixer DC does not thump when the plug-in starts.
+    fn settle(self: &mut Self) -> void {
+        let dc: f32 = self.model == 0 ? 0.35f * f32(self.vol) * (1.0f / 15.0f) : 0.0f;
+        self.ic1 = 0.0f;
+        self.ic2 = 0.0f;
+        self.d1.settle(dc);
+        self.d2.settle(dc);
+        self.d3.settle(dc);
+        self.d4.settle(dc);
+        self.hp_x = dc;
+        self.hp_y = 0.0f;
+        self.quiet = 0x7FFFFFF;
+    }
+
+    /// Write SID register `reg` ($D400 + reg).
+    fn poke(self: &mut Self, reg: i32, value: i32) -> void {
+        let v: i32 = value & 0xFF;
+        if reg == 0 { self.v1.freq = (self.v1.freq & 0xFF00) | v; self.v1.retune(self.cycles_per_sub); }
+        else if reg == 1 { self.v1.freq = (self.v1.freq & 0xFF) | (v << 8); self.v1.retune(self.cycles_per_sub); }
+        else if reg == 2 { self.v1.pw = (self.v1.pw & 0xF00) | v; }
+        else if reg == 3 { self.v1.pw = (self.v1.pw & 0xFF) | ((v & 15) << 8); }
+        else if reg == 4 { self.v1.write_ctrl(v); self.e1.write_gate((v & 1) != 0, self.hard_restart); }
+        else if reg == 5 { self.e1.write_ad(v); }
+        else if reg == 6 { self.e1.write_sr(v); }
+        else if reg == 7 { self.v2.freq = (self.v2.freq & 0xFF00) | v; self.v2.retune(self.cycles_per_sub); }
+        else if reg == 8 { self.v2.freq = (self.v2.freq & 0xFF) | (v << 8); self.v2.retune(self.cycles_per_sub); }
+        else if reg == 9 { self.v2.pw = (self.v2.pw & 0xF00) | v; }
+        else if reg == 10 { self.v2.pw = (self.v2.pw & 0xFF) | ((v & 15) << 8); }
+        else if reg == 11 { self.v2.write_ctrl(v); self.e2.write_gate((v & 1) != 0, self.hard_restart); }
+        else if reg == 12 { self.e2.write_ad(v); }
+        else if reg == 13 { self.e2.write_sr(v); }
+        else if reg == 14 { self.v3.freq = (self.v3.freq & 0xFF00) | v; self.v3.retune(self.cycles_per_sub); }
+        else if reg == 15 { self.v3.freq = (self.v3.freq & 0xFF) | (v << 8); self.v3.retune(self.cycles_per_sub); }
+        else if reg == 16 { self.v3.pw = (self.v3.pw & 0xF00) | v; }
+        else if reg == 17 { self.v3.pw = (self.v3.pw & 0xFF) | ((v & 15) << 8); }
+        else if reg == 18 { self.v3.write_ctrl(v); self.e3.write_gate((v & 1) != 0, self.hard_restart); }
+        else if reg == 19 { self.e3.write_ad(v); }
+        else if reg == 20 { self.e3.write_sr(v); }
+        else if reg == 21 { self.fc = (self.fc & 0x7F8) | (v & 7); self.configure_filter(); }
+        else if reg == 22 { self.fc = (self.fc & 7) | (v << 3); self.configure_filter(); }
+        else if reg == 23 { self.res = (v >> 4) & 15; self.filt = v & 15; self.configure_filter(); }
+        else if reg == 24 { self.mode = v & 0xF0; self.vol = v & 15; }
+    }
+
+    /// Read a register: OSC3 ($1B) and ENV3 ($1C) are readable.
+    fn peek(self: Sid, reg: i32) -> i32 {
+        if reg == 27 { return (self.v3.out >> 4) & 0xFF; }
+        if reg == 28 { return self.e3.counter; }
+        return 0;
+    }
+
+    fn active(self: Sid) -> bool {
+        return self.e1.counter != 0 || self.e2.counter != 0 || self.e3.counter != 0
+            || self.quiet < i32(self.rate * 0.05f);
+    }
+
+    /// One voice's analog output for waveform `w` at envelope `env` (0..1).
+    /// The 6581's waveform DAC is centred low, so its envelope also moves a
+    /// DC level (the thump on attacks); the 8580's is centred.
+    fn voice(self: Sid, w: i32, env: f32) -> f32 {
+        if self.model == 0 { return (f32(w) - 896.0f) * (1.0f / 2048.0f) * env; }
+        return (f32(w) - 2048.0f) * (1.0f / 2048.0f) * env;
+    }
+
+    /// One sub-sample: oscillators, mixer, filter; returns the mix.
+    fn substep(self: &mut Self, env1: f32, env2: f32, env3: f32) -> f32 {
+        self.v1.advance();
+        self.v2.advance();
+        self.v3.advance();
+        // Hard sync: voice 1 follows voice 3, 2 follows 1, 3 follows 2.
+        if (self.v1.ctrl & 2) != 0 && self.v3.rising { self.v1.sync(self.v3.since); }
+        if (self.v2.ctrl & 2) != 0 && self.v1.rising { self.v2.sync(self.v1.since); }
+        if (self.v3.ctrl & 2) != 0 && self.v2.rising { self.v3.sync(self.v2.since); }
+
+        let s1: f32 = self.voice(self.v1.wave(self.v3.acc), env1);
+        let s2: f32 = self.voice(self.v2.wave(self.v1.acc), env2);
+        let s3: f32 = self.voice(self.v3.wave(self.v2.acc), env3);
+
+        var direct: f32 = 0.0f;
+        var filtered: f32 = 0.0f;
+        if (self.filt & 1) != 0 { filtered = filtered + s1; } else { direct = direct + s1; }
+        if (self.filt & 2) != 0 { filtered = filtered + s2; } else { direct = direct + s2; }
+        if (self.filt & 4) != 0 { filtered = filtered + s3; }
+        else if (self.mode & 0x80) == 0 { direct = direct + s3; }
+
+        // The 6581's filter input saturates.
+        var x: f32 = filtered;
+        if self.model == 0 { x = x / sqrtf(1.0f + x * x * 0.12f); }
+        let fv3: f32 = x - self.ic2;
+        let fv1: f32 = self.fa1 * self.ic1 + self.fa2 * fv3;
+        let fv2: f32 = self.ic2 + self.fa2 * self.ic1 + self.fa3 * fv3;
+        self.ic1 = 2.0f * fv1 - self.ic1;
+        self.ic2 = 2.0f * fv2 - self.ic2;
+        var fout: f32 = 0.0f;
+        if (self.mode & 0x10) != 0 { fout = fout + fv2; }
+        if (self.mode & 0x20) != 0 { fout = fout + fv1; }
+        if (self.mode & 0x40) != 0 { fout = fout + x - self.fk * fv1 - fv2; }
+
+        var mix: f32 = direct + fout;
+        // The 6581's mixer DC: volume writes click.
+        if self.model == 0 { mix = mix + 0.35f; }
+        return mix * f32(self.vol) * (1.0f / 15.0f);
+    }
+
+    fn process(self: &mut Self, out_right: ptr<f32>) -> f32 {
+        self.cycle_frac = self.cycle_frac + self.cycles_per_sample;
+        let cycles: i32 = i32(self.cycle_frac);
+        self.cycle_frac = self.cycle_frac - f64(cycles);
+        self.e1.clock(cycles);
+        self.e2.clock(cycles);
+        self.e3.clock(cycles);
+        let env1: f32 = f32(self.e1.counter) * (1.0f / 255.0f) * self.level1;
+        let env2: f32 = f32(self.e2.counter) * (1.0f / 255.0f) * self.level2;
+        let env3: f32 = f32(self.e3.counter) * (1.0f / 255.0f) * self.level3;
+
+        var y: f32 = 0.0f;
+        var i: i32 = 0;
+        while i < self.os {
+            let mix: f32 = self.substep(env1, env2, env3);
+            y = self.d4.process(self.d3.process(self.d2.process(self.d1.process(mix))));
+            i = i + 1;
+        }
+        // AC coupling, then level.
+        let hp: f32 = y - self.hp_x + self.hp_coef * self.hp_y;
+        self.hp_x = y;
+        self.hp_y = hp;
+        self.output_gain = self.output_gain + (self.output_target - self.output_gain) * 0.002f;
+        let out: f32 = hp * 0.3f * self.output_gain;
+        if fabsf(out) < 0.00001f && self.e1.counter == 0 && self.e2.counter == 0 && self.e3.counter == 0 {
+            if self.quiet < 0x7FFFFFF { self.quiet = self.quiet + 1; }
+        } else {
+            self.quiet = 0;
+        }
+        unsafe { *out_right = out; }
+        return out;
+    }
+}
+
+// --- C ABI -------------------------------------------------------------------
+
+/// @brief Allocate a chip for a sample rate (8 kHz .. 384 kHz).
+fn mlasid_create(sample_rate: f32) -> ptr<Sid> {
+    let handle: ptr<Sid> = calloc(1, size_of(Sid));
+    unsafe { *handle = Sid::new(sample_rate); }
+    return handle;
+}
+
+/// @brief Release a chip created by `mlasid_create`.
+fn mlasid_destroy(handle: ptr<Sid>) { free(handle); }
+
+/// @brief Silence the chip: oscillators, envelopes and filter restart;
+/// registers stay.
+fn mlasid_reset(handle: ptr<Sid>) { unsafe { (*handle).reset(); } }
+
+/// @brief Start the output filters at a silent chip's steady state.
+fn mlasid_settle(handle: ptr<Sid>) { unsafe { (*handle).settle(); } }
+
+/// @brief Write SID register `reg` (0..24, $D400..$D418) with `value` (0..255).
+fn mlasid_poke(handle: ptr<Sid>, reg: i32, value: i32) {
+    unsafe { (*handle).poke(reg, value); }
+}
+
+/// @brief Read SID register `reg`: 27 is OSC3, 28 is ENV3; others read 0.
+fn mlasid_peek(handle: ptr<Sid>, reg: i32) -> i32 {
+    unsafe { return (*handle).peek(reg); }
+}
+
+/// @brief 1 while the chip makes sound, else 0.
+fn mlasid_active(handle: ptr<Sid>) -> i32 {
+    unsafe { return (*handle).active() ? 1 : 0; }
+}
+
+/// @brief Set a setting that is not a register:
+/// 0 output gain (linear), 1 model (0 MOS 6581, 1 MOS 8580),
+/// 2 clock (0 PAL, 1 NTSC), 3 hard restart (0 off, 1 on),
+/// 4..6 voice 1..3 level (linear, 0..1).
+fn mlasid_set(handle: ptr<Sid>, index: i32, value: f32) {
+    unsafe {
+        if index == 0 {
+            (*handle).output_target = value < 0.0f ? 0.0f : value;
+            if !(*handle).active() { (*handle).output_gain = (*handle).output_target; }
+        }
+        else if index == 1 { (*handle).model = value > 0.5f ? 1 : 0; (*handle).configure_filter(); }
+        else if index == 2 { (*handle).set_clock(value > 0.5f ? ntsc_clock() : pal_clock()); }
+        else if index == 3 { (*handle).hard_restart = value > 0.5f; }
+        else if index == 4 { (*handle).level1 = sclamp(value, 0.0f, 1.0f); }
+        else if index == 5 { (*handle).level2 = sclamp(value, 0.0f, 1.0f); }
+        else if index == 6 { (*handle).level3 = sclamp(value, 0.0f, 1.0f); }
+    }
+}
+
+/// @brief Process one sample: mono out on both channels (left returned,
+/// right through `out_right`).
+fn mlasid_process(handle: ptr<Sid>, out_right: ptr<f32>) -> f32 {
+    unsafe { return (*handle).process(out_right); }
+}

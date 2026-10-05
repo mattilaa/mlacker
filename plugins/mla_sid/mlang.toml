@@ -1,0 +1,67 @@
+[package]
+name = "mla_sid"
+version = "0.1.0"
+
+[tool.mlang]
+min_mlang_version = "0.2.0"
+build_dir = "build"
+deps_dir = "build/deps"
+
+# MLang checkout providing build/mlang and build/libmlang_std.a. mlacker's
+# build.sh passes an absolute path; the default assumes subprojects/mlang.
+# vst3_sdk_root: the VST3 SDK that mlacker's mlang.toml fetches once for the app
+# and all plugins (run ./build.sh first). mlacker builds every plugin against a
+# single compiled SDK (plugins/CMakeLists.txt); this package's own configure and
+# build tasks are for building the plugin alone.
+[tool.mlang.options]
+mlang_root = "../../subprojects/mlang"
+vst3_sdk_root = "../../build/deps/vst3sdk"
+
+[[task]]
+name = "prepare"
+print = "[mla_sid] Preparing build tree and MLang runtime archive"
+workdir = "{{root}}"
+commands = [
+  "mkdir -p {{build_dir}}/obj {{build_dir}}/cmake",
+  "cmake --build {{option.mlang_root}}/build --target mlang_std -j4"
+]
+
+[[task]]
+name = "compile-dsp"
+phase = "compile"
+print = "[mla_sid] Compiling the MLang SID chip DSP object"
+workdir = "{{root}}"
+depends_on = ["prepare"]
+language = "mlang"
+source = "src/mla_sid_dsp.mla"
+output = "{{build_dir}}/obj/mla_sid_dsp.o"
+compile_only = true
+opt_level = "O2"
+
+[[task]]
+name = "configure"
+print = "[mla_sid] Configuring the CMake project for the VST3 SID synthesizer bundle"
+workdir = "{{root}}"
+depends_on = ["compile-dsp"]
+commands = [
+  "cmake -S {{root}} -B {{build_dir}}/cmake -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT={{option.vst3_sdk_root}} -DMLANG_DSP_OBJECT={{build_dir}}/obj/mla_sid_dsp.o -DMLANG_STD_LIBRARY={{option.mlang_root}}/build/libmlang_std.a -DMLANG_ROOT={{option.mlang_root}}"
+]
+
+[[task]]
+name = "build"
+phase = "build"
+print = "[mla_sid] Building the Mla SID .vst3 bundle"
+workdir = "{{root}}"
+depends_on = ["configure"]
+commands = [
+  "cmake --build {{build_dir}}/cmake --target MlaSid -j4"
+]
+
+[[task]]
+name = "test"
+workdir = "{{root}}"
+depends_on = ["build"]
+commands = [
+  "cmake --build {{build_dir}}/cmake --target mla_sid_tests -j4",
+  "ctest --test-dir {{build_dir}}/cmake --output-on-failure"
+]
