@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Product definition for the mlacker installer (build_pkg.sh fills in @...@).
+     Installs for the current user. The chosen parts unpack into a staging
+     folder in the home folder; the hidden finish step asks where each part
+     goes (defaults ~/.local, ~/.local/bin, ~/.local/plugins/VST3), moves it
+     there and offers to add the tool directories to the PATH. -->
+<installer-gui-script minSpecVersion="2">
+    <title>mlacker @VERSION@</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <license file="LICENSE.txt"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    <options customize="allow" require-scripts="false" hostArchitectures="arm64"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="@MIN_MACOS@"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="prepare"/>
+        <line choice="mlang"/>
+        <line choice="mlacker"/>
+        <line choice="plugins"/>
+        <line choice="finish"/>
+    </choices-outline>
+    <choice id="prepare" visible="false" enabled="false" selected="true">
+        <pkg-ref id="com.github.mattilaa.mlacker.prepare"/>
+    </choice>
+    <choice id="mlang" title="MLang toolchain"
+            description="The MLang compiler and tools (bin), runtime library (lib/mlang) and standard library (share/mlang). The installer asks for the location; default ~/.local, the build scripts' MLANG_PREFIX.">
+        <pkg-ref id="com.github.mattilaa.mlacker.mlang"/>
+    </choice>
+    <choice id="mlacker" title="mlacker"
+            description="The mlacker binary. The installer asks for the location; default ~/.local/bin, the build scripts' BIN_DIR.">
+        <pkg-ref id="com.github.mattilaa.mlacker.app"/>
+    </choice>
+    <choice id="plugins" title="Mla VST3 plugins"
+            description="The Mla VST3 instrument and effect plugins. The installer asks for the location; default ~/.local/plugins/VST3, the build scripts' PLUGIN_DIR.">
+        <pkg-ref id="com.github.mattilaa.mlacker.plugins"/>
+    </choice>
+    <choice id="finish" visible="false" enabled="false" selected="true">
+        <pkg-ref id="com.github.mattilaa.mlacker.finish"/>
+    </choice>
+    <pkg-ref id="com.github.mattilaa.mlacker.prepare" version="@VERSION@">prepare.pkg</pkg-ref>
+    <pkg-ref id="com.github.mattilaa.mlacker.mlang" version="@VERSION@">mlang.pkg</pkg-ref>
+    <pkg-ref id="com.github.mattilaa.mlacker.app" version="@VERSION@">mlacker.pkg</pkg-ref>
+    <pkg-ref id="com.github.mattilaa.mlacker.plugins" version="@VERSION@">plugins.pkg</pkg-ref>
+    <pkg-ref id="com.github.mattilaa.mlacker.finish" version="@VERSION@">finish.pkg</pkg-ref>
+</installer-gui-script>

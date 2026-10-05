@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs first: clear a staging folder left by an interrupted install, so only
+# the parts chosen this time get installed by the finish step.
+if [ "$(id -u)" = 0 ]; then
+    user=$(stat -f%Su /dev/console)
+    home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | sed 's/^NFSHomeDirectory: //')
+else
+    home=$HOME
+fi
+[ -n "$home" ] && rm -rf "$home/Library/Caches/com.github.mattilaa.mlacker.installer"
+exit 0

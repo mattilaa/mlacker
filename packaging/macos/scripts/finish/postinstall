@@ -1,0 +1,230 @@
+#!/bin/sh
+# Runs last. The chosen parts (MLang, mlacker, the Mla VST3 plugins) were
+# unpacked into a staging folder; ask where each one goes (defaults: the build
+# scripts' ~/.local, ~/.local/bin, ~/.local/plugins/VST3), move it there, and
+# offer to add the tool directories to the PATH if it lacks them.
+#
+# Without a GUI session (a command-line install over SSH, say) the defaults
+# are used and the shell profile is left alone. ~/.config/mlacker/installer.conf
+# answers the questions instead of the dialogs:
+#
+#   MLANG_PREFIX=~/.local
+#   BIN_DIR=~/.local/bin
+#   PLUGIN_DIR=~/.local/plugins/VST3
+#   ADD_TO_PATH=yes        # or no
+#
+# Messages go to the install log (/var/log/install.log).
+
+log() { echo "mlacker installer: $*" >&2; }
+
+if [ "$(id -u)" = 0 ]; then
+    user=$(stat -f%Su /dev/console)
+    [ -n "$user" ] && [ "$user" != root ] || { log "no console user"; exit 0; }
+    home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | sed 's/^NFSHomeDirectory: //')
+else
+    user=$(id -un)
+    home=$HOME
+fi
+uid=$(id -u "$user")
+staging="$home/Library/Caches/com.github.mattilaa.mlacker.installer"
+[ -d "$staging" ] || { log "nothing staged in $staging"; exit 0; }
+
+# Run as the user (files they own, their GUI session for dialogs).
+as_user() {
+    if [ "$(id -u)" = 0 ]; then sudo -u "$user" HOME="$home" "$@"; else "$@"; fi
+}
+gui() {
+    if [ "$(id -u)" = 0 ]; then
+        launchctl asuser "$uid" sudo -u "$user" /usr/bin/osascript "$@"
+    else
+        /usr/bin/osascript "$@"
+    fi
+}
+
+mlang_dest="~/.local"
+bin_dest="~/.local/bin"
+plugin_dest="~/.local/plugins/VST3"
+add_to_path=""
+use_dialogs=1
+config="$home/.config/mlacker/installer.conf"
+if [ -f "$config" ]; then
+    value() { sed -n "s/^$1=//p" "$config" | tail -1 | sed 's/^"\(.*\)"$/\1/'; }
+    mlang_dest=$(value MLANG_PREFIX); [ -n "$mlang_dest" ] || mlang_dest="~/.local"
+    bin_dest=$(value BIN_DIR); [ -n "$bin_dest" ] || bin_dest="~/.local/bin"
+    plugin_dest=$(value PLUGIN_DIR); [ -n "$plugin_dest" ] || plugin_dest="~/.local/plugins/VST3"
+    add_to_path=$(value ADD_TO_PATH)
+    use_dialogs=""
+    log "using $config"
+fi
+# Dialogs need the user's GUI session (none over SSH or in a headless run).
+if [ -n "$use_dialogs" ] && ! launchctl print "gui/$uid" >/dev/null 2>&1; then
+    use_dialogs=""
+    log "no GUI session, using the default locations"
+fi
+
+expand() {
+    case "$1" in
+        "~") echo "$home" ;;
+        "~/"*) echo "$home/${1#\~/}" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Ask for a folder: a text field with the default, or a folder chooser.
+# Prints the answer, or nothing when no dialog could be shown.
+ask_folder() {
+    gui - "$1" "$2" <<'EOF' 2>/dev/null
+on run argv
+    set promptText to item 1 of argv
+    set defaultPath to item 2 of argv
+    set reply to display dialog promptText default answer defaultPath buttons {"Choose Folder…", "OK"} default button "OK" with title "mlacker installer" giving up after 900
+    if gave up of reply then return defaultPath
+    if button returned of reply is "Choose Folder…" then
+        try
+            return POSIX path of (choose folder with prompt promptText)
+        on error
+            return defaultPath
+        end try
+    end if
+    return text returned of reply
+end run
+EOF
+}
+
+say() {
+    gui - "$1" <<'EOF' >/dev/null 2>&1
+on run argv
+    display dialog (item 1 of argv) buttons {"OK"} default button "OK" with title "mlacker installer" with icon caution giving up after 900
+end run
+EOF
+}
+
+# The destination for a staged part: asked (until it can be created) or the
+# configured/default one.
+destination() {
+    prompt=$1
+    answer=$2
+    tries=0
+    while :; do
+        if [ -n "$use_dialogs" ]; then
+            reply=$(ask_folder "$prompt" "$answer")
+            # No reply: the dialog could not be shown; keep the default.
+            [ -n "$reply" ] && answer=$reply
+        fi
+        dir=$(expand "$answer")
+        dir=${dir%/}
+        case "$dir" in
+            /*) as_user mkdir -p "$dir" 2>/dev/null && as_user test -w "$dir" && { echo "$dir"; return 0; } ;;
+        esac
+        tries=$((tries + 1))
+        if [ -z "$use_dialogs" ] || [ $tries -ge 3 ]; then
+            log "cannot install into $answer"
+            return 1
+        fi
+        say "Cannot install into $answer. Choose a folder you can write to."
+    done
+}
+
+installed_bins=""
+failed=""
+if [ -d "$staging/mlang" ]; then
+    if dir=$(destination "Install the MLang toolchain under (its tools go to bin/):" "$mlang_dest"); then
+        as_user ditto "$staging/mlang" "$dir"
+        installed_bins="$installed_bins
+$dir/bin"
+        log "MLang installed under $dir"
+    else
+        failed="$failed MLang"
+    fi
+fi
+if [ -d "$staging/mlacker" ]; then
+    if dir=$(destination "Install mlacker into:" "$bin_dest"); then
+        as_user ditto "$staging/mlacker" "$dir"
+        installed_bins="$installed_bins
+$dir"
+        log "mlacker installed into $dir"
+    else
+        failed="$failed mlacker"
+    fi
+fi
+if [ -d "$staging/plugins" ]; then
+    if dir=$(destination "Install the Mla VST3 plugins into:" "$plugin_dest"); then
+        for bundle in "$staging/plugins"/*.vst3; do
+            [ -d "$bundle" ] || continue
+            name=$(basename "$bundle")
+            as_user rm -rf "$dir/$name"
+            as_user ditto "$bundle" "$dir/$name"
+        done
+        log "Mla VST3 plugins installed into $dir"
+    else
+        failed="$failed plugins"
+    fi
+fi
+rm -rf "$staging"
+
+# --- PATH -----------------------------------------------------------------
+shell=$(dscl . -read "/Users/$user" UserShell 2>/dev/null | sed 's/^UserShell: //')
+shell=${shell:-/bin/zsh}
+case "$(basename "$shell")" in
+    zsh) profile="$home/.zprofile" ;;
+    bash) profile="$home/.bash_profile" ;;
+    fish) profile="$home/.config/fish/conf.d/mlacker.fish" ;;
+    *) profile="$home/.profile" ;;
+esac
+# The PATH a new terminal gets (login + interactive shell), time-limited.
+login_path=$(as_user /usr/bin/perl -e 'alarm 10; exec @ARGV' "$shell" -ilc 'printf "%s" "$PATH"' </dev/null 2>/dev/null)
+on_path() {
+    case ":$login_path:" in *":$1:"*) return 0 ;; esac
+    cat /etc/paths /etc/paths.d/* 2>/dev/null | grep -qxF "$1" && return 0
+    [ -f "$profile" ] && grep -qF "$1" "$profile" && return 0
+    return 1
+}
+missing=""
+old_ifs=$IFS
+IFS='
+'
+for dir in $installed_bins; do
+    [ -n "$dir" ] || continue
+    on_path "$dir" || missing="$missing
+$dir"
+done
+IFS=$old_ifs
+
+if [ -n "$missing" ]; then
+    shown_profile=$(echo "$profile" | sed "s|^$home|~|")
+    if [ -z "$add_to_path" ] && [ -n "$use_dialogs" ]; then
+        answer=$(gui - "Add these folders to your PATH (in $shown_profile)?$missing" <<'EOF' 2>/dev/null
+on run argv
+    set reply to display dialog (item 1 of argv) buttons {"Don't Add", "Add to PATH"} default button "Add to PATH" with title "mlacker installer" giving up after 900
+    if gave up of reply then return "no"
+    if button returned of reply is "Add to PATH" then return "yes"
+    return "no"
+end run
+EOF
+)
+        add_to_path=${answer:-no}
+    fi
+    if [ "$add_to_path" = yes ]; then
+        as_user mkdir -p "$(dirname "$profile")"
+        IFS='
+'
+        for dir in $missing; do
+            [ -n "$dir" ] || continue
+            case "$profile" in
+                *.fish) line=$(printf 'set -gx PATH "%s" $PATH' "$dir") ;;
+                *) line=$(printf 'export PATH="%s:$PATH"' "$dir") ;;
+            esac
+            printf '\n# Added by the mlacker installer\n%s\n' "$line" | as_user tee -a "$profile" >/dev/null
+            log "added $dir to PATH in $profile"
+        done
+        IFS=$old_ifs
+    else
+        log "PATH not changed; missing:$(echo "$missing" | tr '\n' ' ')"
+    fi
+fi
+
+if [ -n "$failed" ]; then
+    log "not installed:$failed"
+    exit 1
+fi
+exit 0

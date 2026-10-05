@@ -182,6 +182,29 @@ same name are replaced. The destinations come from `mlacker.conf`. When running
 `--option plugin_dir=DIR` or `--option plugins="mla_verb mla_eq"` (names under
 `plugins/`).
 
+### macOS installer
+
+Releases on GitHub come with `mlacker-<version>-macos-arm64.pkg` (Apple
+silicon): mlacker, the Mla VST3 plugins and the MLang toolchain from MLang's
+`main` at release time. It installs for the current user and asks where each
+part goes, defaulting to the locations above (`~/.local`, `~/.local/bin`,
+`~/.local/plugins/VST3`), then offers to add the tool directories to the PATH
+if they are not on it. Compiling MLang programs needs the Xcode Command Line
+Tools. A command-line install (`installer -pkg ... -target
+CurrentUserHomeDirectory`) uses the defaults, or the answers in
+`~/.config/mlacker/installer.conf` (`MLANG_PREFIX=`, `BIN_DIR=`, `PLUGIN_DIR=`,
+`ADD_TO_PATH=yes|no`).
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the
+package and creates the release (a pre-release for tags like `v0.3.0-rc1`; a
+manual run makes a draft). To build the package locally:
+
+```sh
+rm -rf build/cmake                            # the option is read on first configure
+MLACKER_STATIC_OPENSSL=1 ./build.sh --all     # with MLANG_TOOLCHAIN="yes"
+packaging/macos/build_pkg.sh --version 0.3.0  # -> build/release/
+```
+
 ## Sessions (.mlack 1.2)
 
 Launching mlacker without a filename starts one empty, 64-row **Untitled**

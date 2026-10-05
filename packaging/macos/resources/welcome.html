@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><style>body { font: 13px -apple-system, sans-serif; } code { font-size: 12px; }</style></head>
+<body>
+<h2>mlacker @VERSION@</h2>
+<p>This installs the mlacker terminal tracker together with the MLang toolchain it is
+built with (MLang <code>@MLANG_COMMIT@</code>) and the Mla VST3 plugins.</p>
+<p>Default locations, the same as the build scripts use:</p>
+<ul>
+<li>MLang toolchain: <code>~/.local</code> (tools in <code>~/.local/bin</code>)</li>
+<li>mlacker: <code>~/.local/bin</code></li>
+<li>Mla VST3 plugins: <code>~/.local/plugins/VST3</code></li>
+</ul>
+<p>During the installation you are asked where to install each part (type a path or click
+<b>Choose Folder…</b>), and whether to add the MLang and mlacker tool directories to your
+shell profile if they are not on your PATH yet. To leave a part out, click <b>Customize</b>
+on the Installation Type step.</p>
+<p>Requires a Mac with Apple silicon. Compiling MLang programs needs the Xcode Command Line
+Tools (<code>xcode-select --install</code>).</p>
+</body>
+</html>

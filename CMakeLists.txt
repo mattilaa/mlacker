@@ -27,6 +27,16 @@ set(SMTG_DISABLE_CODE_SIGNING ON CACHE BOOL "" FORCE)
 set(SMTG_BUILD_UNIVERSAL_BINARY OFF CACHE BOOL "" FORCE)
 add_subdirectory("${VST3_SDK_ROOT}" "${CMAKE_BINARY_DIR}/sdk")
 smtg_enable_vst3_sdk()
+# Release packages link OpenSSL statically, so mlacker runs without Homebrew's
+# OpenSSL (MLACKER_STATIC_OPENSSL=1 in the environment of the first configure).
+set(MLACKER_STATIC_OPENSSL_DEFAULT OFF)
+if("$ENV{MLACKER_STATIC_OPENSSL}")
+    set(MLACKER_STATIC_OPENSSL_DEFAULT ON)
+endif()
+option(MLACKER_STATIC_OPENSSL "Link OpenSSL statically" ${MLACKER_STATIC_OPENSSL_DEFAULT})
+if(MLACKER_STATIC_OPENSSL)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+endif()
 find_package(OpenSSL REQUIRED)
 add_library(mlacker_host STATIC src/vst3_host.cpp
     "${VST3_SDK_ROOT}/public.sdk/source/common/memorystream.cpp"
