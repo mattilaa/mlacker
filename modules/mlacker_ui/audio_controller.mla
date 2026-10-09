@@ -93,6 +93,10 @@ pub struct AudioSystem {
     var next_phrase: i32;
     /// Next slot of the system exclusive message ring (see `send_sysex`).
     var next_sysex: i32;
+    /// While `collect_pads`, the note-ons and note-offs posted for track
+    /// `pad_track` (the selected one) gather in `pad_events` for the
+    /// on-screen MPD218 pads, which take them each frame.
+    var collect_pads: bool; var pad_track: i64{-1}; var pad_events: list<NoteEvent>;
     /// Transport last handed to `output` for tempo-synced plugins.
     var transport_output: i64; var transport_bpm: i32; var transport_playing: bool;
     /// Sequencer timing: while `scheduling`, tick `schedule_tick` sounds on
@@ -229,7 +233,13 @@ impl AudioSystem {
     // --- Offline bounce (see bounce.mla) ---------------------------------------
     /// Stop the device and prepare to render at `bpm`. On failure `error`
     /// says why and nothing was changed.
+    /// Take the pad events gathered since the last call.
+    pub fn take_pad_events(self: &mut Self) -> list<NoteEvent> {
+        let events: list<NoteEvent> = self.pad_events; self.pad_events = []; return events;
+    }
     pub fn bounce_begin(self: &mut Self, bpm: i32) -> Bounce {
+        // A bounce plays offline: it lights no pads.
+        self.pad_events = [];
         var job: Bounce = Bounce { bpm: bpm };
         if self.output.handle == 0 { job.error = "Bouncing needs audio enabled (File > Settings)"; return job; }
         if bpm <= 0 { job.error = "Invalid tempo"; return job; }
@@ -344,6 +354,7 @@ impl AudioSystem {
         if !b.ok() { return []; }
         b.playback.update(source, b.tick, false);
         self.sequencer_events(b.playback.events, source);
+        self.pad_events = [];
         self.scheduling = false;
         let limit: i64 = tail_seconds * b.rate;
         // Quiet = below about -90 dBFS for half a second.
@@ -734,9 +745,11 @@ impl AudioSystem {
         let line: str8 = format!("Knob {}: {} {}", knob + 1, self.output.parameter_name(slot, index), shown);
         free(shown); return line;
     }
-    pub fn route_selected(self: AudioSystem, source: &SequenceTable) -> void {
-        if self.output.handle == 0 { return; }
+    pub fn route_selected(self: &mut Self, source: &SequenceTable) -> void {
         let target: i64 = AudioSystem::live_target(source);
+        // The on-screen MPD218 pads show the track the pads play.
+        self.pad_track = target < 0 ? -1 : target % 64;
+        if self.output.handle == 0 { return; }
         if target < 0 { self.output.midi_target(0, -1); return; }
         self.output.midi_target(target % 64, target / 64);
     }
@@ -977,6 +990,12 @@ impl AudioSystem {
     /// scheduled from: a note-on that speaks its row's TEXT cell sends the
     /// text to the instrument first (see `speak`).
     pub fn sequencer_events(self: &mut Self, events: list<NoteEvent>, source: &SequenceTable) -> void {
+        // The on-screen pads light even without audio output.
+        if self.collect_pads {
+            for event in events {
+                if (event.on == 0 || event.on == 1) && event.track == self.pad_track && self.pad_events.len() < 1024 { self.pad_events.push(event); }
+            }
+        }
         if self.output.handle == 0 { return; }
         for event in events {
             if event.on == 3 { self.send_sysex(event, source); continue; }
