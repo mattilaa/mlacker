@@ -172,6 +172,8 @@ add_test(NAME instrument_input_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURR
 set_tests_properties(instrument_input_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME comment_column_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/comment_column_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(comment_column_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
+add_test(NAME project_settings_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/project_settings_tui_smoke.py" "$<TARGET_FILE:mlacker>")
+set_tests_properties(project_settings_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME sysex_columns_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sysex_columns_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(sysex_columns_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME audio_record_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_record_tui_smoke.py" "$<TARGET_FILE:mlacker>")

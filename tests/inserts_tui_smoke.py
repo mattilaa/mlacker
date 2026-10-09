@@ -64,9 +64,10 @@ def main():
             # Replacing the audio device must keep insert parameter state.
             assert b"Audio output (AUHAL)" in tui.send_until(F1 + b"jjjj\r", b"Audio output (AUHAL)")
             # Output -> Disabled; tab past the audio input, sample rate, buffer
-            # size and master headroom to MIDI -> Disabled; past CPU cores to OK.
+            # size and master headroom to MIDI -> Disabled; past MIDI knobs and
+            # CPU cores to OK.
             tui.send(b"\rk\r"); tui.send(b"\t\t\t\t\t\rk\r")
-            assert b"Settings applied. Audio disabled." in tui.send(b"\t\t\r", .6)
+            assert b"Settings applied. Audio disabled." in tui.send(b"\t\t\t\r", .6)
             assert b"0.25" in tui.send(b"\r")
             tui.send(b"\x1b")
             tui.send(b"\x7f")

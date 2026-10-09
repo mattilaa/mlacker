@@ -34,6 +34,16 @@ impl MidiInputEvent {
     }
 }
 
+/// Steps a relative (endless encoder) CC value asks for. Both common
+/// encodings are understood: two's complement (1 = +1, 127 = -1) and binary
+/// offset (65 = +1, 63 = -1). Turning fast sends bigger steps, up to 31.
+pub fn relative_delta(value: i64) -> i64 {
+    if value <= 0 || value == 64 || value > 127 { return 0; }
+    if value < 32 { return value; }
+    if value > 96 { return value - 128; }
+    return value - 64;
+}
+
 /// Streaming decoder: packets may contain multiple messages or running status.
 pub struct MidiDecoder {
     var status: i32; var first: i32; var count: i32; var sysex: bool;

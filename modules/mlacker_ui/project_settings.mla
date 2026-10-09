@@ -1,0 +1,76 @@
+/// File > Project > Project settings: settings saved with the project (and
+/// with a plain session) rather than for every project.
+mod tui::dialog;
+mod tui::dropdown;
+use tui::dialog::Dialog;
+use tui::dropdown::*;
+use tui::button::PushButton;
+use tui::focus::PaneFocus;
+use tui::layout::Alignment;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use tui::menu::Key;
+
+/// The project's MIDI knob mode: 0 as in Settings, 1 absolute, 2 relative.
+pub fn project_knob_items() -> list<DropDownItem> {
+    return [DropDownItem { id: 0, label: "As in Settings" }, DropDownItem { id: 1, label: "Absolute (positions 0-127)" },
+        DropDownItem { id: 2, label: "Relative (endless encoders, +/- steps)" }];
+}
+/// True when knobs are relative: the project's mode (0 as in Settings, 1
+/// absolute, 2 relative), else the Settings default.
+pub fn knobs_relative(project_mode: i32, settings_relative: bool) -> bool {
+    return project_mode == 2 || (project_mode == 0 && settings_relative);
+}
+
+/// Fields, then the buttons.
+fn project_field_knobs() -> i32 { return 0; }
+pub fn project_settings_buttons() -> i32 { return 1; }
+
+pub struct ProjectSettingsDialog : Dialog {
+    var knobs: DropDown;
+};
+impl ProjectSettingsDialog {
+    pub fn new() -> ProjectSettingsDialog {
+        return ProjectSettingsDialog { title: "Project settings", width: 60, height: 10,
+            focus: PaneFocus::new(0), button_alignment: Alignment::Center,
+            buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
+    }
+    /// Show the project's knob mode (0 as in Settings, 1 absolute, 2 relative).
+    pub fn open(self: &mut Self, knob_mode: i32) -> void {
+        self.knobs.set_items(project_knob_items(), wide(knob_mode));
+        self.reset_buttons(); self.focus.selected = 0; self.result = 0; self.active = true;
+    }
+    pub fn knob_mode(self: ProjectSettingsDialog) -> i32 { return i32(self.knobs.selected_id()); }
+    pub fn on_event(self: &mut Self, event: InputEvent) -> void {
+        if self.pressed_button >= 0 { return; }
+        if event.kind == InputKind::Pane || (event.kind == InputKind::Menu && event.key == Key::Toggle) {
+            self.knobs.cancel();
+            let back: bool = (event.kind == InputKind::Pane && (event.key == Key::Up || event.key == Key::Left)) || event.modifiers == 2;
+            let count: i32 = project_settings_buttons() + 1;
+            self.focus.selected = (self.focus.selected + (back ? count - 1 : 1)) % count;
+            return;
+        }
+        if self.focus.selected == project_field_knobs() { if self.knobs.on_event(event) { return; } }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
+            self.active = false; self.result = 2; return;
+        }
+        if self.focus.selected == project_settings_buttons() { self.on_button_event(event); }
+    }
+    pub fn tick(self: &mut Self) -> void {
+        let action: i32 = self.tick_buttons();
+        if action == 1 || action == 2 { self.active = false; self.result = action; }
+    }
+    pub fn paint(self: ProjectSettingsDialog, surface: Surface, viewport: Rect, theme: Theme) -> void {
+        if !self.active { return; }
+        let body: Rect = self.paint_frame(surface, viewport, theme);
+        if body.height < 2 { return; }
+        surface.text(Rect::new(body.x, body.y, body.width, 1), "MIDI knobs (MIDI learn and MPD218)", theme.foreground, theme.panel);
+        let row: Rect = Rect::new(body.x + 1, body.y + 1, body.width - 2, 1);
+        self.knobs.paint(surface, row, theme, self.focus.selected == project_field_knobs());
+        if body.height > 3 { surface.text(Rect::new(body.x, body.y + 3, body.width, 1), "Saved with the project; File > Settings sets the default.", theme.muted, theme.panel); }
+        self.knobs.paint_popup(surface, row, viewport, theme);
+    }
+    pub fn release(self: &mut Self) -> void { self.knobs.release(); }
+}

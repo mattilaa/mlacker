@@ -1,6 +1,7 @@
 """Hardware-free PTY coverage for File > Settings and public dropdowns."""
 import fcntl
 import os
+import tempfile
 import re
 import select
 import struct
@@ -18,8 +19,11 @@ F1 = b"\x1bOP"
 def main():
     master, slave = os.openpty()
     before = termios.tcgetattr(slave)
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 32, 80, 0, 0))
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 80, 0, 0))
     env = dict(os.environ, TERM="xterm-256color", MLANG_TUI_NO_HARDWARE="1")
+    # Never the user's own settings file (~/.config/mlacker/settings).
+    settings_file = os.path.join(tempfile.mkdtemp(prefix="mlacker-settings-"), "settings")
+    env["MLACKER_SETTINGS"] = settings_file
     env.pop("NO_COLOR", None)
     process = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=slave, stderr=slave, env=env)
 
@@ -68,7 +72,7 @@ def main():
         frame = send(b"\x1b")
         assert b"Audio output (AUHAL)" not in frame and b"Patterns" in frame
         # Reopen and walk the fields top to bottom: output, input, sample
-        # rate, buffer, headroom, MIDI, cores. Disabled output and MIDI apply
+        # rate, buffer, headroom, MIDI, MIDI knobs, cores. Disabled output and MIDI apply
         # without device access.
         send(F1 + b"jjjj\r")
         send(b"\rk\r")  # Output: System default -> Disabled
@@ -82,6 +86,9 @@ def main():
         assert b"-12 dB (default)" in frame and b"0 dB (none)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
         send(b"k\r")  # -12 -> -9 dB
         send(b"\t\rk\r")  # MIDI: System default -> Disabled
+        frame = send(b"\t\r")  # MIDI knobs: Absolute by default
+        assert b"Relative (endless encoders" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
+        send(b"j\r")  # Absolute -> Relative
         frame = send(b"\t\r")  # CPU cores choices come from the OS
         assert b"1 core (no worker threads)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
         send(b"j\r")  # All cores -> 1 core
@@ -90,9 +97,12 @@ def main():
         # 250 ms window that may contain only the button press frame.
         frame = send_until(b"\t\r", b"Settings applied. Audio disabled.")
         assert b"Settings applied. Audio disabled." in frame
+        # The knob mode is kept between runs, in the settings file.
+        with open(settings_file) as saved:
+            assert "midi_knobs = relative" in saved.read()
         frame = send(F1 + b"jjjj\r")
         assert b"MIDI input adapter" in frame and b"Disabled" in frame and b"512 frames" in frame and b"96 kHz" in frame
-        assert b"-9 dB" in frame and b"1 core (no worker threads)" in frame
+        assert b"-9 dB" in frame and b"1 core (no worker threads)" in frame and b"Relative (endless encoders" in frame
         # Resize with an expanded dropdown, exercising clipping and overlay.
         send(b"\r")
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 30, 0, 0))

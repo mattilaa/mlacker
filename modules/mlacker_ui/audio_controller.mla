@@ -745,6 +745,31 @@ impl AudioSystem {
         let line: str8 = format!("Knob {}: {} {}", knob + 1, self.output.parameter_name(slot, index), shown);
         free(shown); return line;
     }
+    /// Step parameter `index` of the processor in `slot` by `delta` from
+    /// its current value: a stepped parameter by whole steps, any other by
+    /// 1/127 per step, within its range. An owned status line ("Cutoff 52%"),
+    /// or "" when the parameter is missing or read-only.
+    pub fn step_parameter(self: AudioSystem, slot: i64, index: i64, delta: i64) -> str8 {
+        if self.output.handle == 0 || slot < 0 || index < 0 || delta == 0 { return clone(""); }
+        let count: f64 = self.output.parameter_info(slot, 0, 0);
+        if count < 0.0 || f64(index) >= count || self.output.parameter_info(slot, index, 3) != 0.0 { return clone(""); }
+        let steps: f64 = self.output.parameter_info(slot, index, 1);
+        let current: f64 = self.output.parameter_info(slot, index, 2);
+        var value: f64 = steps > 0.0 ? std::math::floor(current * steps + 0.5) + f64(delta) : current + f64(delta) / 127.0;
+        let top: f64 = steps > 0.0 ? steps : 1.0;
+        if value < 0.0 { value = 0.0; }
+        if value > top { value = top; }
+        if self.output.set_parameter(slot, index, value) != 0 { return clone(""); }
+        let shown: str8 = steps > 0.0 ? format!("{}", i32(value)) : format!("{}%", i32(std::math::round(value * 100.0)));
+        let line: str8 = format!("{} {}", self.output.parameter_name(slot, index), shown);
+        free(shown); return line;
+    }
+    /// Relative MPD218 knob `knob`: step its parameter (see `turn_knob`).
+    pub fn step_knob(self: AudioSystem, slot: i64, knob: i32, delta: i64, selected: i32) -> str8 {
+        let line: str8 = self.step_parameter(slot, wide(mpd218_parameter(knob, selected)), delta);
+        if line == "" { return line; }
+        let status: str8 = format!("Knob {}: {}", knob + 1, line); free(line); return status;
+    }
     pub fn route_selected(self: &mut Self, source: &SequenceTable) -> void {
         let target: i64 = AudioSystem::live_target(source);
         // The on-screen MPD218 pads show the track the pads play.
