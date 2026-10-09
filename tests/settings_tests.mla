@@ -33,14 +33,14 @@ fn settings_modal_focus_and_buttons() {
     settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Enter }); verify(settings.output.expanded);
     settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Escape }); verify(settings.active && !settings.output.expanded);
     // Fields top to bottom (output, input, rate, buffer, headroom, MIDI,
-    // cores), then the buttons, wrapping around both ways.
-    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Toggle, code: 9, modifiers: 2 }); verify(settings.focus.selected == 7);
+    // MIDI knobs, cores), then the buttons, wrapping around both ways.
+    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Toggle, code: 9, modifiers: 2 }); verify(settings.focus.selected == 8);
     settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Toggle, code: 9 }); verify(settings.focus.selected == 0);
-    for i in 1..8 { settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Down }); verify(settings.focus.selected == i32(i)); }
+    for i in 1..9 { settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Down }); verify(settings.focus.selected == i32(i)); }
     settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Down }); verify(settings.focus.selected == 0);
+    settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Up }); verify(settings.focus.selected == 8);
     settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Up }); verify(settings.focus.selected == 7);
-    settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Up }); verify(settings.focus.selected == 6);
-    settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Down }); verify(settings.focus.selected == 7);
+    settings.on_event(InputEvent { kind: InputKind::Pane, key: Key::Down }); verify(settings.focus.selected == 8);
     settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Enter }); verify(settings.pressed_button == 0);
     for _i in 0..10 { settings.tick(); }
     verify(!settings.active && settings.result == 1);
@@ -103,5 +103,19 @@ fn settings_render_cores_from_os() {
     settings.open_audio(-2, -2, 128, 0);
     verify(settings.cores.selected_id() == cores);
     verify(AudioController::set_render_threads(0) == 0);
+    settings.release();
+}
+
+#[test]
+fn settings_midi_knob_mode() {
+    var settings: SettingsDialog = SettingsDialog::new();
+    settings.open_audio(-2, -2, 128, 0);
+    verify(!settings.relative_knobs());
+    settings.set_relative_knobs(true); verify(settings.relative_knobs());
+    // Field 6 is the knob mode: Enter opens it, Up and Enter pick Absolute.
+    settings.focus.selected = 6;
+    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Enter }); verify(settings.knobs.expanded);
+    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Up });
+    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Enter }); verify(!settings.knobs.expanded && !settings.relative_knobs());
     settings.release();
 }

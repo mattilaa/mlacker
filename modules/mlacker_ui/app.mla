@@ -94,6 +94,7 @@ use mlacker_ui::note_playback::NotePlayback;
 mod mlacker_ui::audio_controller;
 mod mlacker_ui::midi_controller;
 use mlacker_ui::midi_controller::MidiInputEvent;
+use mlacker_ui::midi_controller::relative_delta;
 use mlacker_ui::audio_controller::AudioSystem;
 use mlacker_ui::audio_controller::EffectChannel;
 use mlacker_ui::audio_controller::PadAssignment;
@@ -104,6 +105,12 @@ use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::instrument_editor;
 use mlacker_ui::instrument_editor::InstrumentEditor;
 use mlacker_ui::settings_dialog::SettingsDialog;
+mod mlacker_ui::project_settings;
+use mlacker_ui::project_settings::ProjectSettingsDialog;
+use mlacker_ui::project_settings::knobs_relative;
+mod mlacker_ui::preferences;
+use mlacker_ui::preferences::Preferences;
+use mlacker_ui::preferences::preferences_path;
 use mlacker_ui::bpm_dialog::BpmDialog;
 use mlacker_ui::dialog_buttons::TextPrompt;
 use mlacker_ui::dialog_buttons::button_key;
@@ -159,7 +166,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                 MenuItem::submenu("Project", [
                                                 menu_item("Open project", Action::OpenProject, true, keymap),
                                                 menu_item("Save project", Action::SaveProject, !fixture, keymap),
-                                                menu_item("Save project as", Action::SaveProjectAs, !fixture, keymap)]),
+                                                menu_item("Save project as", Action::SaveProjectAs, !fixture, keymap),
+                                                menu_item("Project settings", Action::ProjectSettings, true, keymap)]),
                                 menu_item("Settings", Action::Settings, true, keymap),
                                 menu_item("Quit", Action::Quit, true, keymap)] },
                     Menu {title: "Edit", items: [
@@ -501,6 +509,12 @@ pub fn run() -> i32 {
     // applied on the frame after the dialog closes with OK.
     var curve_dialog: CurveDialog = CurveDialog::new(); var curve_pending: bool = false;
     var settings: SettingsDialog = SettingsDialog::new();
+    var project_settings: ProjectSettingsDialog = ProjectSettingsDialog::new();
+    // Settings kept between runs, and the project's MIDI knob mode (0 as in
+    // Settings, 1 absolute, 2 relative), saved with the session.
+    let preferences_file: str8 = preferences_path();
+    var preferences: Preferences = Preferences::load(preferences_file);
+    var project_knobs: i32 = 0;
     var instrument_editor: InstrumentEditor = InstrumentEditor {};
     var note_playback: NotePlayback = NotePlayback {};
     var pending_length: i32 = 0;
@@ -620,7 +634,7 @@ pub fn run() -> i32 {
                     editor: instrument_editor.active, editor_slot: i32(instrument_editor.slot), editor_selected: instrument_editor.selected, editor_scroll: instrument_editor.scroll,
                     spectrum: spectrum.visible, spectrum_detail: spectrum.detail, spectrum_fps: spectrum.fps, master: spectrum.bus,
                     master_saved: spectrum.visible || spectrum.detail != 0 || spectrum.fps != 30 || !spectrum.bus.is_default(),
-                    move_unasked: move_unasked, editor_fullscreen: editor_fullscreen };
+                    move_unasked: move_unasked, editor_fullscreen: editor_fullscreen, knob_mode: project_knobs };
                 var serializer: SessionCodec = SessionCodec {};
                 if session_request == 4 {
                     let saved: result<str8, str8> = serializer.save_project(request_path, library, view, midi);
@@ -662,7 +676,7 @@ pub fn run() -> i32 {
                             let v: SessionView = data.view;
                             transport = TransportStatus { bpm: v.bpm, beats_per_bar: v.beats, beat_unit: v.unit, row: v.row, phase: v.phase,
                                 ticks: wide(v.row) * 15000 + v.phase, elapsed_ms: i32((wide(v.row) * 15000 + v.phase) / wide(v.bpm)) };
-                            focus.selected = v.pane; move_unasked = v.move_unasked; editor_fullscreen = v.editor_fullscreen;
+                            focus.selected = v.pane; move_unasked = v.move_unasked; editor_fullscreen = v.editor_fullscreen; project_knobs = v.knob_mode;
                             mixer = Mixer { visible: v.mixer, grainy: v.meter_grainy, bus_focus: v.effect_focus, selected_effect: v.effect_selected };
                             mixer.update_effects(midi.output, midi.effects, 0);
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
@@ -1143,12 +1157,29 @@ pub fn run() -> i32 {
             mpd218_shown = midi.midi.mpd218;
             if mpd218_shown { free(message); message = clone("Akai MPD218 connected: pads play the selected track, knobs set its instrument's parameters"); dirty = true; }
         }
+        // MIDI knobs: relative (endless encoders) when the project says so,
+        // else as in Settings. Learned live CCs are then stepped here.
+        let relative: bool = knobs_relative(project_knobs, preferences.relative_knobs);
+        if midi.output.handle != 0 { midi.output.midi_learn_relative(relative); }
         let knobs: list<MidiInputEvent> = midi.midi.knob_events;
         if knobs.len() > 0 {
             let target: i64 = AudioSystem::live_target(library.table);
             let slot: i64 = instrument_editor.active ? instrument_editor.slot : (target < 0 ? -1 : target / 64);
             for knob in knobs {
-                let line: str8 = midi.turn_knob(slot, i32(knob.note), knob.velocity, instrument_editor.active ? instrument_editor.selected : -1);
+                let selected: i32 = instrument_editor.active ? instrument_editor.selected : -1;
+                let line: str8 = relative ? midi.step_knob(slot, i32(knob.note), relative_delta(knob.velocity), selected)
+                    : midi.turn_knob(slot, i32(knob.note), knob.velocity, selected);
+                if line != "" { free(message); message = line; dirty = true; } else { free(line); }
+            }
+        }
+        // Relative knobs: a learned CC steps its parameter from where it is.
+        if relative {
+            let controls: list<MidiInputEvent> = midi.midi.control_events;
+            for control in controls {
+                if control.kind != 6 || control.note > 127 { continue; }
+                let key: i64 = control.channel * 128 + control.note;
+                if midi.output.midi_learn_info(key, 2) == 0 { continue; }
+                let line: str8 = midi.step_parameter(midi.output.midi_learn_info(key, 0), midi.output.midi_learn_info(key, 1), relative_delta(control.velocity));
                 if line != "" { free(message); message = line; dirty = true; } else { free(line); }
             }
         }
@@ -1228,7 +1259,7 @@ pub fn run() -> i32 {
         let cursor_held: bool = library.table.editing || library.table.visual || follow_paused;
         // Placing a pattern in the matrix (its picker and the clash question)
         // keeps playing too; the change is heard when its row next starts.
-        if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || outputs.active || curve_dialog.active { transport.playing = false; }
+        if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || project_settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || outputs.active || curve_dialog.active { transport.playing = false; }
         if library.table.recording_track >= 0 {
             let armed: SequenceTrack = library.table.tracks[library.table.recording_track];
             if !armed.record_armed { transport.playing = false; }
@@ -1359,7 +1390,7 @@ pub fn run() -> i32 {
         }
         // Consume every note-on, including a note released within this poll.
         // Modal editors never receive destructive background recording edits.
-        if menus.active < 0 && !dialog.active && !question.active && !paste_error.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !instrument_editor.active && !sample_editor.active && !sample_dialog.active && !piano.active && !share_question.active && !remove_question.active && !library.renaming && !mixer.bus_focus && library.table.group_detail_rows == 0 {
+        if menus.active < 0 && !dialog.active && !question.active && !paste_error.active && !settings.active && !project_settings.active && !bpm_dialog.active && !curve_dialog.active && !instrument_editor.active && !sample_editor.active && !sample_dialog.active && !piano.active && !share_question.active && !remove_question.active && !library.renaming && !mixer.bus_focus && library.table.group_detail_rows == 0 {
             let notes: list<MidiInputEvent> = midi.midi.note_events;
             if library.table.recording_track < 0 && !library.table.editing {
                 for note in notes { if note.kind == 1 { if library.table.record_note(note.note, note.velocity) { dirty = true; } } }
@@ -1506,6 +1537,12 @@ pub fn run() -> i32 {
             if settings.active && settings.pressed_button >= 0 {
                 settings.tick(); dirty = true;
                 if !settings.active && settings.result == 1 {
+                    // The knob mode is kept between runs.
+                    if preferences.relative_knobs != settings.relative_knobs() {
+                        preferences.relative_knobs = settings.relative_knobs();
+                        let saved: str8 = preferences.save(preferences_file);
+                        if saved != "" { settings.fail(saved); } free(saved);
+                    }
                     // The core cap applies to running audio from its next block.
                     AudioController::set_render_threads(settings.cores.selected_id() < 0 ? 0 : settings.cores.selected_id());
                     // The headroom reaches the output on the next spectrum sync.
@@ -1520,6 +1557,15 @@ pub fn run() -> i32 {
                         else if midi.input_id != -2 { message = format!("AUHAL: {} Hz / {} frames, audio input on. Settings applied.", midi.output.sample_rate(), midi.output.buffer_frames()); }
                         else { message = format!("AUHAL: {} Hz / {} frames. Settings applied.", midi.output.sample_rate(), midi.output.buffer_frames()); }
                     }
+                }
+            }
+            if project_settings.active && project_settings.pressed_button >= 0 {
+                project_settings.tick(); dirty = true;
+                if !project_settings.active && project_settings.result == 1 && project_settings.knob_mode() != project_knobs {
+                    project_knobs = project_settings.knob_mode();
+                    free(message);
+                    message = format!("Project MIDI knobs: {}{}", project_knobs == 0 ? "as in Settings, " : "",
+                        knobs_relative(project_knobs, preferences.relative_knobs) ? "relative" : "absolute");
                 }
             }
             if curve_dialog.active && curve_dialog.pressed_button >= 0 {
@@ -1648,7 +1694,7 @@ pub fn run() -> i32 {
         }
         let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
         focus.reconcile(panes);
-        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || group_picker.active || move_notice.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || library.table.edit_mode > 0 || library.renaming);
+        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || group_picker.active || move_notice.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || project_settings.active || library.table.edit_mode > 0 || library.renaming);
         if curve_pending {
             curve_pending = false;
             let written: i32 = library.table.apply_curve(curve_dialog.selected);
@@ -1736,6 +1782,7 @@ pub fn run() -> i32 {
             curve_dialog.paint(surface, area, Theme::dark_blue());
             piano.paint(surface, area, Theme::dark_blue());
             settings.paint(surface, area, Theme::dark_blue());
+            project_settings.paint(surface, area, Theme::dark_blue());
             paste_error.paint(surface, area, Theme::dark_blue());
             terminal.present(surface);
             surface.release();
@@ -1788,11 +1835,11 @@ pub fn run() -> i32 {
             // dd is consecutive input in the active sequence, never across a
             // menu, dialog, pane switch, or unrelated key.
             if event.kind != InputKind::None || event.code != 0 {
-                if menus.active >= 0 || settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || library.table.editing || library.renaming || focus.selected != 0 ||
+                if menus.active >= 0 || settings.active || project_settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || library.table.editing || library.renaming || focus.selected != 0 ||
                    event.kind == InputKind::Pane ||(event.kind == InputKind::Menu && event.key == Key::Toggle) { library.view.cancel_pending(); library.audio.view.cancel_pending(); library.instruments.cancel_pending(); }
-                if menus.active >= 0 || settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || focus.selected != 1 ||
+                if menus.active >= 0 || settings.active || project_settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || focus.selected != 1 ||
                    event.code != 100 || event.modifiers != 1 { library.table.delete_pending = false; }
-                if menus.active >= 0 || settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || focus.selected != 1 ||
+                if menus.active >= 0 || settings.active || project_settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || focus.selected != 1 ||
                    event.code != 103 || event.modifiers != 1 { library.table.top_pending = false; }
             }
             escape_ticks = 0;
@@ -1808,7 +1855,7 @@ pub fn run() -> i32 {
             // cursor, selection and zoom keys while it is focused.
             let sample_pane: bool = focus.selected == 2 && sample.visible && library.table.audio_under_cursor() &&
                 !sampler.visible && !keyboard.visible && !spectrum.visible && menus.active < 0 &&
-                !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
+                !dialog.active && !settings.active && !project_settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
                 !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active &&
                 !paste_error.active && !library.renaming && !library.table.editing && !sample_editor.active && !sample_dialog.active &&
                 !piano.active && !clip_save.active && !group_dialog.active && !group_question.active && !(instrument_editor.active && instrument_editor.focused);
@@ -1992,7 +2039,7 @@ pub fn run() -> i32 {
             // on the master output instead; again stops it.
             else if ((event.code == 16 && event.modifiers == 1) || (event.code == 112 && event.modifiers == 5)) &&
                     focus.selected == 0 && library.audio_mode && menus.active < 0 &&
-                    !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
+                    !dialog.active && !settings.active && !project_settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
                     !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active &&
                     !paste_error.active && !library.renaming && !sample_editor.active && !sample_dialog.active && !piano.active {
                 let index: i32 = library.audio.selected_sample();
@@ -2015,12 +2062,12 @@ pub fn run() -> i32 {
             }
             else if ((event.code == 16 && event.modifiers == 1) || (event.code == 112 && event.modifiers == 5) ||
                      (event.code == 32 && event.modifiers == 5)) && matrix.visible && menus.active < 0 &&
-                    !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
+                    !dialog.active && !settings.active && !project_settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active &&
                     !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active &&
                     !paste_error.active && !library.renaming && !sample_editor.active && !sample_dialog.active && !sample_pane {
                 song_request = song_playing ? 2 : 1; dirty = true;
             }
-            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !bpm_dialog.active && !sample_editor.active && !sample_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active && !paste_error.active && !library.renaming && !library.table.editing {
+            else if event.code == 32 && event.modifiers == 1 && menus.active < 0 && !dialog.active && !settings.active && !project_settings.active && !bpm_dialog.active && !sample_editor.active && !sample_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active && !paste_error.active && !library.renaming && !library.table.editing {
                 // In the song matrix, Space plays the matrix from the cursor
                 // row, every lane mixed, like Ctrl+P; it stops whatever plays.
                 // Elsewhere it plays the selected pattern.
@@ -2031,7 +2078,7 @@ pub fn run() -> i32 {
             // Tab / Shift+Tab cycle every pane of the main view: sidebar,
             // pattern, inspector/mixer, the FX bus, and the VST3 editor.
             else if event.kind == InputKind::Menu && event.key == Key::Toggle && menus.active < 0 &&
-                    !sample_editor.active && !sample_dialog.active && !piano.active && !dialog.active && !settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active && !paste_error.active && !library.renaming && !library.table.editing {
+                    !sample_editor.active && !sample_dialog.active && !piano.active && !dialog.active && !settings.active && !project_settings.active && !bpm_dialog.active && !curve_dialog.active && !question.active && !share_question.active && !remove_question.active && !clash_question.active && !picker.active && !outputs.active && !group_picker.active && !move_notice.active && !paste_error.active && !library.renaming && !library.table.editing {
                 let has_bus: bool = panes[2].visible() && mixer.visible && !keyboard.visible && !sampler.visible && midi.effects.len() > 0;
                 let has_editor: bool = panes[1].visible() && instrument_editor.active;
                 var stop: i32 = focus.selected == 0 ? 0 : (focus.selected == 1 ? 1 : (mixer.bus_focus && has_bus ? 3 : 2));
@@ -2143,6 +2190,9 @@ pub fn run() -> i32 {
                     piano.on_event(event); dirty = true;
                     if !piano.active { command = piano.result == 2 ? Action::None : Action::ApplyPadChoice; }
                 }
+            }
+            else if project_settings.active {
+                if event.kind != InputKind::None || event.code != 0 { project_settings.on_event(event); dirty = true; }
             }
             else if settings.active {
                 if event.kind != InputKind::None || event.code != 0 { settings.on_event(event); dirty = true; }
@@ -2666,7 +2716,11 @@ pub fn run() -> i32 {
             if command != Action::None && command != Action::LoadInsert { adding_insert_track = -1; }
             if command == Action::Quit { running = false; }
             else if command == Action::Settings {
-                transport.playing = false; settings.open_settings(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate, midi.input_id, master_headroom); focus.set_menu_active(true);
+                transport.playing = false; settings.open_settings(midi.midi_id, midi.output_id, midi.requested_buffer_frames, midi.requested_sample_rate, midi.input_id, master_headroom);
+                settings.set_relative_knobs(preferences.relative_knobs); focus.set_menu_active(true);
+            }
+            else if command == Action::ProjectSettings {
+                project_settings.open(project_knobs); focus.set_menu_active(true);
             }
             else if command == Action::NewSession || command == Action::NewProject {
                 // A new project is a new session that is saved as a .mlaproj
@@ -3579,6 +3633,7 @@ pub fn run() -> i32 {
                 }
                 else if sample_dialog.active { sample_dialog.on_event(event); dirty = true; }
                 else if piano.active { piano.on_event(event); dirty = true; }
+                else if project_settings.active { project_settings.on_event(event); dirty = true; }
                 else if settings.active { settings.on_event(event); dirty = true; }
                 else if curve_dialog.active {
                     curve_dialog.on_event(event); dirty = true;

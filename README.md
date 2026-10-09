@@ -1394,6 +1394,18 @@ and initial values are copied into memory when the plugin loads.
   for that channel/CC. Values span the parameter range, rounded for discrete controls.
   Bindings belong to the session, survive output changes, and save in `.mlack`.
   New sessions start unmapped; removing an instrument removes its bindings.
+- **Relative knobs** suit endless encoders, which send a step up or down
+  rather than a position. In relative mode a learned knob moves its parameter
+  from wherever it is: one step per tick for a stepped parameter, 1/127 of the
+  range for any other, more when the knob turns fast. Both common encodings
+  are understood: two's complement (`1` up, `127` down) and binary offset
+  (`65` up, `63` down). **File → Settings → MIDI knobs** sets the default,
+  kept between runs in `~/.config/mlacker/settings` (or under
+  `$XDG_CONFIG_HOME`); **File → Project → Project settings** overrides it for
+  one project: As in Settings, Absolute or Relative, saved with the project
+  or session. The mode applies to live knobs, learned ones and the MPD218's;
+  learned CCs recorded in a pattern stay absolute. Set the MPD218's knobs to
+  *Inc/Dec* in its editor to use them relative.
 - **Instrument → MIDI learn → Save / Load MIDI learn** exports/imports mappings
   for the selected entry in Instruments as a `.mlalearn` file. Saving suggests
   `<plugin name> - `: type a suffix, or Ctrl+U to replace the whole filename/path.

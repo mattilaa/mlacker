@@ -19,6 +19,8 @@ def main():
     master, slave = os.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 110, 0, 0))
     env = dict(os.environ, TERM="xterm-256color", MLANG_TUI_NO_HARDWARE="1")
+    # Never the user's own settings file (~/.config/mlacker/settings).
+    env.setdefault("MLACKER_SETTINGS", os.path.join(tempfile.mkdtemp(prefix="mlacker-settings-"), "settings"))
     env.pop("NO_COLOR", None)
     process = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=slave, stderr=slave, env=env)
 

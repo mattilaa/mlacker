@@ -52,6 +52,7 @@ int32_t __mlang_std_audio_controller_effect_volume(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_effect_peak(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_midi_learn(int64_t, int64_t, int64_t, int64_t);
 int64_t __mlang_std_audio_controller_midi_learn_info(int64_t, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_midi_learn_relative(int64_t, int64_t);
 int32_t __mlang_std_audio_controller_master_peak(int64_t, int64_t);
 const char *__mlang_std_audio_controller_processor_name(int64_t);
 int32_t __mlang_std_audio_controller_processor_support();
@@ -497,6 +498,24 @@ int main(int argc, char **argv) {
     CHECK(__mlang_std_audio_controller_post(c, 1, 9, 5, 7, 127, 65537, -1, 2, 1) == 0); // live, unbound channel
     CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
     CHECK(__mlang_std_audio_controller_parameter_info(c, 2, 0, 2) == 32.0 / 127.0);
+    CHECK(__mlang_std_audio_controller_live_control(c, 3, 7, 127) == 0);
+    CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
+    CHECK(__mlang_std_audio_controller_parameter_info(c, 2, 0, 2) == 1);
+    // Relative knobs: a live learned CC no longer sets its parameter (the
+    // host steps it), pattern CCs still do, and learning still works.
+    CHECK(__mlang_std_audio_controller_midi_learn_relative(c, 2) == -1);
+    CHECK(__mlang_std_audio_controller_midi_learn_relative(c, 1) == 0);
+    CHECK(__mlang_std_audio_controller_live_control(c, 3, 7, 1) == 0);
+    CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
+    CHECK(__mlang_std_audio_controller_parameter_info(c, 2, 0, 2) == 1);
+    CHECK(__mlang_std_audio_controller_post(c, 0, 9, 5, 7, 32, 1, -1, 2, 1) == 0);
+    CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
+    CHECK(__mlang_std_audio_controller_parameter_info(c, 2, 0, 2) == 32.0 / 127.0);
+    CHECK(__mlang_std_audio_controller_midi_learn(c, -1, 2, 1) == 0);
+    CHECK(__mlang_std_audio_controller_live_control(c, 4, 9, 65) == 0);
+    CHECK(__mlang_std_audio_controller_midi_learn_info(c, 4 * 128 + 9, 1) == 1);
+    CHECK(__mlang_std_audio_controller_midi_learn(c, 4 * 128 + 9, 0, 0) == 0);
+    CHECK(__mlang_std_audio_controller_midi_learn_relative(c, 0) == 0);
     CHECK(__mlang_std_audio_controller_live_control(c, 3, 7, 127) == 0);
     CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
     CHECK(__mlang_std_audio_controller_parameter_info(c, 2, 0, 2) == 1);

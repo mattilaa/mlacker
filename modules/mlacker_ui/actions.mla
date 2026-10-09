@@ -58,7 +58,9 @@ pub enum Action : i32 {
     // Track > Add / remove SysEx columns.
     ToggleSysExColumns = 185,
     // View > Show MPD218 pads.
-    TogglePadGrid = 186
+    TogglePadGrid = 186,
+    // File > Project > Project settings.
+    ProjectSettings = 187
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).

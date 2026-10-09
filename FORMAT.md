@@ -198,14 +198,19 @@ are accepted. Unsupported major or minor versions fail closed.
     a plain session puts generated slices (`kick.wav/kick.wav - 1`) in a group
     named after their original, and a project takes each sample's group from
     its folder.
-22. Optional `PROJECT_OPTIONS` extension follows `AUDIO_GROUPS`, in project
-    sessions only: a flag (0 or 1) set when Audio > Move to group saves the
-    project without asking first ("Don't ask this again"), then a flag set
-    when the sample editor opens full screen (Audio > Always open sample
-    editor full screen; a file ending before it opens it full screen). It is
-    written when the first flag is set or the second is clear, and it
-    requires the preceding tags (`AUDIO_GROUPS` is then written even without
-    groups).
+22. Optional `PROJECT_OPTIONS` extension follows `AUDIO_GROUPS`: a flag
+    (0 or 1) set when Audio > Move to group saves the project without asking
+    first ("Don't ask this again"), then a flag set when the sample editor
+    opens full screen (Audio > Always open sample editor full screen; a file
+    ending before it opens it full screen). A project session writes it when
+    the first flag is set or the second is clear; any session writes it,
+    with the current flags, when `MIDI_KNOBS` follows. It requires the
+    preceding tags (`AUDIO_GROUPS` is then written even without groups).
+23. Optional `MIDI_KNOBS` extension follows `PROJECT_OPTIONS`: the project's
+    MIDI knob mode (File > Project > Project settings), 1 absolute or 2
+    relative (endless encoders stepping learned parameters). It is written
+    only when the project overrides the application setting; a session
+    without it takes the knob mode from File > Settings.
 
 The active pattern is serialized from the live editor, not its older library
 snapshot. Audio placements reference the embedded sample list; plugin assignments

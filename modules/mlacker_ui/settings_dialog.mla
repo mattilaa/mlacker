@@ -30,7 +30,8 @@ use mlacker_ui::spectrum::headroom_choices;
 use mlacker_ui::spectrum::default_headroom_db;
 
 /// File > Settings. Fields top to bottom: the audio output and input, the
-/// sample rate, buffer size and master headroom, then MIDI and the CPU cores.
+/// sample rate, buffer size and master headroom, then MIDI, the MIDI knob
+/// mode and the CPU cores.
 pub struct SettingsDialog : Dialog {
     var midi: DropDown; var output: DropDown; var buffer: DropDown; var rate: DropDown;
     /// Live audio input (AUHAL): -2 disabled, -1 system default, else an
@@ -41,6 +42,10 @@ pub struct SettingsDialog : Dialog {
     /// Render threads (0 = every core), read from and applied to the audio
     /// runtime directly: the cap takes effect without reopening the device.
     var cores: DropDown; var core_label: str8;
+    /// MIDI knobs: 0 absolute (positions 0-127), 1 relative (endless
+    /// encoders sending increments). Saved between runs; a project can
+    /// override it (File > Project > Project settings).
+    var knobs: DropDown;
     var error: str8;
 };
 
@@ -51,13 +56,18 @@ fn field_rate() -> i32 { return 2; }
 fn field_buffer() -> i32 { return 3; }
 fn field_headroom() -> i32 { return 4; }
 fn field_midi() -> i32 { return 5; }
-fn field_cores() -> i32 { return 6; }
+fn field_knobs() -> i32 { return 6; }
+fn field_cores() -> i32 { return 7; }
 /// The buttons follow the last field.
-pub fn settings_buttons() -> i32 { return 7; }
+pub fn settings_buttons() -> i32 { return 8; }
+/// Choices of the MIDI knob mode, by id: 0 absolute, 1 relative.
+pub fn knob_mode_items() -> list<DropDownItem> {
+    return [DropDownItem { id: 0, label: "Absolute (positions 0-127)" }, DropDownItem { id: 1, label: "Relative (endless encoders, +/- steps)" }];
+}
 
 impl SettingsDialog {
     pub fn new() -> SettingsDialog {
-        return SettingsDialog { title: "Settings", width: 64, height: 28,
+        return SettingsDialog { title: "Settings", width: 64, height: 31,
             error: clone(""), core_label: clone(""), focus: PaneFocus::new(0), button_alignment: Alignment::Center,
             buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
     }
@@ -115,6 +125,7 @@ impl SettingsDialog {
         }
         self.midi.set_items(midi_items, midi_id);
         for item in midi_items { free(item.label); }
+        self.knobs.set_items(knob_mode_items(), 0);
         self.open_cores(AudioController::render_thread_limit());
         free(self.error); self.error = clone("");
         self.reset_buttons(); self.focus.selected = 0; self.active = true;
@@ -136,12 +147,15 @@ impl SettingsDialog {
             ? format!("CPU cores for audio ({} performance + {} efficiency)", performance, online - performance)
             : format!("CPU cores for audio ({} online)", online);
     }
+    /// Show the saved MIDI knob mode; call after opening.
+    pub fn set_relative_knobs(self: &mut Self, relative: bool) -> void { self.knobs.set_items(knob_mode_items(), relative ? 1 : 0); }
+    pub fn relative_knobs(self: SettingsDialog) -> bool { return self.knobs.selected_id() == 1; }
     pub fn fail(self: &mut Self, error: str8) -> void {
         free(self.error); self.error = clone(error); self.active = true; self.reset_buttons();
     }
     fn cancel_popups(self: &mut Self) -> void {
         self.output.cancel(); self.input.cancel(); self.rate.cancel(); self.buffer.cancel(); self.headroom.cancel();
-        self.midi.cancel(); self.cores.cancel();
+        self.midi.cancel(); self.knobs.cancel(); self.cores.cancel();
     }
     pub fn on_event(self: &mut Self, event: InputEvent) -> void {
         if self.pressed_button >= 0 { return; }
@@ -160,6 +174,7 @@ impl SettingsDialog {
         if f == field_buffer() { if self.buffer.on_event(event) { return; } }
         if f == field_headroom() { if self.headroom.on_event(event) { return; } }
         if f == field_midi() { if self.midi.on_event(event) { return; } }
+        if f == field_knobs() { if self.knobs.on_event(event) { return; } }
         if f == field_cores() { if self.cores.on_event(event) { return; } }
         if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
             self.active = false; self.result = 2; return;
@@ -189,6 +204,7 @@ impl SettingsDialog {
         SettingsDialog::label(surface, body, field_buffer(), "Buffer size (a request; the device may differ)", theme);
         SettingsDialog::label(surface, body, field_headroom(), "Master headroom (a full-level track reads this far down)", theme);
         SettingsDialog::label(surface, body, field_midi(), "MIDI input adapter", theme);
+        SettingsDialog::label(surface, body, field_knobs(), "MIDI knobs (default for projects; MIDI learn and MPD218)", theme);
         SettingsDialog::label(surface, body, field_cores(), self.core_label, theme);
         self.output.paint(surface, SettingsDialog::field_row(body, field_output()), theme, f == field_output());
         self.input.paint(surface, SettingsDialog::field_row(body, field_input()), theme, f == field_input());
@@ -196,6 +212,7 @@ impl SettingsDialog {
         self.buffer.paint(surface, SettingsDialog::field_row(body, field_buffer()), theme, f == field_buffer());
         self.headroom.paint(surface, SettingsDialog::field_row(body, field_headroom()), theme, f == field_headroom());
         self.midi.paint(surface, SettingsDialog::field_row(body, field_midi()), theme, f == field_midi());
+        self.knobs.paint(surface, SettingsDialog::field_row(body, field_knobs()), theme, f == field_knobs());
         self.cores.paint(surface, SettingsDialog::field_row(body, field_cores()), theme, f == field_cores());
         let error_y: i32 = settings_buttons() * 3;
         if body.height > error_y { surface.text(Rect::new(body.x, body.y + error_y, body.width, 1), self.error, theme.accent, theme.panel); }
@@ -206,11 +223,12 @@ impl SettingsDialog {
         self.buffer.paint_popup(surface, SettingsDialog::field_row(body, field_buffer()), viewport, theme);
         self.headroom.paint_popup(surface, SettingsDialog::field_row(body, field_headroom()), viewport, theme);
         self.midi.paint_popup(surface, SettingsDialog::field_row(body, field_midi()), viewport, theme);
+        self.knobs.paint_popup(surface, SettingsDialog::field_row(body, field_knobs()), viewport, theme);
         self.cores.paint_popup(surface, SettingsDialog::field_row(body, field_cores()), viewport, theme);
     }
     pub fn release(self: &mut Self) -> void {
         self.midi.release(); self.output.release(); self.buffer.release(); self.rate.release(); self.cores.release(); self.input.release();
-        self.headroom.release();
+        self.headroom.release(); self.knobs.release();
         free(self.core_label); free(self.error);
     }
 }

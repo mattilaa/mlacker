@@ -93,7 +93,7 @@ def main():
             tui.send(b"\t\t\rjjj\r")  # past the audio input; Device default -> 96 kHz
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
             tui.send(b"\t\t\rk\r")  # past the master headroom; MIDI -> Disabled
-            frame = tui.send(b"\t\t\r", .6)  # past CPU cores to OK
+            frame = tui.send(b"\t\t\t\r", .6)  # past MIDI knobs and CPU cores to OK
             assert b"Settings applied. Audio disabled." in frame, frame[-5000:]
             assert b"0.25" in tui.send(b"\r")
             tui.send(b"\x1b")

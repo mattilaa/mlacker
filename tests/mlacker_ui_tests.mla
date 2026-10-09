@@ -56,6 +56,12 @@ use mlacker_ui::session::project_group_folder;
 use mlacker_ui::audio_controller::AudioSystem;
 mod mlacker_ui::pad_grid;
 use mlacker_ui::pad_grid::PadGrid;
+mod mlacker_ui::project_settings;
+use mlacker_ui::project_settings::ProjectSettingsDialog;
+use mlacker_ui::project_settings::knobs_relative;
+mod mlacker_ui::preferences;
+use mlacker_ui::preferences::Preferences;
+use mlacker_ui::midi_controller::relative_delta;
 use std::audio::PcmBlock;
 use std::testing::verify_eq;
 use std::testing::verify_eq_i32;
@@ -5072,4 +5078,58 @@ fn tui_mpd218_pad_grid() {
     verify(taken.len() == 2 && taken[0].note == 36 && taken[0].on == 1 && taken[1].on == 0);
     let again: list<NoteEvent> = audio.take_pad_events(); verify(again.len() == 0);
     table.release();
+}
+
+#[test]
+fn tui_relative_midi_knobs() {
+    // Two's complement (1 up, 127 down) and binary offset (65 up, 63 down).
+    verify(relative_delta(1) == 1 && relative_delta(3) == 3 && relative_delta(127) == -1 && relative_delta(125) == -3);
+    verify(relative_delta(65) == 1 && relative_delta(70) == 6 && relative_delta(63) == -1 && relative_delta(60) == -4);
+    verify(relative_delta(0) == 0 && relative_delta(64) == 0 && relative_delta(200) == 0);
+    // The project's mode wins; "as in Settings" takes the default.
+    verify(knobs_relative(0, true) && !knobs_relative(0, false));
+    verify(!knobs_relative(1, true) && knobs_relative(2, false));
+}
+
+#[test]
+fn tui_knob_settings_file() {
+    // Settings are kept in a file between runs; a missing file is the default.
+    let directory: str8 = clone("/private/tmp/mlacker-knobs-test-XXXXXX"); mkdtemp(directory);
+    let path: str8 = format!("{}/config/mlacker/settings", directory);
+    let fresh: Preferences = Preferences::load(path); verify(!fresh.relative_knobs);
+    let wanted: Preferences = Preferences { relative_knobs: true };
+    let saved: str8 = wanted.save(path); verify(saved == ""); free(saved);
+    let loaded: Preferences = Preferences::load(path); verify(loaded.relative_knobs);
+    std::fs::remove_tree(directory); free(path); free(directory);
+}
+
+#[test]
+fn tui_knob_mode_in_sessions() {
+    // A plain session and a project keep the project's knob mode.
+    let directory: str8 = clone("/private/tmp/mlacker-knob-session-XXXXXX"); mkdtemp(directory);
+    var library: PatternLibrary = PatternLibrary::new();
+    var codec: SessionCodec = SessionCodec {}; var audio: AudioSystem = AudioSystem {};
+    let session: str8 = format!("{}/knobs.mlack", directory);
+    verify(codec.save(session, library, SessionView { knob_mode: 2 }, audio));
+    let opened: result<SessionData, str8> = SessionCodec::load(session); verify(opened.is_ok());
+    var data: SessionData = opened.unwrap(); verify(data.view.knob_mode == 2 && data.view.editor_fullscreen); data.release();
+    verify(codec.save(session, library, SessionView {}, audio));
+    let plain: result<SessionData, str8> = SessionCodec::load(session); verify(plain.is_ok());
+    var reread: SessionData = plain.unwrap(); verify(reread.view.knob_mode == 0); reread.release();
+    let target: str8 = format!("{}/Knobs", directory);
+    let project: result<str8, str8> = codec.save_project(target, library, SessionView { knob_mode: 1, move_unasked: true }, audio); verify(project.is_ok());
+    let root: str8 = project.unwrap();
+    let reopened: result<SessionData, str8> = SessionCodec::load_project(root); verify(reopened.is_ok());
+    var kept: SessionData = reopened.unwrap(); verify(kept.view.knob_mode == 1 && kept.view.move_unasked); kept.release();
+    library.release(); std::fs::remove_tree(directory);
+    free(root); free(target); free(session); free(directory);
+}
+
+#[test]
+fn tui_project_settings_dialog() {
+    var dialog: ProjectSettingsDialog = ProjectSettingsDialog::new();
+    dialog.open(2); verify(dialog.active && dialog.knob_mode() == 2);
+    dialog.on_event(InputEvent { kind: InputKind::Menu, key: Key::Escape }); verify(!dialog.active && dialog.result == 2);
+    dialog.open(0); verify(dialog.knob_mode() == 0);
+    dialog.release();
 }

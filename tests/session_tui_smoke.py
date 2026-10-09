@@ -22,6 +22,8 @@ class Terminal:
         self.master, self.slave = os.openpty()
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", 28, 120, 0, 0))
         env = dict(os.environ, TERM="xterm-256color", MLANG_TUI_NO_HARDWARE="1")
+        # Never the user's own settings file (~/.config/mlacker/settings).
+        env.setdefault("MLACKER_SETTINGS", os.path.join(tempfile.mkdtemp(prefix="mlacker-settings-"), "settings"))
         env.pop("MLACKER_DEMO", None)
         env.pop("NO_COLOR", None)
         # Output read while waiting for the app to take keys; the next read
@@ -193,7 +195,7 @@ def main():
             tui.send(b"\t\t\rjjj\r")  # past the audio input; Device default -> 96 kHz
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
             tui.send(b"\t\t\rk\r")  # past the master headroom; MIDI -> Disabled
-            frame = tui.send(b"\t\t\r", 0.6)  # past CPU cores to OK
+            frame = tui.send(b"\t\t\t\r", 0.6)  # past MIDI knobs and CPU cores to OK
             assert b"Settings applied. Audio disabled." in frame, frame[-5000:]
             frame = tui.send(F1 + b"llllll" + b"j\r")
             assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.25" in frame, frame[-5000:]
@@ -237,7 +239,7 @@ def main():
             tui.send(b"\t\t\rjjj\r")  # past the audio input; Device default -> 96 kHz
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
             tui.send(b"\t\t\rk\r")  # past the master headroom; MIDI -> Disabled
-            frame = tui.send(b"\t\t\r", 0.6)  # past CPU cores to OK
+            frame = tui.send(b"\t\t\t\r", 0.6)  # past MIDI knobs and CPU cores to OK
             assert b"Settings applied. Audio disabled." in frame, frame[-5000:]
             tui.send(b"\x13", 0.6)
             assert master_path.read_bytes() == master_saved, "Master plugin state changed on output replacement"

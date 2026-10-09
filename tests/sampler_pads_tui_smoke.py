@@ -145,7 +145,7 @@ def main():
             tui.send(b"\t\t\rjjj\r")  # past the audio input; Device default -> 96 kHz
             tui.send(b"\t\rjj\r")  # Request 512 frames before applying.
             tui.send(b"\t\t\rk\r")  # past the master headroom; MIDI -> Disabled
-            frame = expect(tui.send(b"\t\t\r", 0.8), b"Settings applied")  # past CPU cores to OK
+            frame = expect(tui.send(b"\t\t\t\r", 0.8), b"Settings applied")  # past MIDI knobs and CPU cores to OK
             assert b"sampler pads" not in frame, frame[-4000:]
 
             # A cancelled pad file dialog must not capture the next file dialog.

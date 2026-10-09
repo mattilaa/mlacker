@@ -1,0 +1,70 @@
+/// Settings kept between runs: `~/.config/mlacker/settings` (or under
+/// `$XDG_CONFIG_HOME`, or the file `$MLACKER_SETTINGS`), one `key = value`
+/// per line. Unknown keys and malformed lines are ignored, so newer and older
+/// versions share the file.
+mod std::fs;
+mod std::env::detail;
+use std::env::detail::__env_get_var;
+use std::strbuf::clone;
+use std::strbuf::free;
+use std::strbuf::find;
+use std::strbuf::sub;
+use std::strbuf::len;
+use std::strbuf::trim;
+
+pub struct Preferences {
+    /// MIDI knobs are endless encoders sending increments (relative) rather
+    /// than positions 0-127 (absolute). A project can override it.
+    var relative_knobs: bool;
+};
+
+/// Owned path of the settings file.
+pub fn preferences_path() -> str8 {
+    let explicit: str8 = __env_get_var("MLACKER_SETTINGS");
+    if explicit != "" { return explicit; }
+    free(explicit);
+    let xdg: str8 = __env_get_var("XDG_CONFIG_HOME");
+    if xdg != "" { let path: str8 = format!("{}/mlacker/settings", xdg); free(xdg); return path; }
+    free(xdg);
+    let home: str8 = __env_get_var("HOME");
+    let path: str8 = format!("{}/.config/mlacker/settings", home); free(home); return path;
+}
+
+impl Preferences {
+    /// Settings from `path`; defaults when it is missing or unreadable.
+    pub fn load(path: str8) -> Preferences {
+        var preferences: Preferences = Preferences {};
+        if std::fs::file_exists(path) == 0 { return preferences; }
+        let read: result<str8, str8> = std::fs::read_all_text(path);
+        if read.is_err() { return preferences; }
+        var rest: str8 = read.unwrap();
+        while len(rest) > 0 {
+            let newline: i64 = find(rest, "\n");
+            let size: i64 = newline < 0 ? len(rest) : newline;
+            let line: str8 = sub(rest, 0, size);
+            let next: str8 = newline < 0 ? clone("") : sub(rest, newline + 1, len(rest) - newline - 1);
+            free(rest); rest = next;
+            let equals: i64 = find(line, "=");
+            if equals > 0 {
+                let raw_key: str8 = sub(line, 0, equals); let raw_value: str8 = sub(line, equals + 1, len(line) - equals - 1);
+                let key: str8 = trim(raw_key); let value: str8 = trim(raw_value);
+                if key == "midi_knobs" { preferences.relative_knobs = value == "relative"; }
+                free(raw_key); free(raw_value); free(key); free(value);
+            }
+            free(line);
+        }
+        free(rest);
+        return preferences;
+    }
+    /// Write the settings to `path`, creating its folder. "" or an error.
+    pub fn save(self: Preferences, path: str8) -> str8 {
+        let folder: str8 = std::fs::parent_dir(path);
+        if folder != "" { std::fs::mkdir_p(folder); }
+        free(folder);
+        let text: str8 = format!("# mlacker settings\nmidi_knobs = {}\n", self.relative_knobs ? "relative" : "absolute");
+        let written: result<i32, str8> = std::fs::write_all_text(path, text);
+        free(text);
+        if written.is_err() { return format!("Cannot save settings: {}", written.unwrap_err()); }
+        return clone("");
+    }
+}

@@ -98,6 +98,8 @@ pub struct SessionView {
     /// Project options: Audio > Move to group saves the project without
     /// asking; the sample editor opens full screen.
     var move_unasked: bool; var editor_fullscreen: bool{true};
+    /// Project settings: MIDI knobs 0 as in Settings, 1 absolute, 2 relative.
+    var knob_mode: i32;
 };
 /// Plugin preset outcome. Kit presets (MLAPRE 1.1) also carry sampler pads:
 /// `pads[i]` is loaded from `clips[i]`; the caller owns the clips.
@@ -886,8 +888,11 @@ impl SessionCodec {
         let mastered_view: bool = !self.reading && view.master_saved;
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
-        // Project options (written last, so everything before it is too).
-        let optioned: bool = !self.reading && self.root != "" && (view.move_unasked || !view.editor_fullscreen);
+        // Project settings that override Settings (written last).
+        let knobbed: bool = !self.reading && view.knob_mode != 0;
+        // Project options (written, perhaps with default flags, whenever
+        // MIDI_KNOBS follows, so everything before it is too).
+        let optioned: bool = !self.reading && ((self.root != "" && (view.move_unasked || !view.editor_fullscreen)) || knobbed);
         // Audio-list groups (written, perhaps empty, whenever PROJECT_OPTIONS
         // follows).
         let grouped: bool = !self.reading && (library.audio.groups.len() > 0 || optioned);
@@ -1429,6 +1434,12 @@ impl SessionCodec {
             // Full-screen editor came later: a file ending before it opens
             // the editor full screen.
             if !self.reading || self.reader.remaining() > 0 { state.editor_fullscreen = self.flag(state.editor_fullscreen); }
+        }
+        // Optional MIDI_KNOBS extension: the project's MIDI knob mode.
+        let knobs_extension: bool = self.reading ? options_extension && self.reader.remaining() > 0 : knobbed;
+        if knobs_extension && !self.failed {
+            let tag: str8 = self.text("MIDI_KNOBS"); if tag != "MIDI_KNOBS" { self.failed = true; } if self.reading { free(tag); }
+            state.knob_mode = self.number(state.knob_mode, 1, 2);
         }
         if self.reading { library.audio.rebuild(); }
         if state.editor_slot > 32 {
