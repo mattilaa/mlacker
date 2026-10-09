@@ -56,7 +56,9 @@ pub enum Action : i32 {
     // Audio > Always open sample editor full screen.
     ToggleEditorFullscreen = 184,
     // Track > Add / remove SysEx columns.
-    ToggleSysExColumns = 185
+    ToggleSysExColumns = 185,
+    // View > Show MPD218 pads.
+    TogglePadGrid = 186
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).

@@ -1357,14 +1357,20 @@ by its port name and says so in the status line.
   is pressed. The MPD218 offers no way to light its pads from a computer;
   note-on on channels 1–14, control change and polyphonic aftertouch were
   all tried, and its SysEx only transfers presets (`F0 47 00 34 …`).
+- **View → Show MPD218 pads** shows the pads on screen instead: a 4×4 grid
+  laid out like the MPD218 (pads 1–4 on the bottom row, 13–16 on top) in
+  the bottom pane, where the virtual keyboard and the sampler go. A pad
+  lights red, brighter for harder hits and marked `●`, while the selected
+  track plays its note, timed to the beat, and when you hit it. The grid
+  shows the bank (A–C) of the last note.
 
 `examples/mpd218_demo.mlaproj` is a short song for it: Mla 08 drums on Pad
 Bank A's notes (bass drum on pad 1, snare on pad 3, clap on pad 4, hats on
 pads 7 and 11) with two Mla SID instances playing bass and a tune over
 Am–F–C–G at 112 BPM. Its *Pad sweep* pattern plays all 16 pads' sounds in
 turn, so you can learn where each one is. Open it with the MPD218 as the
-MIDI input, keep the Drums track selected and play along on the pads while
-the song (Song matrix) or a pattern plays.
+MIDI input, keep the Drums track selected, show the pads (View → Show MPD218
+pads) and play along while the song (Song matrix) or a pattern plays.
 
 The status line also shows the last MIDI message received, when it fits:
 `CH10 C-2 v100`, `CH1 CC74=64`, `CH1 PB 0`, `KNOB 7=64`.

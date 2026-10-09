@@ -1,0 +1,128 @@
+/// On-screen mirror of the Akai MPD218's 4x4 pads (View > Show MPD218 pads).
+/// The hardware lights a pad only while it is pressed and cannot be lit from
+/// a computer, so this grid lights each pad as the selected track plays its
+/// note, and as the pads are hit. The default preset's Pad Banks A-C play
+/// notes 36-51, 52-67 and 68-83; the grid shows the bank of the last note.
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use std::strbuf::free;
+use std::strbuf::len;
+
+/// A sequencer note waiting for the transport to reach `tick`.
+pub struct PendingPad { var note: i64; var velocity: i64; var tick: i64; var on: bool; };
+
+/// First note of Pad Bank A.
+pub fn pad_first_note() -> i64 { return 36; }
+/// Pads in the three banks.
+pub fn pad_count() -> i32 { return 48; }
+/// Shortest time a pad stays lit, so a short note still shows.
+pub fn pad_flash_ms() -> i64 { return 120; }
+
+pub struct PadGrid {
+    var visible: bool;
+    /// Bank shown, 0-2 (A-C).
+    var bank: i32;
+    /// Velocity each of the 48 pads is held at (0 = released) and the time
+    /// until which it stays lit after its note-on.
+    var held: list<i64>; var flash_until: list<i64>;
+    var pending: list<PendingPad>;
+};
+impl PadGrid {
+    fn ready(self: &mut Self) -> void {
+        if self.held.len() == pad_count() { return; }
+        self.held = []; self.flash_until = [];
+        let count: i32 = pad_count();
+        for _p in 0..count { self.held.push(0); self.flash_until.push(0); }
+    }
+    /// Pad index (0-47) of `note`, or -1 outside the three banks.
+    pub fn pad_of(note: i64) -> i32 {
+        let pad: i64 = note - pad_first_note();
+        return pad >= 0 && pad < wide(pad_count()) ? i32(pad) : -1;
+    }
+    /// A pad is hit, or its note plays now. Shows its bank.
+    pub fn note_on(self: &mut Self, note: i64, velocity: i64, now: i64) -> bool {
+        let pad: i32 = PadGrid::pad_of(note); if pad < 0 { return false; }
+        self.ready();
+        var held: list<i64> = []; var until: list<i64> = []; let count: i32 = pad_count();
+        for p in 0..count {
+            held.push(p == pad ? (velocity > 0 ? velocity : 1) : self.held[p]);
+            until.push(p == pad ? now + pad_flash_ms() : self.flash_until[p]);
+        }
+        self.held = held; self.flash_until = until; self.bank = pad / 16; return true;
+    }
+    pub fn note_off(self: &mut Self, note: i64) -> bool {
+        let pad: i32 = PadGrid::pad_of(note); if pad < 0 { return false; }
+        self.ready();
+        var held: list<i64> = []; let count: i32 = pad_count();
+        for p in 0..count { held.push(p == pad ? 0 : self.held[p]); }
+        self.held = held; return true;
+    }
+    /// A sequencer note, sent ahead of time: it lights when the transport
+    /// reaches `tick`.
+    pub fn schedule(self: &mut Self, note: i64, on: bool, velocity: i64, tick: i64) -> void {
+        if PadGrid::pad_of(note) < 0 || self.pending.len() >= 1024 { return; }
+        self.pending.push(PendingPad { note: note, velocity: velocity, tick: tick, on: on });
+    }
+    /// Apply the notes the transport has reached (all of them once it
+    /// stops). True when the grid changed, including a flash running out.
+    pub fn advance(self: &mut Self, ticks: i64, playing: bool, now: i64, previous: i64) -> bool {
+        var changed: bool = false;
+        let queued: list<PendingPad> = self.pending; var later: list<PendingPad> = [];
+        for item in queued {
+            if playing && item.tick > ticks { later.push(item); continue; }
+            if item.on { self.note_on(item.note, item.velocity, now); } else { self.note_off(item.note); }
+            changed = true;
+        }
+        self.pending = later;
+        let pads: i64 = self.flash_until.len();
+        for p in 0..pads {
+            let until: i64 = self.flash_until[p];
+            if until > previous && until <= now { changed = true; }
+        }
+        return changed;
+    }
+    /// Darken every pad and drop queued notes.
+    pub fn clear(self: &mut Self) -> void {
+        self.pending = [];
+        self.held = []; self.flash_until = []; self.ready();
+    }
+    /// Velocity pad `pad` (0-47) shows at `now`, 0 when dark.
+    pub fn level(self: PadGrid, pad: i32, now: i64) -> i64 {
+        if pad < 0 || pad >= self.held.len() { return 0; }
+        let held: i64 = self.held[pad];
+        if held > 0 { return held; }
+        return now < self.flash_until[pad] ? 64 : 0;
+    }
+    pub fn title(self: PadGrid) -> str8 {
+        return format!(" MPD218 pads | Bank {} ", self.bank == 0 ? "A" : (self.bank == 1 ? "B" : "C"));
+    }
+    /// The 16 pads of the shown bank as on the MPD218: pads 1-4 on the
+    /// bottom row, 13-16 on top. Lit pads are red, brighter for harder hits,
+    /// and marked with a dot.
+    pub fn paint(self: PadGrid, surface: Surface, area: Rect, theme: Theme, now: i64, status: str8) -> void {
+        if area.width < 12 || area.height < 6 { return; }
+        let grid: Rect = Rect::new(area.x, area.y, area.width, area.height - 2);
+        let width: i32 = grid.width / 4; let height: i32 = grid.height / 4;
+        let names: array<str8, 12> = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"};
+        for row in 0..4 {
+            for column in 0..4 {
+                let number: i32 = (3 - i32(row)) * 4 + i32(column);
+                let pad: i32 = self.bank * 16 + number;
+                let level: i64 = self.level(pad, now);
+                let red: i32 = level > 0 ? 96 + i32(level * 159 / 127) : 0;
+                let background: i32 = level > 0 ? red * 65536 + 24 * 256 + 24 : 0x2a2d36;
+                let cell: Rect = Rect::new(grid.x + i32(column) * width, grid.y + i32(row) * height, width - 1, height > 1 ? height - 1 : 1);
+                surface.fill(cell, Cell { glyph: 32, foreground: theme.foreground, background: background });
+                let note: i64 = pad_first_note() + wide(pad);
+                // The dot shows a lit pad without colour too.
+                let label: str8 = format!(" {} {}{}{}", number + 1, names[note % 12], note / 12 - 1, level > 0 ? " ●" : "");
+                surface.text(Rect::new(cell.x, cell.y, cell.width, 1), label, level > 0 ? 0xFFFFFF : theme.muted, background);
+                free(label);
+            }
+        }
+        surface.text(Rect::new(area.x, area.y + area.height - 2, area.width, 1),
+            "Lights the selected track's notes and the pads you hit | View > Show MPD218 pads hides", theme.muted, theme.panel);
+        surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), status, theme.foreground, theme.panel);
+    }
+}

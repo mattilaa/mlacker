@@ -58,6 +58,8 @@ use mlacker_ui::piano_dialog::PianoDialog;
 mod mlacker_ui::virtual_keyboard;
 use mlacker_ui::virtual_keyboard::VirtualKeyboard;
 use mlacker_ui::virtual_keyboard::HeldNote;
+mod mlacker_ui::pad_grid;
+use mlacker_ui::pad_grid::PadGrid;
 mod mlacker_ui::sampler_view;
 use mlacker_ui::sampler_view::SamplerView;
 use mlacker_ui::sampler_view::AutoMapEntry;
@@ -135,7 +137,7 @@ fn menu_item(label: str8, action: Action, enabled: bool, keymap: &Keymap) -> Men
     return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: keys.shortcut_for(action) };
 }
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, bounce: BounceOptions, editor_fullscreen: bool, keymap: &Keymap) -> MenuBar {
+fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, pads: bool, bounce: BounceOptions, editor_fullscreen: bool, keymap: &Keymap) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
@@ -190,7 +192,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                 menu_item("Fullscreen focused pane", Action::TogglePaneFullscreen, true, keymap),
                                 menu_item("Show / hide View pane", Action::ToggleViewPane, true, keymap),
                                 menu_item("Reset layout", Action::ResetLayout, true, keymap),
-                                menu_item("Show details", Action::ShowDetails, true, keymap)] },
+                                menu_item("Show details", Action::ShowDetails, true, keymap),
+                                menu_item(pads ? "[x] Show MPD218 pads" : "[ ] Show MPD218 pads", Action::TogglePadGrid, true, keymap)] },
                     Menu {title: "Track", items: [
                                 // Plain entries, not a submenu: a submenu as the first
                                 // item would swallow the Right key that walks the menu bar.
@@ -423,11 +426,12 @@ pub fn run() -> i32 {
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
     // Computer-keyboard piano in the same pane (View menu / Shift+P).
     var keyboard: VirtualKeyboard = VirtualKeyboard {};
+    var pads: PadGrid = PadGrid {}; var pads_clock: i64 = 0;
     // Mla Sampler editor in the same pane (View menu / Shift+S).
     var sampler: SamplerView = SamplerView {};
     // Shortcuts for menu actions; the menus label their items from it.
     var keymap: Keymap = Keymap::new(default_keymap());
-    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
     // -1 is the normal split; 1 and 2 expand that pane around the protected
@@ -664,7 +668,7 @@ pub fn run() -> i32 {
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
-                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                             frame_rate.set(v.meter_fps, now_ms()); note_playback = NotePlayback {}; play_pattern = library.active_id;
                             instrument_editor.release();
                             instrument_editor.slot = v.editor_slot;
@@ -1418,6 +1422,20 @@ pub fn run() -> i32 {
         note_playback.once = song_playing ? (library.next_song_row(song_row) != song_row || song_stale) : pattern_held;
         note_playback.update(song_playing ? song_table : (pattern_held ? held_table : library.table), transport.ticks, transport.playing && transport.count_in == 0);
         midi.sequencer_events(note_playback.events, song_playing ? song_table : (pattern_held ? held_table : library.table));
+        // The on-screen MPD218 pads light as the selected track's notes
+        // sound (they are sent ahead) and as the pads are hit.
+        midi.collect_pads = pads.visible;
+        if pads.visible {
+            let played: list<NoteEvent> = midi.take_pad_events();
+            for event in played { pads.schedule(event.note, event.on == 1, event.velocity, event.tick); }
+            let hits: list<MidiInputEvent> = midi.midi.note_events;
+            for hit in hits {
+                if hit.kind == 1 { pads.note_on(hit.note, hit.velocity, now); dirty = true; }
+                if hit.kind == 2 { pads.note_off(hit.note); dirty = true; }
+            }
+            if pads.advance(transport.ticks, transport.playing, now, pads_clock) { dirty = true; }
+            pads_clock = now;
+        }
         if follow_paused && (!transport.playing || song_playing) { follow_paused = false; }
         if pattern_held && (!transport.playing || song_playing) {
             // Stopped (or the matrix took over) before the queued pattern began.
@@ -1664,14 +1682,15 @@ pub fn run() -> i32 {
             }
             // The Sampler pane edits the Mla Sampler on the selected Instrument track.
             let sampler_slot: i32 = sampler.visible ? SamplerView::target(midi.output, library.table.active_instrument()) : 0;
-            let sampler_title: str8 = sampler.visible ? sampler.title(midi.output, sampler_slot) : "";
+            let sampler_title: str8 = sampler.visible ? sampler.title(midi.output, sampler_slot) : (pads.visible ? pads.title() : "");
             // The status bar names the open project or session file.
             let document: str8 = session_path == "" ? clone("Untitled") : base_name(session_path);
             paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, sampler_title, document);
             free(document);
             if keyboard.visible { free(keyboard_title); }
+            if sampler.visible || pads.visible { free(sampler_title); }
+            if pads.visible && !sampler.visible { pads.paint(surface, panes[2].bounds.inset(1), Theme::dark_blue(), now_ms(), message); }
             if sampler.visible {
-                free(sampler_title);
                 var names: list<str8> = [];
                 for s in 0..16 {
                     let used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, i32(s)) : -1;
@@ -3342,7 +3361,7 @@ pub fn run() -> i32 {
             else if command == Action::ToggleEditorFullscreen {
                 editor_fullscreen = !editor_fullscreen;
                 free(message); message = clone(editor_fullscreen ? "The sample editor opens full screen" : "The sample editor opens in the Pattern pane");
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
             }
             else if command == Action::ToggleBounceTail || command == Action::ToggleBounceSecondPass ||
                 command == Action::BounceTail5 || command == Action::BounceTail10 || command == Action::BounceTail20 {
@@ -3355,14 +3374,14 @@ pub fn run() -> i32 {
                 free(message);
                 message = !bounce_options.tail ? clone(bounce_options.second_pass ? "Bounce: no tail, second pass" : "Bounce: no tail")
                     : format!("Bounce: tail up to {} s{}", bounce_options.tail_seconds, bounce_options.second_pass ? ", second pass" : "");
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 dirty = true;
             }
             else if command == Action::ToggleMetronome || command == Action::ToggleExtendRecording || command == Action::MetronomeOnRecording || command == Action::MetronomeAlways {
                 if command == Action::ToggleMetronome { play_metronome = !play_metronome; }
                 else if command == Action::ToggleExtendRecording { extend_recording = !extend_recording; }
                 else { metronome_always = command == Action::MetronomeAlways; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
             }
             else if command == Action::AddPattern || command == Action::ClonePattern { library.add(command == Action::ClonePattern); }
             else if command == Action::RenamePattern {
@@ -3375,7 +3394,7 @@ pub fn run() -> i32 {
             }
             else if command == Action::FollowMatrix {
                 follow_matrix = !follow_matrix;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 free(message);
                 if follow_matrix {
                     if song_playing { library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id; }
@@ -3393,20 +3412,34 @@ pub fn run() -> i32 {
             else if command == Action::MeterUpdateRate { bpm_dialog.open_meter_rate(frame_rate.fps); }
             else if command == Action::ToggleSpectrum {
                 spectrum.visible = !spectrum.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
                 if spectrum.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
             }
+            else if command == Action::TogglePadGrid {
+                pads.visible = !pads.visible; pads.clear();
+                // It shares the pane with the keyboard and the sampler.
+                if pads.visible && (keyboard.visible || sampler.visible) {
+                    keyboard.visible = false; sampler.visible = false;
+                    terminal.report_key_releases(false); input.releases = false;
+                }
+                if pads.visible && fullscreen_pane == 2 { fullscreen_pane = -1; }
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                free(message);
+                message = pads.visible ? clone("MPD218 pads: they light as the selected track plays its notes 36-83 and as you hit the pads")
+                    : clone("MPD218 pads closed");
+                dirty = true;
+            }
             else if command == Action::ToggleVirtualKeyboard {
                 keyboard.visible = !keyboard.visible;
-                if keyboard.visible { sampler.visible = false; }
+                if keyboard.visible { sampler.visible = false; pads.visible = false; }
                 if keyboard.visible && fullscreen_pane == 2 { fullscreen_pane = -1; }
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 // Keys only play while the pane has focus.
                 if keyboard.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
@@ -3417,10 +3450,11 @@ pub fn run() -> i32 {
                 sampler.visible = !sampler.visible;
                 // The sampler and the virtual keyboard share the pane.
                 if sampler.visible && keyboard.visible { keyboard.visible = false; }
+                if sampler.visible { pads.visible = false; }
                 // Kitty-protocol terminals then report key releases, so an
                 // audition (p) lasts exactly as long as the key is held.
                 terminal.report_key_releases(sampler.visible); input.releases = sampler.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 // Keys only reach the sampler while the pane has focus.
                 if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
