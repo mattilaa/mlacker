@@ -1434,6 +1434,31 @@ note-on. The VST3 host sends it as a note-expression text event
 (`kTextTypeID`) of that note, so any VST3 instrument that reads note text
 receives it. On other tracks, the column is only a comment.
 
+### System exclusive (ID and SYSEX) columns
+
+**Track → Add / remove SysEx columns** adds two columns after the selected
+MIDI or Instrument track's CC columns, before its `TEXT` column, or removes
+them with their messages. They are shown in the third column stage with the
+CC columns (`z`). Both take hex bytes `00`–`7F` separated by spaces; lower
+case is stored upper case.
+
+- `ID` is the message header: the manufacturer ID (one byte, or `00` and two
+  more) followed by the device or unit ID, 1–4 bytes, e.g. `43 10` for a
+  Yamaha device 0 or `41 10 42` for a Roland device. An ID carries down: a
+  row uses the ID on its own row or the nearest one above it, so it is set
+  once for a run of messages.
+- `SYSEX` is the rest of the message, up to 80 bytes, e.g. `4C 00 00 7E 00`.
+
+A row with `SYSEX` data sends `F0`, the ID, the data and `F7` at the start of
+the row, before the row's CC values and notes, so it can set up the sound
+they play. A row with data but no ID at or above it sends nothing. Instrument
+tracks send to their assigned instrument and MIDI tracks to the master plugin;
+muted tracks send nothing. The host stores the message in the processor's
+system exclusive ring (`instrument_sysex`) and posts an `InstrumentSysEx`
+event. The VST3 host passes it as a `kMidiSysEx` data event of the bytes
+between `F0` and `F7`, as JUCE-based plugins expect. Plugins that do not
+read data events ignore it.
+
 **Curves between two values.** Put the cursor on a CC value and press
 **Ctrl+V** to mark it (amber), then mark a second value in the same column
 (Ctrl+V on a marked value unmarks it; unzoomed, a cell's first value is

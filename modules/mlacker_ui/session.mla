@@ -790,9 +790,11 @@ impl SessionCodec {
             track.audio = self.flag(track.audio); track.instrument = self.flag(track.instrument);
             track.instrument_id = self.number(track.instrument_id, 0, 32);
             track.note_lines = self.number(track.note_lines, 1, 64);
-            // The TEXT column flag takes the retired waveform-zoom flag's
-            // place, which older versions wrote as 0.
-            track.comment = self.flag(track.comment); if track.audio && track.comment { self.failed = true; }
+            // The column flags take the retired waveform-zoom flag's place,
+            // which older versions wrote as 0: 1 TEXT, 2 ID and SYSEX.
+            let columns: i32 = self.number((track.comment ? 1 : 0) + (track.sysex ? 2 : 0), 0, 3);
+            track.comment = columns % 2 == 1; track.sysex = columns >= 2;
+            if track.audio && columns != 0 { self.failed = true; }
             track.zoom_stage = self.number(track.zoom_stage, 0, 2);
             // 1.0 documents always carry two slots.
             let slots: i32 = self.minor == 0 ? 2 : self.number(i32(track.automation.len()), 0, automation_limit());

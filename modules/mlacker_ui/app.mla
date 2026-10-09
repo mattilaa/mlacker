@@ -216,7 +216,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                 // Last, so the items above keep their positions.
                                 menu_item("Route plugin outputs", Action::RoutePluginOutput, plugins, keymap),
                                 menu_item("Set instrument input", Action::SetInstrumentInput, plugins, keymap),
-                                menu_item("Add / remove comment column", Action::ToggleCommentColumn, true, keymap)] },
+                                menu_item("Add / remove comment column", Action::ToggleCommentColumn, true, keymap),
+                                menu_item("Add / remove SysEx columns", Action::ToggleSysExColumns, true, keymap)] },
                     Menu {title: "Pattern", items: [
                                 menu_item("Add pattern", Action::AddPattern, true, keymap),
                                 menu_item("Clone pattern", Action::ClonePattern, true, keymap),
@@ -3471,6 +3472,12 @@ pub fn run() -> i32 {
                     message = clone(library.table.is_comment()
                         ? "Comment column added: Enter types the text; a speech instrument (Mla Speech) says it on that row"
                         : "Comment column removed");
+                    playback_dirty = true;
+                }
+                else if command == Action::ToggleSysExColumns {
+                    message = clone(library.table.is_sysex_id()
+                        ? "SysEx columns added: ID takes the manufacturer and device ID (43 10), SYSEX the data; F0 and F7 are added"
+                        : "SysEx columns removed");
                     playback_dirty = true;
                 }
                 else { message = clone("Track updated. Mute affects demo state only."); }

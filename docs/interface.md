@@ -405,13 +405,20 @@ mlacker's **Track** menu always targets the selected column's track:
 - Mute / unmute toggles the track flag and its `[M]` header indicator.
 - Automation → Add / Configure / Remove CC column edits the track's list of
   automation columns (up to 16 on a MIDI track, one per controller).
-- Add / remove comment column (the last entry) adds a TEXT column after the
+- Add / remove comment column adds a TEXT column after the
   CC columns of a MIDI or Instrument track, shows it (stage 3) and selects it,
   or removes it with its texts. Enter edits a cell's free text (up to 240
   characters), and the column widens to fit, up to 48 cells. On an Instrument
   track playing a speech instrument (Mla Speech), the row's text is spoken
   with the row's first note, or at C-3 when the row has no note. CC columns
   added later go before it.
+- Add / remove SysEx columns (the last entry) adds ID and SYSEX columns after
+  the CC columns of a MIDI or Instrument track, before TEXT, shows them
+  (stage 3) and selects ID, or removes them with their messages. ID holds the
+  manufacturer ID and device or unit ID (1–4 hex bytes, `43 10`) and carries
+  down to the rows below it; SYSEX holds up to 80 data bytes (`4C 00 00 7E
+  00`). Bytes are `00`–`7F`, stored upper case; F0 and F7 are added when the
+  row plays. The SYSEX column widens to fit, up to 48 cells.
 
 Each automation slot accepts `cc:N` for MIDI CC 0–127 (values 0–127),
 `pitchbend` (signed values -8192–8191), or `name:min:max` for a custom integer
