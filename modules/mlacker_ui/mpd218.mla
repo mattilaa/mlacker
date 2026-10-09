@@ -1,0 +1,40 @@
+/// Akai MPD218 pad controller profile. Its pads already play the selected
+/// track like any MIDI keyboard (default preset: notes 36-51, 52-67 and 68-83
+/// for Pad Banks A-C on channel 10). The profile turns its 18 knobs into
+/// instrument parameter controls.
+mod std::strbuf;
+mod std::math;
+use std::strbuf::contains;
+
+/// True for an MPD218 MIDI port name ("MPD218", "MPD218 Port 1", ...).
+pub fn is_mpd218(name: str8) -> bool { return contains(name, "MPD218") != 0; }
+
+/// Knob (0-17) a default-preset MPD218 controller number belongs to, or -1:
+/// Ctrl Bank A sends CC 3, 9, 12, 13, 14 and 15 from knob 1 to 6, bank B
+/// CC 16-21 and bank C CC 22-27.
+pub fn mpd218_knob(controller: i64) -> i32 {
+    if controller == 3 { return 0; }
+    if controller == 9 { return 1; }
+    if controller >= 12 && controller <= 15 { return i32(controller) - 10; }
+    if controller >= 16 && controller <= 27 { return i32(controller) - 10; }
+    return -1;
+}
+
+/// Knobs per page: 6 knobs in each of the 3 Ctrl Banks.
+pub fn mpd218_page_size() -> i32 { return 18; }
+
+/// Parameter index knob `knob` controls while parameter `selected` is
+/// selected in the instrument editor (-1 when it is closed): the knobs cover
+/// the editor's page of 18 parameters, bank A the first 6, B the next 6 and
+/// C the last 6.
+pub fn mpd218_parameter(knob: i32, selected: i32) -> i32 {
+    let page: i32 = selected > 0 ? selected / mpd218_page_size() : 0;
+    return page * mpd218_page_size() + knob;
+}
+
+/// Parameter value for knob position `position` (0-127): a stepped
+/// parameter's nearest step (0..steps), otherwise normalized 0-1.
+pub fn mpd218_value(position: i64, steps: f64) -> f64 {
+    let normalized: f64 = f64(position < 0 ? 0 : (position > 127 ? 127 : position)) / 127.0;
+    return steps > 0.0 ? std::math::floor(normalized * steps + 0.5) : normalized;
+}

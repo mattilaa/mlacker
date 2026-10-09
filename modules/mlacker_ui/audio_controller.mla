@@ -23,6 +23,8 @@ use std::audio::controller::*;
 use std::audio::detail::__mlang_std_audio_last_error;
 use std::midi::input_count;
 use mlacker_ui::midi_controller::MidiController;
+mod mlacker_ui::mpd218;
+use mlacker_ui::mpd218::*;
 use mlacker_ui::note_playback::NoteEvent;
 use std::strbuf::clone;
 use std::strbuf::free;
@@ -715,6 +717,22 @@ impl AudioSystem {
         }
         if restart { if self.output.start() != 0 { free(message); message = clone("Effect processed but audio restart failed; reopen Settings"); } }
         self.resume_midi(worker); return message;
+    }
+    /// Turn MPD218 knob `knob` (0-17) to `position` (0-127) on the processor
+    /// in `slot` (0 the master): it sets parameter `mpd218_parameter(knob,
+    /// selected)`. An owned status line ("Knob 7: Cutoff 0.52"), or "" when
+    /// that parameter is missing or read-only.
+    pub fn turn_knob(self: AudioSystem, slot: i64, knob: i32, position: i64, selected: i32) -> str8 {
+        if self.output.handle == 0 || slot < 0 { return clone(""); }
+        let index: i64 = wide(mpd218_parameter(knob, selected));
+        let count: f64 = self.output.parameter_info(slot, 0, 0);
+        if count < 0.0 || f64(index) >= count || self.output.parameter_info(slot, index, 3) != 0.0 { return clone(""); }
+        let steps: f64 = self.output.parameter_info(slot, index, 1);
+        let value: f64 = mpd218_value(position, steps);
+        if self.output.set_parameter(slot, index, value) != 0 { return clone(""); }
+        let shown: str8 = steps > 0.0 ? format!("{}", i32(value)) : format!("{}%", i32(std::math::round(value * 100.0)));
+        let line: str8 = format!("Knob {}: {} {}", knob + 1, self.output.parameter_name(slot, index), shown);
+        free(shown); return line;
     }
     pub fn route_selected(self: AudioSystem, source: &SequenceTable) -> void {
         if self.output.handle == 0 { return; }

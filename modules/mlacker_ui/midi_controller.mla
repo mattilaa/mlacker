@@ -4,7 +4,9 @@ mod std::thread;
 mod std::time;
 mod tui::geometry;
 mod std::audio::controller;
+mod mlacker_ui::mpd218;
 use std::audio::controller::*;
+use mlacker_ui::mpd218::*;
 use tui::geometry::wide;
 use std::midi::MidiInput;
 use std::midi::MidiMessage;
@@ -16,7 +18,8 @@ use std::time::sleep_ms;
 // Fixed-size values only: safe to byte-copy across the SPSC boundary.
 // kind: 1 note-on, 2 note-off, 3 other MIDI, 4 connected, 5 unavailable,
 // 6 CC (note=controller, velocity=value; channel pressure is controller
-// 128), 7 pitch bend (note=129).
+// 128), 7 pitch bend (note=129), 8 MPD218 knob (note=knob 0-17,
+// velocity=position 0-127), 9 connected input is an MPD218.
 pub struct MidiInputEvent {
     var kind: i64; var channel: i64; var note: i64; var velocity: i64;
     var received_ms: i64;
@@ -80,6 +83,9 @@ fn midi_input_worker(queue_handle: i64, stop_handle: i64, dropped_handle: i64, a
     }
     let input: MidiInput = opened.unwrap();
     queue.try_push(MidiInputEvent { kind: 4 });
+    let port: i64 = device < 0 ? std::midi::default_input_id() : device;
+    let mpd218: bool = port >= 0 && is_mpd218(std::midi::input_name(port));
+    if mpd218 { queue.try_push(MidiInputEvent { kind: 9 }); }
     var decoder: MidiDecoder = MidiDecoder {};
     var native_dropped: i64 = 0;
     while atomic_load_value(stop) != 0 {
@@ -93,7 +99,13 @@ fn midi_input_worker(queue_handle: i64, stop_handle: i64, dropped_handle: i64, a
         if packet.is_some() {
             let message: MidiMessage = packet.unwrap(); let now: i64 = now_ms();
             for index in 0..message.len() {
-                let event: MidiInputEvent = decoder.feed(message.byte(index), now);
+                var event: MidiInputEvent = decoder.feed(message.byte(index), now);
+                // MPD218 knobs set instrument parameters on the UI thread,
+                // unless MIDI learn is listening or has the knob mapped.
+                if mpd218 && event.kind == 6 && mpd218_knob(event.note) >= 0 && (audio_handle == 0 ||
+                    (audio.midi_learn_info(-1, 2) == 0 && audio.midi_learn_info(event.channel * 128 + event.note, 2) == 0)) {
+                    event.kind = 8; event.note = wide(mpd218_knob(event.note));
+                }
                 if event.kind != 0 {
                     if !queue.try_push(event) { atomic_add_value(dropped, 1); }
                     event.send_audio(audio);
@@ -114,6 +126,12 @@ pub struct MidiController {
     var note_events: list<MidiInputEvent>;
     /// CC and pitch-bend messages of the last poll, for recording automation.
     var control_events: list<MidiInputEvent>;
+    /// MPD218 knob turns of the last poll (see mlacker_ui::mpd218).
+    var knob_events: list<MidiInputEvent>;
+    /// The connected input is an Akai MPD218.
+    var mpd218: bool;
+    /// Last note, controller or knob message received (kind 0 = none yet).
+    var last_event: MidiInputEvent;
 };
 impl MidiController {
     pub fn start() -> MidiController {
@@ -148,9 +166,12 @@ impl MidiController {
             _ => 0
         };
         if (event.kind == 6 || event.kind == 7) && self.control_events.len() < 256 { self.control_events.push(event); }
+        if event.kind == 8 && self.knob_events.len() < 256 { self.knob_events.push(event); }
+        if event.kind == 1 || event.kind == 2 || (event.kind >= 6 && event.kind <= 8) { self.last_event = event; }
         if event.kind == 4 { self.connected = true; }
-        if event.kind == 5 { self.connected = false; }
-        if (event.kind >= 1 && event.kind <= 3) || event.kind == 6 || event.kind == 7 { self.activity_until = event.received_ms + 150; }
+        if event.kind == 5 { self.connected = false; self.mpd218 = false; }
+        if event.kind == 9 { self.mpd218 = true; }
+        if (event.kind >= 1 && event.kind <= 3) || (event.kind >= 6 && event.kind <= 8) { self.activity_until = event.received_ms + 150; }
     }
     /// Notes played on the virtual keyboard join this poll's events, so step
     /// entry and recording treat them like a MIDI keyboard's.
@@ -158,7 +179,7 @@ impl MidiController {
         for event in events { self.dispatch(event); }
     }
     pub fn poll(self: &mut Self, now: i64) -> bool {
-        self.note_events = []; self.control_events = [];
+        self.note_events = []; self.control_events = []; self.knob_events = [];
         var event: MidiInputEvent = MidiInputEvent {};
         let queue: SpscQueue<MidiInputEvent> = SpscQueue<MidiInputEvent> { handle: self.queue_handle };
         if queue.is_valid() {
