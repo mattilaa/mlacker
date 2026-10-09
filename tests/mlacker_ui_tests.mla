@@ -4951,3 +4951,79 @@ fn tui_comment_column_speaks_with_notes() {
     verify(table.comment_column(3) == -1);
     table.release();
 }
+
+fn sysex_edit(table: &mut SequenceTable, row: i32, column: i32, value: str8, area: Rect) -> void {
+    table.selected_row = row; table.selected_column = column;
+    table.edit_event(decode_input("\r"), area); table.editor.set_text(value); table.edit_event(decode_input("\r"), area);
+}
+
+#[test]
+fn tui_sysex_columns_send_messages() {
+    let area: Rect = Rect::new(0, 0, 160, 20);
+    var table: SequenceTable = SequenceTable::new();
+    for r in 0..64 { table.selected_row = i32(r); table.clear_row(); }
+    table.create_instrument_track(1, area);
+    let before: i32 = i32(table.columns.len());
+    table.selected_column = table.track_start(3);
+    table.track_action(Action::ToggleSysExColumns, area);
+    // ID and SYSEX after the note line and the CC column, shown, ID selected.
+    let id: i32 = table.sysex_column(3);
+    verify(i32(table.columns.len()) == before + 2);
+    verify(id == table.track_start(3) + 5 && table.is_sysex_id());
+    let id_column: TableColumn = table.columns[id]; verify(id_column.title == "ID" && !id_column.hidden);
+    let data_column: TableColumn = table.columns[id + 1]; verify(data_column.title == "SYSEX" && !data_column.hidden);
+    // A CC column added later goes before them, a TEXT column after them.
+    verify(table.add_automation(3, "cc:74") == 2);
+    verify(table.sysex_column(3) == id + 1);
+    table.selected_column = table.track_start(3); table.track_action(Action::ToggleCommentColumn, area);
+    verify(table.comment_column(3) == table.sysex_column(3) + 2);
+    let sysex: i32 = table.sysex_column(3);
+    // Hex bytes are stored upper case; status bytes and odd digits are refused.
+    sysex_edit(&mut table, 0, sysex, "43 1a", area);
+    let first_row: TableRow = table.rows[0]; verify(first_row.cells[sysex] == "43 1A" && table.error == "");
+    sysex_edit(&mut table, 0, sysex + 1, "4c 00 00 7e 00", area);
+    let filled: TableRow = table.rows[0]; verify(filled.cells[sysex + 1] == "4C 00 00 7E 00");
+    sysex_edit(&mut table, 2, sysex + 1, "F0 43", area); verify(table.editing && table.error != ""); table.editing = false;
+    sysex_edit(&mut table, 2, sysex, "43 10 1 2", area); verify(table.editing && table.error != ""); table.editing = false;
+    // The ID carries down to rows below it until another one is set.
+    sysex_edit(&mut table, 4, sysex + 1, "01 02", area);
+    let carried: list<i32> = table.sysex_message(3, 4);
+    verify(carried.len() == 6 && carried[0] == 240 && carried[1] == 67 && carried[2] == 26 && carried[3] == 1 && carried[4] == 2 && carried[5] == 247);
+    let whole: list<i32> = table.sysex_message(3, 0);
+    verify(whole.len() == 9 && whole[3] == 76 && whole[6] == 126 && whole[8] == 247);
+    let none: list<i32> = table.sysex_message(3, 1); verify(none.len() == 0);
+    // Collapsed tracks hide both columns with the CC columns.
+    table.zoom_tracks(1, true, area);
+    let hidden: TableColumn = table.columns[sysex + 1]; verify(hidden.hidden);
+    table.zoom_tracks(2, true, area);
+    let shown: TableColumn = table.columns[sysex]; verify(!shown.hidden);
+    // A row's message goes before its notes.
+    table.set_cell(0, table.track_start(3), clone("C-4")); table.set_cell(0, table.track_start(3) + 1, clone("90"));
+    table.revision = table.revision + 1;
+    var playback: NotePlayback = NotePlayback { start_row: 0 };
+    playback.update(table, 0, true);
+    verify(playback.events.len() == 2);
+    let message: NoteEvent = playback.events[0]; let note: NoteEvent = playback.events[1];
+    verify(message.on == 3 && message.text == 1 && message.instrument == 1 && message.track == 3);
+    verify(note.on == 1 && note.note == 60);
+    playback.update(table, 4 * 15000, true);
+    var sent: bool = false;
+    let events: list<NoteEvent> = playback.events;
+    for event in events { if event.on == 3 && event.text == 5 { sent = true; } }
+    verify(sent);
+    // Pattern files keep the columns, with TEXT beside them.
+    let directory: str8 = clone("/private/tmp/mlacker-sysex-test-XXXXXX"); mkdtemp(directory);
+    let path: str8 = format!("{}/sysex.mlapatt", directory);
+    var holder: PatternLibrary = PatternLibrary::empty(); holder.table.release(); holder.table = table.copy_pattern();
+    verify(SessionCodec::save_pattern(path, "SysEx", holder.table));
+    let loaded: result<mlacker_ui::session::PatternData, str8> = SessionCodec::load_pattern(path); verify(loaded.is_ok());
+    let data: mlacker_ui::session::PatternData = loaded.unwrap();
+    let loaded_track: SequenceTrack = data.table.tracks[3]; verify(loaded_track.sysex && loaded_track.comment);
+    let loaded_row: TableRow = data.table.rows[0];
+    verify(loaded_row.cells[data.table.sysex_column(3)] == "43 1A" && loaded_row.cells[data.table.sysex_column(3) + 1] == "4C 00 00 7E 00");
+    data.release(); holder.release(); std::fs::remove_tree(directory); free(path); free(directory);
+    // Removing the columns drops their messages.
+    table.selected_column = table.sysex_column(3); table.track_action(Action::ToggleSysExColumns, area);
+    verify(table.sysex_column(3) == -1 && table.comment_column(3) == table.track_start(3) + 6);
+    table.release();
+}

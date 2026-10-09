@@ -61,6 +61,12 @@ public:
     static constexpr int32 kPhrases = 256, kPhraseChars = 1024;
     std::unique_ptr<char16_t[]> phrases;
     uint32 phraseLength[kPhrases] = {};
+    // System exclusive messages (mlang_audio_processor set_sysex), a ring
+    // like the phrases: F0 and F7 are dropped, since VST3 plugins (JUCE's
+    // wrapper among them) take the bytes between them. Allocated on first use.
+    static constexpr int32 kSysExMessages = 256, kSysExBytes = 1024;
+    std::unique_ptr<uint8[]> sysexData;
+    uint32 sysexLength[kSysExMessages] = {};
     // The phrase the next note-on on `pendingChannel` carries (-1 = none).
     int32 pendingPhrase = -1, pendingChannel = 0, nextNoteId = 0;
     bool active = false, processing = false, instrument = false, addsOutput = false, overflow = false;
@@ -250,6 +256,25 @@ public:
     void text(int32_t channel, int32_t index) noexcept {
         if(!phrases || index < 0 || index >= kPhrases) return;
         pendingPhrase = index; pendingChannel = channel;
+    }
+
+    // Control thread: store message `index`, a whole F0 ... F7 message.
+    int32_t setSysEx(int32_t index, const uint8_t *bytes, int32_t size) {
+        if(index < 0 || index >= kSysExMessages || !bytes || size < 3 || size > kSysExBytes) return -1;
+        if(bytes[0] != 0xF0 || bytes[size - 1] != 0xF7) return -1;
+        if(!sysexData) sysexData = std::make_unique<uint8[]>(static_cast<size_t>(kSysExMessages) * kSysExBytes);
+        std::copy_n(bytes + 1, size - 2, sysexData.get() + static_cast<size_t>(index) * kSysExBytes);
+        sysexLength[index] = static_cast<uint32>(size - 2);
+        return 0;
+    }
+    // Audio thread: send message `index` as a data event at `offset`.
+    void sysex(int32_t index, int32_t offset) noexcept {
+        if(!data.inputEvents || !sysexData || index < 0 || index >= kSysExMessages) return;
+        Event event{}; event.busIndex = 0; event.sampleOffset = offset; event.flags = Event::kIsLive;
+        event.type = Event::kDataEvent; event.data.type = DataEvent::kMidiSysEx;
+        event.data.size = sysexLength[index];
+        event.data.bytes = sysexData.get() + static_cast<size_t>(index) * kSysExBytes;
+        if(incoming.addEvent(event) != kResultOk) overflow = true;
     }
 
     void begin(bool reset) noexcept {
@@ -467,6 +492,10 @@ int32_t load(const char *path, double rate, int32_t frames,
             try { return static_cast<Processor*>(p)->setText(index, text); } catch(...) { return -1; }
         };
         out->text = [](void *p, int32_t channel, int32_t index, int32_t) { static_cast<Processor*>(p)->text(channel, index); };
+        out->set_sysex = [](void *p, int32_t index, const uint8_t *bytes, int32_t size) -> int32_t {
+            try { return static_cast<Processor*>(p)->setSysEx(index, bytes, size); } catch(...) { return -1; }
+        };
+        out->sysex = [](void *p, int32_t index, int32_t offset) { static_cast<Processor*>(p)->sysex(index, offset); };
         out->output_count = [](void *p) -> int32_t { return static_cast<int32_t>(static_cast<Processor*>(p)->outputNames.size()); };
         out->output_name = [](void *p, int32_t bus) -> const char * {
             auto *host = static_cast<Processor*>(p);

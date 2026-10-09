@@ -42,13 +42,15 @@ are accepted. Unsupported major or minor versions fail closed.
    - Next track ID; selected row/column; horizontal/vertical scroll;
      horizontal/vertical scrollbar flags; alternate-track text flag.
    - Track list. Each track: name, mute, volume, pan, audio flag, instrument flag,
-     assigned instrument slot, note-line count, comment flag, zoom stage;
-     automation slots; audio-instance list. The comment flag (0 or 1, always 0
-     on AUDIO tracks) takes the place of a retired waveform-zoom flag, which
-     older versions wrote as 0. A track with the flag has one TEXT column after
-     its automation columns, holding free text of up to 240 bytes. Older
-     readers ignore the flag, so they reject documents that use it, because
-     the row cells do not match their columns.
+     assigned instrument slot, note-line count, column flags, zoom stage;
+     automation slots; audio-instance list. The column flags (0–3, always 0
+     on AUDIO tracks) take the place of a retired waveform-zoom flag, which
+     older versions wrote as 0: 1 adds a TEXT column, holding free text of up
+     to 240 bytes, and 2 adds ID and SYSEX columns. After the track's
+     automation columns come ID and SYSEX, then TEXT. An ID cell holds 1–4
+     and a SYSEX cell 1–80 hex bytes `00`–`7F` separated by single spaces.
+     Older readers reject documents that use flag 2: their flag is 0 or 1
+     (the TEXT-only readers), or the row cells do not match their columns.
    - Automation slots: a count (0–16), then per slot its parameter string
      (`cc:N`, `pitchbend`, `aftertouch` or `name:min:max`), minimum and maximum. Each slot is
      one column after the track's note lines. A minor-0 document has no count

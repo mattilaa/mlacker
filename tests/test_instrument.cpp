@@ -90,6 +90,10 @@ public:
                 int ch = -1, pitch = -1; float value = 0;
                 if(event.type == Event::kNoteOnEvent) { ch = event.noteOn.channel; pitch = event.noteOn.pitch; value = event.noteOn.velocity * 0.5f; }
                 if(event.type == Event::kNoteOffEvent) { ch = event.noteOff.channel; pitch = event.noteOff.pitch; }
+                // Observable system exclusive: 7D (non-commercial) and one
+                // data byte, without F0 and F7, set control 1 to byte / 127.
+                if(event.type == Event::kDataEvent && event.data.type == DataEvent::kMidiSysEx &&
+                   event.data.size == 2 && event.data.bytes[0] == 0x7D) controls[1] = event.data.bytes[1] / 127.0;
                 if(ch >= 0 && ch < 16 && pitch >= 0 && pitch < 128) {
                     auto &old = notes[ch * 128 + pitch]; level += value - old; old = value;
                 }

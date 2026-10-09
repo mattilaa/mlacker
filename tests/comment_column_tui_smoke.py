@@ -10,7 +10,7 @@ from pathlib import Path
 
 from session_tui_smoke import Terminal, F1
 
-# Track menu: Add / remove comment column is the fourteenth entry (the last).
+# Track menu: Add / remove comment column is the fourteenth entry.
 TOGGLE_COMMENT = F1 + b"lll" + b"j" * 13 + b"\r"
 
 

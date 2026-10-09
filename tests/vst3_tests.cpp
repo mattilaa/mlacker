@@ -11,6 +11,8 @@
 extern "C" {
 struct FloatList { int64_t size; const float *data; };
 struct DoubleList { int64_t size; double *data; };
+struct IntList { int64_t size; const int32_t *data; };
+int32_t __mlang_std_audio_controller_instrument_sysex(int64_t, int64_t, int64_t, IntList);
 DoubleList __mlang_std_audio_controller_instrument_markers(int64_t, int64_t, int64_t);
 int32_t __mlang_std_audio_controller_instrument_set_markers(int64_t, int64_t, int64_t, DoubleList, int64_t);
 int64_t __mlang_std_audio_controller_sample_data(int64_t, FloatList, int64_t, int64_t);
@@ -338,6 +340,33 @@ int main(int argc, char **argv) {
     for(int f = 0; f < 256; ++f) {
         float expected = (f >= 32 && f < 64) || (f >= 128 && f < 160) ? 0.f : (f >= 96 ? .5f * 64.f / 127.f : .5f);
         CHECK(std::abs(__mlang_std_audio_pcm_block_sample(b, f, 0) - expected) < 1.e-7f);
+    }
+    // System exclusive messages reach the plugin as kMidiSysEx data events
+    // at their frame, F0 and F7 stripped: 7D 7F, then 7D 20.
+    {
+        const int32_t full[] = {0xF0, 0x7D, 0x7F, 0xF7}, quarter[] = {0xF0, 0x7D, 0x20, 0xF7}, status[] = {0xF0, 0x7D, 0x90, 0xF7};
+        CHECK(__mlang_std_audio_controller_instrument_sysex(c, 1, 0, IntList{4, full}) == 0);
+        CHECK(__mlang_std_audio_controller_instrument_sysex(c, 1, 1, IntList{4, quarter}) == 0);
+        CHECK(__mlang_std_audio_controller_instrument_sysex(c, 1, 2, IntList{4, status}) == -1);
+        CHECK(__mlang_std_audio_controller_instrument_sysex(c, 1, 256, IntList{4, full}) == -1);
+        CHECK(__mlang_std_audio_controller_instrument_sysex(c, 9, 0, IntList{4, full}) == -1); // empty slot
+        CHECK(__mlang_std_audio_controller_instrument_sysex(c, 0, 0, IntList{4, full}) == -1); // no master processor
+        clock = __mlang_std_audio_controller_info(c, 2);
+        CHECK(__mlang_std_audio_controller_post(c, 0, 12, 0, 0, 0, 0, clock + 32, 1, 1) == 0);
+        CHECK(__mlang_std_audio_controller_post(c, 0, 12, 0, 1, 0, 0, clock + 64, 1, 1) == 0);
+        CHECK(__mlang_std_audio_controller_post(c, 0, 12, 0, 256, 0, 0, -1, 1, 1) == -1);
+        CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
+        for(int f = 0; f < 256; ++f) {
+            float expected = f < 32 ? .5f * 64.f / 127.f : (f < 64 ? .5f : .5f * 32.f / 127.f);
+            CHECK(std::abs(__mlang_std_audio_pcm_block_sample(b, f, 0) - expected) < 1.e-6f);
+        }
+        // Back to CC74's 64 for the checks below.
+        const int32_t half[] = {0xF0, 0x7D, 0x40, 0xF7};
+        CHECK(__mlang_std_audio_controller_instrument_sysex(c, 1, 3, IntList{4, half}) == 0);
+        CHECK(__mlang_std_audio_controller_post(c, 0, 12, 0, 3, 0, 0, -1, 1, 1) == 0);
+        CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
+        CHECK(std::abs(__mlang_std_audio_pcm_block_sample(b, 0, 0) - .5f * 64.f / 127.f) < 1.e-6f);
+        std::puts("PASS: system exclusive messages reach the instrument at their frame");
     }
     CHECK(__mlang_std_audio_controller_parameter_info(c, 1, 0, 0) == 40);
     CHECK(std::strcmp(__mlang_std_audio_controller_parameter_name(c, 1, 0), "Modulation") == 0);

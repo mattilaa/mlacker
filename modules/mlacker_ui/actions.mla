@@ -54,7 +54,9 @@ pub enum Action : i32 {
     // Audio > Move to group: the group chosen, then (in a project) confirmed.
     ApplyAudioGroupMove = 183,
     // Audio > Always open sample editor full screen.
-    ToggleEditorFullscreen = 184
+    ToggleEditorFullscreen = 184,
+    // Track > Add / remove SysEx columns.
+    ToggleSysExColumns = 185
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).
@@ -63,5 +65,6 @@ pub fn is_track_action(action: Action) -> bool {
         action == Action::DuplicateTrack || action == Action::ClearTrack || action == Action::MuteTrack ||
         action == Action::ConfigureCcColumn || action == Action::AddCcColumn || action == Action::CreateAudioTrack ||
         action == Action::AddNoteLine || action == Action::RemoveNoteLine || action == Action::DuplicateNoteLine ||
-        action == Action::CollapseNoteLines || action == Action::ExpandNoteLines || action == Action::ToggleCommentColumn;
+        action == Action::CollapseNoteLines || action == Action::ExpandNoteLines || action == Action::ToggleCommentColumn ||
+        action == Action::ToggleSysExColumns;
 }

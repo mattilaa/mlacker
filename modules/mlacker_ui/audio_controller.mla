@@ -89,6 +89,8 @@ pub struct AudioSystem {
     var synced_clips: list<SyncedClip>;
     /// Next slot of the instruments' phrase ring (TEXT cells, 0-255).
     var next_phrase: i32;
+    /// Next slot of the system exclusive message ring (see `send_sysex`).
+    var next_sysex: i32;
     /// Transport last handed to `output` for tempo-synced plugins.
     var transport_output: i64; var transport_bpm: i32; var transport_playing: bool;
     /// Sequencer timing: while `scheduling`, tick `schedule_tick` sounds on
@@ -959,6 +961,7 @@ impl AudioSystem {
     pub fn sequencer_events(self: &mut Self, events: list<NoteEvent>, source: &SequenceTable) -> void {
         if self.output.handle == 0 { return; }
         for event in events {
+            if event.on == 3 { self.send_sysex(event, source); continue; }
             if event.on == 1 && event.text > 0 && event.instrument > 0 { self.speak(event, source); }
             var kind: AudioEventKind = event.on == 1 ? AudioEventKind::NoteOn : AudioEventKind::NoteOff;
             if event.instrument != 0 { kind = event.on == 1 ? AudioEventKind::InstrumentNoteOn : AudioEventKind::InstrumentNoteOff; }
@@ -990,6 +993,23 @@ impl AudioSystem {
         if self.scheduling && frame < 0 { frame = 0; }
         self.output.post(AudioEvent { kind: AudioEventKind::InstrumentText, sample: event.instrument,
             midi: AudioMidiEvent { channel: event.track % 16, note: phrase, velocity: 0 }, source: event.track,
+            frame: frame }, 2);
+    }
+    /// Hand the message of `event`'s SYSEX cell (F0, its ID, its data, F7) to
+    /// the instrument, or the master processor for a MIDI track, as the next
+    /// message of the ring, and post the InstrumentSysEx event that sends it.
+    /// Processors that take no system exclusive messages skip it.
+    fn send_sysex(self: &mut Self, event: NoteEvent, table: &SequenceTable) -> void {
+        var source: SequenceTable = SequenceTable {}; source = table;
+        let message: list<i32> = source.sysex_message(i32(event.track), i32(event.text - 1));
+        if message.len() == 0 || event.instrument < 0 { return; }
+        let index: i64 = wide(self.next_sysex);
+        if self.output.instrument_sysex(event.instrument, index, message) != 0 { return; }
+        self.next_sysex = (self.next_sysex + 1) % 256;
+        var frame: i64 = self.scheduling ? self.frame_of(event.tick) : -1;
+        if self.scheduling && frame < 0 { frame = 0; }
+        self.output.post(AudioEvent { kind: AudioEventKind::InstrumentSysEx, sample: event.instrument,
+            midi: AudioMidiEvent { channel: event.track % 16, note: index }, source: event.track,
             frame: frame }, 2);
     }
     pub fn add_insert(self: &mut Self, path: str8, id: i32) -> i32 {
