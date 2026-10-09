@@ -1354,6 +1354,19 @@ by its port name and says so in the status line.
   default preset's knob CCs are used (3, 9, 12–15; 16–21; 22–27). A knob that
   MIDI learn maps, or turned while learn is listening, stays a plain CC.
 
+- **Pad lights** follow the song: while the selected track plays, each of
+  its notes 36–83 lights the pad that plays it, and its note-off darkens it.
+  mlacker opens the MPD218's MIDI output for this and echoes the note on
+  channel 10, the pads' channel (note-on velocity 127 to light, 0 to darken).
+  Pads light on their own when you hit them, as always.
+
+`examples/mpd218_lights.mlaproj` is a short song made for it: Mla 08 drums
+on Pad Bank A's notes (bass drum on pad 1, snare on pad 3, clap on pad 4,
+hats on pads 7 and 11) with two Mla SID instances playing bass and a tune
+over Am–F–C–G at 112 BPM. Its *Pad sweep* pattern runs a light across all 16
+pads. Open it with the MPD218 as the MIDI input, keep the Drums track
+selected, and play the song (Song matrix) or a pattern.
+
 The status line also shows the last MIDI message received, when it fits:
 `CH10 C-2 v100`, `CH1 CC74=64`, `CH1 PB 0`, `KNOB 7=64`.
 

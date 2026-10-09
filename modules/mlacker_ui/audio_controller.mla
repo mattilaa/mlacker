@@ -93,6 +93,8 @@ pub struct AudioSystem {
     var next_phrase: i32;
     /// Next slot of the system exclusive message ring (see `send_sysex`).
     var next_sysex: i32;
+    /// Track whose played notes light the MPD218's pads (-1 none).
+    var light_track: i64{-1};
     /// Transport last handed to `output` for tempo-synced plugins.
     var transport_output: i64; var transport_bpm: i32; var transport_playing: bool;
     /// Sequencer timing: while `scheduling`, tick `schedule_tick` sounds on
@@ -734,9 +736,11 @@ impl AudioSystem {
         let line: str8 = format!("Knob {}: {} {}", knob + 1, self.output.parameter_name(slot, index), shown);
         free(shown); return line;
     }
-    pub fn route_selected(self: AudioSystem, source: &SequenceTable) -> void {
-        if self.output.handle == 0 { return; }
+    pub fn route_selected(self: &mut Self, source: &SequenceTable) -> void {
         let target: i64 = AudioSystem::live_target(source);
+        // The track the pads play is the one whose notes light them.
+        self.light_track = target < 0 ? -1 : target % 64;
+        if self.output.handle == 0 { return; }
         if target < 0 { self.output.midi_target(0, -1); return; }
         self.output.midi_target(target % 64, target / 64);
     }
@@ -979,6 +983,7 @@ impl AudioSystem {
     pub fn sequencer_events(self: &mut Self, events: list<NoteEvent>, source: &SequenceTable) -> void {
         if self.output.handle == 0 { return; }
         for event in events {
+            if (event.on == 0 || event.on == 1) && event.track == self.light_track { self.midi.light_pad(event.note, event.on == 1); }
             if event.on == 3 { self.send_sysex(event, source); continue; }
             if event.on == 1 && event.text > 0 && event.instrument > 0 { self.speak(event, source); }
             var kind: AudioEventKind = event.on == 1 ? AudioEventKind::NoteOn : AudioEventKind::NoteOff;
