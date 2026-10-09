@@ -2,6 +2,8 @@ mod std::testing;
 mod mlacker_ui::midi_controller;
 use std::testing::verify;
 use mlacker_ui::midi_controller::*;
+mod mlacker_ui::mpd218;
+use mlacker_ui::mpd218::*;
 use std::sync::SpscQueue;
 use std::thread::*;
 use std::audio::controller::AudioController;
@@ -120,4 +122,25 @@ fn midi_bounded_queue_and_loss() {
     controller.poll(100);
     verify(controller.lost_events == 1 && controller.last_note == -1 && controller.last_velocity == 0);
     controller.release();
+}
+
+#[test]
+fn midi_mpd218_knobs() {
+    verify(is_mpd218("MPD218 Port A") && is_mpd218("Akai MPD218") && !is_mpd218("MPK mini"));
+    // Default preset: bank A CC 3, 9, 12-15, bank B CC 16-21, bank C CC 22-27.
+    verify(mpd218_knob(3) == 0 && mpd218_knob(9) == 1 && mpd218_knob(12) == 2 && mpd218_knob(15) == 5);
+    verify(mpd218_knob(16) == 6 && mpd218_knob(21) == 11 && mpd218_knob(22) == 12 && mpd218_knob(27) == 17);
+    verify(mpd218_knob(1) == -1 && mpd218_knob(10) == -1 && mpd218_knob(28) == -1 && mpd218_knob(74) == -1);
+    // The knobs cover the editor's page of 18 parameters.
+    verify(mpd218_parameter(0, -1) == 0 && mpd218_parameter(17, -1) == 17);
+    verify(mpd218_parameter(0, 17) == 0 && mpd218_parameter(6, 18) == 24 && mpd218_parameter(5, 40) == 41);
+    verify(mpd218_value(0, 0.0) == 0.0 && mpd218_value(127, 0.0) == 1.0 && mpd218_value(200, 0.0) == 1.0);
+    verify(mpd218_value(64, 3.0) == 2.0 && mpd218_value(127, 3.0) == 3.0 && mpd218_value(-1, 3.0) == 0.0);
+    // A knob turn is no CC to record, but it is MIDI activity.
+    var midi: MidiController = MidiController {};
+    midi.dispatch(MidiInputEvent { kind: 8, note: 6, velocity: 99, received_ms: 5 });
+    verify(midi.knob_events.len() == 1 && midi.control_events.len() == 0 && midi.activity_until == 155);
+    let last: MidiInputEvent = midi.last_event; verify(last.kind == 8 && last.note == 6);
+    midi.dispatch(MidiInputEvent { kind: 9 }); verify(midi.mpd218);
+    midi.dispatch(MidiInputEvent { kind: 5 }); verify(!midi.mpd218);
 }

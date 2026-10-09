@@ -1338,6 +1338,25 @@ Send levels belong to each pattern. Tracks sharing a VST instrument instance
 share its PCM send levels, just as they share output gain. `.mlack` saves effect
 paths, exposed parameters, return levels, sends, and effect-bank selection.
 
+## Akai MPD218
+
+Select the MPD218 as the MIDI input (File > Settings). mlacker recognises it
+by its port name and says so in the status line.
+
+- **Pads** play the selected track like any MIDI keyboard. The default preset
+  sends notes 36–51, 52–67 and 68–83 for Pad Banks A–C on channel 10, which
+  are the pads of a drum instrument such as Mla Drum.
+- **Knobs** set parameters of the selected track's instrument, or of the
+  instrument the editor shows while it is open (the master plugin on a MIDI
+  track). Ctrl Bank A turns parameters 1–6, bank B 7–12 and bank C 13–18; with
+  the editor open, the knobs cover the page of 18 parameters holding its
+  selection. The status line names the parameter and its new value. The
+  default preset's knob CCs are used (3, 9, 12–15; 16–21; 22–27). A knob that
+  MIDI learn maps, or turned while learn is listening, stays a plain CC.
+
+The status line also shows the last MIDI message received, when it fits:
+`CH10 C-2 v100`, `CH1 CC74=64`, `CH1 PB 0`, `KNOB 7=64`.
+
 ## Use a master plugin
 
 ### Instrument parameter editor

@@ -19,7 +19,21 @@ pub struct TransportStatus {
     var count_in: i64; var click_ticks: i64; var last_click: i64{-1};
     /// Process CPU use across all cores, shown at the right end; -1 hides it.
     var cpu_percent: i32{-1};
+    /// Last MIDI message received, shown after the document name when it
+    /// fits: a MidiInputEvent kind (0 none), its channel and data.
+    var midi_kind: i64; var midi_channel: i64; var midi_data: i64; var midi_value: i64;
 };
+/// Status text of a received MIDI message (see MidiInputEvent kinds), or "".
+pub fn midi_message_text(kind: i64, channel: i64, data: i64, value: i64) -> str8 {
+    let names: array<str8, 12> = {"C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-"};
+    if kind == 1 { return format!("CH{} {}{} v{}", channel + 1, names[data % 12], data / 12 - 1, value); }
+    if kind == 2 { return format!("CH{} {}{} off", channel + 1, names[data % 12], data / 12 - 1); }
+    if kind == 6 && data == 128 { return format!("CH{} AT {}", channel + 1, value); }
+    if kind == 6 { return format!("CH{} CC{}={}", channel + 1, data, value); }
+    if kind == 7 { return format!("CH{} PB {}", channel + 1, value - 8192); }
+    if kind == 8 { return format!("KNOB {}={}", data + 1, value); }
+    return format!("");
+}
 impl TransportStatus {
     pub fn toggle(self: &mut Self, now: i64, selected: i32, count: i32) -> void {
         if self.playing { self.advance(now, count); self.playing = false; return; }
@@ -104,16 +118,27 @@ impl TransportStatus {
         }
         state_end = state_end + i32(len(name));
         free(name);
+        let cpu: str8 = self.cpu_percent >= 0 ? format!("CPU {}{} ", self.cpu_percent, "%") : format!("");
+        let message: str8 = midi_message_text(self.midi_kind, self.midi_channel, self.midi_data, self.midi_value);
+        if message != "" {
+            // Only where it clears the transport text and the CPU meter.
+            let shown: str8 = format!(" | {}", message);
+            if state_end + i32(len(shown)) + i32(len(cpu)) + 1 <= area.width {
+                surface.text(Rect::new(area.x + state_end, area.y, area.width - state_end, 1), shown,
+                    self.midi_received ? 0x5adc8c : theme.muted, theme.panel);
+                state_end = state_end + i32(len(shown));
+            }
+            free(shown);
+        }
+        free(message);
         if self.cpu_percent >= 0 {
-            let cpu: str8 = format!("CPU {}{} ", self.cpu_percent, "%");
             let width: i32 = i32(len(cpu));
             // Right-aligned, and only where it clears the transport text.
             if area.width - width > state_end + 1 {
                 surface.text(Rect::new(area.x + area.width - width, area.y, width, 1), cpu,
                     self.cpu_percent >= 80 ? theme.accent : theme.foreground, theme.panel);
             }
-            free(cpu);
         }
-        free(text);
+        free(cpu); free(text);
     }
 }

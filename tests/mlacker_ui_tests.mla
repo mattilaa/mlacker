@@ -59,6 +59,7 @@ use std::testing::verify_eq;
 use std::testing::verify_eq_i32;
 mod mlacker_ui::transport;
 use mlacker_ui::transport::TransportStatus;
+use mlacker_ui::transport::midi_message_text;
 mod mlacker_ui::cpu_meter;
 use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::waveform;
@@ -5026,4 +5027,15 @@ fn tui_sysex_columns_send_messages() {
     table.selected_column = table.sysex_column(3); table.track_action(Action::ToggleSysExColumns, area);
     verify(table.sysex_column(3) == -1 && table.comment_column(3) == table.track_start(3) + 6);
     table.release();
+}
+
+#[test]
+fn tui_status_line_midi_text() {
+    let note: str8 = midi_message_text(1, 9, 36, 100); verify(note == "CH10 C-2 v100"); free(note);
+    let off: str8 = midi_message_text(2, 0, 60, 0); verify(off == "CH1 C-4 off"); free(off);
+    let cc: str8 = midi_message_text(6, 0, 74, 64); verify(cc == "CH1 CC74=64"); free(cc);
+    let at: str8 = midi_message_text(6, 1, 128, 40); verify(at == "CH2 AT 40"); free(at);
+    let bend: str8 = midi_message_text(7, 0, 129, 8192); verify(bend == "CH1 PB 0"); free(bend);
+    let knob: str8 = midi_message_text(8, 0, 6, 99); verify(knob == "KNOB 7=99"); free(knob);
+    let none: str8 = midi_message_text(0, 0, 0, 0); verify(none == ""); free(none);
 }

@@ -451,6 +451,7 @@ pub fn run() -> i32 {
     var project_open: bool = false; var saving_project: bool = false;
     var pattern_action: Action = Action::None; var last_pattern_dir: str8 = clone("");
     var learn_action: Action = Action::None; var learn_slot: i64 = 0;
+    var mpd218_shown: bool = false;
     // Sampler pads: 117 = from the Audio list, 118 = from a file.
     var pad_action: Action = Action::None; var pad_slot: i32 = 0; var pad_sample: i32 = -1; var pad_index: i32 = 0;
     var adding_pad_file: bool = false;
@@ -1132,6 +1133,21 @@ pub fn run() -> i32 {
         let audition_end: i32 = sampler.audition_due(now, false);
         if audition_end >= 0 { midi.keyboard_note(audition_target, false, audition_end, 0); dirty = true; }
         midi.midi.inject(keyboard.take_events());
+        // MPD218 knobs set parameters of the instrument the editor shows, else
+        // of the selected track's instrument (the master plugin on MIDI tracks).
+        if midi.midi.mpd218 != mpd218_shown {
+            mpd218_shown = midi.midi.mpd218;
+            if mpd218_shown { free(message); message = clone("Akai MPD218 connected: pads play the selected track, knobs set its instrument's parameters"); dirty = true; }
+        }
+        let knobs: list<MidiInputEvent> = midi.midi.knob_events;
+        if knobs.len() > 0 {
+            let target: i64 = AudioSystem::live_target(library.table);
+            let slot: i64 = instrument_editor.active ? instrument_editor.slot : (target < 0 ? -1 : target / 64);
+            for knob in knobs {
+                let line: str8 = midi.turn_knob(slot, i32(knob.note), knob.velocity, instrument_editor.active ? instrument_editor.selected : -1);
+                if line != "" { free(message); message = line; dirty = true; } else { free(line); }
+            }
+        }
         // An Audio view preview ends at the clip's end, or when the selection,
         // the sidebar focus or the view changes, or a dialog opens.
         if preview_sample >= 0 {
@@ -1169,6 +1185,11 @@ pub fn run() -> i32 {
         }
         last_processor_errors = processor_errors;
         if transport.midi_received != midi_active { transport.midi_received = midi_active; dirty = true; }
+        let heard: MidiInputEvent = midi.midi.last_event;
+        if heard.kind != transport.midi_kind || heard.channel != transport.midi_channel || heard.note != transport.midi_data || heard.velocity != transport.midi_value {
+            transport.midi_kind = heard.kind; transport.midi_channel = heard.channel;
+            transport.midi_data = heard.note; transport.midi_value = heard.velocity; dirty = true;
+        }
         if cpu_meter.update(now) { transport.cpu_percent = cpu_meter.percent; dirty = true; }
         let ui_steps: i64 = (now - ui_clock) / 10; ui_clock = ui_clock + ui_steps * 10;
         // Back on the pattern that is still playing: it simply plays on.
