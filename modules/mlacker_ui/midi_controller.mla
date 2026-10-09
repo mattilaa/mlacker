@@ -10,7 +10,6 @@ use mlacker_ui::mpd218::*;
 use tui::geometry::wide;
 use std::midi::MidiInput;
 use std::midi::MidiMessage;
-use std::midi::MidiOutput;
 use std::sync::SpscQueue;
 use std::thread::*;
 use std::time::now_ms;
@@ -133,9 +132,6 @@ pub struct MidiController {
     var mpd218: bool;
     /// Last note, controller or knob message received (kind 0 = none yet).
     var last_event: MidiInputEvent;
-    /// MPD218 output port that lights its pads (handle 0 = none), opened
-    /// when the input turns out to be an MPD218.
-    var lights: MidiOutput;
 };
 impl MidiController {
     pub fn start() -> MidiController {
@@ -173,8 +169,8 @@ impl MidiController {
         if event.kind == 8 && self.knob_events.len() < 256 { self.knob_events.push(event); }
         if event.kind == 1 || event.kind == 2 || (event.kind >= 6 && event.kind <= 8) { self.last_event = event; }
         if event.kind == 4 { self.connected = true; }
-        if event.kind == 5 { self.connected = false; self.mpd218 = false; self.close_lights(); }
-        if event.kind == 9 { self.mpd218 = true; self.open_lights(); }
+        if event.kind == 5 { self.connected = false; self.mpd218 = false; }
+        if event.kind == 9 { self.mpd218 = true; }
         if (event.kind >= 1 && event.kind <= 3) || (event.kind >= 6 && event.kind <= 8) { self.activity_until = event.received_ms + 150; }
     }
     /// Notes played on the virtual keyboard join this poll's events, so step
@@ -198,33 +194,7 @@ impl MidiController {
         }
         return now < self.activity_until;
     }
-    /// Open the MPD218's output port for its pad lights.
-    fn open_lights(self: &mut Self) -> void {
-        if self.lights.handle != 0 { return; }
-        let count: i64 = std::midi::output_count();
-        for id in 0..count {
-            if !is_mpd218(std::midi::output_name(id)) { continue; }
-            let opened: result<MidiOutput, str8> = MidiOutput::open(id, "mlacker_mpd218_lights");
-            if opened.is_ok() { self.lights = opened.unwrap(); }
-            return;
-        }
-    }
-    /// Turn every pad light off and close the port.
-    fn close_lights(self: &mut Self) -> void {
-        if self.lights.handle == 0 { return; }
-        for note in 36..84 { self.light_pad(note, false); }
-        self.lights.close(); self.lights.handle = 0;
-    }
-    /// Light (or darken) the MPD218 pad playing `note` (36-83: Pad Banks
-    /// A-C of the default preset) with a note-on echo on channel 10, the
-    /// pads' own channel. Nothing without an MPD218.
-    pub fn light_pad(self: MidiController, note: i64, on: bool) -> void {
-        if self.lights.handle == 0 || note < 36 || note > 83 { return; }
-        let bytes: list<i32> = [153, i32(note), on ? 127 : 0];
-        self.lights.send_bytes(bytes);
-    }
     pub fn release(self: &mut Self) -> void {
-        self.close_lights();
         if self.worker.raw != 0 { atomic_store_value(self.stop, 0); join(self.worker); self.worker.raw = 0; }
         let queue: SpscQueue<MidiInputEvent> = SpscQueue<MidiInputEvent> { handle: self.queue_handle };
         if queue.is_valid() { queue.release(); self.queue_handle = 0; }
