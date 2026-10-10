@@ -1375,6 +1375,33 @@ pads) and play along while the song (Song matrix) or a pattern plays.
 The status line also shows the last MIDI message received, when it fits:
 `CH10 C-2 v100`, `CH1 CC74=64`, `CH1 PB 0`, `KNOB 7=64`.
 
+## JV-style pad demos
+
+Two example projects show sampled pads in Mla Sampler, each through Juno
+chorus, delay and reverb inserts. The sounds are synthesized from scratch in
+the spirit of Roland JV-1080 and JD-800 patches. They are not Roland's
+samples.
+
+- `examples/footprint_demo.mlaproj`: an original late-90s Balearic trance
+  song at 134 BPM in the style of Disco Citizens. It has a 16th-note gated
+  "Footprint 97" pad, the "Dawn 2 Dusk" soundscape, a "JD-800 Pluck", a Mla
+  SID bass and lead, and Mla 08 drums. Sections: Dawn, Groove, Lead,
+  Breakdown, Build, Peak.
+- `examples/atmosphere_pad.mlaproj`: "Atmosphere", "Dawn 2 Dusk" and
+  "Footprint 97" pads in a short trance song at 136 BPM.
+
+Open one, press **Shift+M** for the song matrix, then **Space** on the top
+row:
+
+```sh
+build/cmake/bin/mlacker examples/footprint_demo.mlaproj
+```
+
+`examples/jv_pads/build.sh footprint` (or `atmosphere`) regenerates a project
+and opens it. It synthesizes the samples (`make_pad.py`), builds the song
+generator (`<song>_song.mla`) against mlacker and runs it. It needs a built
+mlacker and the Mla plugins installed in `~/.local/plugins/VST3`.
+
 ## Use a master plugin
 
 ### Instrument parameter editor
