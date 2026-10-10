@@ -2,9 +2,11 @@
 /// trance demo in the style of Disco Citizens, at 134 BPM over Fmaj7, Em7,
 /// Dm(add9), Cadd9. The "Footprint 97" pad plays as a 16th-note trance gate
 /// and as a sustained pad, "Dawn 2 Dusk" opens, breaks down and closes it.
-/// A JD-800-style pluck rides 3-3-2 over the chords in the lead sections.
-/// Environment: PAD_DIR holds "Footprint 97.wav", "Dawn 2 Dusk.wav" and
-/// "JD-800 Pluck.wav".
+/// A JD-800-style pluck rides 3-3-2 over the chords in the lead sections, and
+/// the JV-1080 "aah" choir sings them in the breakdown and the peak, and a
+/// clock "bling" ticks quarter notes through the dawn and the breakdown.
+/// Environment: PAD_DIR holds "Footprint 97.wav", "Dawn 2 Dusk.wav",
+/// "JD-800 Pluck.wav", "JV Choir.wav" and "Clock Bling.wav".
 mod mlacker_ui::app;
 mod tui::table;
 use tui::table::*;
@@ -29,6 +31,8 @@ fn gate() -> i32 { return 3; }
 fn dawn() -> i32 { return 4; }
 fn pad() -> i32 { return 5; }
 fn pluck() -> i32 { return 6; }
+fn choir() -> i32 { return 7; }
+fn clock() -> i32 { return 8; }
 
 fn song_area() -> Rect { return Rect::new(0, 0, 200, 40); }
 
@@ -56,10 +60,11 @@ fn set_named(system: &AudioSystem, slot: i64, name: str8, value: f64) -> bool {
     return false;
 }
 
-/// A sample in Mla Sampler `slot`, played across the keyboard from C-4 and
-/// looped from `loop_start` (a negative start plays it once, for plucks).
+/// A sample in Mla Sampler `slot`, played across the keyboard from MIDI key
+/// `root` (60 = C-4) and looped from `loop_start` (a negative start plays it
+/// once, for plucks and bells).
 /// `attack` 0-2 s linear, `release` 1 ms-10 s exponential.
-fn setup_pad(system: &mut AudioSystem, library: &mut PatternLibrary, slot: i32, sample: str8, name: str8,
+fn setup_pad(system: &mut AudioSystem, library: &mut PatternLibrary, slot: i32, sample: str8, name: str8, root: f64,
              loop_start: f64, attack: f64, release: f64, cutoff: f64, lfo_rate: f64, lfo_depth: f64) -> bool {
     var audio: AudioSystem = AudioSystem {}; audio = system;
     var songs: PatternLibrary = PatternLibrary {}; songs = library;
@@ -73,7 +78,7 @@ fn setup_pad(system: &mut AudioSystem, library: &mut PatternLibrary, slot: i32, 
     library = songs;
     if assigned != "" { println!("Pad {}: {}", name, assigned); system = audio; return false; }
     let s: i64 = wide(slot);
-    var ok: bool = set_named(audio, s, "Slot 1 Key Mode", 1.0) && set_named(audio, s, "Slot 1 Zone Root", 60.0);
+    var ok: bool = set_named(audio, s, "Slot 1 Key Mode", 1.0) && set_named(audio, s, "Slot 1 Zone Root", root);
     if loop_start >= 0.0 {
         ok = ok && set_named(audio, s, "Slot 1 Loop", 1.0) && set_named(audio, s, "Slot 1 Loop Start", loop_start);
         ok = ok && set_named(audio, s, "Slot 1 Loop End", 0.95) && set_named(audio, s, "Slot 1 Crossfade", 0.15);
@@ -105,19 +110,20 @@ fn setup_effects(system: &mut AudioSystem, plugins: str8, first: i32, chorus: f6
     system = audio; return ok;
 }
 
-/// The seven tracks, the gated pad selected, the samplers' inserts.
+/// The nine tracks, the gated pad selected, the samplers' inserts.
 fn song_pattern() -> SequenceTable {
     var table: SequenceTable = SequenceTable::empty();
     table.set_length(64, song_area());
-    let names: list<str8> = ["Drums", "Bass", "Lead", "Footprint gate", "Dawn 2 Dusk", "Footprint pad", "JD-800 Pluck"];
-    for t in 0..7 {
+    let names: list<str8> = ["Drums", "Bass", "Lead", "Footprint gate", "Dawn 2 Dusk", "Footprint pad", "JD-800 Pluck", "JV Choir", "Clock Bling"];
+    for t in 0..9 {
         table.create_instrument_track(i32(t) + 1, song_area()); table.rename_track(names[t]);
     }
     table.ensure_note_lines(drums(), 3);
     table.ensure_note_lines(gate(), 4); table.ensure_note_lines(dawn(), 4); table.ensure_note_lines(pad(), 4);
+    table.ensure_note_lines(choir(), 4);
     table.rebuild_columns();
-    let pads: list<i32> = [gate(), dawn(), pad(), pluck()];
-    for p in 0..4 {
+    let pads: list<i32> = [gate(), dawn(), pad(), pluck(), choir(), clock()];
+    for p in 0..6 {
         for n in 0..3 { table.set_insert(pads[p], i32(n), i32(p) * 3 + i32(n) + 1); }
     }
     table.selected_row = 0; table.selected_column = table.track_start(gate());
@@ -208,6 +214,18 @@ fn pluck_part(table: &mut SequenceTable) -> void {
     }
 }
 
+/// The clock: a "bling" on every beat like a ticking clock, alternating two
+/// high chord tones, the first beat of each bar the loudest.
+fn clock_part(table: &mut SequenceTable) -> void {
+    let tones: list<str8> = ["E-6", "C-6", "D-6", "B-5", "E-6", "A-5", "D-6", "G-5"];
+    for bar in 0..4 {
+        for beat in 0..4 {
+            let tone: str8 = tones[i32(bar) * 2 + (beat % 2 == 0 ? 0 : 1)];
+            note_at(&mut table, clock(), 0, i32(bar) * 16 + i32(beat) * 4, tone, beat == 0 ? 96 : (beat % 2 == 0 ? 72 : 62), "2.00");
+        }
+    }
+}
+
 /// The lead melody over the four chords (one phrase, four bars).
 fn lead_part(table: &mut SequenceTable, octave_up: bool) -> void {
     let notes: list<str8> = ["A-4", "G-4", "A-4", "C-5", "E-5", "D-5", "C-5",
@@ -235,9 +253,9 @@ fn main() -> i32 {
     let pad_dir: str8 = __env_get_var("PAD_DIR");
     var audio: AudioSystem = AudioSystem::start(false);
     var library: PatternLibrary = PatternLibrary::empty();
-    let names: list<str8> = ["Mla08", "MlaSid", "MlaSid", "MlaSampler", "MlaSampler", "MlaSampler", "MlaSampler"];
-    let labels: list<str8> = ["Mla 08", "Mla SID", "Mla SID", "Mla Sampler", "Mla Sampler", "Mla Sampler", "Mla Sampler"];
-    for i in 0..7 {
+    let names: list<str8> = ["Mla08", "MlaSid", "MlaSid", "MlaSampler", "MlaSampler", "MlaSampler", "MlaSampler", "MlaSampler", "MlaSampler"];
+    let labels: list<str8> = ["Mla 08", "Mla SID", "Mla SID", "Mla Sampler", "Mla Sampler", "Mla Sampler", "Mla Sampler", "Mla Sampler", "Mla Sampler"];
+    for i in 0..9 {
         let path: str8 = format!("{}/{}.vst3", plugins, names[i]);
         let status: str8 = audio.add_instrument(path);
         if status != "" { println!("Instrument {}: {}", i + 1, status); return 1; }
@@ -247,12 +265,18 @@ fn main() -> i32 {
     let footprint: str8 = format!("{}/Footprint 97.wav", pad_dir);
     let dusk: str8 = format!("{}/Dawn 2 Dusk.wav", pad_dir);
     // The gate needs a fast attack and a short release (about 50 ms) to chop.
-    var ok: bool = setup_pad(&mut audio, &mut library, 4, footprint, "Footprint gate", 0.25, 0.0, 0.42, 0.85, 0.30, 0.5625);
-    ok = ok && setup_pad(&mut audio, &mut library, 5, dusk, "Dawn 2 Dusk", 0.2, 0.75, 0.93, 0.80, 0.12, 0.625);
-    ok = ok && setup_pad(&mut audio, &mut library, 6, footprint, "Footprint pad", 0.25, 0.15, 0.80, 0.85, 0.30, 0.5625);
+    var ok: bool = setup_pad(&mut audio, &mut library, 4, footprint, "Footprint gate", 60.0, 0.25, 0.0, 0.42, 0.85, 0.30, 0.5625);
+    ok = ok && setup_pad(&mut audio, &mut library, 5, dusk, "Dawn 2 Dusk", 60.0, 0.2, 0.75, 0.93, 0.80, 0.12, 0.625);
+    ok = ok && setup_pad(&mut audio, &mut library, 6, footprint, "Footprint pad", 60.0, 0.25, 0.15, 0.80, 0.85, 0.30, 0.5625);
     // The pluck plays once, fast in and out (about 0.1 s release), filter open.
     let jd: str8 = format!("{}/JD-800 Pluck.wav", pad_dir);
-    ok = ok && setup_pad(&mut audio, &mut library, 7, jd, "JD-800 Pluck", -1.0, 0.0, 0.50, 1.0, 0.30, 0.5);
+    ok = ok && setup_pad(&mut audio, &mut library, 7, jd, "JD-800 Pluck", 60.0, -1.0, 0.0, 0.50, 1.0, 0.30, 0.5);
+    // The choir: 0.5 s in, 2 s out, open (the formants shape it), no filter LFO.
+    let voices: str8 = format!("{}/JV Choir.wav", pad_dir);
+    let bling: str8 = format!("{}/Clock Bling.wav", pad_dir);
+    ok = ok && setup_pad(&mut audio, &mut library, 8, voices, "JV Choir", 60.0, 0.25, 0.25, 0.825, 0.9, 0.30, 0.5);
+    // The bling rings out once from C-6, filter open, a 1 s release.
+    ok = ok && setup_pad(&mut audio, &mut library, 9, bling, "Clock Bling", 84.0, -1.0, 0.0, 0.75, 1.0, 0.30, 0.5);
     // Gate: chorus II, a dotted-eighth echo that fills the gaps, a plate.
     // Dawn 2 Dusk: chorus I, quarter delay, huge hall. Pad: chorus II, plate.
     ok = ok && setup_effects(&mut audio, plugins, 1, 2.0, 0.043137, 0.35, 0.30, 2.0, 0.6, 0.60, 0.25);
@@ -260,14 +284,20 @@ fn main() -> i32 {
     ok = ok && setup_effects(&mut audio, plugins, 7, 2.0, 0.043137, 0.35, 0.20, 2.0, 0.6, 0.65, 0.30);
     // Pluck: chorus I, a dotted-eighth echo with feedback, a bright plate.
     ok = ok && setup_effects(&mut audio, plugins, 10, 1.0, 0.043137, 0.45, 0.32, 2.0, 0.55, 0.55, 0.25);
+    // Choir: chorus II for the ensemble, a soft quarter echo, a big hall.
+    ok = ok && setup_effects(&mut audio, plugins, 13, 2.0, 0.0588, 0.35, 0.18, 0.0, 0.85, 0.78, 0.40);
+    // Clock: chorus I, a dotted-eighth echo that scatters the ticks, a hall.
+    ok = ok && setup_effects(&mut audio, plugins, 16, 1.0, 0.043137, 0.50, 0.35, 0.0, 0.80, 0.75, 0.40);
     if !ok { return 1; }
 
-    var opening: SequenceTable = song_pattern(); sustained(&mut opening, dawn(), 86);
+    var opening: SequenceTable = song_pattern(); sustained(&mut opening, dawn(), 86); clock_part(&mut opening);
     var groove: SequenceTable = song_pattern(); drum_part(&mut groove, true); bass_part(&mut groove); gate_part(&mut groove, 85);
     var melody: SequenceTable = song_pattern(); drum_part(&mut melody, true); bass_part(&mut melody); gate_part(&mut melody, 90); lead_part(&mut melody, false); pluck_part(&mut melody);
     var breakdown: SequenceTable = song_pattern(); sustained(&mut breakdown, dawn(), 80); sustained(&mut breakdown, pad(), 90); lead_part(&mut breakdown, false);
+    sustained(&mut breakdown, choir(), 96); clock_part(&mut breakdown);
     var build: SequenceTable = song_pattern(); build_part(&mut build); gate_part(&mut build, 75); bass_part(&mut build);
     var peak: SequenceTable = song_pattern(); drum_part(&mut peak, true); bass_part(&mut peak); gate_part(&mut peak, 100); sustained(&mut peak, pad(), 70); lead_part(&mut peak, true); pluck_part(&mut peak);
+    sustained(&mut peak, choir(), 84);
 
     library.table.release(); library.table = opening; library.rename("Dawn");
     library.import_pattern("Groove", groove, []);
