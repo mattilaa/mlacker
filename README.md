@@ -1384,7 +1384,8 @@ samples.
 
 - `examples/footprint_demo.mlaproj`: an original late-90s Balearic trance
   song at 134 BPM in the style of Disco Citizens. It has a 16th-note gated
-  "Footprint 97" pad, the "Dawn 2 Dusk" soundscape, a "JD-800 Pluck", a Mla
+  "Footprint 97" pad, the "Dawn 2 Dusk" soundscape (with a choir layer), a
+  "JD-800 Pluck", a JV-1080 "aah" choir, a ticking "Clock Bling" bell, a Mla
   SID bass and lead, and Mla 08 drums. Sections: Dawn, Groove, Lead,
   Breakdown, Build, Peak.
 - `examples/atmosphere_pad.mlaproj`: "Atmosphere", "Dawn 2 Dusk" and
