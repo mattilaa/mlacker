@@ -1,0 +1,261 @@
+/// Builds examples/atmosphere_pad.mlaproj: three JV-1080-style pads, each a
+/// synthesized sample in its own Mla Sampler through Juno chorus, delay and
+/// reverb ("Atmosphere", "Dawn 2 Dusk", "Footprint 97"), in a short trance
+/// song with Mla 08 drums and two Mla SID parts.
+/// Environment: PAD_DIR holds the three WAVs; RENDER_DIR, if set, gets WAV
+/// renders of two patterns.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::audio_clip::AudioClip;
+use mlacker_ui::bounce::Bounce;
+use tui::geometry::*;
+use std::strbuf::clone;
+use std::strbuf::free;
+mod std::env::detail;
+use std::env::detail::__env_get_var;
+extern fn mlacker_install_vst3_host() -> void;
+
+/// Tracks, in order; instruments are numbered the same plus one.
+fn drums() -> i32 { return 0; }
+fn bass() -> i32 { return 1; }
+fn atmosphere() -> i32 { return 2; }
+fn arp() -> i32 { return 3; }
+fn dawn() -> i32 { return 4; }
+fn footprint() -> i32 { return 5; }
+
+fn song_area() -> Rect { return Rect::new(0, 0, 200, 40); }
+
+fn note_at(table: &mut SequenceTable, track: i32, line: i32, row: i32, note: str8, velocity: i32, length: str8) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let column: i32 = t.track_start(track) + line * 4;
+    t.set_cell(row, column, clone(note));
+    t.set_cell(row, column + 1, format!("{}", velocity));
+    t.set_cell(row, column + 2, clone(length));
+    t.set_cell(row, column + 3, clone("0.00"));
+    table = t;
+}
+
+/// Set parameter `name` of the processor in `slot`: integer steps for a
+/// stepped parameter, otherwise normalized 0-1. False when it is missing.
+fn set_named(system: &AudioSystem, slot: i64, name: str8, value: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    let count: i64 = wide(i32(audio.output.parameter_info(slot, 0, 0)));
+    for i in 0..count {
+        // (A call compared directly with == trips the compiler.)
+        let found: str8 = audio.output.parameter_name(slot, i);
+        if found == name { return audio.output.set_parameter(slot, i, value) == 0; }
+    }
+    println!("Missing parameter {} on slot {}", name, slot);
+    return false;
+}
+
+/// One pad: `sample` in Mla Sampler `slot` (an instrument already loaded),
+/// played across the keyboard from C-4 and looped between `loop_start` and
+/// 0.95 with a crossfade. `attack` (0-2 s linear) and `release` (1 ms-10 s
+/// exponential), a soft 24 dB low-pass at `cutoff` breathing with LFO 1 at
+/// `lfo_rate` (0.05-20 Hz exponential) by `lfo_depth` (0.5 = none, 1 = +4
+/// octaves).
+fn setup_pad(system: &mut AudioSystem, library: &mut PatternLibrary, slot: i32, sample: str8, name: str8,
+             loop_start: f64, attack: f64, release: f64, cutoff: f64, lfo_rate: f64, lfo_depth: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    var songs: PatternLibrary = PatternLibrary {}; songs = library;
+    let loaded: result<AudioClip, str8> = AudioClip::load(sample, 136);
+    if loaded.is_err() { println!("{}: {}", sample, loaded.unwrap_err()); return false; }
+    let clip: AudioClip = loaded.unwrap();
+    let index: i32 = songs.audio.add_clip(clip.copy());
+    let pad: str8 = audio.assign_pad(slot, 0, index, clip.samples, clip.channels, clip.sample_rate, name);
+    library = songs;
+    if pad != "" { println!("Pad {}: {}", name, pad); system = audio; return false; }
+    let s: i64 = wide(slot);
+    var ok: bool = set_named(audio, s, "Slot 1 Key Mode", 1.0) && set_named(audio, s, "Slot 1 Zone Root", 60.0);
+    ok = ok && set_named(audio, s, "Slot 1 Loop", 1.0) && set_named(audio, s, "Slot 1 Loop Start", loop_start);
+    ok = ok && set_named(audio, s, "Slot 1 Loop End", 0.95) && set_named(audio, s, "Slot 1 Crossfade", 0.15);
+    ok = ok && set_named(audio, s, "Attack", attack) && set_named(audio, s, "Release", release);
+    ok = ok && set_named(audio, s, "Slot 1 Velocity Depth", 0.3);
+    ok = ok && set_named(audio, s, "Slot 1 Filter 1 Type", 2.0) && set_named(audio, s, "Slot 1 Filter 1 Cutoff", cutoff);
+    ok = ok && set_named(audio, s, "Slot 1 LFO 1 Rate", lfo_rate) && set_named(audio, s, "Slot 1 LFO 1 Cutoff", lfo_depth);
+    system = audio; return ok;
+}
+
+/// Effects on a pad: inserts `first`..`first + 2` are Juno chorus `chorus`
+/// (1 I, 2 II), a host-synced delay (`beats` normalized, 0.0431 = dotted
+/// eighth, 0.0588 = quarter) and a reverb of `kind` (0 Hall, 2 Plate) with
+/// `decay` (0.1-20 s exponential).
+fn setup_effects(system: &mut AudioSystem, plugins: str8, first: i32, chorus: f64, beats: f64, feedback: f64,
+                 delay_mix: f64, kind: f64, size: f64, decay: f64, verb_mix: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    let effects: list<str8> = ["MlaJunoChorus", "MlaDelay", "MlaVerb"];
+    for i in 0..3 {
+        let path: str8 = format!("{}/{}.vst3", plugins, effects[i]);
+        let id: i32 = first + i32(i);
+        if audio.add_insert(path, id) != id { println!("Insert {} failed", effects[i]); system = audio; return false; }
+        free(path);
+    }
+    let c: i64 = wide(first) + 40; let d: i64 = c + 1; let v: i64 = c + 2;
+    var ok: bool = set_named(audio, c, "Chorus", chorus) && set_named(audio, c, "Mix", 0.5);
+    ok = ok && set_named(audio, d, "Tempo Source", 2.0) && set_named(audio, d, "Beats", beats);
+    ok = ok && set_named(audio, d, "Mix", delay_mix) && set_named(audio, d, "Feedback", feedback);
+    ok = ok && set_named(audio, v, "Type", kind) && set_named(audio, v, "Size", size);
+    ok = ok && set_named(audio, v, "Decay", decay) && set_named(audio, v, "Mix", verb_mix);
+    system = audio; return ok;
+}
+
+/// The six tracks, the given pad selected, each pad's three inserts.
+fn song_pattern(selected: i32) -> SequenceTable {
+    var table: SequenceTable = SequenceTable::empty();
+    table.set_length(64, song_area());
+    let names: list<str8> = ["Drums", "Bass", "Atmosphere", "Arp", "Dawn 2 Dusk", "Footprint 97"];
+    for t in 0..6 {
+        table.create_instrument_track(i32(t) + 1, song_area()); table.rename_track(names[t]);
+    }
+    table.ensure_note_lines(drums(), 3);
+    table.ensure_note_lines(atmosphere(), 4); table.ensure_note_lines(dawn(), 4); table.ensure_note_lines(footprint(), 4);
+    table.rebuild_columns();
+    let pads: list<i32> = [atmosphere(), dawn(), footprint()];
+    for p in 0..3 {
+        for n in 0..3 { table.set_insert(pads[p], i32(n), i32(p) * 3 + i32(n) + 1); }
+    }
+    table.selected_row = 0; table.selected_column = table.track_start(selected);
+    return table;
+}
+
+/// Am9, Fmaj7, Cadd9, Gadd9: one chord per bar, four bars.
+fn chord(bar: i32, voice: i32) -> str8 {
+    let chords: list<str8> = ["A-3", "C-4", "E-4", "B-4", "F-3", "A-3", "C-4", "E-4",
+        "C-4", "E-4", "G-4", "D-5", "G-3", "B-3", "D-4", "A-4"];
+    return chords[bar * 4 + voice];
+}
+
+fn pad_part(table: &mut SequenceTable, track: i32, velocity: i32) -> void {
+    for bar in 0..4 {
+        for voice in 0..4 { note_at(&mut table, track, i32(voice), i32(bar) * 16, chord(i32(bar), i32(voice)), velocity, "16.00"); }
+    }
+}
+
+/// Dawn 2 Dusk holds each chord for two bars: Am9 to Fmaj7.
+fn dawn_part(table: &mut SequenceTable) -> void {
+    for half in 0..2 {
+        for voice in 0..4 { note_at(&mut table, dawn(), i32(voice), i32(half) * 32, chord(i32(half), i32(voice)), 84, "32.00"); }
+    }
+}
+
+/// Offbeat trance bass on each chord's root.
+fn bass_part(table: &mut SequenceTable) -> void {
+    let roots: list<str8> = ["A-2", "F-2", "C-3", "G-2"];
+    for bar in 0..4 {
+        for beat in 0..4 { note_at(&mut table, bass(), 0, i32(bar) * 16 + i32(beat) * 4 + 2, roots[bar], beat == 0 ? 110 : 96, "1.50"); }
+    }
+}
+
+/// Four-on-the-floor kick, claps on 2 and 4, offbeat open hats, quiet 16th hats.
+fn drum_part(table: &mut SequenceTable) -> void {
+    for bar in 0..4 {
+        let b: i32 = i32(bar) * 16;
+        for beat in 0..4 {
+            let row: i32 = b + i32(beat) * 4;
+            note_at(&mut table, drums(), 0, row, "C-2", 120, "1.00");
+            note_at(&mut table, drums(), 1, row + 2, "A#2", 80, "1.00");
+            note_at(&mut table, drums(), 2, row + 1, "F#2", 55, "1.00");
+            note_at(&mut table, drums(), 2, row + 3, "F#2", 60, "1.00");
+        }
+        // Claps share line 1 with the open hats, which sit between the beats.
+        note_at(&mut table, drums(), 1, b + 4, "D#2", 100, "1.00"); note_at(&mut table, drums(), 1, b + 12, "D#2", 105, "1.00");
+    }
+}
+
+/// Eighth-note arpeggio of each chord, an octave above the pad.
+fn arp_part(table: &mut SequenceTable) -> void {
+    let tones: list<str8> = ["A-4", "C-5", "E-5", "B-5", "F-4", "A-4", "C-5", "E-5",
+        "C-5", "E-5", "G-5", "D-6", "G-4", "B-4", "D-5", "A-5"];
+    let order: list<i32> = [0, 1, 2, 3, 2, 1, 3, 2];
+    for bar in 0..4 {
+        for step in 0..8 {
+            note_at(&mut table, arp(), 0, i32(bar) * 16 + i32(step) * 2, tones[i32(bar) * 4 + order[step]], step % 2 == 0 ? 92 : 74, "1.00");
+        }
+    }
+}
+
+/// Render `table` offline (all tracks, 3 s tail) to the WAV `path`.
+fn render(system: &mut AudioSystem, table: &SequenceTable, path: str8) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    var source: SequenceTable = SequenceTable {}; source = table;
+    var job: Bounce = audio.bounce_begin(136);
+    audio.bounce_segment(&mut job, source, 0, i32(source.rows.len()), []);
+    let rendered: list<f32> = audio.bounce_finish(&mut job, source, 3);
+    let rate: i64 = audio.output.sample_rate();
+    system = audio;
+    let made: result<AudioClip, str8> = AudioClip::from_pcm(path, rendered, 2, rate, 136);
+    if made.is_err() { println!("Render failed: {}", made.unwrap_err()); return false; }
+    let clip: AudioClip = made.unwrap();
+    let written: bool = clip.write_wav(path);
+    println!("Rendered {}", path);
+    clip.release(); return written;
+}
+
+fn main() -> i32 {
+    mlacker_install_vst3_host();
+    let home: str8 = __env_get_var("HOME");
+    let plugins: str8 = format!("{}/.local/plugins/VST3", home);
+    let pad_dir: str8 = __env_get_var("PAD_DIR");
+    var audio: AudioSystem = AudioSystem::start(false);
+    var library: PatternLibrary = PatternLibrary::empty();
+    let names: list<str8> = ["Mla08", "MlaSid", "MlaSampler", "MlaSid", "MlaSampler", "MlaSampler"];
+    let labels: list<str8> = ["Mla 08", "Mla SID", "Mla Sampler", "Mla SID", "Mla Sampler", "Mla Sampler"];
+    for i in 0..6 {
+        let path: str8 = format!("{}/{}.vst3", plugins, names[i]);
+        let status: str8 = audio.add_instrument(path);
+        if status != "" { println!("Instrument {}: {}", i + 1, status); return 1; }
+        library.add_instrument(i32(i) + 1, labels[i]);
+        free(path);
+    }
+    // Atmosphere: 0.6 s in, 2.5 s out, ~4 kHz, a 0.2 Hz breath of half an octave.
+    // Dawn 2 Dusk: 1.5 s in, 5.2 s out, ~5 kHz, a 0.1 Hz sweep of an octave.
+    // Footprint 97: 0.3 s in, 1.6 s out, ~7 kHz, a 0.3 Hz shimmer.
+    var ok: bool = setup_pad(&mut audio, &mut library, 3, format!("{}/Atmosphere Pad.wav", pad_dir), "Atmosphere Pad", 0.25, 0.3, 0.85, 0.767, 0.231, 0.5625);
+    ok = ok && setup_pad(&mut audio, &mut library, 5, format!("{}/Dawn 2 Dusk.wav", pad_dir), "Dawn 2 Dusk", 0.2, 0.75, 0.93, 0.80, 0.12, 0.625);
+    ok = ok && setup_pad(&mut audio, &mut library, 6, format!("{}/Footprint 97.wav", pad_dir), "Footprint 97", 0.25, 0.15, 0.80, 0.85, 0.30, 0.5625);
+    // Atmosphere: chorus II, dotted-eighth delay, big hall (6 s).
+    // Dawn 2 Dusk: chorus I, quarter delay with more repeats, huge hall (9 s).
+    // Footprint 97: chorus II, dotted-eighth delay, plate (3 s).
+    ok = ok && setup_effects(&mut audio, plugins, 1, 2.0, 0.043137, 0.45, 0.25, 0.0, 0.85, 0.773, 0.35);
+    ok = ok && setup_effects(&mut audio, plugins, 4, 1.0, 0.0588, 0.55, 0.30, 0.0, 0.95, 0.85, 0.45);
+    ok = ok && setup_effects(&mut audio, plugins, 7, 2.0, 0.043137, 0.35, 0.20, 2.0, 0.6, 0.65, 0.30);
+    if !ok { return 1; }
+
+    var soundscape: SequenceTable = song_pattern(dawn()); dawn_part(&mut soundscape);
+    var intro: SequenceTable = song_pattern(atmosphere()); pad_part(&mut intro, atmosphere(), 88);
+    var with_arp: SequenceTable = song_pattern(atmosphere()); pad_part(&mut with_arp, atmosphere(), 88); arp_part(&mut with_arp);
+    var beat: SequenceTable = song_pattern(atmosphere()); pad_part(&mut beat, atmosphere(), 88); bass_part(&mut beat); drum_part(&mut beat);
+    var full: SequenceTable = song_pattern(atmosphere()); pad_part(&mut full, atmosphere(), 88); bass_part(&mut full); drum_part(&mut full); arp_part(&mut full);
+    var footprint97: SequenceTable = song_pattern(footprint()); pad_part(&mut footprint97, footprint(), 92); bass_part(&mut footprint97); drum_part(&mut footprint97); arp_part(&mut footprint97);
+
+    let render_dir: str8 = __env_get_var("RENDER_DIR");
+    if render_dir != "" {
+        render(&mut audio, soundscape, format!("{}/dawn2dusk.wav", render_dir));
+        render(&mut audio, footprint97, format!("{}/footprint97.wav", render_dir));
+    }
+    library.table.release(); library.table = soundscape; library.rename("Dawn 2 Dusk");
+    library.import_pattern("Pad intro", intro, []);
+    library.import_pattern("Pad and arp", with_arp, []);
+    library.import_pattern("Beat", beat, []);
+    library.import_pattern("Full", full, []);
+    library.import_pattern("Footprint 97", footprint97, []);
+    // 1 Dawn 2 Dusk, 2 Pad intro, 3 Pad and arp, 4 Beat, 5 Full, 6 Footprint 97.
+    let order: list<i32> = [1, 2, 3, 4, 5, 5, 6, 6, 3, 5, 5, 1];
+    library.song = order;
+    library.select(1); library.refresh();
+
+    let view: SessionView = SessionView { bpm: 136, sidebar: 1 };
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project("examples/atmosphere_pad.mlaproj", library, view, audio);
+    if saved.is_err() { println!("Save failed: {}", saved.unwrap_err()); return 1; }
+    println!("Saved {}", saved.unwrap());
+    audio.release();
+    return 0;
+}
