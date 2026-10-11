@@ -139,6 +139,24 @@ fn arp_patch(system: &AudioSystem, slot: i64, follow: f64) -> bool {
     return ok;
 }
 
+/// A MlaLimiter insert `id` in Maximizer mode: the input driven into the
+/// limiter by -`threshold` dB, peaks held at `ceiling` dB, `punch` and `fat`
+/// (0-1) for character. The density of a mastered track, per channel (the
+/// master bus takes no plugins), each ceiling low enough for the sum to stay
+/// below full scale.
+fn limiter(system: &mut AudioSystem, plugins: str8, id: i32, threshold: f64, ceiling: f64, punch: f64, fat: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    let path: str8 = format!("{}/MlaLimiter.vst3", plugins);
+    if audio.add_insert(path, id) != id { println!("Insert {} failed", id); system = audio; return false; }
+    free(path);
+    let v: i64 = wide(id) + 40;
+    // Threshold -30 .. 0 dB, Ceiling -12 .. 0 dB.
+    let ok: bool = set_named(audio, v, "Mode", 0.0) && set_named(audio, v, "Threshold", (threshold + 30.0) / 30.0)
+        && set_named(audio, v, "Ceiling", (ceiling + 12.0) / 12.0) && set_named(audio, v, "Punch", punch)
+        && set_named(audio, v, "Fat", fat);
+    system = audio; return ok;
+}
+
 /// A MlaVerb hall insert `id`: `size`, `decay` and `mix` (0-1).
 fn hall(system: &mut AudioSystem, plugins: str8, id: i32, size: f64, decay: f64, mix: f64) -> bool {
     var audio: AudioSystem = AudioSystem {}; audio = system;
@@ -152,7 +170,7 @@ fn hall(system: &mut AudioSystem, plugins: str8, id: i32, size: f64, decay: f64,
 }
 
 /// The five tracks, the key-followed arpeggio selected, a hall on the pad and
-/// on both arpeggios.
+/// on both arpeggios, a limiter on every track.
 fn song_pattern() -> SequenceTable {
     var table: SequenceTable = SequenceTable::empty();
     table.set_length(64, song_area());
@@ -163,6 +181,9 @@ fn song_pattern() -> SequenceTable {
     table.ensure_note_lines(drums(), 3); table.ensure_note_lines(pad(), 4);
     table.rebuild_columns();
     table.set_insert(pad(), 0, 1); table.set_insert(arp_closed(), 0, 2); table.set_insert(arp(), 0, 3);
+    // A limiter at the end of every chain (inserts 4-8).
+    table.set_insert(drums(), 0, 4); table.set_insert(bass(), 0, 5); table.set_insert(pad(), 1, 6);
+    table.set_insert(arp_closed(), 1, 7); table.set_insert(arp(), 1, 8);
     table.selected_row = 0; table.selected_column = table.track_start(arp());
     return table;
 }
@@ -269,11 +290,12 @@ fn main() -> i32 {
         library.add_instrument(i32(i) + 1, labels[i]);
         free(path);
     }
-    // Bass: mono, a saw with a square an octave down, a plucky 24 dB filter
-    // at 250 Hz (n 0.3637) following the key.
+    // Bass: mono, a saw over a triangle sub an octave down at equal level
+    // (the weight of a mastered trance bass), a plucky 24 dB filter at 250 Hz
+    // (n 0.3637) following the key.
     var ok: bool = set_named(audio, 2, "Key Mode", 1.0) && set_named(audio, 2, "OSC 1 Wave", 5.0);
-    ok = ok && set_named(audio, 2, "OSC 2 Wave", 0.0) && set_named(audio, 2, "OSC 2 Range", 12.0);
-    ok = ok && set_named(audio, 2, "OSC Balance", 0.4) && set_named(audio, 2, "Cutoff", 0.3637);
+    ok = ok && set_named(audio, 2, "OSC 2 Wave", 2.0) && set_named(audio, 2, "OSC 2 Range", 12.0);
+    ok = ok && set_named(audio, 2, "OSC Balance", 0.5) && set_named(audio, 2, "Cutoff", 0.3637);
     ok = ok && set_named(audio, 2, "Resonance", 0.25) && set_named(audio, 2, "Key Follow", 1.0);
     ok = ok && set_named(audio, 2, "Filter Env Depth", 0.5 + 2.5 / 16.0);
     ok = ok && envelope(audio, 2, "Filter", ms("1ms"), ms("150ms"), 0.1, ms("50ms"));
@@ -295,13 +317,18 @@ fn main() -> i32 {
     ok = ok && effects(audio, 3, 3.0, 0.6, 1.0, 4.0, 0.4, 0.2);
     // The two arpeggios: the same patch, Key Follow 0 % and 100 %.
     ok = ok && arp_patch(audio, 4, 0.0) && arp_patch(audio, 5, 1.0);
-    // The mix, built around the arpeggio: the drums at -8 dB (Output: -60 ..
-    // +6 dB), each Mla 8000 at +6 dB, the bass at 70 % level.
-    ok = ok && set_named(audio, 1, "Output", 52.0 / 66.0);
+    // The mix: a long, deep 909 kick (Mla 08 BD Tone down, Decay up), the
+    // drums at -4 dB (Output: -60 .. +6 dB), each Mla 8000 at +6 dB.
+    ok = ok && set_named(audio, 1, "BD Tone", 0.35) && set_named(audio, 1, "BD Decay", 0.6) && set_named(audio, 1, "BD Level", 1.0);
+    ok = ok && set_named(audio, 1, "Output", 56.0 / 66.0);
     for slot in 2..6 { ok = ok && set_named(audio, slot, "Output", 1.0) && set_named(audio, slot, "Level", 1.0); }
-    ok = ok && set_named(audio, 2, "Level", 0.7);
     ok = ok && hall(&mut audio, plugins, 1, 0.95, 0.85, 0.4) && hall(&mut audio, plugins, 2, 0.8, 0.7, 0.25);
     ok = ok && hall(&mut audio, plugins, 3, 0.8, 0.7, 0.25);
+    // Limiters, as on a mastered track: each channel driven 6-10 dB into its
+    // ceiling, so the arpeggio and the pad hold their level between notes.
+    ok = ok && limiter(&mut audio, plugins, 4, -6.0, -6.0, 0.6, 0.3) && limiter(&mut audio, plugins, 5, -8.0, -5.0, 0.3, 0.7);
+    ok = ok && limiter(&mut audio, plugins, 6, -10.0, -4.0, 0.2, 0.6);
+    ok = ok && limiter(&mut audio, plugins, 7, -12.0, -2.0, 0.3, 0.6) && limiter(&mut audio, plugins, 8, -12.0, -2.0, 0.3, 0.6);
     if !ok { return 1; }
 
     // Intro: kick and hat, the closed (0 %) arpeggio over the pad opening.
