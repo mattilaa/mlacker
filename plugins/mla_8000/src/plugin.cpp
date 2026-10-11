@@ -32,6 +32,7 @@
 struct Jp8Voice;
 extern "C" Jp8Voice *mla8000_voice_create__f32(float sampleRate);
 extern "C" void mla8000_voice_destroy__ptr_struct_Jp8Voice(Jp8Voice *voice);
+extern "C" void mla8000_voice_seed__ptr_struct_Jp8Voice_i64(Jp8Voice *voice, int64_t seed);
 extern "C" void mla8000_voice_set__ptr_struct_Jp8Voice_i32_f32(Jp8Voice *voice, int32_t index, float value);
 extern "C" void mla8000_voice_update__ptr_struct_Jp8Voice(Jp8Voice *voice);
 extern "C" void mla8000_voice_note_on__ptr_struct_Jp8Voice_i32(Jp8Voice *voice, int32_t retrigger);
@@ -425,8 +426,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         // Called while inactive: nothing is rendering, the DSP may be rebuilt.
         destroyDsp();
         rate_ = setup.sampleRate >= 8000.0 && setup.sampleRate <= 384000.0 ? setup.sampleRate : 44100.0;
-        for(auto &voice : voice_)
-            voice = mla8000_voice_create__f32(static_cast<float>(rate_));
+        for(int v = 0; v < kVoices; ++v) {
+            voice_[v] = mla8000_voice_create__f32(static_cast<float>(rate_));
+            // Each voice its own random phases, so Unison's stack is decorrelated.
+            mla8000_voice_seed__ptr_struct_Jp8Voice_i64(voice_[v], 22695477 + v * 104729);
+        }
         chorusL_.resize(static_cast<int>(rate_ * 0.05));
         chorusR_.resize(static_cast<int>(rate_ * 0.05));
         delayL_.resize(static_cast<int>(rate_ * 2.6));
@@ -944,11 +948,13 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         const double cutoff = std::clamp(cutoffFromNorm(norm(kCutoffParam)) * std::exp2(octaves), 10.0, 22000.0);
         double level = norm(kLevelParam) * (1.0 - norm(kVelocityAmpParam) * (1.0 - velocity));
         level *= 1.0 + 0.5 * lfo1 * norm(kLfo1AmpParam) + 0.5 * lfo2 * norm(kLfo2AmpParam);
-        // A voice at half of full scale leaves room for chords; Unison's
-        // eight voices sound at the level of about two.
+        // A voice at half of full scale leaves room for chords. Unison's
+        // eight voices start at different random phases and sum like noise
+        // (sqrt(8) = 2.8x one voice); scaled by 0.5 they sound about 3 dB
+        // louder than one voice.
         level *= kVoiceGain;
         if(mode() == kUnison)
-            level *= 0.35;
+            level *= 0.5;
         set(v, kDspHz1, hz1);
         set(v, kDspHz2, hz1 * std::exp2(range / 12.0));
         set(v, kDspCutoff, cutoff);
