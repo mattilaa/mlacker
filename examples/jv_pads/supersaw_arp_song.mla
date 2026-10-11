@@ -5,9 +5,10 @@
 /// "Barber's Adagio for Strings"): a rolling 16th arpeggio over two and a
 /// half octaves, a slow Super Saw pad, a rolling bass and Mla 08 drums.
 ///
-/// The arpeggio plays on two tracks with the same patch, a plucked Super Saw
-/// through the 24 dB low-pass at 600 Hz, that differ only in Key Follow:
-/// - "Arp (Key Follow 0%)" opens the song: the cutoff stays at 600 Hz, so the
+/// The arpeggio plays on two tracks with the same patch, a fat, plucked
+/// Super Saw stack (eight voices in Unison, see arp_patch) through the 12 dB
+/// low-pass at 1.26 kHz, that differ only in Key Follow:
+/// - "Arp (Key Follow 0%)" opens the song: the cutoff stays at 1.26 kHz, so the
 ///   high notes are muffled, like a closed filter.
 /// - "Arp (Key Follow 100%)" takes over at the drop: the cutoff moves an
 ///   octave with every octave played, so the top notes ring as brightly as
@@ -111,23 +112,30 @@ fn effects(system: &AudioSystem, slot: i64, chorus: f64, chorus_level: f64, dela
     return ok;
 }
 
-/// The arpeggio lead: a Super Saw (Detune 0.68, Mix 0.75) through the 24 dB
-/// low-pass at 600 Hz (20 Hz x 1000^0.4924) with 10 dB of resonance and
-/// `follow` 0-1 Key Follow (from C-4). The filter envelope plucks each 16th
-/// two octaves open; the mod wheel opens it up to five octaves more. Chorus 1
-/// and a dotted-eighth panning echo, as on the JP-8000 presets.
+/// The arpeggio lead, made fat the way Arturia's Jup-8000 V trance presets
+/// ("Big En-Trance", "King of Saws") are: all eight voices stacked in Unison
+/// (each a Super Saw at Detune 0.7, Mix 0.85, spread over +/-30 cents and
+/// across the stereo field), OSC 2's saw an octave up underneath at 20 %, the
+/// 12 dB low-pass at 1.26 kHz (20 Hz x 1000^0.6) with little resonance and
+/// `follow` 0-1 Key Follow (from C-4), the bass and treble shelves boosted
+/// (+2 and +10 dB), a little drive, Super Chorus and a dotted-eighth panning
+/// echo. The filter envelope plucks each 16th three octaves open; the mod
+/// wheel opens it up to five octaves more.
 fn arp_patch(system: &AudioSystem, slot: i64, follow: f64) -> bool {
-    var ok: bool = set_named(system, slot, "OSC 1 Wave", 0.0) && set_named(system, slot, "OSC 1 Ctrl 1", 0.68);
-    ok = ok && set_named(system, slot, "OSC 1 Ctrl 2", 0.75) && set_named(system, slot, "OSC Balance", 0.0);
-    ok = ok && set_named(system, slot, "Filter Type", 0.0) && set_named(system, slot, "Filter Slope", 1.0);
-    ok = ok && set_named(system, slot, "Cutoff", 0.4924) && set_named(system, slot, "Resonance", 0.32);
+    var ok: bool = set_named(system, slot, "Key Mode", 3.0) && set_named(system, slot, "Unison Detune", 0.6);
+    ok = ok && set_named(system, slot, "OSC 1 Wave", 0.0) && set_named(system, slot, "OSC 1 Ctrl 1", 0.7);
+    ok = ok && set_named(system, slot, "OSC 1 Ctrl 2", 0.85) && set_named(system, slot, "OSC 2 Wave", 1.0);
+    ok = ok && set_named(system, slot, "OSC 2 Range", 36.0) && set_named(system, slot, "OSC Balance", 0.2);
+    ok = ok && set_named(system, slot, "Filter Type", 0.0) && set_named(system, slot, "Filter Slope", 0.0);
+    ok = ok && set_named(system, slot, "Cutoff", 0.6) && set_named(system, slot, "Resonance", 0.12);
     ok = ok && set_named(system, slot, "Key Follow", follow) && set_named(system, slot, "Mod Wheel", 0.0);
     ok = ok && set_named(system, slot, "Wheel > Cutoff", 0.5 + 5.0 / 16.0);
-    ok = ok && set_named(system, slot, "Filter Env Depth", 0.5 + 2.0 / 16.0);
-    ok = ok && envelope(system, slot, "Filter", ms("1ms"), ms("150ms"), 0.15, ms("150ms"));
-    ok = ok && envelope(system, slot, "Amp", ms("1ms"), ms("400ms"), 0.55, ms("150ms"));
-    ok = ok && set_named(system, slot, "Velocity > Amp", 0.3);
-    ok = ok && effects(system, slot, 1.0, 0.4, 2.0, 3.0, 0.38, 0.3);
+    ok = ok && set_named(system, slot, "Filter Env Depth", 0.5 + 3.0 / 16.0);
+    ok = ok && envelope(system, slot, "Filter", ms("1ms"), 0.6, 0.3, ms("150ms"));
+    ok = ok && envelope(system, slot, "Amp", ms("1ms"), ms("400ms"), 0.6, ms("150ms"));
+    ok = ok && set_named(system, slot, "Velocity > Amp", 0.3) && set_named(system, slot, "Drive", 0.25);
+    ok = ok && set_named(system, slot, "Tone Bass", 0.58) && set_named(system, slot, "Tone Treble", 0.9);
+    ok = ok && effects(system, slot, 3.0, 0.75, 2.0, 3.0, 0.38, 0.28);
     return ok;
 }
 
@@ -270,21 +278,28 @@ fn main() -> i32 {
     ok = ok && set_named(audio, 2, "Filter Env Depth", 0.5 + 2.5 / 16.0);
     ok = ok && envelope(audio, 2, "Filter", ms("1ms"), ms("150ms"), 0.1, ms("50ms"));
     ok = ok && envelope(audio, 2, "Amp", ms("1ms"), ms("250ms"), 0.6, ms("50ms"));
+    ok = ok && set_named(audio, 2, "Drive", 0.3);
     ok = ok && effects(audio, 2, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0);
     // Pad: a slow, wide Super Saw at 200 Hz (n 0.3333), half key follow,
-    // super chorus, a quarter echo; the wheel opens it seven octaves.
+    // with OSC 2's saw an octave down at 20 % for weight and the shelves
+    // boosted (+4 dB bass, +6 dB treble), as on "King of Saws"; super chorus,
+    // a quarter echo; the wheel opens it seven octaves.
     ok = ok && set_named(audio, 3, "OSC 1 Wave", 0.0) && set_named(audio, 3, "OSC 1 Ctrl 1", 0.62);
     ok = ok && set_named(audio, 3, "OSC 1 Ctrl 2", 0.9) && set_named(audio, 3, "Filter Slope", 1.0);
+    ok = ok && set_named(audio, 3, "OSC 2 Wave", 1.0) && set_named(audio, 3, "OSC 2 Range", 12.0);
+    ok = ok && set_named(audio, 3, "OSC Balance", 0.2) && set_named(audio, 3, "Tone Bass", 0.6667);
+    ok = ok && set_named(audio, 3, "Tone Treble", 0.75);
     ok = ok && set_named(audio, 3, "Cutoff", 0.3333) && set_named(audio, 3, "Resonance", 0.15);
     ok = ok && set_named(audio, 3, "Key Follow", 0.5) && set_named(audio, 3, "Wheel > Cutoff", 0.5 + 7.0 / 16.0);
     ok = ok && envelope(audio, 3, "Amp", ms("700ms"), ms("1s"), 1.0, ms("2s"));
     ok = ok && effects(audio, 3, 3.0, 0.6, 1.0, 4.0, 0.4, 0.2);
     // The two arpeggios: the same patch, Key Follow 0 % and 100 %.
     ok = ok && arp_patch(audio, 4, 0.0) && arp_patch(audio, 5, 1.0);
-    // The mix: the drums at -4 dB (Output: -60 .. +6 dB), each Mla 8000 at
-    // +6 dB and full level.
-    ok = ok && set_named(audio, 1, "Output", 56.0 / 66.0);
+    // The mix, built around the arpeggio: the drums at -8 dB (Output: -60 ..
+    // +6 dB), each Mla 8000 at +6 dB, the bass at 70 % level.
+    ok = ok && set_named(audio, 1, "Output", 52.0 / 66.0);
     for slot in 2..6 { ok = ok && set_named(audio, slot, "Output", 1.0) && set_named(audio, slot, "Level", 1.0); }
+    ok = ok && set_named(audio, 2, "Level", 0.7);
     ok = ok && hall(&mut audio, plugins, 1, 0.95, 0.85, 0.4) && hall(&mut audio, plugins, 2, 0.8, 0.7, 0.25);
     ok = ok && hall(&mut audio, plugins, 3, 0.8, 0.7, 0.25);
     if !ok { return 1; }

@@ -11,7 +11,8 @@
 ///   - 0 Super Saw: seven saws at Adam Szabo's measured frequency ratios
 ///     ("How to Emulate the Super Saw", 2010), CTRL 1 the Detune knob through
 ///     his fitted 11th-order curve, CTRL 2 the Mix knob through his centre and
-///     side gain curves. Each saw starts at a random phase on every note, and
+///     side gain curves. Each saw starts at a random phase on every note (each
+///     voice draws from its own seed, see `mla8000_voice_seed`), and
 ///     a 12 dB high-pass at the fundamental removes the beating below it, as
 ///     on the JP-8000.
 ///   - 1 Triangle Mod: a triangle folded by a sine shaper, CTRL 1 the fold,
@@ -386,6 +387,12 @@ fn mla8000_voice_create(sample_rate: f32) -> ptr<Jp8Voice> {
     return voice;
 }
 
+/// @brief Seed the voice's random phases. Give every voice its own seed, or
+/// voices started together (Unison) start in phase and sum into a spike.
+fn mla8000_voice_seed(voice: ptr<Jp8Voice>, seed: i64) {
+    unsafe { (*voice).seed = seed % 2147483648; if (*voice).seed < 0 { (*voice).seed = (*voice).seed + 2147483648; } }
+}
+
 /// @brief Release a voice created by `mla8000_voice_create`.
 fn mla8000_voice_destroy(voice: ptr<Jp8Voice>) { free(voice); }
 
@@ -442,7 +449,7 @@ fn mla8000_voice_set(voice: ptr<Jp8Voice>, index: i32, value: f32) {
 fn mla8000_voice_update(voice: ptr<Jp8Voice>) { unsafe { (*voice).control(); (*voice).counter = control_frames(); } }
 
 /// @brief Start a note: `retrigger` 1 restarts the oscillators at random
-/// phases (the Super Saw's free-running saws) and clears the filter; the
+/// phases (the JP-8000's oscillators run free) and clears the filter; the
 /// envelopes restart from their current level either way.
 fn mla8000_voice_note_on(voice: ptr<Jp8Voice>, retrigger: i32) {
     unsafe {
@@ -450,7 +457,7 @@ fn mla8000_voice_note_on(voice: ptr<Jp8Voice>, retrigger: i32) {
             (*voice).s0 = (*voice).random(); (*voice).s1 = (*voice).random(); (*voice).s2 = (*voice).random();
             (*voice).s3 = (*voice).random(); (*voice).s4 = (*voice).random(); (*voice).s5 = (*voice).random();
             (*voice).s6 = (*voice).random();
-            (*voice).phase1 = 0.0f; (*voice).phase2 = 0.0f; (*voice).feedback = 0.0f;
+            (*voice).phase1 = (*voice).random(); (*voice).phase2 = (*voice).random(); (*voice).feedback = 0.0f;
             if !(*voice).amp.is_active() {
                 (*voice).f1 = Svf { ic1: 0.0f, ic2: 0.0f }; (*voice).f2 = Svf { ic1: 0.0f, ic2: 0.0f };
                 (*voice).hp = Svf { ic1: 0.0f, ic2: 0.0f };
