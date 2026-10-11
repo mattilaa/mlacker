@@ -211,6 +211,14 @@ sit between the two. The two tracks differ only in Key Follow:
   brightly as the bottom ones.
 
 The CC1 column then opens it further through the breakdown and the build.
+
+The mix is balanced against a mastered trance track (Matti Laamanen's
+"Flakes"):
+
+- a deep 909 kick and a bass with a triangle sub an octave down
+- an MlaLimiter at the end of every track's chain, driving each 6–12 dB into
+  its ceiling, for the density of a mastered track
+
 `examples/jv_pads/build.sh supersaw_arp` regenerates it.
 
 ## Build and test

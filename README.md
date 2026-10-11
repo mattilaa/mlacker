@@ -1410,8 +1410,9 @@ samples.
   Key Follow 0 %, so its top
   notes are muffled; at the drop the same patch at Key Follow 100 % takes
   over and the top notes ring out. Its mod wheel then opens it further
-  through the breakdown and the build. Sections: Intro, Drop, Breakdown,
-  Build, Peak.
+  through the breakdown and the build. A deep kick, a sub bass and an
+  MlaLimiter on every track give it the density of a mastered track.
+  Sections: Intro, Drop, Breakdown, Build, Peak.
 - `examples/supersaw_demo.mlaproj`: the Roland JP-8000 Super Saw (seven
   saws on Adam Szabo's measured detune and mix curves, random phases, a
   high-pass at the fundamental) in an original epic-trance song at 138 BPM in
