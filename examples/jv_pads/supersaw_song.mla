@@ -1,0 +1,322 @@
+/// Builds examples/supersaw_demo.mlaproj: an original epic-trance demo in the
+/// style of the late-90s string-theme remixes (Ferry Corsten's remix of
+/// William Orbit's "Barber's Adagio for Strings"), at 138 BPM in B-flat minor
+/// over Bbm, Gbmaj7, Db/F, Ab/Eb. Every synth is the Roland JP-8000 Super
+/// Saw in Mla Sampler through a resonant ladder low-pass that the mod wheel
+/// (the track's CC1 column) opens: the pad sweeps up through the intro and
+/// the breakdown, the trance gate's filter rises through the build, and the
+/// lead sings a slow string-like theme that opens up at the peak.
+/// Environment: PAD_DIR holds "JP-8000 Supersaw.wav".
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::audio_clip::AudioClip;
+use tui::geometry::*;
+use std::strbuf::clone;
+use std::strbuf::free;
+mod std::env::detail;
+use std::env::detail::__env_get_var;
+extern fn mlacker_install_vst3_host() -> void;
+
+/// Tracks, in order; instruments are numbered the same plus one.
+fn drums() -> i32 { return 0; }
+fn bass() -> i32 { return 1; }
+fn gate() -> i32 { return 2; }
+fn pad() -> i32 { return 3; }
+fn lead() -> i32 { return 4; }
+
+fn song_area() -> Rect { return Rect::new(0, 0, 200, 40); }
+
+fn note_at(table: &mut SequenceTable, track: i32, line: i32, row: i32, note: str8, velocity: i32, length: str8) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let column: i32 = t.track_start(track) + line * 4;
+    t.set_cell(row, column, clone(note));
+    t.set_cell(row, column + 1, format!("{}", velocity));
+    t.set_cell(row, column + 2, clone(length));
+    t.set_cell(row, column + 3, clone("0.00"));
+    table = t;
+}
+
+/// The mod wheel (CC1 column) of `track` gliding from `from` to `to` across
+/// rows `first`..`last` (exclusive), four 1/64 steps a row.
+fn sweep(table: &mut SequenceTable, track: i32, first: i32, last: i32, from: i32, to: i32) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let column: i32 = t.automation_column(track, 1);
+    let span: i32 = (last - first) * 4;
+    for row in first..last {
+        let step: i32 = (i32(row) - first) * 4;
+        let a: i32 = from + (to - from) * step / span;
+        let b: i32 = from + (to - from) * (step + 1) / span;
+        let c: i32 = from + (to - from) * (step + 2) / span;
+        let d: i32 = from + (to - from) * (step + 3) / span;
+        t.set_cell(i32(row), column, format!("{} {} {} {}", a, b, c, d));
+    }
+    table = t;
+}
+
+/// Set parameter `name` of the processor in `slot`: integer steps for a
+/// stepped parameter, otherwise normalized 0-1. False when it is missing.
+fn set_named(system: &AudioSystem, slot: i64, name: str8, value: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    let count: i64 = wide(i32(audio.output.parameter_info(slot, 0, 0)));
+    for i in 0..count {
+        // (A call compared directly with == trips the compiler.)
+        let found: str8 = audio.output.parameter_name(slot, i);
+        if found == name { return audio.output.set_parameter(slot, i, value) == 0; }
+    }
+    println!("Missing parameter {} on slot {}", name, slot);
+    return false;
+}
+
+/// The Super Saw in Mla Sampler `slot`, looped, through a ladder low-pass
+/// at `cutoff` (normalized: 20 Hz x 1000^n) with `resonance` (0-1 of 36 dB)
+/// and half key tracking. Mod route 1 sends the mod wheel to the cutoff,
+/// 7 octaves at full; `wheel` is where the wheel rests until a CC1 cell moves
+/// it. `attack` 0-2 s linear, `release` 1 ms-10 s exponential.
+fn setup_saw(system: &mut AudioSystem, library: &mut PatternLibrary, slot: i32, sample: str8, name: str8,
+             attack: f64, release: f64, cutoff: f64, resonance: f64, wheel: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    var songs: PatternLibrary = PatternLibrary {}; songs = library;
+    let loaded: result<AudioClip, str8> = AudioClip::load(sample, 138);
+    if loaded.is_err() { println!("{}: {}", sample, loaded.unwrap_err()); return false; }
+    let clip: AudioClip = loaded.unwrap();
+    // One copy in the Audio list serves every sampler that plays it.
+    var index: i32 = songs.audio.find_clip(clip);
+    if index < 0 { index = songs.audio.add_clip(clip.copy()); }
+    let assigned: str8 = audio.assign_pad(slot, 0, index, clip.samples, clip.channels, clip.sample_rate, name);
+    library = songs;
+    if assigned != "" { println!("Pad {}: {}", name, assigned); system = audio; return false; }
+    let s: i64 = wide(slot);
+    var ok: bool = set_named(audio, s, "Slot 1 Key Mode", 1.0) && set_named(audio, s, "Slot 1 Zone Root", 60.0);
+    ok = ok && set_named(audio, s, "Slot 1 Loop", 1.0) && set_named(audio, s, "Slot 1 Loop Start", 0.1);
+    ok = ok && set_named(audio, s, "Slot 1 Loop End", 0.95) && set_named(audio, s, "Slot 1 Crossfade", 0.15);
+    ok = ok && set_named(audio, s, "Attack", attack) && set_named(audio, s, "Release", release);
+    ok = ok && set_named(audio, s, "Slot 1 Velocity Depth", 0.5);
+    ok = ok && set_named(audio, s, "Slot 1 Filter 1 Type", 8.0) && set_named(audio, s, "Slot 1 Filter 1 Cutoff", cutoff);
+    ok = ok && set_named(audio, s, "Slot 1 Filter 1 Resonance", resonance) && set_named(audio, s, "Slot 1 Filter 1 Key Track", 0.5);
+    // Mod Wheel (source 7) to Cutoff (target 2), +87.5 %: 7 of 8 octaves.
+    ok = ok && set_named(audio, s, "Slot 1 Mod 1 Source", 7.0) && set_named(audio, s, "Slot 1 Mod 1 Target", 2.0);
+    ok = ok && set_named(audio, s, "Slot 1 Mod 1 Amount", 0.9375) && set_named(audio, s, "Mod Wheel", wheel);
+    system = audio; return ok;
+}
+
+/// Inserts `first`..`first + 2`: Juno chorus, a host-synced delay and a reverb.
+fn setup_effects(system: &mut AudioSystem, plugins: str8, first: i32, chorus: f64, beats: f64, feedback: f64,
+                 delay_mix: f64, kind: f64, size: f64, decay: f64, verb_mix: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    let effects: list<str8> = ["MlaJunoChorus", "MlaDelay", "MlaVerb"];
+    for i in 0..3 {
+        let path: str8 = format!("{}/{}.vst3", plugins, effects[i]);
+        let id: i32 = first + i32(i);
+        if audio.add_insert(path, id) != id { println!("Insert {} failed", effects[i]); system = audio; return false; }
+        free(path);
+    }
+    let c: i64 = wide(first) + 40; let d: i64 = c + 1; let v: i64 = c + 2;
+    var ok: bool = set_named(audio, c, "Chorus", chorus) && set_named(audio, c, "Mix", 0.5);
+    ok = ok && set_named(audio, d, "Tempo Source", 2.0) && set_named(audio, d, "Beats", beats);
+    ok = ok && set_named(audio, d, "Mix", delay_mix) && set_named(audio, d, "Feedback", feedback);
+    ok = ok && set_named(audio, v, "Type", kind) && set_named(audio, v, "Size", size);
+    ok = ok && set_named(audio, v, "Decay", decay) && set_named(audio, v, "Mix", verb_mix);
+    system = audio; return ok;
+}
+
+/// The five tracks, the pad selected, the samplers' inserts.
+fn song_pattern() -> SequenceTable {
+    var table: SequenceTable = SequenceTable::empty();
+    table.set_length(64, song_area());
+    let names: list<str8> = ["Drums", "Bass", "Supersaw gate", "Supersaw pad", "Supersaw lead"];
+    for t in 0..5 {
+        table.create_instrument_track(i32(t) + 1, song_area()); table.rename_track(names[t]);
+    }
+    table.ensure_note_lines(drums(), 3);
+    table.ensure_note_lines(gate(), 4); table.ensure_note_lines(pad(), 4);
+    table.rebuild_columns();
+    let saws: list<i32> = [gate(), pad(), lead()];
+    for p in 0..3 {
+        for n in 0..3 { table.set_insert(saws[p], i32(n), i32(p) * 3 + i32(n) + 1); }
+    }
+    table.selected_row = 0; table.selected_column = table.track_start(pad());
+    return table;
+}
+
+/// Bbm, Gbmaj7, Db/F, Ab/Eb: one chord per bar, F held on top through the
+/// first three.
+fn chord(bar: i32, voice: i32) -> str8 {
+    let chords: list<str8> = ["F-3", "A#3", "C#4", "F-4", "F#3", "A#3", "C#4", "F-4",
+        "F-3", "G#3", "C#4", "F-4", "D#3", "G#3", "C-4", "D#4"];
+    return chords[bar * 4 + voice];
+}
+
+/// The trance gate: the chord chopped into 16ths, x.xx.x.xx.xx.x.x
+/// (accents on the beats), velocities scaled by `level` percent.
+fn gate_part(table: &mut SequenceTable, level: i32) -> void {
+    let rhythm: list<i32> = [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 1];
+    for bar in 0..4 {
+        for step in 0..16 {
+            if rhythm[step] == 0 { continue; }
+            let velocity: i32 = (step % 4 == 0 ? 112 : 86) * level / 100;
+            for voice in 0..4 {
+                note_at(&mut table, gate(), i32(voice), i32(bar) * 16 + i32(step), chord(i32(bar), i32(voice)), velocity, "0.55");
+            }
+        }
+    }
+}
+
+fn sustained(table: &mut SequenceTable, track: i32, velocity: i32) -> void {
+    for bar in 0..4 {
+        for voice in 0..4 { note_at(&mut table, track, i32(voice), i32(bar) * 16, chord(i32(bar), i32(voice)), velocity, "16.00"); }
+    }
+}
+
+/// Rolling bass: the offbeat eighth and the 16th after it, on each root.
+fn bass_part(table: &mut SequenceTable) -> void {
+    let roots: list<str8> = ["A#1", "F#1", "C#2", "G#1"];
+    for bar in 0..4 {
+        for beat in 0..4 {
+            let row: i32 = i32(bar) * 16 + i32(beat) * 4;
+            note_at(&mut table, bass(), 0, row + 2, roots[bar], 110, "0.90");
+            note_at(&mut table, bass(), 0, row + 3, roots[bar], 94, "0.90");
+        }
+    }
+}
+
+/// Kick on every beat, claps on 2 and 4, offbeat open hats, 16th hats;
+/// `crash` adds a cymbal on the first downbeat.
+fn drum_part(table: &mut SequenceTable, crash: bool) -> void {
+    for bar in 0..4 {
+        let b: i32 = i32(bar) * 16;
+        for beat in 0..4 {
+            let row: i32 = b + i32(beat) * 4;
+            note_at(&mut table, drums(), 0, row, "C-2", 122, "1.00");
+            note_at(&mut table, drums(), 1, row + 2, "A#2", 80, "1.00");
+            note_at(&mut table, drums(), 2, row + 1, "F#2", 50, "1.00");
+            note_at(&mut table, drums(), 2, row + 3, "F#2", 60, "1.00");
+        }
+        note_at(&mut table, drums(), 1, b + 4, "D#2", 100, "1.00"); note_at(&mut table, drums(), 1, b + 12, "D#2", 106, "1.00");
+    }
+    if crash { note_at(&mut table, drums(), 2, 0, "C#3", 112, "1.00"); }
+}
+
+/// Only the kick and the offbeat hat, for the intro.
+fn kick_part(table: &mut SequenceTable) -> void {
+    for beat in 0..16 {
+        note_at(&mut table, drums(), 0, i32(beat) * 4, "C-2", 118, "1.00");
+        note_at(&mut table, drums(), 1, i32(beat) * 4 + 2, "A#2", 70, "1.00");
+    }
+}
+
+/// The build: kicks for three bars, a snare roll from eighths to 16ths
+/// getting louder, then a last beat of silence before the drop.
+fn build_part(table: &mut SequenceTable) -> void {
+    for bar in 0..3 {
+        for beat in 0..4 { note_at(&mut table, drums(), 0, i32(bar) * 16 + i32(beat) * 4, "C-2", 118, "1.00"); }
+    }
+    for row in 0..60 {
+        let sixteenths: bool = row >= 32;
+        if !sixteenths && row % 2 == 1 { continue; }
+        note_at(&mut table, drums(), 1, i32(row), "D-2", 50 + i32(row) * 70 / 60, "1.00");
+    }
+}
+
+/// The theme: a slow, rising string line over the four chords, long notes
+/// leaning into the next chord. `octave_up` plays it an octave higher.
+fn lead_part(table: &mut SequenceTable, octave_up: bool, level: i32) -> void {
+    let notes: list<str8> = ["F-4", "F#4", "F-4", "C#4",
+        "D#4", "C#4", "A#3",
+        "C#4", "D#4", "F-4", "G#4",
+        "G-4", "D#4", "C-4", "C#4"];
+    let up: list<str8> = ["F-5", "F#5", "F-5", "C#5",
+        "D#5", "C#5", "A#4",
+        "C#5", "D#5", "F-5", "G#5",
+        "G-5", "D#5", "C-5", "C#5"];
+    let rows: list<i32> = [0, 6, 8, 12, 16, 22, 24, 32, 38, 40, 44, 48, 54, 56, 60];
+    let lengths: list<str8> = ["6.00", "2.00", "4.00", "4.00",
+        "6.00", "2.00", "8.00",
+        "6.00", "2.00", "4.00", "4.00",
+        "6.00", "2.00", "4.00", "4.00"];
+    for n in 0..rows.len() {
+        let velocity: i32 = (n % 4 == 0 ? 112 : 96) * level / 100;
+        note_at(&mut table, lead(), 0, rows[n], octave_up ? up[n] : notes[n], velocity, lengths[n]);
+    }
+}
+
+fn main() -> i32 {
+    mlacker_install_vst3_host();
+    let home: str8 = __env_get_var("HOME");
+    let plugins: str8 = format!("{}/.local/plugins/VST3", home);
+    let pad_dir: str8 = __env_get_var("PAD_DIR");
+    var audio: AudioSystem = AudioSystem::start(false);
+    var library: PatternLibrary = PatternLibrary::empty();
+    let names: list<str8> = ["Mla08", "MlaSid", "MlaSampler", "MlaSampler", "MlaSampler"];
+    let labels: list<str8> = ["Mla 08", "Mla SID", "Mla Sampler", "Mla Sampler", "Mla Sampler"];
+    for i in 0..5 {
+        let path: str8 = format!("{}/{}.vst3", plugins, names[i]);
+        let status: str8 = audio.add_instrument(path);
+        if status != "" { println!("Instrument {}: {}", i + 1, status); return 1; }
+        library.add_instrument(i32(i) + 1, labels[i]);
+        free(path);
+    }
+    let saw: str8 = format!("{}/JP-8000 Supersaw.wav", pad_dir);
+    // Cutoffs (20 Hz x 1000^n): 0.25 = 112 Hz, 0.3 = 160 Hz, 0.4 = 320 Hz.
+    // Gate: instant attack, about 60 ms release, 15 dB of resonance to squelch.
+    var ok: bool = setup_saw(&mut audio, &mut library, 3, saw, "Supersaw gate", 0.0, 0.43, 0.3, 0.42, 0.55);
+    // Pad: 0.5 s in, 2 s out, a gentle 7 dB peak, wheel down until swept.
+    ok = ok && setup_saw(&mut audio, &mut library, 4, saw, "Supersaw pad", 0.25, 0.83, 0.25, 0.2, 0.2);
+    // Lead: 80 ms in to bow the notes, 1 s out, 5 dB, mostly open.
+    ok = ok && setup_saw(&mut audio, &mut library, 5, saw, "Supersaw lead", 0.04, 0.75, 0.4, 0.14, 0.75);
+    // Gate: chorus II, a dotted-eighth echo that fills the gaps, a plate.
+    ok = ok && setup_effects(&mut audio, plugins, 1, 2.0, 0.043137, 0.35, 0.28, 2.0, 0.6, 0.60, 0.22);
+    // Pad: chorus I+II wide, a quarter echo, a huge hall.
+    ok = ok && setup_effects(&mut audio, plugins, 4, 3.0, 0.0588, 0.45, 0.22, 0.0, 0.95, 0.85, 0.42);
+    // Lead: chorus II, the dotted-eighth echo, a long hall.
+    ok = ok && setup_effects(&mut audio, plugins, 7, 2.0, 0.043137, 0.45, 0.30, 0.0, 0.85, 0.80, 0.35);
+    if !ok { return 1; }
+
+    // Intro: kick and hat, the pad's filter opening from closed over 4 bars.
+    var intro: SequenceTable = song_pattern(); kick_part(&mut intro); sustained(&mut intro, pad(), 92);
+    sweep(&mut intro, pad(), 0, 64, 0, 70);
+    // Groove: the gate's filter half open and slowly rising, bass rolling.
+    var groove: SequenceTable = song_pattern(); drum_part(&mut groove, true); bass_part(&mut groove); gate_part(&mut groove, 85);
+    sweep(&mut groove, gate(), 0, 64, 40, 75);
+    // Theme: the lead over the gate, both open, the pad underneath.
+    var theme: SequenceTable = song_pattern(); drum_part(&mut theme, true); bass_part(&mut theme); gate_part(&mut theme, 90);
+    sweep(&mut theme, gate(), 0, 1, 85, 85); lead_part(&mut theme, false, 92); sweep(&mut theme, lead(), 0, 1, 90, 90);
+    sustained(&mut theme, pad(), 70); sweep(&mut theme, pad(), 0, 1, 60, 60);
+    // Breakdown and Rise: no drums; the pad and the theme start dark and open over 8 bars.
+    var down: SequenceTable = song_pattern(); sustained(&mut down, pad(), 96); lead_part(&mut down, false, 100);
+    sweep(&mut down, pad(), 0, 64, 5, 55); sweep(&mut down, lead(), 0, 64, 15, 60);
+    var rise: SequenceTable = song_pattern(); sustained(&mut rise, pad(), 100); lead_part(&mut rise, true, 104);
+    sweep(&mut rise, pad(), 0, 64, 55, 115); sweep(&mut rise, lead(), 0, 64, 60, 127);
+    // Build: the snare roll, the gate's filter screaming open.
+    var build: SequenceTable = song_pattern(); build_part(&mut build); gate_part(&mut build, 80); bass_part(&mut build);
+    sweep(&mut build, gate(), 0, 60, 10, 127);
+    // Peak: everything, wide open, the theme an octave up.
+    var peak: SequenceTable = song_pattern(); drum_part(&mut peak, true); bass_part(&mut peak); gate_part(&mut peak, 100);
+    sweep(&mut peak, gate(), 0, 1, 110, 110); sustained(&mut peak, pad(), 76); sweep(&mut peak, pad(), 0, 1, 90, 90);
+    lead_part(&mut peak, true, 100); sweep(&mut peak, lead(), 0, 1, 127, 127);
+
+    library.table.release(); library.table = intro; library.rename("Intro");
+    library.import_pattern("Groove", groove, []);
+    library.import_pattern("Theme", theme, []);
+    library.import_pattern("Breakdown", down, []);
+    library.import_pattern("Rise", rise, []);
+    library.import_pattern("Build", build, []);
+    library.import_pattern("Peak", peak, []);
+    // 1 Intro, 2 Groove, 3 Theme, 4 Breakdown, 5 Rise, 6 Build, 7 Peak.
+    let order: list<i32> = [1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 7, 3, 1];
+    library.song = order;
+    library.select(1); library.refresh();
+
+    let view: SessionView = SessionView { bpm: 138, sidebar: 1 };
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project("examples/supersaw_demo.mlaproj", library, view, audio);
+    if saved.is_err() { println!("Save failed: {}", saved.unwrap_err()); return 1; }
+    println!("Saved {}", saved.unwrap());
+    audio.release();
+    return 0;
+}

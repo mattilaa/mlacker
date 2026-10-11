@@ -3,7 +3,7 @@ Pure Python, no numpy: wavetable saws, sine partials, biquad filters, noise.
 
 Usage: make_pad.py <preset> <out.wav>
 Presets: atmosphere, dawn2dusk, footprint97, jd800pluck, jvchoir, clockbling,
-pizzicato
+pizzicato, jp8000
 (clockbling's root is C-6)."""
 import math
 import random
@@ -290,6 +290,57 @@ def jd800pluck(table, detunes, seed, frames):
     return out
 
 
+# Roland JP-8000 "Super Saw", after Adam Szabo's analysis ("How to Emulate the
+# Super Saw", 2010): seven saws at fixed frequency ratios scaled by a
+# non-linear Detune curve, the centre saw and the six side saws mixed by
+# separate Mix curves, each saw starting at a random phase, and a high-pass
+# at the fundamental taking out the low beating.
+SUPERSAW_OFFSETS = [-0.11002313, -0.06288439, -0.01952356, 0.0, 0.01991221, 0.06216538, 0.10745242]
+
+
+def supersaw_detune(x):
+    """Szabo's fit of the Detune knob (0-1) to the scale of the offsets."""
+    coefficients = [10028.7312891634, -50818.8652045924, 111363.4808729368, -138150.6761080548,
+                    106649.6679158292, -53046.9642751875, 17019.9518580080, -3425.0836591318,
+                    404.2703938388, -24.1878824391, 0.6717417634, 0.0030115596]
+    y = 0.0
+    for c in coefficients:
+        y = y * x + c
+    return y
+
+
+def jp8000(table, detunes, seed, frames):
+    """The Super Saw at Detune 0.7 and Mix 0.8, filter open (the sampler's
+    resonant low-pass and the CC 1 sweep do the rest). Each ear has its own
+    random phases and a little more or less spread, standing in for the
+    JP-8000's chorus width before the chorus insert."""
+    rng = random.Random(seed * 7919)
+    detune = supersaw_detune(0.7) * (1.0 if seed == 1 else 1.04)
+    mix = 0.8
+    centre = -0.55366 * mix + 0.99785
+    side = -0.73764 * mix * mix + 1.2841 * mix + 0.044372
+    gains = [centre if offset == 0.0 else side for offset in SUPERSAW_OFFSETS]
+    steps = [ROOT * (1.0 + offset * detune) / RATE for offset in SUPERSAW_OFFSETS]
+    phases = [rng.random() for _ in SUPERSAW_OFFSETS]
+    # One-pole high-pass at the fundamental.
+    coefficient = math.exp(-2 * math.pi * ROOT / RATE)
+    previous_in = previous_out = 0.0
+    out = []
+    for _ in range(frames):
+        s = 0.0
+        for v in range(7):
+            index = phases[v] * TABLE
+            k = int(index)
+            a = table[k % TABLE]
+            s += (a + (table[(k + 1) % TABLE] - a) * (index - k)) * gains[v]
+            p = phases[v] + steps[v]
+            phases[v] = p - int(p)
+        high = coefficient * (previous_out + s - previous_in)
+        previous_in, previous_out = s, high
+        out.append(high)
+    return out
+
+
 PRESETS = {
     "atmosphere": (atmosphere, 6.0, 48, [-14, -9, -4, 0, 5, 10, 15], [-15, -10, -5, 1, 4, 9, 14]),
     "dawn2dusk": (dawn2dusk, 10.0, 32, [-8, -3, 2, 7], [-7, -2, 3, 8]),
@@ -297,6 +348,7 @@ PRESETS = {
     "clockbling": (clockbling, 2.5, 8, [], []),
     "jvchoir": (jvchoir, 6.0, 40, [], []),
     "jd800pluck": (jd800pluck, 1.5, 64, [-6, 0, 7], [-7, 1, 6]),
+    "jp8000": (jp8000, 8.0, 80, [], []),
     "footprint97": (footprint97, 6.0, 64, [-26, -17, -9, -3, 0, 4, 10, 18, 25], [-25, -18, -10, -4, 1, 3, 9, 17, 26]),
 }
 
