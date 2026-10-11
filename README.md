@@ -1405,7 +1405,9 @@ samples.
 - `examples/mla8000_supersaw_arp.mlaproj`: a Super Saw arpeggio lead on Mla
   8000 in an original epic-trance song at 138 BPM in B-flat minor, in the
   style of the late-90s string-theme remixes. A rolling 16th arpeggio spans
-  two and a half octaves. The intro plays it at Key Follow 0 %, so its top
+  two and a half octaves, played by a fat eight-voice Unison Super Saw stack
+  modelled on Arturia's Jup-8000 V trance presets. The intro plays it at
+  Key Follow 0 %, so its top
   notes are muffled; at the drop the same patch at Key Follow 100 % takes
   over and the top notes ring out. Its mod wheel then opens it further
   through the breakdown and the build. Sections: Intro, Drop, Breakdown,

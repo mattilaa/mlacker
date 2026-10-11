@@ -65,8 +65,10 @@ mod wheel every 16 frames. The effects run after the voices.
   - Mono: retriggers on every key.
   - Legato: retriggers only from silence.
   - Unison: all eight voices on one key, spread across ±Unison Detune and
-    panned across the stereo field. The JP-8000 has no Unison mode; its
-    successor, the JP-8080, added one.
+    panned across the stereo field. Every voice starts its oscillators at
+    its own random phases, so the stack sums smoothly, about 3 dB louder
+    than one voice, with no spike at the start of each note. The JP-8000
+    has no Unison mode; its successor, the JP-8080, added one.
 - **Portamento** is a constant-time glide. In Poly mode it glides from the
   last key played; in the other modes from the voice's current pitch.
 - **LFO 1** has Triangle, Saw, Square or S&H shapes, a rate of 0.05–30 Hz,
@@ -190,8 +192,19 @@ regenerates it.
 `examples/mla8000_supersaw_arp.mlaproj` puts Key Follow to work on a Super
 Saw arpeggio lead. It is an original trance song at 138 BPM in B-flat minor,
 in the same late-90s style. The arpeggio rolls in 16ths over two and a half
-octaves, through the 24 dB low-pass at 600 Hz, on two tracks with the same
-patch:
+octaves, on two tracks with the same patch.
+
+The patch is made fat the way Arturia's Jup-8000 V trance presets are (Big
+En-Trance, King of Saws):
+
+- all eight voices stacked in Unison, each a Super Saw
+- OSC 2's saw an octave up underneath
+- the 12 dB low-pass at 1.26 kHz with little resonance
+- the treble shelf boosted
+- a little drive, Super Chorus and the panning delay
+
+Measured against renders of those presets, its stereo width and presence
+sit between the two. The two tracks differ only in Key Follow:
 
 - In the intro it plays at Key Follow 0 %, so its top notes are muffled.
 - At the drop, Key Follow 100 % takes over and the top notes ring as
