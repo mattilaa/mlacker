@@ -2,7 +2,8 @@
 Pure Python, no numpy: wavetable saws, sine partials, biquad filters, noise.
 
 Usage: make_pad.py <preset> <out.wav>
-Presets: atmosphere, dawn2dusk, footprint97, jd800pluck, jvchoir, clockbling
+Presets: atmosphere, dawn2dusk, footprint97, jd800pluck, jvchoir, clockbling,
+pizzicato
 (clockbling's root is C-6)."""
 import math
 import random
@@ -156,6 +157,51 @@ def clockbling(table, detunes, seed, frames):
     return out
 
 
+def pizzicato(table, detunes, seed, frames):
+    """A pizzicato string section: six players a few ms apart and a few
+    cents out, each a saw through string-body resonances, plucked bright and
+    darkening fast, on a short decay."""
+    # The same six players in both ears, panned across the section.
+    rng = random.Random(11)
+    players = []
+    for j in range(6):
+        cents = rng.uniform(-8, 8)
+        pan = -1.0 + 2.0 * j / 5
+        ear = 0.5 + 0.4 * (-pan if seed == 1 else pan)
+        players.append({
+            "start": int(rng.uniform(0.0, 0.004) * RATE),
+            "step": ROOT * 2 ** (cents / 1200) / RATE,
+            "phase": rng.random(),
+            "gain": rng.uniform(0.8, 1.0) * ear,
+        })
+    bodies = [(Biquad("bp", 290, 2.2), 0.9), (Biquad("bp", 1050, 3.0), 0.6), (Biquad("bp", 2700, 4.0), 0.35)]
+    bright = Biquad("lp", 8000, 0.9)
+    out = []
+    for i in range(frames):
+        s = 0.0
+        for p in players:
+            k = i - p["start"]
+            if k < 0:
+                continue
+            age = k / RATE
+            index = p["phase"] * TABLE
+            n = int(index)
+            a = table[n % TABLE]
+            wave_value = a + (table[(n + 1) % TABLE] - a) * (index - n)
+            p["phase"] = (p["phase"] + p["step"]) % 1.0
+            attack = min(1.0, age / 0.002)
+            s += wave_value * p["gain"] * attack * (0.85 * math.exp(-age / 0.16) + 0.15 * math.exp(-age / 0.45))
+        if i % 32 == 0:
+            t = i / RATE
+            bright.tune(1500 + 6500 * math.exp(-t / 0.05))
+        # The plucked string itself carries the snap; the body rings under it.
+        body = 1.0 * s
+        for f, gain in bodies:
+            body += f.run(s) * gain * 0.45
+        out.append(bright.run(body / 3.0))
+    return out
+
+
 def atmosphere(table, detunes, seed, frames):
     """Roland "Atmosphere": a choir-like "aah" over saws, with a breath band."""
     rng = random.Random(seed)
@@ -247,6 +293,7 @@ def jd800pluck(table, detunes, seed, frames):
 PRESETS = {
     "atmosphere": (atmosphere, 6.0, 48, [-14, -9, -4, 0, 5, 10, 15], [-15, -10, -5, 1, 4, 9, 14]),
     "dawn2dusk": (dawn2dusk, 10.0, 32, [-8, -3, 2, 7], [-7, -2, 3, 8]),
+    "pizzicato": (pizzicato, 1.2, 48, [], []),
     "clockbling": (clockbling, 2.5, 8, [], []),
     "jvchoir": (jvchoir, 6.0, 40, [], []),
     "jd800pluck": (jd800pluck, 1.5, 64, [-6, 0, 7], [-7, 1, 6]),
@@ -260,8 +307,9 @@ def main():
     table = saw_table(harmonics)
     left = voice(table, left_detunes, 1, frames)
     right = voice(table, right_detunes, 2, frames)
-    # Fade in over 40 ms (the sampler's envelope shapes the rest).
-    fade = int(0.04 * RATE)
+    # Pads fade in over 40 ms (the sampler's envelope shapes the rest);
+    # plucks and bells keep their attack, with only a 1 ms ramp against clicks.
+    fade = int((0.001 if sys.argv[1] in ("pizzicato", "jd800pluck", "clockbling") else 0.04) * RATE)
     for i in range(fade):
         left[i] *= i / fade
         right[i] *= i / fade
