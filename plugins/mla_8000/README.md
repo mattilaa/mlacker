@@ -172,6 +172,34 @@ build/cmake/bin/mlacker examples/mla8000_demo.mlaproj
 `examples/jv_pads/build.sh mla8000` regenerates the project from
 `examples/jv_pads/mla8000_song.mla`.
 
+`examples/mla8000_keyfollow.mlaproj` demonstrates **Key Follow**. Three Mla
+8000s play the same patch: a resonant saw through the 24 dB low-pass at
+800 Hz. They differ only in Key Follow: 0 %, 50 % and 100 %. Each of the
+first three patterns plays an Am7 arpeggio that climbs four octaves from A-1
+to G-5 and comes back down, on one of them.
+
+- At 0 % the cutoff stays put. Low notes buzz, and high notes lose their
+  harmonics and go dull.
+- At 100 % the cutoff moves an octave for every octave played, so every note
+  keeps the same tone.
+
+The "Groove" pattern then uses the 100 % patch over a bass that is also
+key-followed, with Mla 08 drums. `examples/jv_pads/build.sh keyfollow`
+regenerates it.
+
+`examples/mla8000_supersaw_arp.mlaproj` puts Key Follow to work on a Super
+Saw arpeggio lead. It is an original trance song at 138 BPM in B-flat minor,
+in the same late-90s style. The arpeggio rolls in 16ths over two and a half
+octaves, through the 24 dB low-pass at 600 Hz, on two tracks with the same
+patch:
+
+- In the intro it plays at Key Follow 0 %, so its top notes are muffled.
+- At the drop, Key Follow 100 % takes over and the top notes ring as
+  brightly as the bottom ones.
+
+The CC1 column then opens it further through the breakdown and the build.
+`examples/jv_pads/build.sh supersaw_arp` regenerates it.
+
 ## Build and test
 
 From the repository root, `./build.sh --plugins` builds every plug-in,
