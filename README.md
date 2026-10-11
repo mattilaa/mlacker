@@ -1397,6 +1397,19 @@ samples.
   gated Super Saw stab, a Super Saw pad and a Super Saw lead, each with the
   plugin's chorus and delay, the CC1 columns sweeping their filters. Needs
   Mla 8000 installed (`./build.sh --plugins --install`).
+- `examples/mla8000_keyfollow.mlaproj`: Mla 8000's filter **Key Follow**,
+  heard by comparison. The same resonant saw arpeggio, climbing four octaves,
+  plays at Key Follow 0 %, 50 % and 100 %. At 0 % the high notes go dull;
+  at 100 % every note keeps the same tone. A groove using the 100 % patch
+  follows.
+- `examples/mla8000_supersaw_arp.mlaproj`: a Super Saw arpeggio lead on Mla
+  8000 in an original epic-trance song at 138 BPM in B-flat minor, in the
+  style of the late-90s string-theme remixes. A rolling 16th arpeggio spans
+  two and a half octaves. The intro plays it at Key Follow 0 %, so its top
+  notes are muffled; at the drop the same patch at Key Follow 100 % takes
+  over and the top notes ring out. Its mod wheel then opens it further
+  through the breakdown and the build. Sections: Intro, Drop, Breakdown,
+  Build, Peak.
 - `examples/supersaw_demo.mlaproj`: the Roland JP-8000 Super Saw (seven
   saws on Adam Szabo's measured detune and mix curves, random phases, a
   high-pass at the fundamental) in an original epic-trance song at 138 BPM in
@@ -1413,7 +1426,7 @@ row:
 build/cmake/bin/mlacker examples/footprint_demo.mlaproj
 ```
 
-`examples/jv_pads/build.sh footprint` (or `atmosphere`, `supersaw`, `mla8000`) regenerates a project
+`examples/jv_pads/build.sh footprint` (or `atmosphere`, `supersaw`, `mla8000`, `keyfollow`, `supersaw_arp`) regenerates a project
 and opens it. It synthesizes the samples (`make_pad.py`), builds the song
 generator (`<song>_song.mla`) against mlacker and runs it. It needs a built
 mlacker and the Mla plugins installed in `~/.local/plugins/VST3`.

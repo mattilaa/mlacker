@@ -6,6 +6,8 @@
 #   examples/jv_pads/build.sh supersaw     # examples/supersaw_demo.mlaproj
 #   examples/jv_pads/build.sh mla8000      # examples/mla8000_demo.mlaproj (no samples:
 #                                          # it plays the Mla 8000 plugin)
+#   examples/jv_pads/build.sh keyfollow    # examples/mla8000_keyfollow.mlaproj (Mla 8000)
+#   examples/jv_pads/build.sh supersaw_arp # examples/mla8000_supersaw_arp.mlaproj (Mla 8000)
 #
 # Synthesizes the pad samples (make_pad.py), compiles the song generator
 # (<song>_song.mla) against mlacker's modules and VST3 host, runs it to load
@@ -18,7 +20,9 @@ case "$song" in
     footprint) project=examples/footprint_demo.mlaproj; presets="footprint97 dawn2dusk jd800pluck jvchoir clockbling pizzicato" ;;
     supersaw) project=examples/supersaw_demo.mlaproj; presets="jp8000" ;;
     mla8000) project=examples/mla8000_demo.mlaproj; presets="" ;;
-    *) echo "Usage: $0 atmosphere|footprint|supersaw|mla8000" >&2; exit 2 ;;
+    keyfollow) project=examples/mla8000_keyfollow.mlaproj; presets="" ;;
+    supersaw_arp) project=examples/mla8000_supersaw_arp.mlaproj; presets="" ;;
+    *) echo "Usage: $0 atmosphere|footprint|supersaw|mla8000|keyfollow|supersaw_arp" >&2; exit 2 ;;
 esac
 cd "$(dirname "$0")/../.."
 root=$PWD
