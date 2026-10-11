@@ -12,7 +12,7 @@ set -e
 song=${1:-footprint}
 case "$song" in
     atmosphere) project=examples/atmosphere_pad.mlaproj; presets="atmosphere dawn2dusk footprint97" ;;
-    footprint) project=examples/footprint_demo.mlaproj; presets="footprint97 dawn2dusk jd800pluck jvchoir clockbling" ;;
+    footprint) project=examples/footprint_demo.mlaproj; presets="footprint97 dawn2dusk jd800pluck jvchoir clockbling pizzicato" ;;
     *) echo "Usage: $0 atmosphere|footprint" >&2; exit 2 ;;
 esac
 cd "$(dirname "$0")/../.."
@@ -27,6 +27,7 @@ for preset in $presets; do
         jd800pluck) name="JD-800 Pluck" ;;
         jvchoir) name="JV Choir" ;;
         clockbling) name="Clock Bling" ;;
+        pizzicato) name="Pizzicato" ;;
     esac
     python3 -I examples/jv_pads/make_pad.py "$preset" "$work/samples/$name.wav"
 done
