@@ -4,6 +4,8 @@
 #   examples/jv_pads/build.sh atmosphere   # examples/atmosphere_pad.mlaproj
 #   examples/jv_pads/build.sh footprint    # examples/footprint_demo.mlaproj
 #   examples/jv_pads/build.sh supersaw     # examples/supersaw_demo.mlaproj
+#   examples/jv_pads/build.sh mla8000      # examples/mla8000_demo.mlaproj (no samples:
+#                                          # it plays the Mla 8000 plugin)
 #
 # Synthesizes the pad samples (make_pad.py), compiles the song generator
 # (<song>_song.mla) against mlacker's modules and VST3 host, runs it to load
@@ -15,7 +17,8 @@ case "$song" in
     atmosphere) project=examples/atmosphere_pad.mlaproj; presets="atmosphere dawn2dusk footprint97" ;;
     footprint) project=examples/footprint_demo.mlaproj; presets="footprint97 dawn2dusk jd800pluck jvchoir clockbling pizzicato" ;;
     supersaw) project=examples/supersaw_demo.mlaproj; presets="jp8000" ;;
-    *) echo "Usage: $0 atmosphere|footprint|supersaw" >&2; exit 2 ;;
+    mla8000) project=examples/mla8000_demo.mlaproj; presets="" ;;
+    *) echo "Usage: $0 atmosphere|footprint|supersaw|mla8000" >&2; exit 2 ;;
 esac
 cd "$(dirname "$0")/../.."
 root=$PWD
@@ -37,6 +40,7 @@ done
 # The generator imports mlacker_ui modules, which resolve from src/.
 cp "examples/jv_pads/${song}_song.mla" "src/zz_${song}_song.mla"
 trap 'rm -f "$root/src/zz_${song}_song.mla"' EXIT
+trap 'exit 130' INT TERM
 subprojects/mlang/build/mlang -c "src/zz_${song}_song.mla" -o "$work/$song.o" -O2 -Wno-unwrap -Wno-colon-if >/dev/null
 cmake -S . -B "$work/cmake_$song" -DCMAKE_BUILD_TYPE=Release -DVST3_SDK_ROOT="$root/build/deps/vst3sdk" \
     -DMLACKER_MAIN_OBJECT="$work/$song.o" -DMLANG_ROOT="$root/subprojects/mlang" >/dev/null

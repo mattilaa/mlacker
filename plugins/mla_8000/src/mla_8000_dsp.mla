@@ -1,0 +1,492 @@
+/// \file mla_8000_dsp.mla
+/// \brief C-ABI bridge: one voice of a Roland JP-8000 style synthesizer.
+///
+/// Same split as Mla Sampler: each voice is a scalar-only value struct,
+/// heap-allocated with `calloc` and handed to the C++ VST3 layer as an opaque
+/// pointer. The C++ side allocates voices, runs the LFOs, portamento and the
+/// effects, and sends each voice its pitches, cutoff and levels at control
+/// rate; the voice runs the oscillators, the envelopes and the filter.
+///
+/// - **OSC 1** has the JP-8000's seven waveforms, each with two controls:
+///   - 0 Super Saw: seven saws at Adam Szabo's measured frequency ratios
+///     ("How to Emulate the Super Saw", 2010), CTRL 1 the Detune knob through
+///     his fitted 11th-order curve, CTRL 2 the Mix knob through his centre and
+///     side gain curves. Each saw starts at a random phase on every note, and
+///     a 12 dB high-pass at the fundamental removes the beating below it, as
+///     on the JP-8000.
+///   - 1 Triangle Mod: a triangle folded by a sine shaper, CTRL 1 the fold,
+///     CTRL 2 how far LFO 1 moves it.
+///   - 2 Noise: white noise, CTRL 1 darkens it (a one-pole low-pass).
+///   - 3 Feedback Osc: a sine phase-modulated by its own output, from sine
+///     (CTRL 1 at 0) towards a bright saw; CTRL 2 adds the octave above.
+///   - 4 Square: a pulse, CTRL 1 the width, CTRL 2 how far LFO 1 moves it
+///     (PWM).
+///   - 5 Saw, 6 Triangle.
+///   The saws and pulses are band-limited with polyBLEP.
+/// - **OSC 2**: 0 Square (its own width), 1 Saw, 2 Triangle, 3 Noise, with
+///   hard sync to OSC 1 and ring modulation (OSC 1 x OSC 2); Cross Mod moves
+///   OSC 1's frequency by OSC 2 (linear FM).
+/// - **Pitch envelope**: attack and decay, a bipolar depth in semitones, on
+///   both oscillators.
+/// - **Filter**: LPF, BPF or HPF, 12 or 24 dB/octave: topology-preserving
+///   state-variable filters (Cytomic), two in series for 24 dB with the
+///   resonance on the second, which nearly self-oscillates at the top. The
+///   input saturates gently (tanh) before the filter. Its envelope moves the
+///   cutoff by up to +-8 octaves.
+/// - **Amp**: an ADSR (linear attack, exponential decay and release), then a
+///   constant-power pan.
+///
+/// Pitches, the cutoff, the envelope depths and the filter coefficients
+/// update every 16 frames.
+
+mod dsp::envelope;
+use dsp::envelope::Adsr;
+
+extern fn calloc(count: i64, size: i64) -> ptr<Jp8Voice>;
+extern fn free(block: ptr<Jp8Voice>) -> void;
+extern fn sinf(value: f32) -> f32;
+extern fn cosf(value: f32) -> f32;
+extern fn tanf(value: f32) -> f32;
+extern fn tanhf(value: f32) -> f32;
+extern fn exp2f(value: f32) -> f32;
+extern fn sqrtf(value: f32) -> f32;
+extern fn fabsf(value: f32) -> f32;
+
+fn pi() -> f32 { return 3.14159265358979323846f; }
+fn control_frames() -> i32 { return 16; }
+
+fn clampf(value: f32, low: f32, high: f32) -> f32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+/// Szabo's fit of the JP-8000's Detune knob (0-1) to the scale of the side
+/// saws' frequency offsets: gentle up to about 0.6, then steep.
+fn supersaw_detune(x: f32) -> f32 {
+    var y: f32 = 10028.7312891634f;
+    y = y * x - 50818.8652045924f;
+    y = y * x + 111363.4808729368f;
+    y = y * x - 138150.6761080548f;
+    y = y * x + 106649.6679158292f;
+    y = y * x - 53046.9642751875f;
+    y = y * x + 17019.9518580080f;
+    y = y * x - 3425.0836591318f;
+    y = y * x + 404.2703938388f;
+    y = y * x - 24.1878824391f;
+    y = y * x + 0.6717417634f;
+    y = y * x + 0.0030115596f;
+    return y;
+}
+
+/// The seven saws' frequency offsets at full detune, centre saw at 0.
+fn supersaw_offset(index: i32) -> f32 {
+    if index == 0 { return -0.11002313f; }
+    if index == 1 { return -0.06288439f; }
+    if index == 2 { return -0.01952356f; }
+    if index == 3 { return 0.0f; }
+    if index == 4 { return 0.01991221f; }
+    if index == 5 { return 0.06216538f; }
+    return 0.10745242f;
+}
+
+/// The polyBLEP residual at phase `t` (0-1) for a step of `dt` per sample.
+fn blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x: f32 = t / dt;
+        return x + x - x * x - 1.0f;
+    }
+    if t > 1.0f - dt {
+        let x: f32 = (t - 1.0f) / dt;
+        return x * x + x + x + 1.0f;
+    }
+    return 0.0f;
+}
+
+fn wrap(phase: f32) -> f32 {
+    if phase >= 1.0f { return phase - 1.0f; }
+    if phase < 0.0f { return phase + 1.0f; }
+    return phase;
+}
+
+fn saw(t: f32, dt: f32) -> f32 { return 2.0f * t - 1.0f - blep(t, dt); }
+
+/// A pulse high for `width` of the cycle: the difference of two saws.
+fn pulse(t: f32, dt: f32, width: f32) -> f32 {
+    return saw(t, dt) - saw(wrap(t + width), dt) + 2.0f * width - 1.0f;
+}
+
+fn triangle(t: f32) -> f32 { return 4.0f * fabsf(t - 0.5f) - 1.0f; }
+
+/// A topology-preserving state-variable filter's state.
+struct Svf { var ic1: f32; var ic2: f32; };
+
+/// One TPT state-variable step with gain `g` and damping `k`; `kind` 0
+/// low-pass, 1 band-pass (unity peak), 2 high-pass.
+fn svf_run(state: &mut Svf, g: f32, k: f32, input: f32, kind: i32) -> f32 {
+    var s: Svf = Svf { ic1: 0.0f, ic2: 0.0f }; s = state;
+    let a1: f32 = 1.0f / (1.0f + g * (g + k));
+    let v3: f32 = input - s.ic2;
+    let v1: f32 = a1 * s.ic1 + g * a1 * v3;
+    let v2: f32 = s.ic2 + g * v1;
+    s.ic1 = 2.0f * v1 - s.ic1;
+    s.ic2 = 2.0f * v2 - s.ic2;
+    state = s;
+    if kind == 1 { return k * v1; }
+    if kind == 2 { return input - k * v1 - v2; }
+    return v2;
+}
+
+/// @brief One voice: oscillators, envelopes, filter and amp.
+struct Jp8Voice {
+    var rate: f32;
+    var counter: i32;
+    var seed: i64;
+
+    // --- OSC 1 ------------------------------------------------------------
+    var wave1: i32;
+    var ctrl1: f32;
+    var ctrl2: f32;
+    var hz1: f32;
+    var s0: f32; var s1: f32; var s2: f32; var s3: f32; var s4: f32; var s5: f32; var s6: f32;
+    var centre_gain: f32;
+    var side_gain: f32;
+    var spread: f32;
+    var phase1: f32;
+    var dt1: f32;
+    var feedback: f32;
+    var noise_lp: f32;
+    /// The supersaw's high-pass at the fundamental (TPT SVF).
+    var hp: Svf;
+    var hp_g: f32;
+
+    // --- OSC 2 ------------------------------------------------------------
+    var wave2: i32;
+    var hz2: f32;
+    var phase2: f32;
+    var dt2: f32;
+    var width2: f32;
+    var sync: bool;
+    var ring: bool;
+    var cross: f32;
+    var balance: f32;
+    var last2: f32;
+
+    // --- Modulation from the C++ side -------------------------------------
+    /// LFO 1 now (-1 .. 1), for PWM and the triangle fold.
+    var lfo: f32;
+    var pitch_env_depth: f32;
+    var pitch_attack: f32;
+    var pitch_decay: f32;
+    var pitch_env: f32;
+    var pitch_stage: i32;
+    var pitch_factor: f32;
+
+    // --- Filter -----------------------------------------------------------
+    var filter_type: i32;
+    var slope24: bool;
+    var cutoff: f32;
+    var resonance: f32;
+    var env_depth: f32;
+    var drive: f32;
+    var f1: Svf;
+    var f2: Svf;
+    var g: f32;
+    var k1: f32;
+    var k2: f32;
+
+    // --- Envelopes, level, pan --------------------------------------------
+    var amp: Adsr;
+    var fenv: Adsr;
+    var level: f32;
+    var left_gain: f32;
+    var right_gain: f32;
+};
+
+impl Jp8Voice {
+    fn random(self: &mut Self) -> f32 {
+        self.seed = (self.seed * 1103515245 + 12345) % 2147483648;
+        if self.seed < 0 { self.seed = self.seed + 2147483648; }
+        return f32(self.seed) / 2147483648.0f;
+    }
+
+    fn noise(self: &mut Self) -> f32 { return self.random() * 2.0f - 1.0f; }
+
+    /// Mix curves (Szabo): the centre saw falls and the six side saws rise
+    /// as Mix goes up.
+    fn update_mix(self: &mut Self) -> void {
+        let x: f32 = clampf(self.ctrl2, 0.0f, 1.0f);
+        self.centre_gain = -0.55366f * x + 0.99785f;
+        self.side_gain = -0.73764f * x * x + 1.2841f * x + 0.044372f;
+        self.spread = supersaw_detune(clampf(self.ctrl1, 0.0f, 1.0f));
+    }
+
+    fn svf_g(self: Jp8Voice, hz: f32) -> f32 {
+        let limited: f32 = clampf(hz, 10.0f, self.rate * 0.45f);
+        return tanf(pi() * limited / self.rate);
+    }
+
+    /// Pitch envelope, pitches, cutoff and the filter's coefficients.
+    fn control(self: &mut Self) -> void {
+        let frames: f32 = f32(control_frames());
+        if self.pitch_stage == 1 {
+            let step: f32 = self.pitch_attack <= 0.0f ? 1.0f : frames / (self.pitch_attack * self.rate);
+            self.pitch_env = self.pitch_env + step;
+            if self.pitch_env >= 1.0f { self.pitch_env = 1.0f; self.pitch_stage = 2; }
+        } else if self.pitch_stage == 2 {
+            let step: f32 = self.pitch_decay <= 0.0f ? 1.0f : frames / (self.pitch_decay * self.rate);
+            self.pitch_env = self.pitch_env - step;
+            if self.pitch_env <= 0.0f { self.pitch_env = 0.0f; self.pitch_stage = 0; }
+        }
+        self.pitch_factor = exp2f(self.pitch_env * self.pitch_env_depth / 12.0f);
+        self.dt1 = clampf(self.hz1 * self.pitch_factor / self.rate, 0.0f, 0.45f);
+        self.dt2 = clampf(self.hz2 * self.pitch_factor / self.rate, 0.0f, 0.45f);
+        self.hp_g = self.svf_g(self.hz1 * self.pitch_factor);
+        let octaves: f32 = self.env_depth * self.fenv.current_level();
+        self.g = self.svf_g(self.cutoff * exp2f(octaves));
+        let r: f32 = clampf(self.resonance, 0.0f, 1.0f);
+        if self.slope24 {
+            // Butterworth first stage; the second carries the resonance.
+            self.k1 = 1.41421356f - 0.6f * r;
+            self.k2 = 1.41421356f * (1.0f - r) + 0.06f;
+        } else {
+            self.k1 = 2.0f * (1.0f - r) + 0.06f;
+            self.k2 = self.k1;
+        }
+    }
+
+    fn supersaw(self: &mut Self) -> f32 {
+        let base: f32 = self.dt1;
+        var out: f32 = 0.0f;
+        let d: f32 = self.spread;
+        let d0: f32 = base * (1.0f + supersaw_offset(0) * d);
+        let d1: f32 = base * (1.0f + supersaw_offset(1) * d);
+        let d2: f32 = base * (1.0f + supersaw_offset(2) * d);
+        let d4: f32 = base * (1.0f + supersaw_offset(4) * d);
+        let d5: f32 = base * (1.0f + supersaw_offset(5) * d);
+        let d6: f32 = base * (1.0f + supersaw_offset(6) * d);
+        out = out + (saw(self.s0, d0) + saw(self.s1, d1) + saw(self.s2, d2)) * self.side_gain;
+        out = out + saw(self.s3, base) * self.centre_gain;
+        out = out + (saw(self.s4, d4) + saw(self.s5, d5) + saw(self.s6, d6)) * self.side_gain;
+        self.s0 = wrap(self.s0 + d0); self.s1 = wrap(self.s1 + d1); self.s2 = wrap(self.s2 + d2);
+        self.s3 = wrap(self.s3 + base);
+        self.s4 = wrap(self.s4 + d4); self.s5 = wrap(self.s5 + d5); self.s6 = wrap(self.s6 + d6);
+        // The high-pass at the fundamental.
+        var hp: Svf = self.hp;
+        let high: f32 = svf_run(&mut hp, self.hp_g, 1.41421356f, out, 2);
+        self.hp = hp;
+        return high * 0.6f;
+    }
+
+    /// OSC 1's sample at the current phase step `dt` (cross mod applied).
+    fn osc1(self: &mut Self, dt: f32) -> f32 {
+        let t: f32 = self.phase1;
+        var out: f32 = 0.0f;
+        let w: i32 = self.wave1;
+        if w == 1 {
+            let fold: f32 = clampf(self.ctrl1 + self.ctrl2 * self.lfo * 0.5f, 0.0f, 1.0f);
+            out = sinf(triangle(t) * (1.0f + 4.0f * fold) * pi() * 0.5f);
+        } else if w == 2 {
+            let white: f32 = self.noise();
+            let a: f32 = 1.0f - clampf(self.ctrl1, 0.0f, 0.98f);
+            self.noise_lp = self.noise_lp + a * (white - self.noise_lp);
+            out = self.noise_lp;
+        } else if w == 3 {
+            let amount: f32 = clampf(self.ctrl1, 0.0f, 1.0f) * 1.6f;
+            let fundamental: f32 = sinf(2.0f * pi() * t + amount * self.feedback);
+            self.feedback = 0.5f * (self.feedback + fundamental);
+            let upper: f32 = sinf(4.0f * pi() * t + amount * self.feedback);
+            out = fundamental + clampf(self.ctrl2, 0.0f, 1.0f) * 0.6f * upper;
+        } else if w == 4 {
+            let width: f32 = clampf(0.5f - 0.45f * self.ctrl1 + 0.45f * self.ctrl2 * self.lfo, 0.03f, 0.97f);
+            out = pulse(t, dt, width);
+        } else if w == 5 {
+            out = saw(t, dt);
+        } else {
+            out = triangle(t);
+        }
+        self.phase1 = wrap(t + dt);
+        return out;
+    }
+
+    fn osc2(self: &mut Self, wrapped: bool) -> f32 {
+        if self.sync && wrapped { self.phase2 = 0.0f; }
+        let t: f32 = self.phase2;
+        let dt: f32 = self.dt2;
+        var out: f32 = 0.0f;
+        if self.wave2 == 0 { out = pulse(t, dt, clampf(self.width2, 0.03f, 0.97f)); }
+        else if self.wave2 == 1 { out = saw(t, dt); }
+        else if self.wave2 == 2 { out = triangle(t); }
+        else { out = self.noise(); }
+        self.phase2 = wrap(t + dt);
+        return out;
+    }
+
+    fn process(self: &mut Self, out_right: ptr<f32>) -> f32 {
+        if self.counter <= 0 { self.control(); self.counter = control_frames(); }
+        self.counter = self.counter - 1;
+        let amp: f32 = self.amp.process();
+        self.fenv.process();
+        // OSC 2 first: cross mod moves OSC 1's frequency by it.
+        let before: f32 = self.phase1;
+        var dt: f32 = self.dt1;
+        if self.cross > 0.0f { dt = clampf(dt * (1.0f + self.cross * 4.0f * self.last2), 0.0f, 0.45f); }
+        var one: f32 = 0.0f;
+        if self.wave1 == 0 {
+            one = self.supersaw();
+            self.phase1 = wrap(before + dt);
+        } else {
+            one = self.osc1(dt);
+        }
+        let wrapped: bool = self.phase1 < before;
+        var two: f32 = self.osc2(wrapped);
+        self.last2 = two;
+        if self.ring { two = two * one; }
+        let b: f32 = clampf(self.balance, 0.0f, 1.0f);
+        let mixed: f32 = one * (1.0f - b) + two * b;
+        var x: f32 = tanhf(mixed * self.drive) / self.drive;
+        var a: Svf = self.f1;
+        x = svf_run(&mut a, self.g, self.k1, x, self.filter_type);
+        self.f1 = a;
+        if self.slope24 {
+            var b: Svf = self.f2;
+            x = svf_run(&mut b, self.g, self.k2, x, self.filter_type);
+            self.f2 = b;
+        }
+        // The resonant peak saturates rather than growing without bound.
+        x = tanhf(x * 0.5f) * 2.0f;
+        let out: f32 = x * amp * self.level;
+        unsafe { *out_right = out * self.right_gain; }
+        return out * self.left_gain;
+    }
+}
+
+// --- C ABI -------------------------------------------------------------------
+
+/// @brief Allocate an idle voice for a sample rate (8 kHz .. 384 kHz).
+fn mla8000_voice_create(sample_rate: f32) -> ptr<Jp8Voice> {
+    let rate: f32 = clampf(sample_rate, 8000.0f, 384000.0f);
+    let voice: ptr<Jp8Voice> = calloc(1, size_of(Jp8Voice));
+    unsafe {
+        (*voice).rate = rate;
+        (*voice).seed = 22695477;
+        (*voice).amp = Adsr::new(rate);
+        (*voice).fenv = Adsr::new(rate);
+        (*voice).ctrl1 = 0.7f; (*voice).ctrl2 = 0.8f;
+        (*voice).hz1 = 261.63f; (*voice).hz2 = 261.63f;
+        (*voice).width2 = 0.5f;
+        (*voice).cutoff = 20000.0f;
+        (*voice).drive = 1.0f;
+        (*voice).level = 1.0f;
+        (*voice).left_gain = 0.70710678f; (*voice).right_gain = 0.70710678f;
+        (*voice).pitch_factor = 1.0f;
+        (*voice).update_mix();
+        (*voice).control();
+    }
+    return voice;
+}
+
+/// @brief Release a voice created by `mla8000_voice_create`.
+fn mla8000_voice_destroy(voice: ptr<Jp8Voice>) { free(voice); }
+
+/// @brief Set one setting (see plugin.cpp's DspIndex):
+/// 0 OSC 1 wave (0-6), 1 CTRL 1, 2 CTRL 2 (0-1), 3 OSC 1 Hz, 4 OSC 2 wave
+/// (0-3), 5 OSC 2 Hz, 6 OSC 2 width (0-1), 7 sync, 8 ring (0/1), 9 cross mod
+/// (0-1), 10 balance (0 OSC 1 .. 1 OSC 2), 11 LFO 1 (-1..1), 12 pitch env
+/// depth (semitones), 13 pitch attack, 14 pitch decay (s), 15 filter type
+/// (0 LP, 1 BP, 2 HP), 16 slope (0 12 dB, 1 24 dB), 17 cutoff (Hz),
+/// 18 resonance (0-1), 19 filter env depth (octaves), 20-23 filter ADSR
+/// (s, s, 0-1, s), 24-27 amp ADSR, 28 level (linear), 29 pan (-1..1),
+/// 30 drive (1 = clean .. 4).
+fn mla8000_voice_set(voice: ptr<Jp8Voice>, index: i32, value: f32) {
+    unsafe {
+        if index == 0 { (*voice).wave1 = i32(clampf(value, 0.0f, 6.0f) + 0.5f); }
+        else if index == 1 { (*voice).ctrl1 = clampf(value, 0.0f, 1.0f); (*voice).update_mix(); }
+        else if index == 2 { (*voice).ctrl2 = clampf(value, 0.0f, 1.0f); (*voice).update_mix(); }
+        else if index == 3 { (*voice).hz1 = clampf(value, 0.0f, 20000.0f); }
+        else if index == 4 { (*voice).wave2 = i32(clampf(value, 0.0f, 3.0f) + 0.5f); }
+        else if index == 5 { (*voice).hz2 = clampf(value, 0.0f, 20000.0f); }
+        else if index == 6 { (*voice).width2 = clampf(value, 0.0f, 1.0f); }
+        else if index == 7 { (*voice).sync = value > 0.5f; }
+        else if index == 8 { (*voice).ring = value > 0.5f; }
+        else if index == 9 { (*voice).cross = clampf(value, 0.0f, 1.0f); }
+        else if index == 10 { (*voice).balance = clampf(value, 0.0f, 1.0f); }
+        else if index == 11 { (*voice).lfo = clampf(value, -1.0f, 1.0f); }
+        else if index == 12 { (*voice).pitch_env_depth = clampf(value, -63.0f, 63.0f); }
+        else if index == 13 { (*voice).pitch_attack = clampf(value, 0.0f, 10.0f); }
+        else if index == 14 { (*voice).pitch_decay = clampf(value, 0.0f, 10.0f); }
+        else if index == 15 { (*voice).filter_type = i32(clampf(value, 0.0f, 2.0f) + 0.5f); }
+        else if index == 16 { (*voice).slope24 = value > 0.5f; }
+        else if index == 17 { (*voice).cutoff = clampf(value, 10.0f, 22000.0f); }
+        else if index == 18 { (*voice).resonance = clampf(value, 0.0f, 1.0f); }
+        else if index == 19 { (*voice).env_depth = clampf(value, -8.0f, 8.0f); }
+        else if index == 20 { (*voice).fenv.set_attack_seconds(value); }
+        else if index == 21 { (*voice).fenv.set_decay_seconds(value); }
+        else if index == 22 { (*voice).fenv.set_sustain(value); }
+        else if index == 23 { (*voice).fenv.set_release_seconds(value); }
+        else if index == 24 { (*voice).amp.set_attack_seconds(value); }
+        else if index == 25 { (*voice).amp.set_decay_seconds(value); }
+        else if index == 26 { (*voice).amp.set_sustain(value); }
+        else if index == 27 { (*voice).amp.set_release_seconds(value); }
+        else if index == 28 { (*voice).level = clampf(value, 0.0f, 4.0f); }
+        else if index == 29 {
+            let angle: f32 = (clampf(value, -1.0f, 1.0f) + 1.0f) * pi() * 0.25f;
+            (*voice).left_gain = cosf(angle); (*voice).right_gain = sinf(angle);
+        }
+        else if index == 30 { (*voice).drive = clampf(value, 1.0f, 4.0f); }
+    }
+}
+
+/// @brief Recompute the pitches, cutoff and filter now rather than at the
+/// next 16-frame step (after a note's settings, before its first sample).
+fn mla8000_voice_update(voice: ptr<Jp8Voice>) { unsafe { (*voice).control(); (*voice).counter = control_frames(); } }
+
+/// @brief Start a note: `retrigger` 1 restarts the oscillators at random
+/// phases (the Super Saw's free-running saws) and clears the filter; the
+/// envelopes restart from their current level either way.
+fn mla8000_voice_note_on(voice: ptr<Jp8Voice>, retrigger: i32) {
+    unsafe {
+        if retrigger != 0 {
+            (*voice).s0 = (*voice).random(); (*voice).s1 = (*voice).random(); (*voice).s2 = (*voice).random();
+            (*voice).s3 = (*voice).random(); (*voice).s4 = (*voice).random(); (*voice).s5 = (*voice).random();
+            (*voice).s6 = (*voice).random();
+            (*voice).phase1 = 0.0f; (*voice).phase2 = 0.0f; (*voice).feedback = 0.0f;
+            if !(*voice).amp.is_active() {
+                (*voice).f1 = Svf { ic1: 0.0f, ic2: 0.0f }; (*voice).f2 = Svf { ic1: 0.0f, ic2: 0.0f };
+                (*voice).hp = Svf { ic1: 0.0f, ic2: 0.0f };
+            }
+        }
+        (*voice).pitch_env = 0.0f; (*voice).pitch_stage = 1;
+        (*voice).amp.gate_on(); (*voice).fenv.gate_on();
+        (*voice).control(); (*voice).counter = control_frames();
+    }
+}
+
+/// @brief Release the note: both envelopes enter their release.
+fn mla8000_voice_note_off(voice: ptr<Jp8Voice>) {
+    unsafe { (*voice).amp.gate_off(); (*voice).fenv.gate_off(); }
+}
+
+/// @brief Silence at once.
+fn mla8000_voice_reset(voice: ptr<Jp8Voice>) {
+    unsafe {
+        (*voice).amp.reset(); (*voice).fenv.reset();
+        (*voice).f1 = Svf { ic1: 0.0f, ic2: 0.0f }; (*voice).f2 = Svf { ic1: 0.0f, ic2: 0.0f };
+        (*voice).hp = Svf { ic1: 0.0f, ic2: 0.0f };
+    }
+}
+
+/// @brief 1 while the amp envelope runs, else 0.
+fn mla8000_voice_active(voice: ptr<Jp8Voice>) -> i32 {
+    unsafe { return (*voice).amp.is_active() ? 1 : 0; }
+}
+
+/// @brief The amp envelope's level now (0-1), for voice stealing.
+fn mla8000_voice_level(voice: ptr<Jp8Voice>) -> f32 {
+    unsafe { return (*voice).amp.current_level(); }
+}
+
+/// @brief Process one sample (left returned, right through `out_right`).
+fn mla8000_voice_process(voice: ptr<Jp8Voice>, out_right: ptr<f32>) -> f32 {
+    unsafe { return (*voice).process(out_right); }
+}

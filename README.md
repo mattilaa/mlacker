@@ -7,8 +7,9 @@ and a native VST3 host. The tracker's UI and model live in `modules/mlacker_ui/`
 instruments, the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
 own carrier synth), [Mla Speech](plugins/mla_speech) (an Atari ST style
 speech synthesizer that says a pattern's comment texts),
-[Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines) and
-[Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+[Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines),
+[Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write) and
+[Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run
@@ -1391,6 +1392,11 @@ samples.
   Breakdown, Build, Peak.
 - `examples/atmosphere_pad.mlaproj`: "Atmosphere", "Dawn 2 Dusk" and
   "Footprint 97" pads in a short trance song at 136 BPM.
+- `examples/mla8000_demo.mlaproj`: the same kind of song played on the
+  [Mla 8000](plugins/mla_8000) plugin instead of samples: a mono bass, a
+  gated Super Saw stab, a Super Saw pad and a Super Saw lead, each with the
+  plugin's chorus and delay, the CC1 columns sweeping their filters. Needs
+  Mla 8000 installed (`./build.sh --plugins --install`).
 - `examples/supersaw_demo.mlaproj`: the Roland JP-8000 Super Saw (seven
   saws on Adam Szabo's measured detune and mix curves, random phases, a
   high-pass at the fundamental) in an original epic-trance song at 138 BPM in
@@ -1407,7 +1413,7 @@ row:
 build/cmake/bin/mlacker examples/footprint_demo.mlaproj
 ```
 
-`examples/jv_pads/build.sh footprint` (or `atmosphere`, `supersaw`) regenerates a project
+`examples/jv_pads/build.sh footprint` (or `atmosphere`, `supersaw`, `mla8000`) regenerates a project
 and opens it. It synthesizes the samples (`make_pad.py`), builds the song
 generator (`<song>_song.mla`) against mlacker and runs it. It needs a built
 mlacker and the Mla plugins installed in `~/.local/plugins/VST3`.
