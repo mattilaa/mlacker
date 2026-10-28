@@ -14,7 +14,9 @@
 ///   octave with every octave played, so the top notes ring as brightly as
 ///   the bottom ones.
 /// The mod wheel (Wheel > Cutoff) opens the 100 % arpeggio further, through
-/// the breakdown and the build. Needs Mla 8000 installed in
+/// the breakdown and the build. A MlaPump on the bass, the pad and the
+/// arpeggios ducks them under every kick (the sidechain pump). Needs Mla
+/// 8000, Mla 08, MlaVerb, MlaLimiter and MlaPump installed in
 /// ~/.local/plugins/VST3.
 mod mlacker_ui::app;
 mod tui::table;
@@ -169,9 +171,28 @@ fn hall(system: &mut AudioSystem, plugins: str8, id: i32, size: f64, decay: f64,
     system = audio; return ok;
 }
 
+/// A MlaPump insert `id`: the sidechain pump, locked to the sequencer's
+/// beat so the gain dips under every kick, by `depth` (0-1), and swells back
+/// over `release` of the beat, late (Curve), for the breathing of a trance
+/// mix.
+fn pump(system: &mut AudioSystem, plugins: str8, id: i32, depth: f64, release: f64) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    let path: str8 = format!("{}/MlaPump.vst3", plugins);
+    if audio.add_insert(path, id) != id { println!("Insert {} failed", id); system = audio; return false; }
+    free(path);
+    let v: i64 = wide(id) + 40;
+    // Rate 2 = 1/4; Attack 0 .. 20 ms, Hold 0 .. 0.5, Release 0.05 .. 1.
+    let ok: bool = set_named(audio, v, "Rate", 2.0) && set_named(audio, v, "Depth", depth)
+        && set_named(audio, v, "Attack", 2.0 / 20.0) && set_named(audio, v, "Hold", 0.06 / 0.5)
+        && set_named(audio, v, "Release", (release - 0.05) / 0.95) && set_named(audio, v, "Curve", 0.45);
+    system = audio; return ok;
+}
+
 /// The five tracks, the key-followed arpeggio selected, a hall on the pad and
-/// on both arpeggios, a limiter on every track.
-fn song_pattern() -> SequenceTable {
+/// on both arpeggios, a limiter on every track and, where the kick plays
+/// (`pumped`), the sidechain pump after the limiters on the bass, the pad and
+/// the arpeggios.
+fn song_pattern(pumped: bool) -> SequenceTable {
     var table: SequenceTable = SequenceTable::empty();
     table.set_length(64, song_area());
     let names: list<str8> = ["Drums", "Bass", "Supersaw pad", "Arp (Key Follow 0%)", "Arp (Key Follow 100%)"];
@@ -184,6 +205,11 @@ fn song_pattern() -> SequenceTable {
     // A limiter at the end of every chain (inserts 4-8).
     table.set_insert(drums(), 0, 4); table.set_insert(bass(), 0, 5); table.set_insert(pad(), 1, 6);
     table.set_insert(arp_closed(), 1, 7); table.set_insert(arp(), 1, 8);
+    // The pump last, so the limiters don't flatten it (inserts 9-12).
+    if pumped {
+        table.set_insert(bass(), 1, 9); table.set_insert(pad(), 2, 10);
+        table.set_insert(arp_closed(), 2, 11); table.set_insert(arp(), 2, 12);
+    }
     table.selected_row = 0; table.selected_column = table.track_start(arp());
     return table;
 }
@@ -324,27 +350,32 @@ fn main() -> i32 {
     for slot in 2..6 { ok = ok && set_named(audio, slot, "Output", 1.0) && set_named(audio, slot, "Level", 1.0); }
     ok = ok && hall(&mut audio, plugins, 1, 0.95, 0.85, 0.4) && hall(&mut audio, plugins, 2, 0.8, 0.7, 0.25);
     ok = ok && hall(&mut audio, plugins, 3, 0.8, 0.7, 0.25);
-    // Limiters, as on a mastered track: each channel driven 6-10 dB into its
-    // ceiling, so the arpeggio and the pad hold their level between notes.
-    ok = ok && limiter(&mut audio, plugins, 4, -6.0, -6.0, 0.6, 0.3) && limiter(&mut audio, plugins, 5, -8.0, -5.0, 0.3, 0.7);
-    ok = ok && limiter(&mut audio, plugins, 6, -10.0, -4.0, 0.2, 0.6);
-    ok = ok && limiter(&mut audio, plugins, 7, -12.0, -2.0, 0.3, 0.6) && limiter(&mut audio, plugins, 8, -12.0, -2.0, 0.3, 0.6);
+    // Limiters, as on a mastered track: each channel driven 6-14 dB into its
+    // ceiling, so the arpeggio and the pad hold their level between notes;
+    // the synths' ceilings sit high, as the pump after them takes them down.
+    ok = ok && limiter(&mut audio, plugins, 4, -6.0, -6.0, 0.6, 0.3) && limiter(&mut audio, plugins, 5, -10.0, -3.0, 0.3, 0.7);
+    ok = ok && limiter(&mut audio, plugins, 6, -12.0, -2.0, 0.2, 0.6);
+    ok = ok && limiter(&mut audio, plugins, 7, -14.0, 0.0, 0.3, 0.6) && limiter(&mut audio, plugins, 8, -14.0, 0.0, 0.3, 0.6);
+    // The pump: the pad and the arpeggios dip deepest and breathe back over
+    // most of the beat; the bass dips less and recovers by its offbeat note.
+    ok = ok && pump(&mut audio, plugins, 9, 0.5, 0.4) && pump(&mut audio, plugins, 10, 0.8, 0.75);
+    ok = ok && pump(&mut audio, plugins, 11, 0.7, 0.65) && pump(&mut audio, plugins, 12, 0.7, 0.65);
     if !ok { return 1; }
 
     // Intro: kick and hat, the closed (0 %) arpeggio over the pad opening.
-    var intro: SequenceTable = song_pattern(); kick_part(&mut intro); arp_part(&mut intro, arp_closed(), 92, 4);
+    var intro: SequenceTable = song_pattern(true); kick_part(&mut intro); arp_part(&mut intro, arp_closed(), 92, 4);
     pad_part(&mut intro, 80); sweep(&mut intro, pad(), 0, 64, 0, 60);
     // Drop: the key-followed arpeggio takes over, full drums and bass.
-    var drop: SequenceTable = song_pattern(); drum_part(&mut drop, true); bass_part(&mut drop);
+    var drop: SequenceTable = song_pattern(true); drum_part(&mut drop, true); bass_part(&mut drop);
     arp_part(&mut drop, arp(), 96, 4); pad_part(&mut drop, 70); sweep(&mut drop, pad(), 0, 1, 60, 60);
     // Breakdown: no drums, the pad and the arpeggio, its wheel opening it.
-    var down: SequenceTable = song_pattern(); pad_part(&mut down, 96); sweep(&mut down, pad(), 0, 64, 30, 90);
+    var down: SequenceTable = song_pattern(false); pad_part(&mut down, 96); sweep(&mut down, pad(), 0, 64, 30, 90);
     arp_part(&mut down, arp(), 90, 4); sweep(&mut down, arp(), 0, 64, 0, 50);
     // Build: the snare roll, the arpeggio screaming open.
-    var build: SequenceTable = song_pattern(); build_part(&mut build); bass_part(&mut build);
+    var build: SequenceTable = song_pattern(true); build_part(&mut build); bass_part(&mut build);
     arp_part(&mut build, arp(), 100, 4); sweep(&mut build, arp(), 0, 60, 50, 110);
     // Peak: everything, the arpeggio half open on the wheel.
-    var peak: SequenceTable = song_pattern(); drum_part(&mut peak, true); bass_part(&mut peak);
+    var peak: SequenceTable = song_pattern(true); drum_part(&mut peak, true); bass_part(&mut peak);
     arp_part(&mut peak, arp(), 104, 4); sweep(&mut peak, arp(), 0, 1, 64, 64);
     pad_part(&mut peak, 76); sweep(&mut peak, pad(), 0, 1, 90, 90);
 

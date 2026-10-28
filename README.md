@@ -9,7 +9,8 @@ own carrier synth), [Mla Speech](plugins/mla_speech) (an Atari ST style
 speech synthesizer that says a pattern's comment texts),
 [Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines),
 [Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write) and
-[Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+[Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`,
+as is [Mla Pump](plugins/mla_pump) (a tempo-locked sidechain pump). [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 ## Build and run
@@ -1411,7 +1412,10 @@ samples.
   notes are muffled; at the drop the same patch at Key Follow 100 % takes
   over and the top notes ring out. Its mod wheel then opens it further
   through the breakdown and the build. A deep kick, a sub bass and an
-  MlaLimiter on every track give it the density of a mastered track.
+  MlaLimiter on every track give it the density of a mastered track, and
+  [Mla Pump](plugins/mla_pump) ducks the bass, the pad and the arpeggios
+  under every kick (a sidechain pump of about 9 dB), except in the
+  breakdown.
   Sections: Intro, Drop, Breakdown, Build, Peak.
 - `examples/supersaw_demo.mlaproj`: the Roland JP-8000 Super Saw (seven
   saws on Adam Szabo's measured detune and mix curves, random phases, a

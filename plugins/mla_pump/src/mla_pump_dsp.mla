@@ -1,0 +1,117 @@
+/// \file mla_pump_dsp.mla
+/// \brief C-ABI bridge: a tempo-locked sidechain pump (a volume ducker on
+/// the beat grid, as LFO Tool or Kickstart do it).
+///
+/// Every period (a 1/4 note by default) the gain dips under the kick and
+/// swells back:
+///
+/// - **Attack**: from full gain down to 1 - Depth, linearly, in Attack ms,
+///   starting on the grid line.
+/// - **Hold**: stays down for Hold (a fraction of the period).
+/// - **Release**: swells back to full gain over Release (a fraction of the
+///   period), along x^(1 + 3 Curve): Curve 0 is a straight ramp, higher
+///   values stay down longer and come back late, the trance "breathing".
+///
+/// The grid follows the host's quarter-note position while it plays, so
+/// the dips land on the sequencer's beats (the kick); otherwise it runs free
+/// at the host or manual tempo. The pump is a scalar value struct,
+/// heap-allocated with `calloc` and handed to the C++ VST3 layer as an
+/// opaque pointer.
+extern fn calloc(count: i64, size: i64) -> ptr<Pump>;
+extern fn free(block: ptr<Pump>) -> void;
+extern fn floor(value: f64) -> f64;
+extern fn powf(base: f32, exponent: f32) -> f32;
+
+fn clampf(value: f32, low: f32, high: f32) -> f32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+struct Pump {
+    var rate: f64;
+    /// Host or manual tempo, BPM.
+    var tempo: f64;
+    /// Position in quarter notes.
+    var beat: f64;
+    /// Length of one pump, in quarter notes.
+    var period: f64;
+    var depth: f32;
+    var attack_ms: f32;
+    var hold: f32;
+    var release: f32;
+    var curve: f32;
+    /// The last gain applied, for metering and the tests.
+    var gain: f32;
+};
+
+impl Pump {
+    /// The gain at the current position.
+    fn shape(self: Pump) -> f32 {
+        // The tolerance keeps rounding in the running position from landing
+        // a frame short of the grid line.
+        let periods: f64 = self.beat / self.period + 0.000000001;
+        let frac: f32 = clampf(f32(periods - floor(periods)), 0.0f, 1.0f);
+        let floor_gain: f32 = 1.0f - self.depth;
+        let attack: f32 = f32(f64(self.attack_ms) * 0.001 * self.tempo / 60.0 / self.period);
+        if frac < attack { return 1.0f - self.depth * frac / attack; }
+        let release: f32 = clampf(self.release, 0.0001f, clampf(1.0f - attack - self.hold, 0.0001f, 1.0f));
+        let x: f32 = clampf((frac - attack - self.hold) / release, 0.0f, 1.0f);
+        return floor_gain + (1.0f - floor_gain) * powf(x, 1.0f + 3.0f * self.curve);
+    }
+    /// One frame's gain, then advance the position.
+    fn step(self: &mut Self) -> f32 {
+        self.gain = self.shape();
+        self.beat = self.beat + self.tempo / 60.0 / self.rate;
+        return self.gain;
+    }
+}
+
+/// @brief A pump at `sample_rate`, a 1/4 note at 120 BPM with the defaults.
+fn mlapump_create(sample_rate: f32) -> ptr<Pump> {
+    let handle: ptr<Pump> = calloc(1, size_of(Pump));
+    unsafe {
+        (*handle).rate = f64(clampf(sample_rate, 8000.0f, 384000.0f));
+        (*handle).tempo = 120.0;
+        (*handle).period = 1.0;
+        (*handle).depth = 0.7f;
+        (*handle).attack_ms = 1.0f;
+        (*handle).hold = 0.05f;
+        (*handle).release = 0.55f;
+        (*handle).curve = 0.4f;
+        (*handle).gain = 1.0f;
+    }
+    return handle;
+}
+fn mlapump_destroy(handle: ptr<Pump>) { free(handle); }
+/// @brief Back to the start of a period.
+fn mlapump_reset(handle: ptr<Pump>) { unsafe { (*handle).beat = 0.0; (*handle).gain = 1.0f; } }
+
+/// @brief Set one setting: 0 depth (0-1), 1 period (quarter notes),
+/// 2 attack ms, 3 hold, 4 release (fractions of the period), 5 curve (0-1).
+fn mlapump_set(handle: ptr<Pump>, index: i32, value: f64) {
+    unsafe {
+        if index == 0 { (*handle).depth = clampf(f32(value), 0.0f, 1.0f); }
+        else if index == 1 { if value > 0.0 { (*handle).period = value; } }
+        else if index == 2 { (*handle).attack_ms = clampf(f32(value), 0.0f, 100.0f); }
+        else if index == 3 { (*handle).hold = clampf(f32(value), 0.0f, 1.0f); }
+        else if index == 4 { (*handle).release = clampf(f32(value), 0.0f, 1.0f); }
+        else if index == 5 { (*handle).curve = clampf(f32(value), 0.0f, 1.0f); }
+    }
+}
+/// @brief Block start: the tempo, and the host beat when it is running
+/// (follow != 0); otherwise the position runs on from the last block.
+fn mlapump_sync(handle: ptr<Pump>, tempo: f64, beat: f64, follow: i32) {
+    unsafe {
+        if tempo > 0.0 { (*handle).tempo = tempo; }
+        if follow != 0 { (*handle).beat = beat; }
+    }
+}
+fn mlapump_gain(handle: ptr<Pump>) -> f32 { unsafe { return (*handle).gain; } }
+fn mlapump_process(handle: ptr<Pump>, left: f32, right: f32, out_right: ptr<f32>) -> f32 {
+    unsafe {
+        let gain: f32 = (*handle).step();
+        *out_right = right * gain;
+        return left * gain;
+    }
+}

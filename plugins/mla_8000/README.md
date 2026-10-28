@@ -216,8 +216,13 @@ The mix is balanced against a mastered trance track (Matti Laamanen's
 "Flakes"):
 
 - a deep 909 kick and a bass with a triangle sub an octave down
-- an MlaLimiter at the end of every track's chain, driving each 6–12 dB into
-  its ceiling, for the density of a mastered track
+- an MlaLimiter on every track, driving each 6–14 dB into its ceiling, for
+  the density of a mastered track
+- after the limiters, [Mla Pump](../mla_pump) on the bass, the pad and the
+  arpeggios: a sidechain pump locked to the beat. The pad and the arpeggios
+  dip 9 dB under each kick and swell back over most of the beat. The bass
+  dips less and is back by its offbeat note. The breakdown, without a kick,
+  leaves the pump out.
 
 `examples/jv_pads/build.sh supersaw_arp` regenerates it.
 
