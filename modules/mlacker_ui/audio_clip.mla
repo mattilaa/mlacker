@@ -109,7 +109,7 @@ impl AudioClip {
     /// Per-channel peaks of `count` consecutive slices of `length` frames from
     /// `start`, for waveform detail finer than the stored quarter-row peaks.
     /// Slices past the end of the samples are silent.
-    pub fn slice_peaks(self: AudioClip, start: i64, length: i64, count: i64) -> list<WavePeak> {
+    pub fn slice_peaks(self: &Self, start: i64, length: i64, count: i64) -> list<WavePeak> {
         let channels: i64 = self.channels < 1 ? 1 : self.channels;
         let samples: list<f32> = self.samples; let total: i64 = samples.len() / channels;
         var out: list<WavePeak> = [];
@@ -128,7 +128,7 @@ impl AudioClip {
     }
     /// Peak and average level of frames [start, start + length), like a row's
     /// stored peak; frames past the end of the samples are silent.
-    pub fn range_peak(self: AudioClip, start: i64, length: i64) -> WavePeak {
+    pub fn range_peak(self: &Self, start: i64, length: i64) -> WavePeak {
         let channels: i64 = self.channels < 1 ? 1 : self.channels;
         let samples: list<f32> = self.samples; let total: i64 = samples.len() / channels;
         let a: i64 = start < 0 ? 0 : start; let b: i64 = start + length < total ? start + length : total;

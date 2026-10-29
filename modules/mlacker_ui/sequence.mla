@@ -1915,23 +1915,23 @@ pub fn is_note(self: SequenceTable) -> bool {
 /// frames and row size) at `edited`. A length change resets the placement's
 /// non-destructive trim to the natural length. Returns the number replaced.
 pub fn replace_clip(self: &mut Self, old: &AudioClip, edited: &AudioClip) -> i32 {
-    var before: AudioClip = AudioClip {}; before = old;
-    var after: AudioClip = AudioClip {}; after = edited;
     var count: i32 = 0;
     for t in 0..self.tracks.len() {
-        var track: SequenceTrack = self.tracks[t];
-        if !track.audio { continue; }
-        var changed: bool = false; var updated: list<AudioInstance> = [];
-        for i in 0..track.instances.len() {
-            var next: AudioInstance = AudioInstance {}; next = track.instances[i];
-            if next.clip.source == before.source && next.clip.frames == before.frames && next.clip.frames_per_row == before.frames_per_row {
-                next.clip.release(); next.clip = after.copy(); next.clip.offset = 0;
-                if after.frames != before.frames { next.offset_frames = 0; next.length_ticks = 0; }
-                changed = true; count = count + 1;
+        if !self.tracks[t].audio { continue; }
+        for i in 0..self.tracks[t].instances.len() {
+            if self.tracks[t].instances[i].clip.source == old.source &&
+                self.tracks[t].instances[i].clip.frames == old.frames &&
+                self.tracks[t].instances[i].clip.frames_per_row == old.frames_per_row {
+                if self.tracks[t].instances[i].clip.peaks.len() > 0 { free(self.tracks[t].instances[i].clip.source); }
+                self.tracks[t].instances[i].clip = edited.copy();
+                self.tracks[t].instances[i].clip.offset = 0;
+                if edited.frames != old.frames {
+                    self.tracks[t].instances[i].offset_frames = 0;
+                    self.tracks[t].instances[i].length_ticks = 0;
+                }
+                count = count + 1;
             }
-            updated.push(next);
         }
-        if changed { track.instances = updated; self.replace_track(i32(t), track); }
     }
     if count > 0 { self.revision = self.revision + 1; }
     return count;
@@ -1939,23 +1939,20 @@ pub fn replace_clip(self: &mut Self, old: &AudioClip, edited: &AudioClip) -> i32
 /// Give every placement of `old` the path `source`, keeping the rest of the
 /// placement. Returns how many were renamed.
 pub fn rename_clip_source(self: &mut Self, old: &AudioClip, source: str8) -> i32 {
-    var before: AudioClip = AudioClip {}; before = old;
     var count: i32 = 0;
     for t in 0..self.tracks.len() {
-        var track: SequenceTrack = self.tracks[t];
-        if !track.audio { continue; }
-        var changed: bool = false; var updated: list<AudioInstance> = [];
-        for i in 0..track.instances.len() {
-            var next: AudioInstance = AudioInstance {}; next = track.instances[i];
-            if next.clip.source == before.source && next.clip.frames == before.frames && next.clip.frames_per_row == before.frames_per_row {
-                free(next.clip.source); next.clip.source = clone(source);
-                changed = true; count = count + 1;
+        if !self.tracks[t].audio { continue; }
+        for i in 0..self.tracks[t].instances.len() {
+            if self.tracks[t].instances[i].clip.source == old.source &&
+                self.tracks[t].instances[i].clip.frames == old.frames &&
+                self.tracks[t].instances[i].clip.frames_per_row == old.frames_per_row {
+                free(self.tracks[t].instances[i].clip.source);
+                self.tracks[t].instances[i].clip.source = clone(source);
+                count = count + 1;
             }
-            updated.push(next);
         }
-        if changed { track.instances = updated; self.replace_track(i32(t), track); }
     }
-    if self.audio_clipboard.peaks.len() > 0 && self.audio_clipboard.source == before.source && self.audio_clipboard.frames == before.frames {
+    if self.audio_clipboard.peaks.len() > 0 && self.audio_clipboard.source == old.source && self.audio_clipboard.frames == old.frames {
         free(self.audio_clipboard.source); self.audio_clipboard.source = clone(source);
     }
     if count > 0 { self.revision = self.revision + 1; }
@@ -2052,20 +2049,18 @@ pub fn clip_usage(self: SequenceTable, sample: &AudioClip) -> i32 {
 }
 /// Drop every placement of `sample`. Returns how many were removed.
 pub fn remove_clips_of(self: &mut Self, sample: &AudioClip) -> i32 {
-    var source: AudioClip = AudioClip {}; source = sample;
     var count: i32 = 0;
     for t in 0..self.tracks.len() {
-        var track: SequenceTrack = self.tracks[t];
-        if !track.audio { continue; }
-        var kept: list<AudioInstance> = []; var changed: bool = false;
-        let instances: list<AudioInstance> = track.instances;
-        for instance in instances {
-            if instance.clip.source == source.source && instance.clip.frames == source.frames &&
-               instance.clip.frames_per_row == source.frames_per_row {
-                instance.clip.release(); changed = true; count = count + 1;
-            } else { kept.push(instance); }
+        if !self.tracks[t].audio { continue; }
+        var reversed: list<AudioInstance> = [];
+        while self.tracks[t].instances.len() > 0 {
+            let instance: AudioInstance = self.tracks[t].instances.pop();
+            if instance.clip.source == sample.source && instance.clip.frames == sample.frames &&
+               instance.clip.frames_per_row == sample.frames_per_row {
+                instance.clip.release(); count = count + 1;
+            } else { reversed.push(instance); }
         }
-        if changed { track.instances = kept; self.replace_track(i32(t), track); }
+        while reversed.len() > 0 { self.tracks[t].instances.push(reversed.pop()); }
     }
     if count > 0 { self.revision = self.revision + 1; }
     return count;
@@ -2132,23 +2127,30 @@ pub fn create_track_kind(self: &mut Self, duplicate: bool, audio: bool, area: Re
     // AUDIO tracks play no MIDI, so they start without automation.
     if !audio { track.automation = default_automation(); }
     if duplicate {
-        let original: SequenceTrack = self.tracks[source];
         track.release_strings();
-        track = SequenceTrack { name: format!("{} copy", original.name), muted: original.muted, volume: original.volume, pan: original.pan, sends: original.copy_sends(), audio: original.audio, output: original.output, aux_outputs: original.aux_outputs, instrument: original.instrument, instrument_id: original.instrument_id, note_lines: original.note_lines, instances: original.copy_audio(), zoom_stage: original.zoom_stage,
-            comment: original.comment, sysex: original.sysex, automation: original.copy_automation() };
+        var aux: list<i32> = [];
+        for i in 0..self.tracks[source].aux_outputs.len() { aux.push(self.tracks[source].aux_outputs[i]); }
+        track = SequenceTrack { name: format!("{} copy", self.tracks[source].name), muted: self.tracks[source].muted, volume: self.tracks[source].volume, pan: self.tracks[source].pan, sends: self.tracks[source].copy_sends(), audio: self.tracks[source].audio, output: self.tracks[source].output, aux_outputs: aux, instrument: self.tracks[source].instrument, instrument_id: self.tracks[source].instrument_id, note_lines: self.tracks[source].note_lines, instances: self.tracks[source].copy_audio(), zoom_stage: self.tracks[source].zoom_stage,
+            comment: self.tracks[source].comment, sysex: self.tracks[source].sysex, automation: self.tracks[source].copy_automation() };
     }
-    if duplicate && track.instrument { let original: SequenceTrack = self.tracks[source]; track.inserts = original.inserts; }
+    if duplicate && track.instrument {
+        for i in 0..self.tracks[source].inserts.len() { track.inserts.push(self.tracks[source].inserts[i]); }
+    }
     self.tracks.push(track);
     if !duplicate { self.next_track_id = self.next_track_id + 1; }
+    let added_columns: i32 = self.track_columns(i32(self.tracks.len()) - 1);
+    let source_column: i32 = duplicate ? self.track_start(source) : 0;
     var rows: list<TableRow> = [];
     let old: list<TableRow> = self.rows;
     for row in old {
+        var appended: list<str8> = [];
+        for c in 0..added_columns {
+            if duplicate { appended.push(clone(row.cells[source_column + c])); }
+            else { appended.push(clone("")); }
+        }
         var cells: list<str8> = []; let previous: list<str8> = row.cells;
         for value in previous { cells.push(value); }
-        for c in 0..self.track_columns(i32(self.tracks.len()) - 1) {
-            if duplicate { cells.push(clone(row.cells[self.track_start(source) + c])); }
-            else { cells.push(clone("")); }
-        }
+        for value in appended { cells.push(value); }
         rows.push(TableRow { cells: cells });
     }
     self.rows = rows; self.selected_column = self.track_start(i32(self.tracks.len()) - 1);
@@ -2203,9 +2205,8 @@ pub fn clear_track(self: &mut Self) -> void {
     self.revision = self.revision + 1;
     let index: i32 = self.active_track(); if index < 0 { return; }
     let first: i32 = self.track_start(index); let end: i32 = first + self.track_columns(index);
-    var track: SequenceTrack = self.tracks[index];
-    let has_clip: bool = track.instances.len() > 0;
-    let wave: i32 = track.audio ? self.audio_waveform_column(index) : -1;
+    let has_clip: bool = self.tracks[index].instances.len() > 0;
+    let wave: i32 = self.tracks[index].audio ? self.audio_waveform_column(index) : -1;
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
     for row in previous {
         var cells: list<str8> = [];
@@ -2220,16 +2221,20 @@ pub fn clear_track(self: &mut Self) -> void {
     }
     self.rows = rows; self.error = "";
     if has_clip {
-        track.release_audio(); track.instances = [];
-        self.replace_track(index, track); self.rebuild_columns();
+        while self.tracks[index].instances.len() > 0 {
+            let instance: AudioInstance = self.tracks[index].instances.pop();
+            instance.clip.release();
+        }
+        self.rebuild_columns();
     }
 }
 pub fn rename_track(self: &mut Self, name: str8) -> bool {
     let index: i32 = self.active_track(); if index < 0 { return false; }
     if !table_matches("[A-Za-z0-9][A-Za-z0-9 _-]{0,31}", name) { self.error = "Name: 1-32 letters, digits, spaces, _ or -"; return false; }
-    var track: SequenceTrack = self.tracks[index];
-    let copy: str8 = clone(name); free(track.name); track.name = copy;
-    self.replace_track(index, track); self.rebuild_columns(); self.error = ""; return true;
+    let copy: str8 = clone(name);
+    free(self.tracks[index].name);
+    self.tracks[index].name = copy;
+    self.rebuild_columns(); self.error = ""; return true;
 }
 /// Parse "cc:N", "pitchbend", "aftertouch" or "name:min:max" into an owned slot; sets
 /// `error` and returns an empty parameter when the spec is invalid.
@@ -2257,52 +2262,49 @@ fn parse_automation(self: &mut Self, spec: str8) -> AutomationSlot {
 }
 /// True when another slot of track `index` than `skip` (one-based) already
 /// plays the controller or parameter of `spec`.
-fn automation_taken(self: SequenceTable, index: i32, spec: str8, skip: i32) -> bool {
-    let track: SequenceTrack = self.tracks[index];
+fn automation_taken(self: &Self, index: i32, spec: str8, skip: i32) -> bool {
     let controller: i64 = automation_controller(spec);
-    for i in 0..track.automation.len() {
+    for i in 0..self.tracks[index].automation.len() {
         if i32(i) + 1 == skip { continue; }
-        let slot: AutomationSlot = track.automation[i];
-        if slot.parameter == spec || (controller >= 0 && automation_controller(slot.parameter) == controller) { return true; }
+        let parameter: str8 = self.tracks[index].automation[i].parameter;
+        if parameter == spec || (controller >= 0 && automation_controller(parameter) == controller) { return true; }
     }
     return false;
 }
 /// Change what one-based automation `slot` of the active track plays.
 pub fn configure_slot(self: &mut Self, slot: i32, spec: str8) -> bool {
     let index: i32 = self.active_track(); if index < 0 { return false; }
-    let current: SequenceTrack = self.tracks[index];
-    if slot < 1 || slot > current.automation.len() { self.error = "Select a CC column first"; return false; }
+    if slot < 1 || slot > self.tracks[index].automation.len() { self.error = "Select a CC column first"; return false; }
     if self.automation_taken(index, spec, slot) { self.error = "The track already has a column for that controller"; return false; }
     let definition: AutomationSlot = self.parse_automation(spec);
     if definition.parameter == "" { return false; }
     let column: i32 = self.automation_column(index, slot);
-    let rows: list<TableRow> = self.rows;
-    for row in rows {
-        if !automation_valid(row.cells[column], definition.minimum, definition.maximum) {
+    for r in 0..self.rows.len() {
+        if !automation_valid(self.rows[r].cells[column], definition.minimum, definition.maximum) {
             free(definition.parameter); self.error = "Existing values exceed limits; clear track first"; return false;
         }
     }
-    var track: SequenceTrack = self.tracks[index];
-    var slots: list<AutomationSlot> = [];
-    for i in 0..track.automation.len() {
-        let old: AutomationSlot = track.automation[i];
-        if i32(i) + 1 == slot { free(old.parameter); slots.push(definition); } else { slots.push(old); }
+    var reversed: list<AutomationSlot> = [];
+    while self.tracks[index].automation.len() > 0 {
+        let position: i64 = self.tracks[index].automation.len() - 1;
+        let old: AutomationSlot = self.tracks[index].automation.pop();
+        if position == slot - 1 { free(old.parameter); reversed.push(definition); }
+        else { reversed.push(old); }
     }
-    track.automation = slots;
-    self.replace_track(index, track); self.rebuild_columns(); self.error = ""; return true;
+    while reversed.len() > 0 { self.tracks[index].automation.push(reversed.pop()); }
+    self.rebuild_columns(); self.error = ""; return true;
 }
 /// Add an automation column for `spec` after the last one of track `index`
 /// and show it. Returns its one-based slot, or 0 with `error` set.
 pub fn add_automation(self: &mut Self, index: i32, spec: str8) -> i32 {
     if index < 0 || index >= self.tracks.len() { return 0; }
-    let current: SequenceTrack = self.tracks[index];
-    if current.audio { self.error = "An AUDIO track has no MIDI output to automate"; return 0; }
-    if current.automation.len() >= automation_limit() { self.error = "Maximum 16 CC columns per track"; return 0; }
+    if self.tracks[index].audio { self.error = "An AUDIO track has no MIDI output to automate"; return 0; }
+    if self.tracks[index].automation.len() >= automation_limit() { self.error = "Maximum 16 CC columns per track"; return 0; }
     if self.automation_taken(index, spec, 0) { self.error = "The track already has a column for that controller"; return 0; }
     let definition: AutomationSlot = self.parse_automation(spec);
     if definition.parameter == "" { return 0; }
     // After the last CC column, before the SYSEX and TEXT columns.
-    let column: i32 = self.automation_column(index, i32(current.automation.len()) + 1);
+    let column: i32 = self.automation_column(index, i32(self.tracks[index].automation.len()) + 1);
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
     for row in previous {
         var cells: list<str8> = [];
@@ -2314,18 +2316,17 @@ pub fn add_automation(self: &mut Self, index: i32, spec: str8) -> i32 {
         rows.push(TableRow { cells: cells });
     }
     self.rows = rows;
-    var track: SequenceTrack = self.tracks[index];
-    track.automation.push(definition); track.zoom_stage = 2;
-    let added: i32 = i32(track.automation.len());
-    self.replace_track(index, track); self.rebuild_columns();
+    self.tracks[index].automation.push(definition);
+    self.tracks[index].zoom_stage = 2;
+    let added: i32 = i32(self.tracks[index].automation.len());
+    self.rebuild_columns();
     self.revision = self.revision + 1; self.error = "";
     return added;
 }
 /// Remove one-based automation `slot` of track `index` with its values.
 pub fn remove_automation(self: &mut Self, index: i32, slot: i32, area: Rect) -> bool {
     if index < 0 || index >= self.tracks.len() { return false; }
-    var track: SequenceTrack = self.tracks[index];
-    if slot < 1 || slot > track.automation.len() { self.error = "Select a CC column first"; return false; }
+    if slot < 1 || slot > self.tracks[index].automation.len() { self.error = "Select a CC column first"; return false; }
     let column: i32 = self.automation_column(index, slot);
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
     for row in previous {
@@ -2334,13 +2335,15 @@ pub fn remove_automation(self: &mut Self, index: i32, slot: i32, area: Rect) -> 
         rows.push(TableRow { cells: cells });
     }
     self.rows = rows;
-    var slots: list<AutomationSlot> = [];
-    for i in 0..track.automation.len() {
-        let old: AutomationSlot = track.automation[i];
-        if i32(i) + 1 == slot { free(old.parameter); } else { slots.push(old); }
+    var reversed: list<AutomationSlot> = [];
+    while self.tracks[index].automation.len() > 0 {
+        let position: i64 = self.tracks[index].automation.len() - 1;
+        let old: AutomationSlot = self.tracks[index].automation.pop();
+        if position == slot - 1 { free(old.parameter); }
+        else { reversed.push(old); }
     }
-    let remaining: i32 = i32(slots.len());
-    track.automation = slots; self.replace_track(index, track);
+    while reversed.len() > 0 { self.tracks[index].automation.push(reversed.pop()); }
+    let remaining: i32 = i32(self.tracks[index].automation.len());
     // The cursor stays on the neighbouring CC column, else the track's NOTE.
     self.selected_column = remaining > 0 ? self.automation_column(index, slot > remaining ? remaining : slot) : self.track_start(index);
     self.rebuild_columns(); self.reconcile(area);
@@ -2349,8 +2352,8 @@ pub fn remove_automation(self: &mut Self, index: i32, slot: i32, area: Rect) -> 
 /// Replace every automation column of track `index` with `slots` (owned),
 /// leaving their cells empty.
 fn replace_automation(self: &mut Self, index: i32, slots: list<AutomationSlot>) -> void {
-    let track: SequenceTrack = self.tracks[index];
-    let first: i32 = self.automation_column(index, 1); let old_count: i32 = i32(track.automation.len());
+    let first: i32 = self.automation_column(index, 1);
+    let old_count: i32 = i32(self.tracks[index].automation.len());
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
     for row in previous {
         var cells: list<str8> = [];
@@ -2362,9 +2365,11 @@ fn replace_automation(self: &mut Self, index: i32, slots: list<AutomationSlot>) 
         rows.push(TableRow { cells: cells });
     }
     self.rows = rows;
-    var updated: SequenceTrack = self.tracks[index];
-    let old: list<AutomationSlot> = updated.automation; for slot in old { free(slot.parameter); }
-    updated.automation = slots; self.replace_track(index, updated);
+    while self.tracks[index].automation.len() > 0 {
+        let old: AutomationSlot = self.tracks[index].automation.pop();
+        free(old.parameter);
+    }
+    self.tracks[index].automation = slots;
 }
 /// 80 adds a blank note line, 81 removes it, 82 duplicates NOTE/VEL/LEN/OFF.
 /// Move every note of track `index` onto note line `line`, adding lines until
@@ -2373,12 +2378,10 @@ fn replace_automation(self: &mut Self, index: i32, slots: list<AutomationSlot>) 
 /// Grow track `index` to at least `count` note lines, adding empty columns.
 pub fn ensure_note_lines(self: &mut Self, index: i32, count: i32) -> bool {
     if index < 0 || index >= self.tracks.len() || count < 1 || count > 64 { return false; }
-    var track: SequenceTrack = self.tracks[index];
-    if track.audio { return false; }
+    if self.tracks[index].audio { return false; }
     let first: i32 = self.track_start(index);
-    while track.note_lines < count {
-        var grown: SequenceTrack = self.tracks[index];
-        let column: i32 = first + track.note_lines * 4;
+    while self.tracks[index].note_lines < count {
+        let column: i32 = first + self.tracks[index].note_lines * 4;
         var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
         for row in previous {
             var cells: list<str8> = [];
@@ -2390,9 +2393,7 @@ pub fn ensure_note_lines(self: &mut Self, index: i32, count: i32) -> bool {
             rows.push(TableRow { cells: cells });
         }
         self.rows = rows;
-        grown.note_lines = grown.note_lines + 1;
-        self.replace_track(index, grown);
-        track = self.tracks[index];
+        self.tracks[index].note_lines = self.tracks[index].note_lines + 1;
     }
     return true;
 }
@@ -2452,8 +2453,7 @@ pub fn append_tracks_from(self: &mut Self, source: &SequenceTable, area: Rect, s
 }
 pub fn move_notes_to_line(self: &mut Self, index: i32, line: i32, area: Rect) -> bool {
     if index < 0 || index >= self.tracks.len() || line < 1 || line > 15 { return false; }
-    var track: SequenceTrack = self.tracks[index];
-    if track.audio { return false; }
+    if self.tracks[index].audio { return false; }
     if !self.ensure_note_lines(index, line + 1) { return false; }
     let first: i32 = self.track_start(index);
     // Move line 0 onto the target line; the source line is left empty.
@@ -2474,25 +2474,24 @@ pub fn move_notes_to_line(self: &mut Self, index: i32, line: i32, area: Rect) ->
         moved.push(TableRow { cells: cells });
     }
     self.rows = moved;
-    var renamed: SequenceTrack = self.tracks[index];
-    let base: str8 = strip_split_suffix(renamed.name);
-    free(renamed.name); renamed.name = format!("{} - {}", base, line + 1); free(base);
-    self.replace_track(index, renamed);
+    let base: str8 = strip_split_suffix(self.tracks[index].name);
+    free(self.tracks[index].name);
+    self.tracks[index].name = format!("{} - {}", base, line + 1);
+    free(base);
     self.revision = self.revision + 1;
     self.rebuild_columns(); self.reconcile(area);
     return true;
 }
 pub fn note_line_action(self: &mut Self, command: Action, area: Rect) -> void {
     let index: i32 = self.active_track(); if index < 0 { return; }
-    var track: SequenceTrack = self.tracks[index];
-    if track.audio { self.error = "Note lines require a MIDI track"; return; }
+    if self.tracks[index].audio { self.error = "Note lines require a MIDI track"; return; }
     let first: i32 = self.track_start(index);
     let offset: i32 = self.selected_column - first;
-    let selected: i32 = offset < track.note_lines * 4 ? offset / 4 : -1;
+    let selected: i32 = offset < self.tracks[index].note_lines * 4 ? offset / 4 : -1;
     if selected < 0 && command != Action::AddNoteLine { self.error = "Select a NOTE, VEL, LEN or OFF column"; return; }
-    if command == Action::RemoveNoteLine && track.note_lines == 1 { self.error = "Keep at least one note line"; return; }
-    if command != Action::RemoveNoteLine && track.note_lines >= 16 { self.error = "Maximum 16 note lines per track"; return; }
-    let line: i32 = command == Action::RemoveNoteLine ? selected : (selected < 0 ? track.note_lines : selected + 1);
+    if command == Action::RemoveNoteLine && self.tracks[index].note_lines == 1 { self.error = "Keep at least one note line"; return; }
+    if command != Action::RemoveNoteLine && self.tracks[index].note_lines >= 16 { self.error = "Maximum 16 note lines per track"; return; }
+    let line: i32 = command == Action::RemoveNoteLine ? selected : (selected < 0 ? self.tracks[index].note_lines : selected + 1);
     let column: i32 = first + line * 4;
     let source: i32 = first + selected * 4;
     var rows: list<TableRow> = []; let previous: list<TableRow> = self.rows;
@@ -2508,9 +2507,9 @@ pub fn note_line_action(self: &mut Self, command: Action, area: Rect) -> void {
         }
         rows.push(TableRow { cells: cells });
     }
-    track.note_lines = track.note_lines + (command == Action::RemoveNoteLine ? -1 : 1);
-    let next: i32 = line >= track.note_lines ? track.note_lines - 1 : line;
-    self.replace_track(index, track); self.rows = rows;
+    self.tracks[index].note_lines = self.tracks[index].note_lines + (command == Action::RemoveNoteLine ? -1 : 1);
+    let next: i32 = line >= self.tracks[index].note_lines ? self.tracks[index].note_lines - 1 : line;
+    self.rows = rows;
     self.selected_column = first + next * 4;
     self.rebuild_columns(); self.reconcile(area); self.error = "";
     self.delete_pending = false; self.top_pending = false;
@@ -2527,22 +2526,21 @@ pub fn track_action(self: &mut Self, command: Action, area: Rect) -> void {
     if command == Action::DeleteTrack { self.remove_track(area); return; }
     if command == Action::ClearTrack { self.clear_track(); return; }
     let index: i32 = self.active_track(); if index < 0 { return; }
-    var track: SequenceTrack = self.tracks[index];
-    if command == Action::MuteTrack { track.muted = !track.muted; self.replace_track(index, track); self.rebuild_columns(); return; }
+    if command == Action::MuteTrack { self.tracks[index].muted = !self.tracks[index].muted; self.rebuild_columns(); return; }
     if command == Action::RemoveCcColumn {
         self.remove_automation(index, self.automation_slot_at(self.selected_column), area); return;
     }
-    if command == Action::AddCcColumn && track.audio { self.error = "An AUDIO track has no MIDI output to automate"; return; }
+    if command == Action::AddCcColumn && self.tracks[index].audio { self.error = "An AUDIO track has no MIDI output to automate"; return; }
     if command == Action::ConfigureCcColumn {
         // Off a CC column (they hide while a track is collapsed) the first one is meant.
         self.edit_slot = self.automation_slot_at(self.selected_column);
-        if self.edit_slot == 0 && track.automation.len() > 0 { self.edit_slot = 1; }
+        if self.edit_slot == 0 && self.tracks[index].automation.len() > 0 { self.edit_slot = 1; }
         if self.edit_slot == 0 { self.error = "The track has no CC column; add one first"; return; }
     }
     if command == Action::RenameTrack || command == Action::ConfigureCcColumn || command == Action::AddCcColumn {
         self.edit_mode = command == Action::RenameTrack ? 1 : (command == Action::ConfigureCcColumn ? 2 : 3);
-        if command == Action::RenameTrack { self.editor.set_text(track.name); }
-        else if command == Action::ConfigureCcColumn { let slot: AutomationSlot = track.automation[self.edit_slot - 1]; self.editor.set_text(slot.parameter); }
+        if command == Action::RenameTrack { self.editor.set_text(self.tracks[index].name); }
+        else if command == Action::ConfigureCcColumn { self.editor.set_text(self.tracks[index].automation[self.edit_slot - 1].parameter); }
         else { self.editor.set_text("cc:74"); }
         self.editing = true; self.error = "";
     }
