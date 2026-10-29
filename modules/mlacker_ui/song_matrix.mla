@@ -147,12 +147,13 @@ impl SongMatrix {
                     let repeat: bool = cover.offset >= span;
                     let step: i32 = cover.offset % span;
                     if step == 0 && index >= 0 {
-                        let entry: PatternEntry = source.patterns[index];
                         let looping: bool = repeat || source.song_loops(row, lane);
                         // A pattern longer than one matrix row names itself on
                         // the row it starts and keeps the rows it still fills.
                         let room: i32 = 10 - (span > 1 ? 2 : 0) - (looping ? 2 : 0);
-                        let name: str8 = len(entry.name) > wide(room) ? sub(entry.name, 0, wide(room)) : format!("{}", entry.name);
+                        let name: str8 = len(source.patterns[index].name) > wide(room)
+                            ? sub(source.patterns[index].name, 0, wide(room))
+                            : format!("{}", source.patterns[index].name);
                         if repeat { text = span > 1 ? format!("» {} ┬", name) : format!("» {}", name); }
                         else if looping { text = span > 1 ? format!("{} ┬ »", name) : format!("{} »", name); }
                         else { text = span > 1 ? format!("{} ┬", name) : format!("{}", name); }

@@ -50,7 +50,7 @@ pub struct SyncedClip {
 };
 /// Cheap content key: enough spread to separate two clips of equal geometry,
 /// including one a destructive edit rewrote in place.
-pub fn clip_fingerprint(samples: list<f32>) -> i64 {
+pub fn clip_fingerprint(samples: &list<f32>) -> i64 {
     let count: i64 = samples.len();
     let step: i64 = count > 64 ? count / 64 : 1;
     var hash: i64 = count % 1000000007;
@@ -176,7 +176,7 @@ impl AudioSystem {
                     if next.copy_parameters_from(self.output, i + 1) != 0 { next.close(); return Err<i32, str8>("Cannot preserve instrument parameters; settings unchanged"); }
                 }
             }
-            let pads: list<PadAssignment> = self.pads;
+            let pads: list<PadAssignment> = std::copy(self.pads);
             for entry in pads {
                 let clip: AudioClip = samples[entry.sample];
                 let name: str8 = base_name(clip.source);
@@ -396,7 +396,7 @@ impl AudioSystem {
         var table: SequenceTable = SequenceTable {}; table = source;
         if !playing || table.rows.len() == 0 {
             if self.samples_running {
-                let placements: list<SamplePlacement> = self.sample_placements;
+                let placements: list<SamplePlacement> = std::copy(self.sample_placements);
                 for placement in placements {
                     self.output.post(AudioEvent { kind: AudioEventKind::StopSource, source: placement.track }, 0);
                 }
@@ -460,7 +460,7 @@ impl AudioSystem {
             self.sample_output = self.output.handle; self.samples_running = true;
             if !valid { self.samples_running = false; return false; }
         }
-        let previous: list<SamplePlacement> = self.sample_placements;
+        let previous: list<SamplePlacement> = std::copy(self.sample_placements);
         var updated: list<SamplePlacement> = [];
         // Stamped starts are posted in frame order (one lane, nondecreasing).
         var stamped: list<SamplePlacement> = []; var frames: list<i64> = [];
@@ -561,7 +561,7 @@ impl AudioSystem {
     /// Returns -1 when the controller is full or refuses the data.
     fn register_clip(self: &mut Self, clip: AudioClip) -> i64 {
         let fingerprint: i64 = clip_fingerprint(clip.samples);
-        let known: list<RegisteredClip> = self.registered_clips;
+        let known: list<RegisteredClip> = std::copy(self.registered_clips);
         for entry in known {
             if entry.fingerprint == fingerprint && entry.frames == clip.frames
                 && entry.channels == clip.channels && entry.rate == clip.sample_rate { return entry.id; }
@@ -578,7 +578,7 @@ impl AudioSystem {
         var instance: AudioInstance = AudioInstance {}; instance = placement;
         let fingerprint: i64 = clip_fingerprint(instance.clip.samples);
         let from: i64 = rc.offset; let to: i64 = rc.offset + rc.frames;
-        let known: list<SyncedClip> = self.synced_clips;
+        let known: list<SyncedClip> = std::copy(self.synced_clips);
         for entry in known {
             if entry.fingerprint == fingerprint && entry.source_frames == instance.clip.frames && entry.from == from && entry.to == to &&
                 entry.original_bpm == instance.original_bpm && entry.algorithm == instance.stretch_algorithm &&
@@ -600,7 +600,7 @@ impl AudioSystem {
     /// pattern's placements on the next `sample_playback`.
     pub fn restart_samples(self: &mut Self, row: i32) -> void {
         if self.samples_running {
-            let placements: list<SamplePlacement> = self.sample_placements;
+            let placements: list<SamplePlacement> = std::copy(self.sample_placements);
             for placement in placements {
                 self.output.post(AudioEvent { kind: AudioEventKind::StopSource, source: placement.track }, 0);
             }
@@ -629,11 +629,11 @@ impl AudioSystem {
         for s in 0..96 {
             var selected: i32 = -1;
             for t in 0..table.tracks.len() {
-                let track: SequenceTrack = table.tracks[t];
-                if (!track.instrument && s == t) || (track.instrument && track.instrument_id > 0 && s == 63 + wide(track.instrument_id)) { selected = i32(t); }
+                if (!table.tracks[t].instrument && s == t) ||
+                   (table.tracks[t].instrument && table.tracks[t].instrument_id > 0 && s == 63 + wide(table.tracks[t].instrument_id)) { selected = i32(t); }
             }
             for n in 0..4 {
-                var id: i32 = 0; if selected >= 0 { let track: SequenceTrack = table.tracks[selected]; id = track.insert_id(i32(n)); }
+                var id: i32 = 0; if selected >= 0 { id = table.tracks[selected].insert_id(i32(n)); }
                 self.output.insert_route(s, n, id);
             }
         }
@@ -642,8 +642,8 @@ impl AudioSystem {
         for s in 0..96 {
             var destination: i32 = 0;
             for t in 0..table.tracks.len() {
-                let track: SequenceTrack = table.tracks[t];
-                if (!track.instrument && s == t) || (track.instrument && track.instrument_id > 0 && s == 63 + wide(track.instrument_id)) {
+                if (!table.tracks[t].instrument && s == t) ||
+                   (table.tracks[t].instrument && table.tracks[t].instrument_id > 0 && s == 63 + wide(table.tracks[t].instrument_id)) {
                     destination = table.track_output(i32(t));
                 }
             }
@@ -654,8 +654,7 @@ impl AudioSystem {
         for slot in 1..33 {
             var source: i32 = 0;
             for t in 0..table.tracks.len() {
-                let track: SequenceTrack = table.tracks[t];
-                if track.instrument && wide(track.instrument_id) == slot { source = table.track_input(i32(t)); }
+                if table.tracks[t].instrument && wide(table.tracks[t].instrument_id) == slot { source = table.track_input(i32(t)); }
             }
             // The controller numbers the live input 65.
             self.output.instrument_input(slot, source == -1 ? 65 : wide(source));
@@ -667,8 +666,7 @@ impl AudioSystem {
             if outputs <= 1 { continue; }
             var selected: i32 = -1;
             for t in 0..table.tracks.len() {
-                let track: SequenceTrack = table.tracks[t];
-                if track.instrument && wide(track.instrument_id) == slot { selected = i32(t); }
+                if table.tracks[t].instrument && wide(table.tracks[t].instrument_id) == slot { selected = i32(t); }
             }
             for bus in 1..outputs {
                 let stored: i32 = selected >= 0 ? table.track_aux_output(selected, i32(bus)) : -1;
@@ -679,16 +677,16 @@ impl AudioSystem {
             }
         }
         for i in 0..table.tracks.len() {
-            let track: SequenceTrack = table.tracks[i];
-            self.output.track_volume(i, track.instrument ? track.instrument_id : 0, track.muted ? 0 : track.volume);
-            for fx in 0..8 { self.output.effect_send(i, track.instrument ? track.instrument_id : 0, fx, track.muted ? 0 : track.send_level(i32(fx))); }
+            self.output.track_volume(i, table.tracks[i].instrument ? table.tracks[i].instrument_id : 0,
+                table.tracks[i].muted ? 0 : table.tracks[i].volume);
+            for fx in 0..8 { self.output.effect_send(i, table.tracks[i].instrument ? table.tracks[i].instrument_id : 0,
+                fx, table.tracks[i].muted ? 0 : table.tracks[i].send_level(i32(fx))); }
         }
         // A muted assignment must not silence other tracks using the same instance.
         for i in 0..table.tracks.len() {
-            let track: SequenceTrack = table.tracks[i];
-            if track.instrument && !track.muted {
-                self.output.track_volume(i, track.instrument_id, track.volume);
-                for fx in 0..8 { self.output.effect_send(i, track.instrument_id, fx, track.send_level(i32(fx))); }
+            if table.tracks[i].instrument && !table.tracks[i].muted {
+                self.output.track_volume(i, table.tracks[i].instrument_id, table.tracks[i].volume);
+                for fx in 0..8 { self.output.effect_send(i, table.tracks[i].instrument_id, fx, table.tracks[i].send_level(i32(fx))); }
             }
         }
         for fx in 0..self.effects.len() { let effect: EffectChannel = self.effects[fx]; self.output.effect_volume(fx, effect.volume); }
@@ -696,7 +694,7 @@ impl AudioSystem {
         // (PCM track t + 1), so through their inserts, fader and output.
         for t in 0..64 {
             var on: bool = false;
-            if t < table.tracks.len() { let track: SequenceTrack = table.tracks[t]; on = track.audio && track.input_armed; }
+            if t < table.tracks.len() { on = table.tracks[t].audio && table.tracks[t].input_armed; }
             self.output.input_monitor(t + 1, on);
         }
     }
@@ -781,12 +779,12 @@ impl AudioSystem {
     /// Where live notes go: instrument slot * 64 + track (slot 0 = preview
     /// synth), or -1 when the armed/selected track is audio, muted or unassigned.
     pub fn live_target(source: &SequenceTable) -> i64 {
-        var table: SequenceTable = SequenceTable {}; table = source;
-        let index: i32 = table.recording_track >= 0 ? table.recording_track : table.active_track();
+        let index: i32 = source.recording_track >= 0 ? source.recording_track : source.active_track();
         if index < 0 || index >= 64 { return -1; }
-        let track: SequenceTrack = table.tracks[index];
-        if track.audio || track.muted { return -1; }
-        if track.instrument { return track.instrument_id > 0 ? wide(track.instrument_id) * 64 + wide(index) : -1; }
+        if source.tracks[index].audio || source.tracks[index].muted { return -1; }
+        if source.tracks[index].instrument {
+            return source.tracks[index].instrument_id > 0 ? wide(source.tracks[index].instrument_id) * 64 + wide(index) : -1;
+        }
         return wide(index);
     }
     /// Virtual keyboard note on the main lane, tagged as live input like a
@@ -871,7 +869,7 @@ impl AudioSystem {
         if self.output.instrument_pad(slot, pad, samples, channels, rate, name) != 0 {
             return format!("Pad sample failed: {}", __mlang_std_audio_last_error());
         }
-        let old: list<PadAssignment> = self.pads; var next: list<PadAssignment> = [];
+        let old: list<PadAssignment> = std::copy(self.pads); var next: list<PadAssignment> = [];
         var placed: bool = false;
         // Keep ascending (slot, pad) order; the session format requires it.
         for entry in old {
@@ -891,7 +889,7 @@ impl AudioSystem {
         var source: AudioClip = AudioClip {}; source = clip;
         let name: str8 = base_name(source.source);
         var count: i32 = 0;
-        let pads: list<PadAssignment> = self.pads;
+        let pads: list<PadAssignment> = std::copy(self.pads);
         for entry in pads {
             if entry.sample != sample { continue; }
             if self.output.instrument_pad(entry.slot, entry.pad, source.samples, source.channels, source.sample_rate, name) != 0 { count = -1; break; }
@@ -904,7 +902,7 @@ impl AudioSystem {
     /// Empty a sampler pad and forget its session assignment. Owned error or "".
     pub fn clear_pad(self: &mut Self, slot: i32, pad: i32) -> str8 {
         if self.output.instrument_clear_pad(slot, pad) != 0 { return format!("Cannot clear pad: {}", __mlang_std_audio_last_error()); }
-        let old: list<PadAssignment> = self.pads; var next: list<PadAssignment> = [];
+        let old: list<PadAssignment> = std::copy(self.pads); var next: list<PadAssignment> = [];
         for entry in old { if entry.slot != slot || entry.pad != pad { next.push(entry); } }
         self.pads = next;
         self.forget_markers(slot, pad);
@@ -912,7 +910,7 @@ impl AudioSystem {
     }
     /// Session sample index loaded into a pad, or -1.
     pub fn pad_sample(self: AudioSystem, slot: i32, pad: i32) -> i32 {
-        let pads: list<PadAssignment> = self.pads;
+        let pads: list<PadAssignment> = std::copy(self.pads);
         for entry in pads { if entry.slot == slot && entry.pad == pad { return entry.sample; } }
         return -1;
     }
@@ -920,7 +918,7 @@ impl AudioSystem {
     /// emptied, and later sample indexes shift down. Returns pads cleared.
     pub fn drop_sample_pads(self: &mut Self, sample: i32) -> i32 {
         var cleared: i32 = 0;
-        let old: list<PadAssignment> = self.pads; var next: list<PadAssignment> = [];
+        let old: list<PadAssignment> = std::copy(self.pads); var next: list<PadAssignment> = [];
         for entry in old {
             if entry.sample == sample {
                 if self.output.instrument_clear_pad(entry.slot, entry.pad) == 0 { cleared = cleared + 1; }
@@ -934,7 +932,7 @@ impl AudioSystem {
         return cleared;
     }
     fn forget_pads(self: &mut Self, slot: i32) -> void {
-        let old: list<PadAssignment> = self.pads; var next: list<PadAssignment> = [];
+        let old: list<PadAssignment> = std::copy(self.pads); var next: list<PadAssignment> = [];
         for entry in old { if entry.slot != slot { next.push(entry); } }
         self.pads = next;
         self.forget_markers(slot, -1);
@@ -1014,7 +1012,7 @@ impl AudioSystem {
     /// Post the sequencer's events. `source` is the pattern they were
     /// scheduled from: a note-on that speaks its row's TEXT cell sends the
     /// text to the instrument first (see `speak`).
-    pub fn sequencer_events(self: &mut Self, events: list<NoteEvent>, source: &SequenceTable) -> void {
+    pub fn sequencer_events(self: &mut Self, events: &list<NoteEvent>, source: &SequenceTable) -> void {
         // The on-screen pads light even without audio output.
         if self.collect_pads {
             for event in events {

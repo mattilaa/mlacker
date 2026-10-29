@@ -352,11 +352,13 @@ impl PatternLibrary {
         // Drop trailing lanes that no longer hold anything.
         var kept: list<SongLane> = []; var last: i32 = -1;
         for l in 0..self.extra_lanes.len() {
-            let column: SongLane = self.extra_lanes[l];
-            let slots: list<i32> = column.slots;
-            for value in slots { if value != 0 { last = i32(l); break; } }
+            for r in 0..self.extra_lanes[l].slots.len() {
+                if self.extra_lanes[l].slots[r] != 0 { last = i32(l); break; }
+            }
         }
-        for l in 0..self.extra_lanes.len() { if i32(l) <= last { kept.push(self.extra_lanes[l]); } }
+        for l in 0..self.extra_lanes.len() {
+            if i32(l) <= last { kept.push(SongLane { slots: std::copy(self.extra_lanes[l].slots) }); }
+        }
         self.extra_lanes = kept;
         return true;
     }
@@ -421,24 +423,23 @@ impl PatternLibrary {
     pub fn clashing_notes(self: PatternLibrary, first: i32, second: i32) -> i32 {
         let a: i32 = self.index_of(first); let b: i32 = self.index_of(second);
         if a < 0 || b < 0 || first == second { return 0; }
-        let left: PatternEntry = self.patterns[a]; let right: PatternEntry = self.patterns[b];
         var count: i32 = 0;
-        let rows: i64 = left.data.rows.len() < right.data.rows.len() ? left.data.rows.len() : right.data.rows.len();
-        for t in 0..left.data.tracks.len() {
-            let track: SequenceTrack = left.data.tracks[t];
-            if track.audio || !track.instrument || track.instrument_id <= 0 { continue; }
-            for u in 0..right.data.tracks.len() {
-                let other: SequenceTrack = right.data.tracks[u];
-                if other.audio || !other.instrument || other.instrument_id != track.instrument_id { continue; }
+        let rows: i64 = self.patterns[a].data.rows.len() < self.patterns[b].data.rows.len()
+            ? self.patterns[a].data.rows.len() : self.patterns[b].data.rows.len();
+        for t in 0..self.patterns[a].data.tracks.len() {
+            if self.patterns[a].data.tracks[t].audio || !self.patterns[a].data.tracks[t].instrument ||
+               self.patterns[a].data.tracks[t].instrument_id <= 0 { continue; }
+            for u in 0..self.patterns[b].data.tracks.len() {
+                if self.patterns[b].data.tracks[u].audio || !self.patterns[b].data.tracks[u].instrument ||
+                   self.patterns[b].data.tracks[u].instrument_id != self.patterns[a].data.tracks[t].instrument_id { continue; }
                 for r in 0..rows {
-                    let left_row: TableRow = left.data.rows[r]; let right_row: TableRow = right.data.rows[r];
-                    for line in 0..track.note_lines {
-                        let column: i32 = left.data.track_start(i32(t)) + i32(line) * 4;
-                        let note: str8 = left_row.cells[column];
+                    for line in 0..self.patterns[a].data.tracks[t].note_lines {
+                        let column: i32 = self.patterns[a].data.track_start(i32(t)) + i32(line) * 4;
+                        let note: str8 = self.patterns[a].data.rows[r].cells[column];
                         if note == "" { continue; }
-                        for other_line in 0..other.note_lines {
-                            let other_column: i32 = right.data.track_start(i32(u)) + i32(other_line) * 4;
-                            if right_row.cells[other_column] == note { count = count + 1; }
+                        for other_line in 0..self.patterns[b].data.tracks[u].note_lines {
+                            let other_column: i32 = self.patterns[b].data.track_start(i32(u)) + i32(other_line) * 4;
+                            if self.patterns[b].data.rows[r].cells[other_column] == note { count = count + 1; }
                         }
                     }
                 }
@@ -502,14 +503,11 @@ impl PatternLibrary {
         return split;
     }
     pub fn refresh(self: &mut Self) -> void {
-        let old: list<ListItem> = self.view.items;
-        for item in old { free(item.label); }
+        for i in 0..self.view.items.len() { free(self.view.items[i].label); }
         var items: list<ListItem> = [];
-        let entries: list<PatternEntry> = self.patterns;
-        {
-            for entry in entries {
-                items.push(ListItem { id: entry.id, label: format!("{}{} {}", entry.id < 10 ? "00" : (entry.id < 100 ? "0" : ""), entry.id, entry.name) });
-            }
+        for i in 0..self.patterns.len() {
+            let id: i32 = self.patterns[i].id;
+            items.push(ListItem { id: id, label: format!("{}{} {}", id < 10 ? "00" : (id < 100 ? "0" : ""), id, self.patterns[i].name) });
         }
         self.view.items = items; self.view.cancel_pending();
     }
@@ -529,7 +527,7 @@ impl PatternLibrary {
         let item: ListItem = self.view.items[self.view.selected]; self.select(item.id);
     }
     /// Copy a validated pattern into this session without changing song order.
-    pub fn import_pattern(self: &mut Self, name: str8, table: &SequenceTable, clips: list<AudioClip>) -> bool {
+    pub fn import_pattern(self: &mut Self, name: str8, table: &SequenceTable, clips: &list<AudioClip>) -> bool {
         if self.patterns.len() >= 128 { self.error = "Maximum 128 patterns"; return false; }
         var missing: i32 = 0;
         for clip in clips { if self.audio.find_clip(clip) < 0 { missing = missing + 1; } }
@@ -643,9 +641,8 @@ impl PatternLibrary {
         if selected < 0 || selected >= self.song.len() { return; }
         let target: i32 = self.index_of(song_cell_id(self.song[selected])) + direction;
         if target < 0 || target >= self.patterns.len() { return; }
-        let entry: PatternEntry = self.patterns[target];
         var order: list<i32> = [];
-        for i in 0..self.song.len() { order.push(i == selected ? entry.id : self.song[i]); }
+        for i in 0..self.song.len() { order.push(i == selected ? self.patterns[target].id : self.song[i]); }
         self.song = order; self.refresh(); self.view.reconcile(area); self.choose_selected();
     }
     pub fn on_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
@@ -702,8 +699,7 @@ impl PatternLibrary {
         self.show_instruments();
         let index: i32 = self.table.active_track();
         if index >= 0 {
-            let track: SequenceTrack = self.table.tracks[index];
-            if track.instrument { self.table.assign_instrument(id); }
+            if self.table.tracks[index].instrument { self.table.assign_instrument(id); }
         }
     }
     pub fn name_instrument(self: &mut Self, id: i32, name: str8) -> void {

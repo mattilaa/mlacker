@@ -88,7 +88,7 @@ impl Keymap {
         if event.released || (event.kind == InputKind::None && event.code == 0) { return KeyMatch { action: Action::None }; }
         let held: bool = self.pending.len() > 0;
         var presses: list<InputEvent> = [];
-        let before: list<InputEvent> = self.pending; for press in before { presses.push(press); }
+        let before: list<InputEvent> = std::copy(self.pending); for press in before { presses.push(press); }
         presses.push(event);
         let found: KeyMatch = self.find(presses);
         if found.waiting { self.pending = presses; return found; }

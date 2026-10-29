@@ -201,9 +201,9 @@ impl NotePlayback {
         if horizon < self.horizon { horizon = self.horizon; }
         while true {
             var event_tick: i64 = horizon + 1;
-            let voices: list<PlayingNote> = self.active;
+            let voices: list<PlayingNote> = std::copy(self.active);
             for voice in voices { if voice.end < event_tick { event_tick = voice.end; } }
-            let score: list<ScheduledNote> = self.score;
+            let score: list<ScheduledNote> = std::copy(self.score);
             for note in score { if note.start < event_tick { event_tick = note.start; } }
             if event_tick > horizon { break; }
             self.finish_at(event_tick, false);

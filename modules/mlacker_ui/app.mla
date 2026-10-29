@@ -322,7 +322,13 @@ fn aux_route_text(destination: i32) -> str8 {
     return destination < 0 ? clone("MAIN") : (destination == 0 ? clone("MST") : format!("A{}", destination));
 }
 
-fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &SequenceTable, mixer: &Mixer, patterns: &PatternLibrary, transport: TransportStatus, sample_ref: &SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
+/// A read-only placement view for painting; its clip storage stays with the pattern.
+fn preview_instance(source: &AudioInstance) -> AudioInstance {
+    var instance: AudioInstance = AudioInstance {}; instance = source;
+    return instance;
+}
+
+fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &mut SequenceTable, mixer: &Mixer, patterns: &mut PatternLibrary, transport: TransportStatus, sample_ref: &SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
     var sample: SampleView = SampleView {}; sample = sample_ref;
     let theme: Theme = Theme::dark_blue();
     surface.fill(surface.bounds(), Cell { glyph: 32, foreground: theme.foreground, background: theme.background });
@@ -358,8 +364,6 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
     let show_sample: bool = !show_sampler && !show_keyboard && !show_spectrum && sample.visible && table.audio_under_cursor();
     var sample_title: str8 = "";
     if show_sample {
-        let track: SequenceTrack = table.tracks[table.active_track()];
-        let instance: AudioInstance = track.instances[track.instance_at(table.selected_row)];
         sample_title = clone(" Sample ");
     }
     let details: Panel = Panel { title: show_sampler ? sampler_title : show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
@@ -378,10 +382,12 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
         }
     }
     else if show_sample {
-        let track: SequenceTrack = table.tracks[table.active_track()];
-        let instance: AudioInstance = track.instances[track.instance_at(table.selected_row)];
-        let render_clip: AudioClip = instance.render_clip();
+        let track_index: i32 = table.active_track();
+        let hit: i32 = table.tracks[track_index].instance_at(table.selected_row);
+        let instance: AudioInstance = preview_instance(table.tracks[track_index].instances[hit]);
         let row: i32 = table.selected_row - instance.start_row;
+        let name: str8 = base_name(instance.clip.source);
+        let render_clip: AudioClip = instance.render_clip();
         // The waveform, the key help, then the status bar: clip name, cursor
         // position, selection and transient mode.
         let help: bool = bottom.height > 6;
@@ -391,7 +397,6 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
             let keys: str8 = format!("{}  t trim  x delete  Ctrl+P play  Ctrl+S save  Esc unselect", sample_keys());
             surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 2, bottom.width, 1), keys, theme.muted, theme.panel); free(keys);
         }
-        let name: str8 = base_name(instance.clip.source);
         let line: str8 = sample_info(sample, render_clip, row, name, message); free(name);
         paint_status_bar(surface, Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), theme, line); free(line);
         if(patterns.error != "" || table.error != "") && bottom.height > 0 {
@@ -801,8 +806,7 @@ pub fn run() -> i32 {
                     library.select(matrix_armed_id); play_pattern = library.active_id;
                     let index: i32 = library.table.recording_candidate();
                     if index >= 0 {
-                        let track: SequenceTrack = library.table.tracks[index];
-                        matrix_auto_armed = track.record_armed ? -1 : index;
+                        matrix_auto_armed = library.table.tracks[index].record_armed ? -1 : index;
                         library.table.set_record_armed(index, true);
                         library.table.selected_column = library.table.track_start(index);
                         library.table.recording_extend = true;
@@ -926,8 +930,9 @@ pub fn run() -> i32 {
                     let entry: AutoMapEntry = plan[i];
                     if !library.audio.load(paths[entry.file], transport.bpm) { failure = clone(library.audio.error); break; }
                     let index: i32 = i32(library.audio.samples.len()) - 1;
-                    let clip: AudioClip = library.audio.samples[index];
+                    let clip: AudioClip = library.audio.samples[index].copy();
                     let name: str8 = base_name(clip.source);
+                    if clip.peaks.len() > 0 { free(clip.source); }
                     let error: str8 = midi.assign_pad(pad_slot, pad_index + i32(i), index, clip.samples, clip.channels, clip.sample_rate, name);
                     free(name);
                     if error != "" { failure = error; break; }
@@ -963,8 +968,9 @@ pub fn run() -> i32 {
                     if pad >= i32(midi.output.instrument_sampler(pad_slot, 1)) { failure = clone("ran out of pads"); break; }
                     if !library.audio.load(paths[i], transport.bpm) { failure = clone(library.audio.error); break; }
                     let index: i32 = i32(library.audio.samples.len()) - 1;
-                    let clip: AudioClip = library.audio.samples[index];
+                    let clip: AudioClip = library.audio.samples[index].copy();
                     let name: str8 = base_name(clip.source);
+                    if clip.peaks.len() > 0 { free(clip.source); }
                     let error: str8 = midi.assign_pad(pad_slot, pad, index, clip.samples, clip.channels, clip.sample_rate, name);
                     if i == 0 { free(first_name); first_name = clone(name); }
                     free(name);
@@ -1047,7 +1053,7 @@ pub fn run() -> i32 {
                 }
                 let used: i32 = midi.pad_sample(slot, preset_sampler_pad);
                 let has_clip: bool = used >= 0 && used < library.audio.samples.len();
-                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used]; }
+                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used].copy(); }
                 let saved: PresetResult = SessionCodec::sampler_slot_file(preset_path, name, true, keys, values, clip, has_clip);
                 free(message); message = saved.status;
             } else {
@@ -1072,7 +1078,8 @@ pub fn run() -> i32 {
                         let index: i32 = library.audio.add_clip(clip);
                         if index < 0 { failed = clone(library.audio.error); }
                         else {
-                            let added: AudioClip = library.audio.samples[index];
+                            let added: AudioClip = library.audio.samples[index].copy();
+                            if added.peaks.len() > 0 { free(added.source); }
                             failed = midi.assign_pad(slot, preset_sampler_pad, index, added.samples, added.channels, added.sample_rate, clip_name);
                         }
                         free(clip_name);
@@ -1092,13 +1099,19 @@ pub fn run() -> i32 {
             let saving_preset: bool = preset_request == Action::SaveInstrumentPreset || preset_request == Action::SaveEffectPreset;
             var kit_pads: list<i32> = []; var kit_clips: list<AudioClip> = [];
             if preset_request == Action::SaveInstrumentPreset {
-                let assigned: list<PadAssignment> = midi.pads;
-                for entry in assigned { if entry.slot == learn_slot { kit_pads.push(entry.pad); kit_clips.push(library.audio.samples[entry.sample]); } }
+                let assigned: list<PadAssignment> = std::copy(midi.pads);
+                for entry in assigned {
+                    if entry.slot == learn_slot {
+                        kit_pads.push(entry.pad);
+                        kit_clips.push(library.audio.samples[entry.sample].copy());
+                    }
+                }
             }
             if !saving_preset { midi.midi.release(); }
             var preset: PresetResult = PresetResult {};
             if effect_preset { preset = SessionCodec::effect_preset_file(preset_path, midi.output, learn_slot, saving_preset); }
             else { preset = SessionCodec::preset_file(preset_path, midi.output, learn_slot, saving_preset, kit_pads, kit_clips); }
+            for clip in kit_clips { clip.release(); }
             free(message); message = preset.status;
             if !saving_preset {
                 if preset.ok && preset.has_pads {
@@ -1108,7 +1121,7 @@ pub fn run() -> i32 {
                     let loaded: i64 = midi.output.instrument_sampler(slot, 2);
                     var pad_mask: i64 = 1;
                     for p in 0..pads {
-                        var kept: bool = false; let wanted: list<i32> = preset.pads;
+                        var kept: bool = false; let wanted: list<i32> = std::copy(preset.pads);
                         for pad in wanted { if pad == i32(p) { kept = true; } }
                         if !kept && p < 63 && (loaded / pad_mask) % 2 == 1 { let cleared: str8 = midi.clear_pad(slot, i32(p)); if cleared != "" { free(cleared); } }
                         if p < 62 { pad_mask = pad_mask * 2; }
@@ -1119,7 +1132,8 @@ pub fn run() -> i32 {
                         let name: str8 = base_name(clip.source);
                         let index: i32 = library.audio.add_clip(clip);
                         if index < 0 { failed = clone(library.audio.error); free(name); break; }
-                        let added: AudioClip = library.audio.samples[index];
+                        let added: AudioClip = library.audio.samples[index].copy();
+                        if added.peaks.len() > 0 { free(added.source); }
                         let error: str8 = midi.assign_pad(slot, preset.pads[i], index, added.samples, added.channels, added.sample_rate, name);
                         free(name);
                         if error != "" { failed = error; break; }

@@ -61,8 +61,8 @@ impl Bounce {
 }
 
 /// The events of the tracks in `tracks` (all when it is empty).
-pub fn keep_tracks(events: list<NoteEvent>, tracks: list<i32>) -> list<NoteEvent> {
-    if tracks.len() == 0 { return events; }
+pub fn keep_tracks(events: &list<NoteEvent>, tracks: list<i32>) -> list<NoteEvent> {
+    if tracks.len() == 0 { return std::copy(events); }
     var kept: list<NoteEvent> = [];
     for event in events {
         var keep: bool = false;

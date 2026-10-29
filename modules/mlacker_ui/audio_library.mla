@@ -223,12 +223,12 @@ impl AudioLibrary {
         self.align();
         var selected_id: i32 = 0;
         if self.view.selected >= 0 && self.view.selected < self.view.items.len() { selected_id = self.view.items[self.view.selected].id; }
-        let old: list<ListItem> = self.view.items; for item in old { free(item.label); }
+        for i in 0..self.view.items.len() { free(self.view.items[i].label); }
         var items: list<ListItem> = self.group_rows("", 0);
         for i in 0..self.samples.len() {
             let member: str8 = self.group_of(i32(i));
             if member != "" { continue; }
-            let clip: AudioClip = self.samples[i]; let label: str8 = audio_label(clip.source);
+            let label: str8 = audio_label(self.samples[i].source);
             items.push(ListItem { id: i32(i) + 1, label: format!("{} {}", i + 1, label) }); free(label);
         }
         let item_count: i64 = items.len(); self.view.items = items; self.view.marks = [];

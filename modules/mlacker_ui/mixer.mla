@@ -201,10 +201,10 @@ impl Mixer {
         var start: i32 = 0; var span: i32 = 0;
         for i in 0..tracks.len() {
             if i > selected { break; }
-            let track: SequenceTrack = tracks[i]; span = span + self.track_width(track.instrument, i32(i));
+            span = span + self.track_width(tracks[i].instrument, i32(i));
         }
         while span > available && start < selected && start < tracks.len() {
-            let track: SequenceTrack = tracks[start]; span = span - self.track_width(track.instrument, start); start = start + 1;
+            span = span - self.track_width(tracks[start].instrument, start); start = start + 1;
         }
         // The OUT row sits below the fader value, on the last row of the strip.
         let lift: i32 = area.height > 4 ? 1 : 0;
@@ -253,7 +253,7 @@ impl Mixer {
             if lift > 0 {
                 var destination: i32 = track.output;
                 if destination > tracks.len() || destination - 1 == i32(index) { destination = 0; }
-                if destination > 0 { let other: SequenceTrack = tracks[destination - 1]; if !other.audio { destination = 0; } }
+                if destination > 0 && !tracks[destination - 1].audio { destination = 0; }
                 let text: str8 = output_label_text(track.instrument ? track.instrument_id : 0, destination);
                 surface.text(Rect::new(x, area.y + area.height - 1, strip.width, 1), text,
                     destination > 0 ? theme.accent : theme.muted, bg);

@@ -169,7 +169,7 @@ impl SessionData {
             free(name);
             if sent != 0 { next.release(); return Err<AudioSystem, str8>("Cannot restore a sampler pad; session retained"); }
         }
-        next.pads = self.pads;
+        next.pads = pads;
         // Hand-set slice markers follow their pads' samples.
         let markers: list<PadMarkers> = self.markers;
         for entry in markers {
@@ -179,7 +179,7 @@ impl SessionData {
                 next.release(); return Err<AudioSystem, str8>("Cannot restore a pad's slice markers; session retained");
             }
         }
-        next.pad_markers = self.markers;
+        next.pad_markers = markers;
         return Ok<AudioSystem, str8>(next);
     }
 }
@@ -422,7 +422,7 @@ impl SessionCodec {
             let key: i64 = codec.integer(saving ? keys[i] : 0, 0, 1048575);
             let value: f64 = codec.real(saving ? values[i] : 0.0, 0.0, 1.0);
             if !saving {
-                let seen: list<i64> = result.keys;
+                let seen: list<i64> = std::copy(result.keys);
                 for other in seen { if other == key { codec.failed = true; } }
                 result.keys.push(key); result.values.push(value);
             }
@@ -721,7 +721,7 @@ impl SessionCodec {
             if codec.failed { break; }
             let id: i64 = codec.integer(0, 0, 4294967295);
             let value: f64 = codec.real(0.0, 0.0, 1.0);
-            let ids: list<i64> = plugin.ids; for old in ids { if old == id { codec.failed = true; } }
+            let ids: list<i64> = std::copy(plugin.ids); for old in ids { if old == id { codec.failed = true; } }
             plugin.ids.push(id); plugin.values.push(value);
         }
         // A kit preset's pads belong to the session; skip them.

@@ -34,8 +34,14 @@ pub struct AudioClip {
     // Transient render window start (frames into `samples`); never serialized.
     var offset: i64;
 };
+/// Absolute mono level of frame `frame` (the channels averaged).
+fn mono_sample_level(samples: &list<f32>, channels: i64, frame: i64) -> f32 {
+    let value: f32 = channels < 2 ? samples[frame]
+        : (samples[frame * channels] + samples[frame * channels + 1]) * 0.5f;
+    return value < 0.0f ? -value : value;
+}
 impl AudioClip {
-    pub fn copy(self: AudioClip) -> AudioClip {
+    pub fn copy(self: &Self) -> AudioClip {
         var copy: AudioClip = AudioClip {};
         copy.samples = self.samples; copy.channels = self.channels; copy.sample_rate = self.sample_rate;
         copy.frames = self.frames; copy.frames_per_row = self.frames_per_row; copy.offset = self.offset;
@@ -51,7 +57,7 @@ impl AudioClip {
     /// Owned clip holding the pattern rows from `offset_rows` to the end.
     /// Sample data is realigned so the first kept row maps to frame 0, keeping
     /// the samples.len() >= frames*channels invariant used by the sample view.
-    pub fn slice_tail(self: AudioClip, offset_rows: i64) -> AudioClip {
+    pub fn slice_tail(self: &Self, offset_rows: i64) -> AudioClip {
         var tail: AudioClip = AudioClip {};
         tail.channels = self.channels; tail.sample_rate = self.sample_rate;
         tail.frames_per_row = self.frames_per_row;
@@ -76,7 +82,7 @@ impl AudioClip {
     }
     /// Owned clip playing back-to-front: rows, detail slices and interleaved
     /// samples are all reversed while channel order within each frame is kept.
-    pub fn reverse(self: AudioClip) -> AudioClip {
+    pub fn reverse(self: &Self) -> AudioClip {
         var out: AudioClip = AudioClip {};
         out.channels = self.channels; out.sample_rate = self.sample_rate;
         out.frames = self.frames; out.frames_per_row = self.frames_per_row;
@@ -173,7 +179,7 @@ impl AudioClip {
     }
     /// Owned clip covering the sample frame range [from, to), realigned to frame
     /// 0 with freshly computed peaks. Used to lift a waveform-selected sub-clip.
-    pub fn slice_frames(self: AudioClip, from: i64, to: i64) -> AudioClip {
+    pub fn slice_frames(self: &Self, from: i64, to: i64) -> AudioClip {
         var out: AudioClip = AudioClip {};
         out.channels = self.channels; out.sample_rate = self.sample_rate;
         out.frames_per_row = self.frames_per_row;
@@ -247,12 +253,12 @@ impl AudioClip {
         for t in taken {
             let lo: i64 = t * hop - hop; let far: i64 = t * hop + 2 * hop; let hi: i64 = far < frames ? far : frames;
             var peak: f32 = 0.0f;
-            for f in lo..hi { let a: f32 = self.level_at(f); if a > peak { peak = a; } }
+            for f in lo..hi { let a: f32 = mono_sample_level(samples, channels, f); if a > peak { peak = a; } }
             var onset: i64 = t * hop;
-            for f in lo..hi { if self.level_at(f) >= peak * 0.3f { onset = f; break; } }
+            for f in lo..hi { if mono_sample_level(samples, channels, f) >= peak * 0.3f { onset = f; break; } }
             let back: i64 = onset - 64 < lo ? lo : onset - 64; let through: i64 = onset + 1;
             var quiet: i64 = onset; var level: f32 = 2.0f;
-            for f in back..through { let a: f32 = self.level_at(f); if a <= level { level = a; quiet = f; } }
+            for f in back..through { let a: f32 = mono_sample_level(samples, channels, f); if a <= level { level = a; quiet = f; } }
             var at: i64 = 0;
             while at < cuts.len() && cuts[at] < quiet { at = at + 1; }
             var sorted: list<i64> = [];
@@ -262,11 +268,6 @@ impl AudioClip {
         }
         for c in cuts { points.push(c); }
         points.push(frames); return points;
-    }
-    /// Absolute mono level of frame `f` (the channels averaged).
-    fn level_at(self: AudioClip, f: i64) -> f32 {
-        let v: f32 = self.channels < 2 ? self.samples[f] : (self.samples[f * self.channels] + self.samples[f * self.channels + 1]) * 0.5f;
-        return v < 0.0f ? -v : v;
     }
     /// Owned clip with the same source, format and row size but new interleaved
     /// PCM; frames and peaks are recomputed. `samples` must not be shared.
