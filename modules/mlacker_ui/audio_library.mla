@@ -85,19 +85,19 @@ pub struct AudioLibrary {
     var sample_groups: list<str8>;
 };
 impl AudioLibrary {
-    pub fn group_open(self: AudioLibrary, name: str8) -> bool {
+    pub fn group_open(self: &Self, name: str8) -> bool {
         let groups: list<str8> = self.expanded; for group in groups { if group == name { return true; } } return false;
     }
-    pub fn has_group(self: AudioLibrary, path: str8) -> bool {
+    pub fn has_group(self: &Self, path: str8) -> bool {
         let groups: list<str8> = self.groups; for group in groups { if group == path { return true; } } return false;
     }
     /// Index of group `path` in `groups`, or -1.
-    pub fn group_index(self: AudioLibrary, path: str8) -> i32 {
+    pub fn group_index(self: &Self, path: str8) -> i32 {
         for i in 0..self.groups.len() { if self.groups[i] == path { return i32(i); } }
         return -1;
     }
     /// Group path of sample `index` (borrowed), "" for none.
-    pub fn group_of(self: AudioLibrary, index: i32) -> str8 {
+    pub fn group_of(self: &Self, index: i32) -> str8 {
         if index < 0 || index >= self.sample_groups.len() { return ""; }
         return self.sample_groups[index];
     }
@@ -162,25 +162,25 @@ impl AudioLibrary {
         self.expanded = still;
     }
     /// Groups inside group `path` (at any depth).
-    pub fn subgroup_count(self: AudioLibrary, path: str8) -> i32 {
+    pub fn subgroup_count(self: &Self, path: str8) -> i32 {
         var count: i32 = 0;
         let groups: list<str8> = self.groups; for group in groups { if group != path && in_group(group, path) { count = count + 1; } }
         return count;
     }
     /// Samples in group `path` or the groups inside it.
-    pub fn samples_in_group(self: AudioLibrary, path: str8) -> list<i32> {
+    pub fn samples_in_group(self: &Self, path: str8) -> list<i32> {
         var found: list<i32> = [];
         for i in 0..self.sample_groups.len() { if in_group(self.sample_groups[i], path) { found.push(i32(i)); } }
         return found;
     }
-    fn item_index(self: AudioLibrary, id: i32) -> i32 {
+    fn item_index(self: &Self, id: i32) -> i32 {
         let items: list<ListItem> = self.view.items;
         for i in 0..items.len() { if items[i].id == id { return i32(i); } }
         return -1;
     }
     /// The rows of group `parent`'s child groups (each followed, when open, by
     /// its own rows and samples), indented by `depth`.
-    fn group_rows(self: AudioLibrary, parent: str8, depth: i32) -> list<ListItem> {
+    fn group_rows(self: &Self, parent: str8, depth: i32) -> list<ListItem> {
         var children: list<i32> = [];
         for i in 0..self.groups.len() {
             let up: str8 = group_parent(self.groups[i]);
@@ -236,12 +236,12 @@ impl AudioLibrary {
         self.view.selected = restored >= 0 ? restored : (item_count > 0 ? 0 : -1);
         self.view.cancel_pending();
     }
-    pub fn selected_sample(self: AudioLibrary) -> i32 {
+    pub fn selected_sample(self: &Self) -> i32 {
         if self.view.selected < 0 || self.view.selected >= self.view.items.len() { return -1; }
         let id: i32 = self.view.items[self.view.selected].id; return id > 0 ? id - 1 : -1;
     }
     /// The selected group row's path (borrowed), or "".
-    pub fn selected_group(self: AudioLibrary) -> str8 {
+    pub fn selected_group(self: &Self) -> str8 {
         if self.view.selected < 0 || self.view.selected >= self.view.items.len() { return ""; }
         let id: i32 = self.view.items[self.view.selected].id;
         let index: i32 = -id - 1;
@@ -249,7 +249,7 @@ impl AudioLibrary {
     }
     /// The group a new item goes in: the selected group, or the selected
     /// sample's group (borrowed; "" for the top level).
-    pub fn current_group(self: AudioLibrary) -> str8 {
+    pub fn current_group(self: &Self) -> str8 {
         let group: str8 = self.selected_group();
         if group != "" { return group; }
         return self.group_of(self.selected_sample());
@@ -288,7 +288,7 @@ impl AudioLibrary {
         self.view.cancel_pending(); self.error = ""; return true;
     }
     /// Index of a sample with identical format and PCM, or -1.
-    pub fn find_clip(self: AudioLibrary, source: &AudioClip) -> i32 {
+    pub fn find_clip(self: &Self, source: &AudioClip) -> i32 {
         var clip: AudioClip = AudioClip {}; clip = source;
         for i in 0..self.samples.len() {
             let other: AudioClip = self.samples[i];

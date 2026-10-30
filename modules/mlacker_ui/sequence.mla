@@ -198,6 +198,13 @@ pub struct AudioInstance {
     var pitch: i32; var resample: i32; var loop_mode: i32;
 };
 impl AudioInstance {
+    pub fn copy(self: &Self) -> AudioInstance {
+        return AudioInstance { clip: self.clip.copy(), start_row: self.start_row,
+            length_ticks: self.length_ticks, offset_frames: self.offset_frames,
+            frame_end: self.frame_end, original_bpm: self.original_bpm,
+            stretch_algorithm: self.stretch_algorithm, pitch: self.pitch,
+            resample: self.resample, loop_mode: self.loop_mode };
+    }
     /// Repitch, Stretch or Beats with an original BPM: the sample keeps that
     /// tempo's beats on the pattern rows whatever the project BPM, and is
     /// rendered to the project tempo when played.
@@ -309,6 +316,16 @@ pub struct SequenceTrack {
     var sysex: bool;
 };
 impl SequenceTrack {
+    pub fn copy(self: &Self) -> SequenceTrack {
+        return SequenceTrack { name: clone(self.name), muted: self.muted,
+            automation: self.copy_automation(), volume: self.volume, pan: self.pan,
+            record_armed: self.record_armed, input_armed: self.input_armed,
+            sends: self.copy_sends(), inserts: std::copy(self.inserts), audio: self.audio,
+            output: self.output, aux_outputs: std::copy(self.aux_outputs), input: self.input,
+            instrument: self.instrument, instrument_id: self.instrument_id,
+            note_lines: self.note_lines, instances: self.copy_audio(), zoom_stage: self.zoom_stage,
+            comment: self.comment, sysex: self.sysex };
+    }
     pub fn insert_id(self: &Self, position: i32) -> i32 {
         if position < 0 || position >= self.inserts.len() { return 0; } return self.inserts[position];
     }
@@ -380,7 +397,7 @@ pub fn output_label_text(instrument_id: i32, destination: i32) -> str8 {
     }
     return destination > 0 ? format!("OUT:A{}", destination) : clone("OUT:MST");
 }
-pub fn track_output_label(tracks: list<SequenceTrack>, index: i32) -> str8 {
+pub fn track_output_label(tracks: &list<SequenceTrack>, index: i32) -> str8 {
     if index < 0 || index >= tracks.len() { return clone("OUT:MST"); }
     // Same validation as track_output_of; read fields without moving a track.
     var destination: i32 = tracks[index].output;
@@ -594,7 +611,7 @@ pub fn armed_audio_tracks(self: &Self) -> list<i32> {
 }
 /// A red A (input armed) and R (record armed) in the top right corner of
 /// each armed track's header, as the mixer shows R.
-pub fn paint_arm_marks(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+pub fn paint_arm_marks(self: &Self, surface: Surface, area: Rect, theme: Theme) -> void {
     if self.groups.len() == 0 || area.height < 1 { return; }
     let body: Rect = self.body(area);
     let frozen: i32 = self.frozen_width() > body.width ? body.width : self.frozen_width();
@@ -626,7 +643,7 @@ pub fn set_muted(self: &mut Self, index: i32, muted: bool) -> bool {
 }
 /// The first armed AUDIO track, which an audio take records into; -1 when
 /// none is armed.
-pub fn armed_audio_track(self: SequenceTable) -> i32 {
+pub fn armed_audio_track(self: &Self) -> i32 {
     for i in 0..self.tracks.len() { if self.tracks[i].audio && self.tracks[i].record_armed { return i32(i); } }
     return -1;
 }
@@ -658,7 +675,7 @@ pub fn recording_candidate(self: &Self) -> i32 {
 }
 /// Pattern length a take stopped at `tick` leaves: the nearest bar line of
 /// `bar_rows` rows, moved on by whole bars while that would cut off notes.
-pub fn take_length(self: SequenceTable, tick: i64, bar_rows: i32) -> i32 {
+pub fn take_length(self: &Self, tick: i64, bar_rows: i32) -> i32 {
     let bar: i64 = wide(bar_rows < 1 ? 1 : bar_rows);
     var bars: i64 = (tick + bar * 7500) / (bar * 15000);
     if bars < 1 { bars = 1; }
@@ -821,15 +838,15 @@ pub fn set_send(self: &mut Self, index: i32, fx: i32, value: i32) -> bool {
     return true;
 }
 /// Output channel of a track: 0 = master, otherwise destination index + 1.
-pub fn track_output(self: SequenceTable, index: i32) -> i32 {
+pub fn track_output(self: &Self, index: i32) -> i32 {
     return track_output_of(self.tracks, index);
 }
 /// Mixer label of a track's output: "MST", "A3", or the instrument it plays.
-pub fn output_label(self: SequenceTable, index: i32) -> str8 {
+pub fn output_label(self: &Self, index: i32) -> str8 {
     return track_output_label(self.tracks, index);
 }
 /// True when routing `index` into `destination` (1-based) would loop back.
-pub fn output_loops(self: SequenceTable, index: i32, destination: i32) -> bool {
+pub fn output_loops(self: &Self, index: i32, destination: i32) -> bool {
     if destination <= 0 { return false; }
     var step: i32 = destination - 1;
     for _hop in 0..64 {
@@ -862,7 +879,7 @@ pub fn set_track_output(self: &mut Self, index: i32, destination: i32) -> bool {
 /// Validated audio input of the instrument track `index`: 0 = none, -1 = the
 /// live audio input, otherwise the AUDIO track index + 1 feeding it. A stale
 /// route reads as 0.
-pub fn track_input(self: SequenceTable, index: i32) -> i32 {
+pub fn track_input(self: &Self, index: i32) -> i32 {
     if index < 0 || index >= self.tracks.len() { return 0; }
     if self.tracks[index].instrument && self.tracks[index].input == -1 { return -1; }
     let input: i32 = self.tracks[index].input;
@@ -889,7 +906,7 @@ pub fn set_track_input(self: &mut Self, index: i32, source: i32) -> bool {
 }
 /// Validated route of aux bus `bus` of the instrument track `index` (see
 /// `set_aux_output`). A route to a missing or non-audio track reads as -1.
-pub fn track_aux_output(self: SequenceTable, index: i32, bus: i32) -> i32 {
+pub fn track_aux_output(self: &Self, index: i32, bus: i32) -> i32 {
     if index < 0 || index >= self.tracks.len() { return -1; }
     if !self.tracks[index].instrument { return -1; }
     let destination: i32 = self.tracks[index].aux_output(bus);
@@ -1287,7 +1304,7 @@ pub fn slice_audio(self: &mut Self, area: Rect) -> bool {
     }
     self.reconcile(area); self.error = ""; return true;
 }
-pub fn paint_audio(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+pub fn paint_audio(self: &Self, surface: Surface, area: Rect, theme: Theme) -> void {
     self.paint_audio_style(surface, area, theme, true, false);
 }
 /// Thin sub-row dots show duration on the NOTE cell's unchanged background.
@@ -1297,7 +1314,7 @@ pub fn cycle_vertical_zoom(self: &mut Self, area: Rect) -> void {
     self.row_scale = self.row_spacing() == 1 ? 2 : (self.row_spacing() == 2 ? 4 : 1);
     self.reconcile(area);
 }
-pub fn subdivision_brightness(self: SequenceTable, line: i32) -> i32 {
+pub fn subdivision_brightness(self: &Self, line: i32) -> i32 {
     let part: i32 = line % self.row_spacing();
     if part == 0 { return 100; }
     return self.row_spacing() == 4 && part % 2 == 1 ? 68 : 84;
@@ -1358,7 +1375,7 @@ pub fn mark_hidden_notes(self: &mut Self) -> void {
 }
 /// Repaint automation cells holding 1/64 steps: zoomed in, each visible step
 /// on its own line; a value followed by "+" hides steps between the lines.
-pub fn paint_automation(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+pub fn paint_automation(self: &Self, surface: Surface, area: Rect, theme: Theme) -> void {
     let body: Rect = self.body(area);
     let clip: Rect = Rect::new(body.x + self.frozen_width(), body.y, body.width - self.frozen_width(), body.height);
     let spacing: i32 = self.row_spacing(); let per_line: i32 = automation_steps_per_row() / spacing;
@@ -1423,7 +1440,7 @@ fn subdivision_cell(self: &mut Self, slot: i32, column: i32) -> str8 {
     else if self.selected_subrow == 0 { free(text); text = clone(self.rows[self.selected_row].cells[column]); }
     self.selected_row = saved_row; self.selected_subrow = saved_sub; self.selected_column = saved_col; return text;
 }
-pub fn paint_subdivision_notes(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+pub fn paint_subdivision_notes(self: &Self, surface: Surface, area: Rect, theme: Theme) -> void {
     if self.row_spacing() == 1 { return; }
     let body: Rect = self.body(area);
     let clip: Rect = Rect::new(body.x + self.frozen_width(), body.y, body.width - self.frozen_width(), body.height);
@@ -1464,7 +1481,7 @@ pub fn paint_subdivision_notes(self: SequenceTable, surface: Surface, area: Rect
     }
 }
 /// Source note under the zoomed cursor, or {-1,-1} for an empty time position.
-pub fn subdivision_source(self: SequenceTable) -> ViewNote {
+pub fn subdivision_source(self: &Self) -> ViewNote {
     let index: i32 = self.active_track(); if index < 0 { return ViewNote { row: -1, column: -1 }; }
     let lane: i32 = (self.selected_column - self.track_start(index)) / 4;
     let slot: i32 = self.selected_row * self.row_spacing() + self.selected_subrow;
@@ -1500,7 +1517,7 @@ fn subdivision_commit(self: &mut Self, value: str8) -> bool {
     let ok: bool = self.commit(value);
     self.selected_row = display_row; self.selected_column = display_column; return ok;
 }
-pub fn paint_note_lengths(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+pub fn paint_note_lengths(self: &Self, surface: Surface, area: Rect, theme: Theme) -> void {
     let body: Rect = self.body(area);
     let powers: array<i32, 8> = {1, 2, 4, 8, 16, 32, 64, 128};
     let dots: array<i32, 4> = {1, 2, 4, 64};
@@ -1559,7 +1576,7 @@ pub fn has_audio_properties(self: &Self) -> bool {
     return false;
 }
 /// A borrowed copy of the placement under the Pattern cursor.
-pub fn audio_at_cursor(self: SequenceTable) -> AudioInstance {
+pub fn audio_at_cursor(self: &Self) -> AudioInstance {
     let index: i32 = self.active_track();
     if index < 0 { return AudioInstance {}; }
     let track: SequenceTrack = self.tracks[index];
@@ -1600,7 +1617,7 @@ pub fn set_audio_properties(self: &mut Self, from: i64, to: i64, bpm: i32, algor
     self.write_owned_cell(start_row, self.audio_length_column(index), duration_text(ticks));
     self.reconcile(area); self.error = ""; return true;
 }
-pub fn paint_audio_style(self: SequenceTable, surface: Surface, area: Rect, theme: Theme, grainy: bool, wave: bool) -> void {
+pub fn paint_audio_style(self: &Self, surface: Surface, area: Rect, theme: Theme, grainy: bool, wave: bool) -> void {
     let body: Rect = self.body(area);
     let clip: Rect = Rect::new(body.x + self.frozen_width(), body.y, body.width - self.frozen_width(), body.height);
     let spacing: i32 = self.row_spacing();
@@ -1681,7 +1698,7 @@ pub fn paint_audio_style(self: SequenceTable, surface: Surface, area: Rect, them
 }
 /// Independent pattern snapshot, including tracks, automation, mixer settings,
 /// cursor and viewport. No owned strings or mutable lists alias the source.
-pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
+pub fn copy_pattern(self: &Self) -> SequenceTable {
     var copy: SequenceTable = SequenceTable { frozen_columns: self.frozen_columns,
         alternate_group_text: self.alternate_group_text,
         horizontal_scrollbar: self.horizontal_scrollbar, vertical_scrollbar: self.vertical_scrollbar,
@@ -1710,7 +1727,7 @@ pub fn copy_pattern(self: SequenceTable) -> SequenceTable {
 /// wrapping so a pattern shorter than the matrix row repeats to fill it. Audio
 /// clips keep their place relative to the slice and are dropped when they start
 /// outside it.
-pub fn copy_slice(self: SequenceTable, start: i32, count: i32) -> SequenceTable {
+pub fn copy_slice(self: &Self, start: i32, count: i32) -> SequenceTable {
     var copy: SequenceTable = self.copy_pattern();
     let source_rows: i64 = self.rows.len();
     if count <= 0 || source_rows == 0 || (start == 0 && wide(count) == source_rows) { return copy; }
@@ -1750,23 +1767,23 @@ pub fn track_columns(self: &Self, index: i32) -> i32 {
         : self.tracks[index].note_lines * 4 + slots + (self.tracks[index].sysex ? 2 : 0) + (self.tracks[index].comment ? 1 : 0);
 }
 /// ID column of track `index` (SYSEX follows it), or -1 when it has none.
-pub fn sysex_column(self: SequenceTable, index: i32) -> i32 {
+pub fn sysex_column(self: &Self, index: i32) -> i32 {
     if index < 0 || index >= self.tracks.len() { return -1; }
     if self.tracks[index].audio || !self.tracks[index].sysex { return -1; }
     return self.track_start(index) + self.tracks[index].note_lines * 4 + i32(self.tracks[index].automation.len());
 }
-pub fn is_sysex_id(self: SequenceTable) -> bool {
+pub fn is_sysex_id(self: &Self) -> bool {
     let index: i32 = self.active_track();
     return index >= 0 && self.selected_column == self.sysex_column(index);
 }
-pub fn is_sysex_data(self: SequenceTable) -> bool {
+pub fn is_sysex_data(self: &Self) -> bool {
     let index: i32 = self.active_track(); let column: i32 = self.sysex_column(index);
     return column >= 0 && self.selected_column == column + 1;
 }
 /// Whole system exclusive message (F0 ... F7) the SYSEX cell of track `index`
 /// sends on `row`, or an empty list when the cell is empty or no ID is set on
 /// the row or above it.
-pub fn sysex_message(self: SequenceTable, index: i32, row: i32) -> list<i32> {
+pub fn sysex_message(self: &Self, index: i32, row: i32) -> list<i32> {
     let column: i32 = self.sysex_column(index);
     if column < 0 || row < 0 || row >= self.rows.len() { return []; }
     if column + 1 >= self.rows[row].cells.len() || self.rows[row].cells[column + 1] == "" { return []; }
@@ -1781,19 +1798,19 @@ pub fn sysex_message(self: SequenceTable, index: i32, row: i32) -> list<i32> {
     message.push(247); return message;
 }
 /// TEXT column of track `index`, or -1 when it has none.
-pub fn comment_column(self: SequenceTable, index: i32) -> i32 {
+pub fn comment_column(self: &Self, index: i32) -> i32 {
     if index < 0 || index >= self.tracks.len() { return -1; }
     if self.tracks[index].audio || !self.tracks[index].comment { return -1; }
     return self.track_start(index) + self.tracks[index].note_lines * 4 + i32(self.tracks[index].automation.len()) + (self.tracks[index].sysex ? 2 : 0);
 }
-pub fn is_comment(self: SequenceTable) -> bool {
+pub fn is_comment(self: &Self) -> bool {
     let index: i32 = self.active_track();
     return index >= 0 && self.selected_column == self.comment_column(index);
 }
 /// Width of track `index`'s TEXT column: its longest text, 10-48 cells.
-fn comment_width(self: SequenceTable, index: i32) -> i32 { return self.text_width(self.comment_column(index)); }
+fn comment_width(self: &Self, index: i32) -> i32 { return self.text_width(self.comment_column(index)); }
 /// Width of a free-length column: its longest cell, 10-48 cells.
-fn text_width(self: SequenceTable, column: i32) -> i32 {
+fn text_width(self: &Self, column: i32) -> i32 {
     var longest: i64 = 4;
     if column < 0 { return 10; }
     for row in 0..self.rows.len() {
@@ -1864,21 +1881,21 @@ pub fn track_start(self: &Self, index: i32) -> i32 {
     return first;
 }
 /// Column of one-based automation `slot` of track `index`.
-pub fn automation_column(self: SequenceTable, index: i32, slot: i32) -> i32 {
+pub fn automation_column(self: &Self, index: i32, slot: i32) -> i32 {
     return self.track_start(index) + (self.tracks[index].audio ? 0 : self.tracks[index].note_lines * 4) + slot - 1;
 }
 /// LEN, OFF and optional waveform columns of an AUDIO track.
-pub fn audio_length_column(self: SequenceTable, index: i32) -> i32 {
+pub fn audio_length_column(self: &Self, index: i32) -> i32 {
     return self.track_start(index) + i32(self.tracks[index].automation.len());
 }
-pub fn audio_offset_column(self: SequenceTable, index: i32) -> i32 { return self.audio_length_column(index) + 1; }
-pub fn audio_waveform_column(self: SequenceTable, index: i32) -> i32 { return self.audio_length_column(index) + 2; }
-pub fn is_audio_waveform(self: SequenceTable) -> bool {
+pub fn audio_offset_column(self: &Self, index: i32) -> i32 { return self.audio_length_column(index) + 1; }
+pub fn audio_waveform_column(self: &Self, index: i32) -> i32 { return self.audio_length_column(index) + 2; }
+pub fn is_audio_waveform(self: &Self) -> bool {
     let index: i32 = self.active_track(); if index < 0 { return false; }
     return self.tracks[index].audio && self.tracks[index].instances.len() > 0 && self.selected_column == self.audio_waveform_column(index);
 }
 /// Fine timing offset of an audio placement, stored in its OFF cell.
-pub fn audio_timing_offset(self: SequenceTable, index: i32, row: i32) -> i64 {
+pub fn audio_timing_offset(self: &Self, index: i32, row: i32) -> i64 {
     if index < 0 || index >= self.tracks.len() || row < 0 || row >= self.rows.len() { return 0; }
     if !self.tracks[index].audio { return 0; }
     let column: i32 = self.audio_offset_column(index);
@@ -1887,7 +1904,7 @@ pub fn audio_timing_offset(self: SequenceTable, index: i32, row: i32) -> i64 {
     return ticks >= -245760000 && ticks <= 245760000 ? ticks : 0;
 }
 /// Track owning `column`, or -1 for the ROW column.
-pub fn track_of_column(self: SequenceTable, column: i32) -> i32 {
+pub fn track_of_column(self: &Self, column: i32) -> i32 {
     if column < 1 { return -1; }
     var first: i32 = 1;
     for i in 0..self.tracks.len() {
@@ -1897,17 +1914,17 @@ pub fn track_of_column(self: SequenceTable, column: i32) -> i32 {
     return -1;
 }
 /// One-based automation slot at `column`, or 0 when it is not automation.
-pub fn automation_slot_at(self: SequenceTable, column: i32) -> i32 {
+pub fn automation_slot_at(self: &Self, column: i32) -> i32 {
     let index: i32 = self.track_of_column(column); if index < 0 { return 0; }
     let slot: i32 = column - self.automation_column(index, 1) + 1;
     return slot >= 1 && slot <= self.tracks[index].automation.len() ? slot : 0;
 }
-pub fn is_automation(self: SequenceTable) -> bool { return self.automation_slot_at(self.selected_column) > 0; }
+pub fn is_automation(self: &Self) -> bool { return self.automation_slot_at(self.selected_column) > 0; }
 /// Automation step under the cursor: the zoomed sub-row as a 1/64 step.
-pub fn automation_step(self: SequenceTable) -> i32 {
+pub fn automation_step(self: &Self) -> i32 {
     return self.selected_subrow * (automation_steps_per_row() / self.row_spacing());
 }
-pub fn is_note(self: SequenceTable) -> bool {
+pub fn is_note(self: &Self) -> bool {
     let index: i32 = self.active_track(); if index < 0 { return false; }
     let offset: i32 = self.selected_column - self.track_start(index);
     return !self.tracks[index].audio && offset >= 0 && offset < self.tracks[index].note_lines * 4 && offset % 4 == 0;
@@ -2037,7 +2054,7 @@ pub fn detach_instrument(self: &mut Self, id: i32) -> void {
     self.revision = self.revision + 1;
 }
 /// Placements of `sample` in this pattern (matched like the session codec).
-pub fn clip_usage(self: SequenceTable, sample: &AudioClip) -> i32 {
+pub fn clip_usage(self: &Self, sample: &AudioClip) -> i32 {
     var count: i32 = 0;
     for t in 0..self.tracks.len() {
         for instance in 0..self.tracks[t].instances.len() {
@@ -2067,19 +2084,19 @@ pub fn remove_clips_of(self: &mut Self, sample: &AudioClip) -> i32 {
     return count;
 }
 /// Tracks assigned to instrument instance `id`.
-pub fn instrument_usage(self: SequenceTable, id: i32) -> i32 {
+pub fn instrument_usage(self: &Self, id: i32) -> i32 {
     var count: i32 = 0;
     for i in 0..self.tracks.len() { if self.tracks[i].instrument && self.tracks[i].instrument_id == id { count = count + 1; } }
     return count;
 }
 /// True when any track in this pattern is assigned instrument instance `id`.
-pub fn instrument_in_use(self: SequenceTable, id: i32) -> bool {
+pub fn instrument_in_use(self: &Self, id: i32) -> bool {
     if id <= 0 { return false; }
     for i in 0..self.tracks.len() { if self.tracks[i].instrument && self.tracks[i].instrument_id == id { return true; } }
     return false;
 }
 /// True when a track other than `index` is assigned instrument instance `id`.
-pub fn instrument_used_by_other(self: SequenceTable, id: i32, index: i32) -> bool {
+pub fn instrument_used_by_other(self: &Self, id: i32, index: i32) -> bool {
     if id <= 0 { return false; }
     for i in 0..self.tracks.len() {
         if i32(i) != index && self.tracks[i].instrument && self.tracks[i].instrument_id == id { return true; }
@@ -2087,7 +2104,7 @@ pub fn instrument_used_by_other(self: SequenceTable, id: i32, index: i32) -> boo
     return false;
 }
 /// First track (other than `index`) using instance `id`, or -1.
-pub fn instrument_user(self: SequenceTable, id: i32, index: i32) -> i32 {
+pub fn instrument_user(self: &Self, id: i32, index: i32) -> i32 {
     for i in 0..self.tracks.len() {
         if i32(i) != index && self.tracks[i].instrument && self.tracks[i].instrument_id == id { return i32(i); }
     }
@@ -2105,7 +2122,7 @@ pub fn clear_active_inserts(self: &mut Self) -> void {
 }
 /// Instrument instance of the selected track, or 0 when it is not an assigned
 /// Instrument track.
-pub fn active_instrument(self: SequenceTable) -> i32 {
+pub fn active_instrument(self: &Self) -> i32 {
     let index: i32 = self.active_track();
     if index < 0 { return 0; }
     return self.tracks[index].instrument ? self.tracks[index].instrument_id : 0;
@@ -2587,7 +2604,7 @@ pub fn zoom_tracks(self: &mut Self, stage: i32, all: bool, area: Rect) -> void {
     }
     self.reconcile(area);
 }
-pub fn note_index(self: SequenceTable, value: str8) -> i32 {
+pub fn note_index(self: &Self, value: str8) -> i32 {
     for i in 0..128 { if self.notes[i] == value { return i32(i); } }
     return -1;
 }
@@ -3068,7 +3085,7 @@ pub fn clear_clipboard(self: &mut Self) -> void {
     let kinds: list<str8> = self.clipboard_kinds; for kind in kinds { free(kind); }
     self.clipboard = []; self.clipboard_kinds = []; self.clipboard_rows = false; self.clipboard_spacing = 1;
 }
-fn cell_kind(self: SequenceTable, column: i32) -> str8 {
+fn cell_kind(self: &Self, column: i32) -> str8 {
     // Any CC column takes any other's values; limits are checked on paste.
     if self.automation_slot_at(column) > 0 { return clone("CC:automation"); }
     let definition: TableColumn = self.columns[column];
@@ -3439,11 +3456,11 @@ pub fn edit_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
     }
     return self.on_event(event, area);
 }
-pub fn paint_editor(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+pub fn paint_editor(self: &Self, surface: Surface, area: Rect, theme: Theme) -> void {
     if self.editing && self.edit_mode == 0 { self.editor.paint(surface, self.selected_rect(area), theme.foreground, theme.selection, true); }
 }
 /// `frame` supplies the OK/Cancel buttons and their focus.
-pub fn paint_track_dialog(self: SequenceTable, surface: Surface, viewport: Rect, theme: Theme, frame: &TextPrompt) -> void {
+pub fn paint_track_dialog(self: &Self, surface: Surface, viewport: Rect, theme: Theme, frame: &TextPrompt) -> void {
     if !self.editing || self.edit_mode == 0 { return; }
     var dialog: TextPrompt = TextPrompt {}; dialog = frame;
     dialog.title = self.edit_mode == 1 ? "Rename track" : (self.edit_mode == 2 ? "Configure CC column" : "Add CC column");
@@ -3452,7 +3469,7 @@ pub fn paint_track_dialog(self: SequenceTable, surface: Surface, viewport: Rect,
     if content.height > 2 { self.editor.paint(surface, Rect::new(content.x, content.y + 2, content.width, 1), theme.foreground, theme.selection, dialog.focus.selected == 0); }
     if content.height > 4 { surface.text(Rect::new(content.x, content.y + 4, content.width, 1), self.error, theme.accent, theme.panel); }
 }
-pub fn paint_track_details(self: SequenceTable, surface: Surface, area: Rect, theme: Theme) -> void {
+pub fn paint_track_details(self: &Self, surface: Surface, area: Rect, theme: Theme) -> void {
     let index: i32 = self.active_track(); if index < 0 || area.height < 3 { return; }
     let track: SequenceTrack = self.tracks[index];
     let title: str8 = format!("{} [{}]{}", track.name, track.audio ? "AUDIO" : (track.instrument ? "INSTRUMENT" : "MIDI"), track.muted ? " [muted]" : "");

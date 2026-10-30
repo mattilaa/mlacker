@@ -3,7 +3,6 @@
 /// for Pad Banks A-C on channel 10). The profile turns its 18 knobs into
 /// instrument parameter controls.
 mod std::strbuf;
-mod std::math;
 use std::strbuf::contains;
 
 /// True for an MPD218 MIDI port name ("MPD218", "MPD218 Port 1", ...).
@@ -36,5 +35,5 @@ pub fn mpd218_parameter(knob: i32, selected: i32) -> i32 {
 /// parameter's nearest step (0..steps), otherwise normalized 0-1.
 pub fn mpd218_value(position: i64, steps: f64) -> f64 {
     let normalized: f64 = f64(position < 0 ? 0 : (position > 127 ? 127 : position)) / 127.0;
-    return steps > 0.0 ? std::math::floor(normalized * steps + 0.5) : normalized;
+    return steps > 0.0 ? f64(i64(normalized * steps + 0.5)) : normalized;
 }

@@ -348,8 +348,7 @@ impl AudioSystem {
         b.capture_from = frame * 2 < b.samples.len() ? frame * 2 : b.samples.len();
         job = b;
     }
-    pub fn bounce_finish(self: &mut Self, job: &mut Bounce, source: &SequenceTable, tail_seconds: i64) -> list<f32> {
-        // Fields of a borrowed struct are reached through a local copy.
+    pub fn bounce_finish(self: &mut Self, job: Bounce, source: &SequenceTable, tail_seconds: i64) -> list<f32> {
         var b: Bounce = Bounce {}; b = job;
         if !b.ok() { return []; }
         b.playback.update(source, b.tick, false);
@@ -387,7 +386,6 @@ impl AudioSystem {
         b.block.close();
         if b.restart { self.output.start(); }
         if b.worker { self.midi = MidiController::start_selected(self.midi_id, self.output.handle); }
-        job = b;
         return out;
     }
     pub fn poll(self: &mut Self, now: i64) -> bool { return self.midi.poll(now); }

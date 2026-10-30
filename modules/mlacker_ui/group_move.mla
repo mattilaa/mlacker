@@ -30,9 +30,9 @@ impl GroupPicker {
             buttons: [PushButton { label: "OK", action: 1 }, PushButton { label: "Cancel", action: 2 }] };
     }
     /// List `groups` (borrowed paths), selecting `current`.
-    pub fn open(self: &mut Self, groups: list<str8>, current: str8) -> void {
+    pub fn open(self: &mut Self, groups: &list<str8>, current: str8) -> void {
         self.release();
-        for group in groups { self.all.push(clone(group)); }
+        for i in 0..groups.len() { self.all.push(clone(groups[i])); }
         self.paths.push(clone("")); self.labels.push(clone("(No group)"));
         self.add_children("", 0);
         self.selected = 0;

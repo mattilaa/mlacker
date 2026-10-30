@@ -62,7 +62,7 @@ impl Mixer {
         return false;
     }
     /// -1 means this event did not change a send. Reuse the public slider's bounds/type checks.
-    pub fn send_value(self: Mixer, event: InputEvent, track: SequenceTrack) -> i32 {
+    pub fn send_value(self: Mixer, event: InputEvent, track: &SequenceTrack) -> i32 {
         if self.bus_focus || self.selected_send < 0 || self.selected_send >= self.effect_volumes.len() { return -1; }
         let down: bool = (event.modifiers == 1 && event.code == 74) || (event.modifiers == 2 && (event.code == 106 || event.code == 74));
         let up: bool = (event.modifiers == 1 && event.code == 75) || (event.modifiers == 2 && (event.code == 107 || event.code == 75));

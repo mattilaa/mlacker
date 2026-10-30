@@ -328,7 +328,7 @@ fn preview_instance(source: &AudioInstance) -> AudioInstance {
     return instance;
 }
 
-fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, table: &mut SequenceTable, mixer: &Mixer, patterns: &mut PatternLibrary, transport: TransportStatus, sample_ref: &SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
+fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<Pane>, message: str8, mixer: &Mixer, patterns: &mut PatternLibrary, transport: TransportStatus, sample_ref: &SampleView, matrix_visible: bool, channels: &SequenceTable, merged_channels: bool, spectrum: &SpectrumView, keyboard: &VirtualKeyboard, keyboard_title: str8, sampler_title: str8, document: str8) -> void {
     var sample: SampleView = SampleView {}; sample = sample_ref;
     let theme: Theme = Theme::dark_blue();
     surface.fill(surface.bounds(), Cell { glyph: 32, foreground: theme.foreground, background: theme.background });
@@ -343,49 +343,48 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
     // The song matrix takes over this pane; the caller paints it right after,
     // still below the menu bar.
     if !matrix_visible {
-        let title: str8 = format!(" Pattern / {} {} | 1/{} ", patterns.active_id, patterns.active_name(), table.row_spacing() * 16);
+        let title: str8 = format!(" Pattern / {} {} | 1/{} ", patterns.active_id, patterns.active_name(), patterns.table.row_spacing() * 16);
         let sequence: Panel = Panel { title: title };
         let top: Rect = sequence.paint_focused(surface, editor.bounds, theme, focus.is_active(1));
         free(title);
-        table.mark_hidden_notes();
-        table.paint(surface, top, theme);
-        table.paint_audio_style(surface, top, theme, sample.grainy, sample.wave);
-        table.paint_subdivision_notes(surface, top, theme);
-        table.paint_automation(surface, top, theme);
-        table.paint_note_lengths(surface, top, theme);
-        table.paint_arm_marks(surface, top, theme);
-        table.paint_editor(surface, top, theme);
+        patterns.table.paint(surface, top, theme);
+        patterns.table.paint_audio_style(surface, top, theme, sample.grainy, sample.wave);
+        patterns.table.paint_subdivision_notes(surface, top, theme);
+        patterns.table.paint_automation(surface, top, theme);
+        patterns.table.paint_note_lengths(surface, top, theme);
+        patterns.table.paint_arm_marks(surface, top, theme);
+        patterns.table.paint_editor(surface, top, theme);
     }
     // The sampler (Shift+S) or the virtual keyboard (Shift+P) covers whatever
     // else this pane shows. The caller paints the sampler over its panel.
     let show_sampler: bool = sampler_title != "";
     let show_keyboard: bool = !show_sampler && keyboard.visible;
     let show_spectrum: bool = !show_sampler && !show_keyboard && spectrum.visible;
-    let show_sample: bool = !show_sampler && !show_keyboard && !show_spectrum && sample.visible && table.audio_under_cursor();
+    let show_sample: bool = !show_sampler && !show_keyboard && !show_spectrum && sample.visible && patterns.table.audio_under_cursor();
     var sample_title: str8 = "";
     if show_sample {
         sample_title = clone(" Sample ");
     }
     let details: Panel = Panel { title: show_sampler ? sampler_title : show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
     let bottom: Rect = details.paint_focused(surface, inspector.bounds, theme, focus.is_active(2));
-    let label: Label = Label { text: patterns.error != "" ? patterns.error : (table.error != "" ? table.error : (table.editing && table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels": message)) };
+    let label: Label = Label { text: patterns.error != "" ? patterns.error : (patterns.table.error != "" ? patterns.table.error : (patterns.table.editing && patterns.table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels": message)) };
     if show_keyboard {
-        keyboard.paint(surface, bottom, theme, table.editing && table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels" : message);
-        if(patterns.error != "" || table.error != "") && bottom.height > 0 {
-            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
+        keyboard.paint(surface, bottom, theme, patterns.table.editing && patterns.table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels" : message);
+        if(patterns.error != "" || patterns.table.error != "") && bottom.height > 0 {
+            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : patterns.table.error, theme.accent, theme.panel);
         }
     }
     else if show_spectrum {
         spectrum.paint(surface, bottom, theme, mixer.master.left, mixer.master.right, focus.is_active(2), message);
-        if(patterns.error != "" || table.error != "") && bottom.height > 0 {
-            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
+        if(patterns.error != "" || patterns.table.error != "") && bottom.height > 0 {
+            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : patterns.table.error, theme.accent, theme.panel);
         }
     }
     else if show_sample {
-        let track_index: i32 = table.active_track();
-        let hit: i32 = table.tracks[track_index].instance_at(table.selected_row);
-        let instance: AudioInstance = preview_instance(table.tracks[track_index].instances[hit]);
-        let row: i32 = table.selected_row - instance.start_row;
+        let track_index: i32 = patterns.table.active_track();
+        let hit: i32 = patterns.table.tracks[track_index].instance_at(patterns.table.selected_row);
+        let instance: AudioInstance = preview_instance(patterns.table.tracks[track_index].instances[hit]);
+        let row: i32 = patterns.table.selected_row - instance.start_row;
         let name: str8 = base_name(instance.clip.source);
         let render_clip: AudioClip = instance.render_clip();
         // The waveform, the key help, then the status bar: clip name, cursor
@@ -399,20 +398,20 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
         }
         let line: str8 = sample_info(sample, render_clip, row, name, message); free(name);
         paint_status_bar(surface, Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), theme, line); free(line);
-        if(patterns.error != "" || table.error != "") && bottom.height > 0 {
-            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
+        if(patterns.error != "" || patterns.table.error != "") && bottom.height > 0 {
+            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : patterns.table.error, theme.accent, theme.panel);
         }
     }
     else if mixer.visible {
         let mix_area: Rect = Rect::new(bottom.x, bottom.y, bottom.width, bottom.height - (mixer.effect_volumes.len() > 0 && bottom.height > 1 ? 1 : 0));
         if merged_channels { mixer.paint(surface, mix_area, theme, channels.tracks, channels.active_track()); }
-        else { mixer.paint(surface, mix_area, theme, table.tracks, table.active_track()); }
+        else { mixer.paint(surface, mix_area, theme, patterns.table.tracks, patterns.table.active_track()); }
         if mixer.effect_volumes.len() > 0 && bottom.height > 1 { surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), message, theme.muted, theme.panel); }
-        if(patterns.error != "" || table.error != "") && bottom.height > 0 {
-            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : table.error, theme.accent, theme.panel);
+        if(patterns.error != "" || patterns.table.error != "") && bottom.height > 0 {
+            surface.text(Rect::new(bottom.x, bottom.y + bottom.height - 1, bottom.width, 1), patterns.error != "" ? patterns.error : patterns.table.error, theme.accent, theme.panel);
         }
     }
-    else if !show_sampler { label.paint(surface, bottom, theme); table.paint_track_details(surface, bottom, theme); }
+    else if !show_sampler { label.paint(surface, bottom, theme); patterns.table.paint_track_details(surface, bottom, theme); }
     if show_sample { free(sample_title); }
     transport.paint(surface, Rect::new(0, surface.height - 1, surface.width, 1), theme, document);
 }
@@ -785,8 +784,13 @@ pub fn run() -> i32 {
             }
             prepared_table = SequenceTable {}; prepared_mixer = SequenceTable {}; prepared_row = -1;
             transport.playing = false;
-            note_playback.update(song_playing ? song_table : library.table, transport.ticks, false);
-            midi.sequencer_events(note_playback.events, song_playing ? song_table : library.table);
+            if song_playing {
+                note_playback.update(song_table, transport.ticks, false);
+                midi.sequencer_events(note_playback.events, song_table);
+            } else {
+                note_playback.update(library.table, transport.ticks, false);
+                midi.sequencer_events(note_playback.events, library.table);
+            }
             song_table.release(); song_table = SequenceTable {};
             note_playback = NotePlayback {};
             free(message);
@@ -876,7 +880,7 @@ pub fn run() -> i32 {
             // arrive in dialog.accepted_paths; flows that take a single file use
             // the first one.
             accept_pending = false;
-            let paths: list<str8> = dialog.accepted_paths;
+            let paths: list<str8> = std::copy(dialog.accepted_paths);
             let first: str8 = dialog.accepted_path;
             if pattern_action != Action::None { free(last_pattern_dir); last_pattern_dir = clone(dialog.directory); }
             else if adding_audio || adding_pad_file { free(last_audio_dir); last_audio_dir = clone(dialog.directory); }
@@ -886,7 +890,8 @@ pub fn run() -> i32 {
             free(message);
             if pattern_action != Action::None {
                 if pattern_action == Action::SavePattern {
-                    let saved: bool = SessionCodec::save_pattern(first, library.active_name(), library.table);
+                    var saved_table: SequenceTable = library.table.copy_pattern();
+                    let saved: bool = SessionCodec::save_pattern(first, library.active_name(), saved_table);
                     message = clone(saved ? "Saved pattern (.mlapatt)" : "Cannot save pattern");
                 } else {
                     let loaded: result<PatternData, str8> = SessionCodec::load_pattern(first);
@@ -1152,7 +1157,9 @@ pub fn run() -> i32 {
         // Faders, sends, inserts and output channels belong to the pattern that
         // is playing. While the matrix runs, that is the merged song row, not
         // whatever pattern the sidebar happens to have selected.
-        midi.sync_volumes(song_playing ? song_table : (pattern_held ? held_table : library.table));
+        if song_playing { midi.sync_volumes(song_table); }
+        else if pattern_held { midi.sync_volumes(held_table); }
+        else { midi.sync_volumes(library.table); }
         let midi_active: bool = midi.poll(now);
         // Virtual keyboard notes whose keys stopped repeating end now; its
         // notes join the MIDI input for step entry and recording.
@@ -1175,9 +1182,16 @@ pub fn run() -> i32 {
         // else as in Settings. Learned live CCs are then stepped here.
         let relative: bool = knobs_relative(project_knobs, preferences.relative_knobs);
         if midi.output.handle != 0 { midi.output.midi_learn_relative(relative); }
-        let knobs: list<MidiInputEvent> = midi.midi.knob_events;
+        let knobs: list<MidiInputEvent> = std::copy(midi.midi.knob_events);
         if knobs.len() > 0 {
-            let target: i64 = AudioSystem::live_target(library.table);
+            let live_index: i32 = library.table.recording_track >= 0 ? library.table.recording_track : library.table.active_track();
+            var target: i64 = -1;
+            if live_index >= 0 && live_index < 64 && live_index < library.table.tracks.len() &&
+               !library.table.tracks[live_index].audio && !library.table.tracks[live_index].muted {
+                target = library.table.tracks[live_index].instrument
+                    ? (library.table.tracks[live_index].instrument_id > 0 ? wide(library.table.tracks[live_index].instrument_id) * 64 + wide(live_index) : -1)
+                    : wide(live_index);
+            }
             let slot: i64 = instrument_editor.active ? instrument_editor.slot : (target < 0 ? -1 : target / 64);
             for knob in knobs {
                 let selected: i32 = instrument_editor.active ? instrument_editor.selected : -1;
@@ -1188,7 +1202,7 @@ pub fn run() -> i32 {
         }
         // Relative knobs: a learned CC steps its parameter from where it is.
         if relative {
-            let controls: list<MidiInputEvent> = midi.midi.control_events;
+            let controls: list<MidiInputEvent> = std::copy(midi.midi.control_events);
             for control in controls {
                 if control.kind != 6 || control.note > 127 { continue; }
                 let key: i64 = control.channel * 128 + control.note;
@@ -1254,8 +1268,7 @@ pub fn run() -> i32 {
             } else if transport.playing && !song_playing && !transport.recording && library.index_of(play_pattern) >= 0 {
                 // Choosing another pattern queues it: the playing one runs to
                 // its end from a copy, then the chosen one starts on row 0.
-                let entry: PatternEntry = library.patterns[library.index_of(play_pattern)];
-                held_table = entry.data.copy_pattern(); pattern_held = true;
+                held_table = library.patterns[library.index_of(play_pattern)].data.copy_pattern(); pattern_held = true;
                 free(message); message = format!("Pattern {} plays next", library.active_id); dirty = true;
             } else if song_playing && !matrix_recording {
                 // The matrix plays its own rows; the editor just shows another pattern.
@@ -1275,14 +1288,13 @@ pub fn run() -> i32 {
         // keeps playing too; the change is heard when its row next starts.
         if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || project_settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || outputs.active || curve_dialog.active { transport.playing = false; }
         if library.table.recording_track >= 0 {
-            let armed: SequenceTrack = library.table.tracks[library.table.recording_track];
-            if !armed.record_armed { transport.playing = false; }
+            if !library.table.tracks[library.table.recording_track].record_armed { transport.playing = false; }
             let pending: i64 = transport.playing ? (now - transport.clock_ms) * wide(transport.bpm) : 0;
             let record_now: i64 = transport.ticks + pending - transport.count_in;
             // Matrix time runs on across rows; the take counts from where its
             // pattern started.
             let base: i64 = matrix_recording ? matrix_record_offset : 0;
-            let notes: list<MidiInputEvent> = midi.midi.note_events;
+            let notes: list<MidiInputEvent> = std::copy(midi.midi.note_events);
             for note in notes {
                 let tick: i64 = record_now - (now - note.received_ms) * wide(transport.bpm);
                 if transport.playing && pending >= transport.count_in && (transport.count_in == 0 || tick >= transport.ticks) {
@@ -1290,7 +1302,7 @@ pub fn run() -> i32 {
                 }
             }
             // Controllers moved during the take land in the track's CC columns.
-            let controls: list<MidiInputEvent> = midi.midi.control_events;
+            let controls: list<MidiInputEvent> = std::copy(midi.midi.control_events);
             for control in controls {
                 let tick: i64 = record_now - (now - control.received_ms) * wide(transport.bpm);
                 if transport.playing && pending >= transport.count_in && (transport.count_in == 0 || tick >= transport.ticks) {
@@ -1405,12 +1417,16 @@ pub fn run() -> i32 {
         // Consume every note-on, including a note released within this poll.
         // Modal editors never receive destructive background recording edits.
         if menus.active < 0 && !dialog.active && !question.active && !paste_error.active && !settings.active && !project_settings.active && !bpm_dialog.active && !curve_dialog.active && !instrument_editor.active && !sample_editor.active && !sample_dialog.active && !piano.active && !share_question.active && !remove_question.active && !library.renaming && !mixer.bus_focus && library.table.group_detail_rows == 0 {
-            let notes: list<MidiInputEvent> = midi.midi.note_events;
+            let notes: list<MidiInputEvent> = std::copy(midi.midi.note_events);
             if library.table.recording_track < 0 && !library.table.editing {
                 for note in notes { if note.kind == 1 { if library.table.record_note(note.note, note.velocity) { dirty = true; } } }
             }
         }
-        if !midi.sample_playback(song_playing ? song_table : (pattern_held ? held_table : library.table), transport.ticks, transport.playing && transport.count_in == 0, transport.bpm) {
+        var samples_ready: bool = false;
+        if song_playing { samples_ready = midi.sample_playback(song_table, transport.ticks, transport.playing && transport.count_in == 0, transport.bpm); }
+        else if pattern_held { samples_ready = midi.sample_playback(held_table, transport.ticks, transport.playing && transport.count_in == 0, transport.bpm); }
+        else { samples_ready = midi.sample_playback(library.table, transport.ticks, transport.playing && transport.count_in == 0, transport.bpm); }
+        if !samples_ready {
             transport.playing = false; free(message); message = clone("Cannot prepare sample playback (maximum 256 placements per pattern)"); dirty = true;
         }
         midi.sync_transport(transport.bpm, transport.ticks, transport.playing && transport.count_in == 0);
@@ -1425,7 +1441,7 @@ pub fn run() -> i32 {
                 // Stopped (or switched to the matrix): the take becomes a
                 // sample, placed where it started.
                 let row: i32 = audio_take.row;
-                let targets: list<i32> = audio_take.tracks;
+                let targets: list<i32> = std::copy(audio_take.tracks);
                 take_count = take_count + 1;
                 let name: str8 = format!("Recording {}.wav", take_count);
                 let finished: result<AudioClip, str8> = audio_take.finish(midi.output, name, transport.bpm);
@@ -1437,7 +1453,7 @@ pub fn run() -> i32 {
                     let index: i32 = library.audio.add_clip(clip);
                     if index < 0 { message = format!("Audio take lost: {}", library.audio.error); }
                     else {
-                        let added: AudioClip = library.audio.samples[index];
+                        let added: AudioClip = library.audio.samples[index].copy();
                         let label: str8 = base_name(added.source);
                         // On every armed track; a track where it does not fit
                         // keeps what it has.
@@ -1465,15 +1481,23 @@ pub fn run() -> i32 {
         // So does a pattern with another one queued behind it.
         // A row whose cells changed ends its pass too, to start again merged.
         note_playback.once = song_playing ? (library.next_song_row(song_row) != song_row || song_stale) : pattern_held;
-        note_playback.update(song_playing ? song_table : (pattern_held ? held_table : library.table), transport.ticks, transport.playing && transport.count_in == 0);
-        midi.sequencer_events(note_playback.events, song_playing ? song_table : (pattern_held ? held_table : library.table));
+        if song_playing {
+            note_playback.update(song_table, transport.ticks, transport.playing && transport.count_in == 0);
+            midi.sequencer_events(note_playback.events, song_table);
+        } else if pattern_held {
+            note_playback.update(held_table, transport.ticks, transport.playing && transport.count_in == 0);
+            midi.sequencer_events(note_playback.events, held_table);
+        } else {
+            note_playback.update(library.table, transport.ticks, transport.playing && transport.count_in == 0);
+            midi.sequencer_events(note_playback.events, library.table);
+        }
         // The on-screen MPD218 pads light as the selected track's notes
         // sound (they are sent ahead) and as the pads are hit.
         midi.collect_pads = pads.visible;
         if pads.visible {
             let played: list<NoteEvent> = midi.take_pad_events();
             for event in played { pads.schedule(event.note, event.on == 1, event.velocity, event.tick); }
-            let hits: list<MidiInputEvent> = midi.midi.note_events;
+            let hits: list<MidiInputEvent> = std::copy(midi.midi.note_events);
             for hit in hits {
                 if hit.kind == 1 { pads.note_on(hit.note, hit.velocity, now); dirty = true; }
                 if hit.kind == 2 { pads.note_off(hit.note); dirty = true; }
@@ -1735,17 +1759,26 @@ pub fn run() -> i32 {
             library.audio.view.reconcile(panes[0].bounds.inset(1));
             var keyboard_title: str8 = "";
             if keyboard.visible {
-                let target: i64 = AudioSystem::live_target(library.table);
-                var track_name: str8 = "Select a MIDI or Instrument track";
-                if target >= 0 { let track: SequenceTrack = library.table.tracks[target % 64]; track_name = track.name; }
+                let live_index: i32 = library.table.recording_track >= 0 ? library.table.recording_track : library.table.active_track();
+                var target: i64 = -1;
+                if live_index >= 0 && live_index < 64 && live_index < library.table.tracks.len() &&
+                   !library.table.tracks[live_index].audio && !library.table.tracks[live_index].muted {
+                    target = library.table.tracks[live_index].instrument
+                        ? (library.table.tracks[live_index].instrument_id > 0 ? wide(library.table.tracks[live_index].instrument_id) * 64 + wide(live_index) : -1)
+                        : wide(live_index);
+                }
+                var track_name: str8 = clone("Select a MIDI or Instrument track");
+                if target >= 0 { free(track_name); track_name = clone(library.table.tracks[target % 64].name); }
                 keyboard_title = keyboard.title(track_name);
+                free(track_name);
             }
             // The Sampler pane edits the Mla Sampler on the selected Instrument track.
             let sampler_slot: i32 = sampler.visible ? SamplerView::target(midi.output, library.table.active_instrument()) : 0;
             let sampler_title: str8 = sampler.visible ? sampler.title(midi.output, sampler_slot) : (pads.visible ? pads.title() : "");
             // The status bar names the open project or session file.
             let document: str8 = session_path == "" ? clone("Untitled") : base_name(session_path);
-            paint_demo(surface, menus, focus, panes, message, library.table, mixer, library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, sampler_title, document);
+            if !matrix.visible { library.table.mark_hidden_notes(); }
+            paint_demo(surface, menus, focus, panes, message, mixer, &mut library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, sampler_title, document);
             free(document);
             if keyboard.visible { free(keyboard_title); }
             if sampler.visible || pads.visible { free(sampler_title); }
@@ -1754,7 +1787,7 @@ pub fn run() -> i32 {
                 var names: list<str8> = [];
                 for s in 0..16 {
                     let used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, i32(s)) : -1;
-                    if used >= 0 && used < library.audio.samples.len() { let clip: AudioClip = library.audio.samples[used]; names.push(base_name(clip.source)); }
+                    if used >= 0 && used < library.audio.samples.len() { names.push(base_name(library.audio.samples[used].source)); }
                     else { names.push(clone("")); }
                 }
                 // Where each output bus goes, for the Out column.
@@ -1762,7 +1795,7 @@ pub fn run() -> i32 {
                 for bus in 1..8 { routes.push(aux_route_text(midi.aux_route(sampler_slot, i32(bus), library.table.track_aux_output(library.table.active_track(), i32(bus))))); }
                 let wave_used: i32 = sampler_slot > 0 ? midi.pad_sample(sampler_slot, sampler.slot) : -1;
                 let wave_known: bool = wave_used >= 0 && wave_used < library.audio.samples.len();
-                var wave_clip: AudioClip = AudioClip {}; if wave_known { wave_clip = library.audio.samples[wave_used]; }
+                var wave_clip: AudioClip = AudioClip {}; if wave_known { wave_clip = library.audio.samples[wave_used].copy(); }
                 // The wave view shows the slot's slice markers (cuts).
                 if sampler_slot > 0 && sampler.needs_cuts(sampler_slot, wave_used, wave_known ? wave_clip.frames : -1) {
                     sampler.take_cuts(midi.markers(sampler_slot, sampler.slot), sampler_slot, wave_used, wave_known ? wave_clip.frames : -1);
@@ -1913,17 +1946,17 @@ pub fn run() -> i32 {
                         // The audible part of the clip under the cursor becomes a
                         // new sample, added beside the original or (destructive)
                         // replacing it everywhere.
-                        let track: SequenceTrack = library.table.tracks[library.table.active_track()];
-                        let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
+                        let clip_track: i32 = library.table.active_track();
+                        let clip_instance: i32 = library.table.tracks[clip_track].instance_at(library.table.selected_row);
+                        let instance: AudioInstance = preview_instance(library.table.tracks[clip_track].instances[clip_instance]);
                         let name: str8 = clone(clip_save.name.text); let destructive: bool = clip_save.destructive;
                         let into: str8 = clone(clip_save.chosen_group());
                         var index: i32 = -1; var taken: bool = false;
                         for i in 0..library.audio.samples.len() {
-                            let other: AudioClip = library.audio.samples[i];
-                            if other.source == instance.clip.source && other.frames == instance.clip.frames { index = i32(i); }
+                            if library.audio.samples[i].source == instance.clip.source && library.audio.samples[i].frames == instance.clip.frames { index = i32(i); }
                         }
                         for i in 0..library.audio.samples.len() {
-                            let other: AudioClip = library.audio.samples[i]; let other_name: str8 = base_name(other.source);
+                            let other_name: str8 = base_name(library.audio.samples[i].source);
                             if other_name == name && !(destructive && i32(i) == index) { taken = true; }
                             free(other_name);
                         }
@@ -1939,8 +1972,7 @@ pub fn run() -> i32 {
                                 if destructive {
                                     let placed: i32 = library.replace_sample(index, region);
                                     library.audio.set_group(index, into); library.audio.reveal_sample(index);
-                                    let saved: AudioClip = library.audio.samples[index];
-                                    let pads: i32 = midi.refresh_pads(index, saved);
+                                    let pads: i32 = midi.refresh_pads(index, library.audio.samples[index]);
                                     sampler.forget_cuts();
                                     message = pads < 0 ? format!("Saved {} over sample {}, but a drum pad rejected it: {}", name, index + 1, __mlang_std_audio_last_error())
                                         : format!("Saved {} over sample {}: {} placement(s), {} drum pad(s) updated", name, index + 1, placed, pads);
@@ -1965,8 +1997,9 @@ pub fn run() -> i32 {
                 sample.unselect(); free(message); message = clone("Unselected"); dirty = true;
             }
             else if sample_pane && sample_pane_key(event) {
-                let track: SequenceTrack = library.table.tracks[library.table.active_track()];
-                let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
+                let sample_track: i32 = library.table.active_track();
+                let sample_instance: i32 = library.table.tracks[sample_track].instance_at(library.table.selected_row);
+                let instance: AudioInstance = preview_instance(library.table.tracks[sample_track].instances[sample_instance]);
                 let rc: AudioClip = instance.render_clip();
                 let row: i32 = library.table.selected_row - instance.start_row;
                 let code: i32 = event.code; let mods: i32 = (event.modifiers - 1) % 64 + 1;
@@ -1994,8 +2027,7 @@ pub fn run() -> i32 {
                     // The new clip goes in its sample's group unless chosen otherwise.
                     var current: str8 = "";
                     for i in 0..library.audio.samples.len() {
-                        let other: AudioClip = library.audio.samples[i];
-                        if other.source == instance.clip.source && other.frames == instance.clip.frames { current = library.audio.group_of(i32(i)); }
+                        if library.audio.samples[i].source == instance.clip.source && library.audio.samples[i].frames == instance.clip.frames { current = library.audio.group_of(i32(i)); }
                     }
                     clip_save.open(suggested, library.audio.groups, current); free(suggested);
                 }
@@ -2020,8 +2052,7 @@ pub fn run() -> i32 {
                             free(edited.source); edited.source = sibling_path(instance.clip.source, name);
                             var home: str8 = "";
                             for i in 0..library.audio.samples.len() {
-                                let other: AudioClip = library.audio.samples[i];
-                                if other.source == instance.clip.source && other.frames == instance.clip.frames { home = library.audio.group_of(i32(i)); }
+                                if library.audio.samples[i].source == instance.clip.source && library.audio.samples[i].frames == instance.clip.frames { home = library.audio.group_of(i32(i)); }
                             }
                             let added: i32 = library.audio.add_clip_in(edited.copy(), home);
                             if library.table.replace_audio_clip(edited, panes[1].bounds.inset(1)) {
@@ -2064,7 +2095,7 @@ pub fn run() -> i32 {
                 if !replay { message = clone("Preview stopped"); }
                 else if index < 0 || index >= library.audio.samples.len() { message = clone("Select a sample to preview"); }
                 else {
-                    let clip: AudioClip = library.audio.samples[index];
+                    let clip: AudioClip = library.audio.samples[index].copy();
                     let error: str8 = midi.preview_clip(clip);
                     if error == "" {
                         preview_sample = index;
@@ -2139,8 +2170,7 @@ pub fn run() -> i32 {
                     }
                 }
                 else if action == 4 {
-                    let original: AudioClip = library.audio.samples[sample_editor.index];
-                    let suggested: str8 = trim_name(original.source, library.audio.samples);
+                    let suggested: str8 = trim_name(library.audio.samples[sample_editor.index].source, library.audio.samples);
                     sample_editor.open_save(suggested, library.audio.groups, library.audio.group_of(sample_editor.index)); free(suggested);
                 }
                 else if action == 1 {
@@ -2152,7 +2182,7 @@ pub fn run() -> i32 {
                     let into: str8 = clone(sample_editor.save.chosen_group());
                     var taken: bool = false;
                     for i in 0..library.audio.samples.len() {
-                        let clip: AudioClip = library.audio.samples[i]; let other: str8 = base_name(clip.source);
+                        let other: str8 = base_name(library.audio.samples[i].source);
                         if other == name && !(destructive && i32(i) == index) { taken = true; }
                         free(other);
                     }
@@ -2160,15 +2190,13 @@ pub fn run() -> i32 {
                     else {
                         let loop_cropped: bool = destructive && editing_sampler_slot > 0 && sample_editor.cropped_to_watch;
                         if sample_editor.view.playing { midi.stop_preview(); }
-                        let original: AudioClip = library.audio.samples[index];
-                        let path: str8 = sibling_path(original.source, name);
+                        let path: str8 = sibling_path(library.audio.samples[index].source, name);
                         var edited: AudioClip = sample_editor.take(); free(edited.source); edited.source = path;
                         free(message);
                         if destructive {
                             let placed: i32 = library.replace_sample(index, edited);
                             library.audio.set_group(index, into); library.audio.reveal_sample(index);
-                            let saved: AudioClip = library.audio.samples[index];
-                            let pads: i32 = midi.refresh_pads(index, saved);
+                            let pads: i32 = midi.refresh_pads(index, library.audio.samples[index]);
                             sampler.forget_cuts();
                             // Trimmed to a Sampler slot's loop: that slot now loops,
                             // and starts, over the whole sample.
@@ -2310,7 +2338,14 @@ pub fn run() -> i32 {
             // The focused virtual keyboard plays its keys ("q" included) and
             // leaves pane moves, Tab, Space and shortcuts to the app.
             else if keyboard.visible && focus.selected == 2 && !mixer.bus_focus && !instrument_editor.focused && menus.active < 0 && VirtualKeyboard::handles(event) {
-                let target: i64 = AudioSystem::live_target(library.table);
+                let live_index: i32 = library.table.recording_track >= 0 ? library.table.recording_track : library.table.active_track();
+                var target: i64 = -1;
+                if live_index >= 0 && live_index < 64 && live_index < library.table.tracks.len() &&
+                   !library.table.tracks[live_index].audio && !library.table.tracks[live_index].muted {
+                    target = library.table.tracks[live_index].instrument
+                        ? (library.table.tracks[live_index].instrument_id > 0 ? wide(library.table.tracks[live_index].instrument_id) * 64 + wide(live_index) : -1)
+                        : wide(live_index);
+                }
                 let octave: i32 = keyboard.octave;
                 let note: i32 = keyboard.on_event(event, target, now_ms());
                 if note >= 0 { midi.keyboard_note(target, true, note, keyboard.velocity); dirty = true; }
@@ -2325,7 +2360,7 @@ pub fn run() -> i32 {
                 // The wave view reads the slot's session sample.
                 let used: i32 = target > 0 ? midi.pad_sample(target, sampler.slot) : -1;
                 let has_clip: bool = used >= 0 && used < library.audio.samples.len();
-                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used]; }
+                var clip: AudioClip = AudioClip {}; if has_clip { clip = library.audio.samples[used].copy(); }
                 if target > 0 && sampler.needs_cuts(target, used, has_clip ? clip.frames : -1) {
                     sampler.take_cuts(midi.markers(target, sampler.slot), target, used, has_clip ? clip.frames : -1);
                 }
@@ -2336,7 +2371,14 @@ pub fn run() -> i32 {
                 else if request == 7 {
                     // p plays the slot on the track's instrument, like a key of
                     // the virtual keyboard.
-                    let live: i64 = AudioSystem::live_target(library.table);
+                    let live_index: i32 = library.table.recording_track >= 0 ? library.table.recording_track : library.table.active_track();
+                    var live: i64 = -1;
+                    if live_index >= 0 && live_index < 64 && live_index < library.table.tracks.len() &&
+                       !library.table.tracks[live_index].audio && !library.table.tracks[live_index].muted {
+                        live = library.table.tracks[live_index].instrument
+                            ? (library.table.tracks[live_index].instrument_id > 0 ? wide(library.table.tracks[live_index].instrument_id) * 64 + wide(live_index) : -1)
+                            : wide(live_index);
+                    }
                     let key: i32 = sampler.audition_key(midi.output, target);
                     if target < 1 || live < 0 || key < 0 { free(message); message = clone("Nothing to play: select an unmuted Instrument track playing Mla Sampler"); }
                     else {
@@ -2353,7 +2395,7 @@ pub fn run() -> i32 {
                 else if request == 16 || request == 17 {
                     // Cuts edited in the wave view (16), or detected again (17):
                     // the instrument plays them with Beats; the session keeps them.
-                    let cuts: list<i64> = sampler.cuts;
+                    let cuts: list<i64> = std::copy(sampler.cuts);
                     let now: list<i64> = midi.set_markers(target, sampler.slot, cuts, request == 17);
                     let count: i64 = now.len();
                     sampler.take_cuts(now, target, used, has_clip ? clip.frames : -1);
@@ -2373,7 +2415,7 @@ pub fn run() -> i32 {
                 }
                 else if request == 13 {
                     // Slice k of the slot's sample goes to slot + k, a one-shot pad.
-                    let points: list<i64> = sampler.slice_points;
+                    let points: list<i64> = std::copy(sampler.slice_points);
                     var made: i32 = 0; var failure: str8 = "";
                     if has_clip && points.len() > 2 {
                         let source: AudioClip = clip;
@@ -2386,7 +2428,7 @@ pub fn run() -> i32 {
                             free(piece.source); piece.source = format!("{} slice {}.wav", stem, i + 1);
                             let index: i32 = library.audio.add_clip(piece);
                             if index < 0 { failure = clone(library.audio.error); break; }
-                            let added: AudioClip = library.audio.samples[index];
+                            let added: AudioClip = library.audio.samples[index].copy();
                             let name: str8 = base_name(added.source);
                             let error: str8 = midi.assign_pad(target, sampler.slot + i32(i), index, added.samples, added.channels, added.sample_rate, name);
                             free(name);
@@ -2423,7 +2465,7 @@ pub fn run() -> i32 {
                     if toggled > 0 {
                         command = toggled;
                         menu_kept = true; kept_active = menus.active; kept_selected = menus.selected;
-                        kept_path = []; let path: list<i32> = menus.path; for index in path { kept_path.push(index); }
+                        kept_path = std::copy(menus.path);
                     }
                 }
                 else if event.kind == InputKind::Menu {
@@ -2475,8 +2517,9 @@ pub fn run() -> i32 {
                 if library.table.audio_under_cursor() {
                     sample.visible = !sample.visible;
                     if sample.visible {
-                        let track: SequenceTrack = library.table.tracks[library.table.active_track()];
-                        let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
+                        let sample_track: i32 = library.table.active_track();
+                        let sample_instance: i32 = library.table.tracks[sample_track].instance_at(library.table.selected_row);
+                        let instance: AudioInstance = preview_instance(library.table.tracks[sample_track].instances[sample_instance]);
                         let rc: AudioClip = instance.render_clip(); sample.reset_selection(rc.frames);
                         // The opened Sample pane takes the focus.
                         if fullscreen_pane == 1 { fullscreen_pane = -1; }
@@ -2486,8 +2529,9 @@ pub fn run() -> i32 {
                 }
             } else if event.modifiers == 5 && event.code == 121 &&
             (focus.selected == 1 || focus.selected == 2) && sample.visible && library.table.audio_under_cursor() {
-                let track: SequenceTrack = library.table.tracks[library.table.active_track()];
-                let instance: AudioInstance = track.instances[track.instance_at(library.table.selected_row)];
+                let sample_track: i32 = library.table.active_track();
+                let sample_instance: i32 = library.table.tracks[sample_track].instance_at(library.table.selected_row);
+                let instance: AudioInstance = preview_instance(library.table.tracks[sample_track].instances[sample_instance]);
                 let region: AudioClip = instance.clip.slice_frames(sample.sel_start, sample.sel_end);
                 free(message);
                 if region.peaks.len() > 0 {
@@ -2504,8 +2548,7 @@ pub fn run() -> i32 {
             } else if focus.selected == 2 && mixer.visible && !(sample.visible && library.table.audio_under_cursor()) {
                 if mixer.send_navigation(event, library.table.active_track()) { dirty = true; }
                 else if !mixer.bus_focus && mixer.selected_send >= 0 {
-                    let track: SequenceTrack = library.table.tracks[library.table.active_track()];
-                    let value: i32 = mixer.send_value(event, track);
+                    let value: i32 = mixer.send_value(event, library.table.tracks[library.table.active_track()]);
                     if value >= 0 { library.table.set_send(library.table.active_track(), mixer.selected_send, value); dirty = true; }
                     else if (event.code == 82 && event.modifiers == 1) || (event.modifiers == 2 && (event.code == 114 || event.code == 82)) {
                         if library.table.mixer_event(event, panes[1].bounds.inset(1)) { dirty = true; }
@@ -2548,8 +2591,10 @@ pub fn run() -> i32 {
                 else if action == 1 {
                     // Pattern list for this cell: "<no>:<name>", plus an empty entry.
                     var ids: list<i32> = [0]; var labels: list<str8> = [clone("  -  (empty)")];
-                    let entries: list<PatternEntry> = library.patterns;
-                    for entry in entries { ids.push(entry.id); labels.push(format!("{}{}:{}", entry.id < 10 ? "00" : (entry.id < 100 ? "0" : ""), entry.id, entry.name)); }
+                    for p in 0..library.patterns.len() {
+                        let id: i32 = library.patterns[p].id;
+                        ids.push(id); labels.push(format!("{}{}:{}", id < 10 ? "00" : (id < 100 ? "0" : ""), id, library.patterns[p].name));
+                    }
                     picker.open(ids, labels, library.song_at(matrix.row, matrix.lane));
                     focus.set_menu_active(true);
                 }
@@ -2645,11 +2690,11 @@ pub fn run() -> i32 {
                 free(message);
                 if index < 0 { message = clone("No track under the cursor"); }
                 else {
-                    let track: SequenceTrack = library.table.tracks[index];
-                    if !track.audio { message = clone("Shift+A arms an AUDIO track for the audio input"); }
+                    if !library.table.tracks[index].audio { message = clone("Shift+A arms an AUDIO track for the audio input"); }
                     else {
-                        library.table.set_input_armed(index, !track.input_armed);
-                        message = track.input_armed ? format!("A{}: audio input off", index + 1)
+                        let was_armed: bool = library.table.tracks[index].input_armed;
+                        library.table.set_input_armed(index, !was_armed);
+                        message = was_armed ? format!("A{}: audio input off", index + 1)
                             : (midi.input_id == -2 ? format!("A{}: audio input armed; choose an input in File > Settings to hear it", index + 1)
                                 : format!("A{}: audio input armed (through its inserts); Shift+R arms it for recording", index + 1));
                     }
@@ -2663,11 +2708,12 @@ pub fn run() -> i32 {
                 free(message);
                 if index < 0 { message = clone("No track under the cursor"); }
                 else {
-                    let track: SequenceTrack = library.table.tracks[index];
-                    library.table.set_record_armed(index, !track.record_armed);
-                    let label: str8 = track.audio ? format!("A{}", index + 1) : clone(track.name);
-                    message = track.record_armed ? format!("{}: recording off", label)
-                        : (track.audio ? format!("{}: armed; the audio input records onto it while the pattern plays", label)
+                    let was_armed: bool = library.table.tracks[index].record_armed;
+                    let audio_track: bool = library.table.tracks[index].audio;
+                    let label: str8 = audio_track ? format!("A{}", index + 1) : clone(library.table.tracks[index].name);
+                    library.table.set_record_armed(index, !was_armed);
+                    message = was_armed ? format!("{}: recording off", label)
+                        : (audio_track ? format!("{}: armed; the audio input records onto it while the pattern plays", label)
                             : format!("{}: armed; MIDI input records onto it while the pattern plays", label));
                     free(label);
                 }
@@ -2696,8 +2742,9 @@ pub fn run() -> i32 {
                     dirty = true;
                 }
                 else if event.kind == InputKind::Edit && event.key == Key::Backspace && (event.modifiers == 1 || event.modifiers == 2) {
-                    var view: ListView = ListView {}; view = library.audio_mode ? library.audio.view : (library.instruments_mode ? library.instruments : library.view);
-                    sidebar_remove = view.targets(); sidebar_remove_kind = library.audio_mode ? 1 : (library.instruments_mode ? 2 : 3);
+                    if library.audio_mode { sidebar_remove = library.audio.view.targets(); sidebar_remove_kind = 1; }
+                    else if library.instruments_mode { sidebar_remove = library.instruments.targets(); sidebar_remove_kind = 2; }
+                    else { sidebar_remove = library.view.targets(); sidebar_remove_kind = 3; }
                     library.audio.view.marks = []; library.instruments.marks = []; library.view.marks = [];
                     dirty = true;
                 }
@@ -2717,10 +2764,9 @@ pub fn run() -> i32 {
                 if library.share_request > 0 {
                     share_id = library.share_request; library.share_request = 0;
                     let user: i32 = library.table.instrument_user(share_id, library.table.active_track());
-                    let other: SequenceTrack = library.table.tracks[user];
                     let name: str8 = midi.output.instrument_name(share_id);
                     // One line: dialog text does not wrap. Sharing links sound, pads, fader and inserts.
-                    share_question.title = format!("{} #{} already plays '{}'", name, share_id, other.name);
+                    share_question.title = format!("{} #{} already plays '{}'", name, share_id, library.table.tracks[user].name);
                     share_question.question = format!("Load a new {} for this track, or share #{}?", name, share_id);
                     share_question.open(); focus.set_menu_active(true); dirty = true;
                 }
@@ -2832,8 +2878,7 @@ pub fn run() -> i32 {
                 else if focus.selected == 1 && library.table.group_detail_rows > 0 {
                     let index: i32 = library.table.active_track();
                     if index >= 0 {
-                        let track: SequenceTrack = library.table.tracks[index];
-                        let id: i32 = track.insert_id(library.table.selected_group_detail);
+                        let id: i32 = library.table.tracks[index].insert_id(library.table.selected_group_detail);
                         if id > 0 { learn_slot = id + 40; }
                     }
                 } else if mixer.selected_effect >= 0 && mixer.selected_effect < midi.effects.len() { learn_slot = mixer.selected_effect + 33; }
@@ -2864,9 +2909,8 @@ pub fn run() -> i32 {
             else if command == Action::LoadInsert || command == Action::RemoveInsert || (command == Action::EditEffectPlugin && focus.selected == 1 && library.table.group_detail_rows > 0) {
                 let index: i32 = library.table.active_track();
                 if index >= 0 {
-                    let track: SequenceTrack = library.table.tracks[index];
                     let position: i32 = library.table.selected_group_detail;
-                    let id: i32 = track.insert_id(position);
+                    let id: i32 = library.table.tracks[index].insert_id(position);
                     if command == Action::RemoveInsert { library.table.set_insert(index, position, 0); }
                     else if id > 0 { instrument_editor.open(midi.output, id + 40); }
                     else if command == Action::EditEffectPlugin { free(message); message = clone("Select a loaded insert effect first"); }
@@ -2891,7 +2935,7 @@ pub fn run() -> i32 {
                 } else if command == Action::RemoveEffectPlugin { free(message); message = midi.load_effect(mixer.selected_effect, ""); }
                 else {
                     send_track = library.table.active_track(); send_fx = mixer.selected_effect;
-                    if send_track >= 0 { let track: SequenceTrack = library.table.tracks[send_track]; bpm_dialog.open_send(track.send_level(send_fx)); }
+                    if send_track >= 0 { bpm_dialog.open_send(library.table.tracks[send_track].send_level(send_fx)); }
                     else { free(message); message = clone("Select a source track in Pattern view first"); }
                 }
             }
@@ -2912,7 +2956,7 @@ pub fn run() -> i32 {
                     var names: list<str8> = [];
                     for p in 0..pads {
                         let used: i32 = midi.pad_sample(slot, i32(p));
-                        if used >= 0 && used < library.audio.samples.len() { let clip: AudioClip = library.audio.samples[used]; names.push(base_name(clip.source)); }
+                        if used >= 0 && used < library.audio.samples.len() { names.push(base_name(library.audio.samples[used].source)); }
                         else { names.push(clone("")); }
                     }
                     let title: str8 = format!("{} | {} #{}", command == Action::SendSampleToPad ? "Send sample to drum key" : "Load drum key from file", midi.output.instrument_name(slot), slot);
@@ -2934,7 +2978,7 @@ pub fn run() -> i32 {
                     let error: str8 = midi.clear_pad(pad_slot, pad_index);
                     free(message); message = error == "" ? format!("Pad {} cleared", pad_index + 1) : error;
                 } else if pad_action == Action::SendSampleToPad {
-                    let clip: AudioClip = library.audio.samples[pad_sample];
+                    let clip: AudioClip = library.audio.samples[pad_sample].copy();
                     let name: str8 = base_name(clip.source);
                     let error: str8 = midi.assign_pad(pad_slot, pad_index, pad_sample, clip.samples, clip.channels, clip.sample_rate, name);
                     free(message);
@@ -2964,8 +3008,7 @@ pub fn run() -> i32 {
                         // Suggest the slot's sample name.
                         let used: i32 = midi.pad_sample(target, sampler.slot);
                         if used >= 0 && used < library.audio.samples.len() {
-                            let clip: AudioClip = library.audio.samples[used];
-                            let suggested: str8 = base_name(clip.source); dialog.path_field.set_text(suggested); free(suggested);
+                            let suggested: str8 = base_name(library.audio.samples[used].source); dialog.path_field.set_text(suggested); free(suggested);
                         }
                     }
                     focus.set_menu_active(true);
@@ -2979,7 +3022,7 @@ pub fn run() -> i32 {
                     free(message); message = clone("Load the slot's sample from a file or the Audio list first (Enter)");
                 } else {
                     transport.playing = false;
-                    let clip: AudioClip = library.audio.samples[used];
+                    let clip: AudioClip = library.audio.samples[used].copy();
                     sample_editor.open(clip, used);
                     sample_editor.select(sampler.loop_range_start(midi.output, target, clip.frames), sampler.loop_range_end(midi.output, target, clip.frames));
                     editing_sampler_slot = target; editing_sampler_pad = sampler.slot;
@@ -2995,7 +3038,7 @@ pub fn run() -> i32 {
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
                 else {
                     transport.playing = false;
-                    let clip: AudioClip = library.audio.samples[index];
+                    let clip: AudioClip = library.audio.samples[index].copy();
                     sample_editor.open(clip, index);
                     // The editor covers the Pattern pane, which takes the focus.
                     sample_editor_return = focus.selected; sample_editor_fullscreen = fullscreen_pane;
@@ -3040,8 +3083,7 @@ pub fn run() -> i32 {
                 if index < 0 || index >= library.audio.samples.len() { free(message); message = clone("Select a sample in Audio first (View > Audio)"); }
                 else if uses == 0 { remove_target = index; remove_request = 1; }
                 else {
-                    let clip: AudioClip = library.audio.samples[index];
-                    let name: str8 = base_name(clip.source);
+                    let name: str8 = base_name(library.audio.samples[index].source);
                     remove_target = index; remove_pending = 1;
                     remove_question.title = format!("Remove sample {}: {}", index + 1, name);
                     remove_question.question = format!("{} clip(s) in the song use it. Remove them too?", uses);
@@ -3145,9 +3187,8 @@ pub fn run() -> i32 {
                 let index: i32 = library.table.active_track();
                 if index < 0 { free(message); message = clone("Select a track first"); }
                 else {
-                    let track: SequenceTrack = library.table.tracks[index];
                     var ids: list<i32> = [0]; var labels: list<str8> = [];
-                    output_track = index; output_kind = track.audio || track.instrument ? 2 : 1;
+                    output_track = index; output_kind = library.table.tracks[index].audio || library.table.tracks[index].instrument ? 2 : 1;
                     var current: i32 = 0;
                     if output_kind == 1 {
                         labels.push(clone("  MST  master (preview tone)"));
@@ -3160,11 +3201,9 @@ pub fn run() -> i32 {
                     } else {
                         labels.push(clone("  MST  master"));
                         current = library.table.track_output(index);
-                        let channels: list<SequenceTrack> = library.table.tracks;
-                        for t in 0..channels.len() {
-                            let other: SequenceTrack = channels[t];
-                            if !other.audio || i32(t) == index || library.table.output_loops(index, i32(t) + 1) { continue; }
-                            ids.push(i32(t) + 1); labels.push(format!("  A{}   {}", t + 1, other.name));
+                        for t in 0..library.table.tracks.len() {
+                            if !library.table.tracks[t].audio || i32(t) == index || library.table.output_loops(index, i32(t) + 1) { continue; }
+                            ids.push(i32(t) + 1); labels.push(format!("  A{}   {}", t + 1, library.table.tracks[t].name));
                         }
                     }
                     if ids.len() == 1 {
@@ -3219,11 +3258,9 @@ pub fn run() -> i32 {
                 if slot < 1 { free(message); message = clone("Select an Instrument track playing a plugin"); }
                 else {
                     var ids: list<i32> = [0, -1]; var labels: list<str8> = [clone("  --   none"), clone("  IN   Audio input (Settings)")];
-                    let channels: list<SequenceTrack> = library.table.tracks;
-                    for t in 0..channels.len() {
-                        let other: SequenceTrack = channels[t];
-                        if !other.audio { continue; }
-                        ids.push(i32(t) + 1); labels.push(format!("  A{}   {}", t + 1, other.name));
+                    for t in 0..library.table.tracks.len() {
+                        if !library.table.tracks[t].audio { continue; }
+                        ids.push(i32(t) + 1); labels.push(format!("  A{}   {}", t + 1, library.table.tracks[t].name));
                     }
                     output_track = index; output_kind = 5;
                     outputs.title = "Instrument input";
@@ -3383,7 +3420,7 @@ pub fn run() -> i32 {
                             if on_matrix {
                                 let first: i32 = matrix.marked_first(); let last: i32 = matrix.marked_last();
                                 for r in first..last + 1 {
-                                    let merged: SequenceTable = library.merge_song_row(i32(r), terminal_bounds(), false);
+                                    var merged: SequenceTable = library.merge_song_row(i32(r), terminal_bounds(), false);
                                     // Rows without patterns play nothing, as in song playback.
                                     if merged.rows.len() > 0 { midi.bounce_segment(&mut job, merged, 0, i32(merged.rows.len()), []); }
                                     merged.release();
@@ -3408,10 +3445,12 @@ pub fn run() -> i32 {
                             }
                         }
                         let rate: i64 = job.rate;
-                        let rendered: list<f32> = midi.bounce_finish(&mut job, library.table, bounce_options.tail ? bounce_options.tail_seconds : 0);
+                        let rendered: list<f32> = midi.bounce_finish(job, library.table, bounce_options.tail ? bounce_options.tail_seconds : 0);
+                        var pcm: list<f32> = [];
+                        for i in 0..rendered.len() { pcm.push(rendered[i]); }
                         bounce_count = bounce_count + 1;
                         let name: str8 = format!("Bounce {}.wav", bounce_count);
-                        let made: result<AudioClip, str8> = AudioClip::from_pcm(name, rendered, 2, rate, transport.bpm);
+                        let made: result<AudioClip, str8> = AudioClip::from_pcm(name, pcm, 2, rate, transport.bpm);
                         if made.is_err() { message = format!("Bounce of {} failed: {}", what, made.unwrap_err()); bounce_count = bounce_count - 1; }
                         else {
                             let clip: AudioClip = made.unwrap();

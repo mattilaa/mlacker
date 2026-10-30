@@ -164,7 +164,7 @@ impl PatternLibrary {
     }
     pub fn active_name(self: &Self) -> str8 {
         let index: i32 = self.index_of(self.active_id); if index < 0 { return ""; }
-        return self.patterns[index].name;
+        return clone(self.patterns[index].name);
     }
     fn save_active(self: &mut Self) -> void {
         var entries: list<PatternEntry> = [];
@@ -180,8 +180,7 @@ impl PatternLibrary {
     pub fn select(self: &mut Self, id: i32) -> void {
         if id == self.active_id || self.index_of(id) < 0 { return; }
         self.save_active();
-        let entry: PatternEntry = self.patterns[self.index_of(id)];
-        var replacement: SequenceTable = entry.data.copy_pattern();
+        var replacement: SequenceTable = self.patterns[self.index_of(id)].data.copy_pattern();
         replacement.clipboard = self.table.clipboard; replacement.clipboard_kinds = self.table.clipboard_kinds;
         replacement.clipboard_rows = self.table.clipboard_rows; replacement.clipboard_spacing = self.table.clipboard_spacing;
         self.table.clipboard = []; self.table.clipboard_kinds = [];
@@ -594,7 +593,7 @@ impl PatternLibrary {
             let column: SongLane = self.extra_lanes[l]; var slots: list<i32> = [];
             for r in 0..column.slots.len() {
                 var gone: bool = false;
-                for index in dropped { if index == i32(r) { gone = true; } }
+                for dropped_row in dropped { if dropped_row == i32(r) { gone = true; } }
                 if !gone { slots.push(song_cell_id(column.slots[r]) == removed ? 0 : column.slots[r]); }
             }
             lanes.push(SongLane { slots: slots });
