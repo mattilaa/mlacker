@@ -685,7 +685,7 @@ fn mlasid_create(sample_rate: f32) -> ptr<Sid> {
 }
 
 /// @brief Release a chip created by `mlasid_create`.
-fn mlasid_destroy(handle: ptr<Sid>) { free(handle); }
+fn mlasid_destroy(handle: ptr<Sid>) { unsafe { free(handle); } }
 
 /// @brief Silence the chip: oscillators, envelopes and filter restart;
 /// registers stay.

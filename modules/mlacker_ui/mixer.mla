@@ -62,7 +62,7 @@ impl Mixer {
         return false;
     }
     /// -1 means this event did not change a send. Reuse the public slider's bounds/type checks.
-    pub fn send_value(self: Mixer, event: InputEvent, track: SequenceTrack) -> i32 {
+    pub fn send_value(self: Mixer, event: InputEvent, track: &SequenceTrack) -> i32 {
         if self.bus_focus || self.selected_send < 0 || self.selected_send >= self.effect_volumes.len() { return -1; }
         let down: bool = (event.modifiers == 1 && event.code == 74) || (event.modifiers == 2 && (event.code == 106 || event.code == 74));
         let up: bool = (event.modifiers == 1 && event.code == 75) || (event.modifiers == 2 && (event.code == 107 || event.code == 75));
@@ -134,30 +134,28 @@ impl Mixer {
         // not an additional animation frame.
         var levels: list<MeterLevel> = []; var changed: bool = false;
         for i in 0..table.tracks.len() {
-            let track: SequenceTrack = table.tracks[i];
             var left: i32 = 0; var right: i32 = 0;
-            if playing && row >= 0 && row < table.rows.len() && !track.muted {
-                if track.audio {
-                    let hit: i32 = track.instance_at(row);
+            if playing && row >= 0 && row < table.rows.len() && !table.tracks[i].muted {
+                if table.tracks[i].audio {
+                    let hit: i32 = table.tracks[i].instance_at(row);
                     if hit >= 0 {
-                        let instance: AudioInstance = track.instances[hit];
-                        let peak: WavePeak = instance.clip.peaks[row - instance.start_row];
-                        if wide(row - instance.start_row) * 15000 + wide(phase) < instance.duration() {
+                        let start_row: i32 = table.tracks[i].instances[hit].start_row;
+                        let peak: WavePeak = table.tracks[i].instances[hit].clip.peaks[row - start_row];
+                        if wide(row - start_row) * 15000 + wide(phase) < table.tracks[i].instances[hit].duration() {
                             left = peak.left; right = peak.right;
                         }
                     }
                 } else {
                     let first: i32 = table.track_start(i32(i));
                     for r in 0..table.rows.len() {
-                        let data: TableRow = table.rows[r];
-                        for line in 0..track.note_lines {
+                        for line in 0..table.tracks[i].note_lines {
                             let column: i32 = first + i32(line) * 4;
-                            if data.cells[column] == "" { continue; }
+                            if table.rows[r].cells[column] == "" { continue; }
                             let age: i64 = wide(row - i32(r)) * 15000 + wide(phase) - table.note_offset(i32(r), column);
                             if age < 0 { continue; }
-                            if age >= 15000 && (data.cells[column + 2] == "" || data.cells[column + 2] == "1.00") { continue; }
-                            if data.cells[column] != "" {
-                                let velocity: result<i64, str8> = table_integer(data.cells[column + 1]);
+                            if age >= 15000 && (table.rows[r].cells[column + 2] == "" || table.rows[r].cells[column + 2] == "1.00") { continue; }
+                            if table.rows[r].cells[column] != "" {
+                                let velocity: result<i64, str8> = table_integer(table.rows[r].cells[column + 1]);
                                 let decay: i64 = table.note_length(i32(r), column) * 3 / 5;
                                 if velocity.is_ok() && age < decay {
                                     let value: i64 = velocity.unwrap();
@@ -201,16 +199,19 @@ impl Mixer {
         var start: i32 = 0; var span: i32 = 0;
         for i in 0..tracks.len() {
             if i > selected { break; }
-            let track: SequenceTrack = tracks[i]; span = span + self.track_width(track.instrument, i32(i));
+            span = span + self.track_width(tracks[i].instrument, i32(i));
         }
         while span > available && start < selected && start < tracks.len() {
-            let track: SequenceTrack = tracks[start]; span = span - self.track_width(track.instrument, start); start = start + 1;
+            span = span - self.track_width(tracks[start].instrument, start); start = start + 1;
         }
         // The OUT row sits below the fader value, on the last row of the strip.
         let lift: i32 = area.height > 4 ? 1 : 0;
         var cursor: i32 = 0;
         for index in start..tracks.len() {
             if cursor >= available { break; }
+            var destination: i32 = tracks[index].output;
+            if destination > tracks.len() || destination - 1 == i32(index) { destination = 0; }
+            if destination > 0 && !tracks[destination - 1].audio { destination = 0; }
             let track: SequenceTrack = tracks[index];
             let base: i32 = 8;
             let preferred: i32 = self.track_width(track.instrument, i32(index));
@@ -251,9 +252,6 @@ impl Mixer {
             // Where this channel goes: master, another audio track, or (for an
             // instrument track) the instance it plays.
             if lift > 0 {
-                var destination: i32 = track.output;
-                if destination > tracks.len() || destination - 1 == i32(index) { destination = 0; }
-                if destination > 0 { let other: SequenceTrack = tracks[destination - 1]; if !other.audio { destination = 0; } }
                 let text: str8 = output_label_text(track.instrument ? track.instrument_id : 0, destination);
                 surface.text(Rect::new(x, area.y + area.height - 1, strip.width, 1), text,
                     destination > 0 ? theme.accent : theme.muted, bg);

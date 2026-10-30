@@ -16,8 +16,8 @@ fn mladelay_create(rate: f32) -> ptr<StereoDelay> {
     return handle;
 }
 fn mladelay_destroy(handle: ptr<StereoDelay>) {
-    unsafe { let dead: StereoDelay = *handle; dead.reset(); }
-    free(handle);
+    unsafe { var dead: StereoDelay = *handle; dead.reset(); }
+    unsafe { free(handle); }
 }
 fn mladelay_reset(handle: ptr<StereoDelay>) { unsafe { (*handle).reset(); } }
 

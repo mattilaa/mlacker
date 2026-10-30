@@ -574,7 +574,7 @@ impl SamplerView {
     /// changed (the application sends them), u detects them again (17).
     fn cut_event(self: &mut Self, event: InputEvent, clip: &AudioClip, frames: i64, left: bool, right: bool,
         fine_left: bool, fine_right: bool, snap: bool) -> i32 {
-        var cuts: list<i64> = []; cuts = self.cuts;
+        var cuts: list<i64> = std::copy(self.cuts);
         let count: i32 = i32(cuts.len());
         if count == 0 { return 0; }
         var selected: i32 = self.cut < count ? self.cut : count - 1;

@@ -50,7 +50,7 @@ fn mladist_create(sample_rate: f32) -> ptr<MlaDistortion> {
 
 /// @brief Release a distortion instance created by `mladist_create`.
 fn mladist_destroy(handle: ptr<MlaDistortion>) {
-    free(handle);
+    unsafe { free(handle); }
 }
 
 /// @brief Clear tone/DC-blocker history on both channels without changing params.

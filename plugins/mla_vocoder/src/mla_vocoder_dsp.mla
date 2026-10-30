@@ -677,8 +677,8 @@ fn mlavocoder_create(sample_rate: f32) -> ptr<Vocoder> {
 /// @brief Release an instance created by `mlavocoder_create`.
 fn mlavocoder_destroy(handle: ptr<Vocoder>) {
     // Move the value out so its lists are dropped, then free the block.
-    unsafe { let dead: Vocoder = *handle; dead.release_all(); }
-    free(handle);
+    unsafe { var dead: Vocoder = *handle; dead.release_all(); }
+    unsafe { free(handle); }
 }
 
 /// @brief Silence: clear filters, envelopes, voices and the ensemble line.

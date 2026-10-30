@@ -49,8 +49,8 @@ impl SidebarClipboard {
         var audio: AudioSystem = AudioSystem {}; audio = system;
         self.release(); self.error = "";
         self.kind = library.audio_mode ? 1 : (library.instruments_mode ? 2 : 3);
-        var view: ListView = ListView {}; view = library.audio_mode ? library.audio.view : (library.instruments_mode ? library.instruments : library.view);
-        let ids: list<i32> = view.targets();
+        let ids: list<i32> = library.audio_mode ? library.audio.view.targets()
+            : (library.instruments_mode ? library.instruments.targets() : library.view.targets());
         for id in ids {
             var entry: SidebarCopy = SidebarCopy { name: clone(""), path: clone("") };
             if self.kind == 1 {
@@ -96,6 +96,7 @@ impl SidebarClipboard {
         let current: i32 = library.audio_mode ? 1 : (library.instruments_mode ? 2 : 3);
         if current != self.kind || self.entries.len() == 0 { self.error = "Copy items from this list with y first"; return SidebarPaste { library: library, audio: audio }; }
         let entries: list<SidebarCopy> = self.entries;
+        self.entries = [];
         for entry in entries {
             if self.kind == 1 {
                 if library.audio.samples.len() >= 256 { self.error = "Maximum 256 samples"; break; }
@@ -118,9 +119,15 @@ impl SidebarClipboard {
                 for n in start..100000 { free(name); name = format!("{} - {}", stem, n); if self.name_available(library, name) { break; } }
                 free(stem);
                 if self.kind == 3 {
-                    var clips: list<AudioClip> = []; let tracks: list<SequenceTrack> = entry.pattern.tracks;
-                    for track in tracks { let instances: list<AudioInstance> = track.instances; for instance in instances { clips.push(instance.clip); } }
-                    if !library.import_pattern(name, entry.pattern, clips) { free(name); self.error = library.error; break; }
+                    var clips: list<AudioClip> = [];
+                    for t in 0..entry.pattern.tracks.len() {
+                        for i in 0..entry.pattern.tracks[t].instances.len() {
+                            clips.push(entry.pattern.tracks[t].instances[i].clip.copy());
+                        }
+                    }
+                    let imported: bool = library.import_pattern(name, entry.pattern, clips);
+                    for clip in clips { clip.release(); }
+                    if !imported { free(name); self.error = library.error; break; }
                 } else {
                     let worker: bool = audio.midi.worker.raw != 0; audio.midi.release();
                     let loaded: str8 = audio.add_instrument(entry.path);
@@ -152,6 +159,7 @@ impl SidebarClipboard {
             }
             copied = copied + 1;
         }
+        self.entries = entries;
         return SidebarPaste { library: library, audio: audio, count: copied };
     }
 }

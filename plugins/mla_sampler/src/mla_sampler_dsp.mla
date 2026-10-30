@@ -553,7 +553,7 @@ fn mlasampler_voice_create(sample_rate: f32) -> ptr<SamplerVoice> {
 
 /// @brief Release a voice created by `mlasampler_voice_create`.
 fn mlasampler_voice_destroy(voice: ptr<SamplerVoice>) {
-    free(voice);
+    unsafe { free(voice); }
 }
 
 /// @brief Amp envelope times in seconds and sustain level 0..1. Takes effect
@@ -688,25 +688,32 @@ fn sampler_filter_chain(voice: ptr<SamplerVoice>, left: f32, right: f32) -> Ster
             if !on1 && !on2 && !on3 && !on4 { return StereoSample { left: left, right: right }; }
             return StereoSample { left: sum_left, right: sum_right };
         }
+        // Extract scalar outputs and clear each temporary before borrowing the next filter.
         if (*voice).chain == 2 {
             var sum_left: f32 = 0.0f; var sum_right: f32 = 0.0f;
             if on1 || on2 {
-                let a: StereoSample = (*voice).filter1.process(left, right);
-                let b: StereoSample = (*voice).filter2.process(a.left, a.right);
+                var a: StereoSample = (*voice).filter1.process(left, right);
+                let a_left: f32 = a.left; let a_right: f32 = a.right; a = StereoSample {};
+                let b: StereoSample = (*voice).filter2.process(a_left, a_right);
                 sum_left = sum_left + b.left; sum_right = sum_right + b.right;
             }
             if on3 || on4 {
-                let c: StereoSample = (*voice).filter3.process(left, right);
-                let d: StereoSample = (*voice).filter4.process(c.left, c.right);
+                var c: StereoSample = (*voice).filter3.process(left, right);
+                let c_left: f32 = c.left; let c_right: f32 = c.right; c = StereoSample {};
+                let d: StereoSample = (*voice).filter4.process(c_left, c_right);
                 sum_left = sum_left + d.left; sum_right = sum_right + d.right;
             }
             if !on1 && !on2 && !on3 && !on4 { return StereoSample { left: left, right: right }; }
             return StereoSample { left: sum_left, right: sum_right };
         }
-        let first: StereoSample = (*voice).filter1.process(left, right);
-        let second: StereoSample = (*voice).filter2.process(first.left, first.right);
-        let third: StereoSample = (*voice).filter3.process(second.left, second.right);
-        return (*voice).filter4.process(third.left, third.right);
+        var first: StereoSample = (*voice).filter1.process(left, right);
+        let first_left: f32 = first.left; let first_right: f32 = first.right; first = StereoSample {};
+        var second: StereoSample = (*voice).filter2.process(first_left, first_right);
+        let second_left: f32 = second.left; let second_right: f32 = second.right; second = StereoSample {};
+        var third: StereoSample = (*voice).filter3.process(second_left, second_right);
+        let third_left: f32 = third.left; let third_right: f32 = third.right; third = StereoSample {};
+        let final_sample: StereoSample = (*voice).filter4.process(third_left, third_right);
+        return StereoSample { left: final_sample.left, right: final_sample.right };
     }
 }
 

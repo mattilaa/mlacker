@@ -13,8 +13,8 @@ fn mlalimiter_create(rate: f32) -> ptr<PunchLimiter> {
     return handle;
 }
 fn mlalimiter_destroy(handle: ptr<PunchLimiter>) {
-    unsafe { let dead: PunchLimiter = *handle; dead.reset(); }
-    free(handle);
+    unsafe { var dead: PunchLimiter = *handle; dead.reset(); }
+    unsafe { free(handle); }
 }
 fn mlalimiter_reset(handle: ptr<PunchLimiter>) { unsafe { (*handle).reset(); } }
 fn mlalimiter_latency(handle: ptr<PunchLimiter>) -> i64 { unsafe { return (*handle).latency_samples(); } }

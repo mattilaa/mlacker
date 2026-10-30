@@ -68,7 +68,7 @@ impl PadGrid {
     /// stops). True when the grid changed, including a flash running out.
     pub fn advance(self: &mut Self, ticks: i64, playing: bool, now: i64, previous: i64) -> bool {
         var changed: bool = false;
-        let queued: list<PendingPad> = self.pending; var later: list<PendingPad> = [];
+        let queued: list<PendingPad> = std::copy(self.pending); var later: list<PendingPad> = [];
         for item in queued {
             if playing && item.tick > ticks { later.push(item); continue; }
             if item.on { self.note_on(item.note, item.velocity, now); } else { self.note_off(item.note); }

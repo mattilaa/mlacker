@@ -169,7 +169,7 @@ impl SessionData {
             free(name);
             if sent != 0 { next.release(); return Err<AudioSystem, str8>("Cannot restore a sampler pad; session retained"); }
         }
-        next.pads = self.pads;
+        next.pads = pads;
         // Hand-set slice markers follow their pads' samples.
         let markers: list<PadMarkers> = self.markers;
         for entry in markers {
@@ -179,7 +179,7 @@ impl SessionData {
                 next.release(); return Err<AudioSystem, str8>("Cannot restore a pad's slice markers; session retained");
             }
         }
-        next.pad_markers = self.markers;
+        next.pad_markers = markers;
         return Ok<AudioSystem, str8>(next);
     }
 }
@@ -422,7 +422,7 @@ impl SessionCodec {
             let key: i64 = codec.integer(saving ? keys[i] : 0, 0, 1048575);
             let value: f64 = codec.real(saving ? values[i] : 0.0, 0.0, 1.0);
             if !saving {
-                let seen: list<i64> = result.keys;
+                let seen: list<i64> = std::copy(result.keys);
                 for other in seen { if other == key { codec.failed = true; } }
                 result.keys.push(key); result.values.push(value);
             }
@@ -721,7 +721,7 @@ impl SessionCodec {
             if codec.failed { break; }
             let id: i64 = codec.integer(0, 0, 4294967295);
             let value: f64 = codec.real(0.0, 0.0, 1.0);
-            let ids: list<i64> = plugin.ids; for old in ids { if old == id { codec.failed = true; } }
+            let ids: list<i64> = std::copy(plugin.ids); for old in ids { if old == id { codec.failed = true; } }
             plugin.ids.push(id); plugin.values.push(value);
         }
         // A kit preset's pads belong to the session; skip them.
@@ -745,37 +745,39 @@ impl SessionCodec {
     /// (0-5), pitch (-24..24, 0 below Stretch), resampling (0-3) and
     /// Transients 2 loop mode (0-2). Returns the pattern with them applied.
     fn audio_properties(self: &mut Self, source: &SequenceTable) -> SequenceTable {
-        var table: SequenceTable = SequenceTable {}; table = source;
+        var table: SequenceTable = source.copy_pattern();
         let track_count: i32 = self.number(i32(table.tracks.len()), 0, 64);
         if track_count != table.tracks.len() { self.failed = true; return table; }
-        var tracks: list<SequenceTrack> = [];
         for t in 0..track_count {
-            var track: SequenceTrack = table.tracks[t];
-            let count: i32 = self.number(i32(track.instances.len()), 0, 16384);
-            if count != track.instances.len() { self.failed = true; return table; }
-            var placements: list<AudioInstance> = [];
+            let count: i32 = self.number(i32(table.tracks[t].instances.len()), 0, 16384);
+            if count != table.tracks[t].instances.len() { self.failed = true; return table; }
             for j in 0..count {
-                var instance: AudioInstance = AudioInstance {}; instance = track.instances[j];
-                instance.frame_end = self.integer(instance.frame_end, 0, 16777216);
-                if instance.frame_end != 0 && (instance.frame_end <= instance.offset_frames || instance.frame_end > instance.clip.frames) { self.failed = true; }
-                instance.original_bpm = self.number(instance.original_bpm, 0, 400);
-                if instance.original_bpm > 0 && instance.original_bpm < 20 { self.failed = true; }
-                instance.stretch_algorithm = self.number(instance.stretch_algorithm, 0, 5);
-                instance.pitch = self.number(instance.pitch, -24, 24);
-                if instance.pitch != 0 && instance.stretch_algorithm < 2 { self.failed = true; }
-                instance.resample = self.number(instance.resample, 0, 3);
-                instance.loop_mode = self.number(instance.loop_mode, 0, 2);
-                placements.push(instance);
+                let frame_end: i64 = self.integer(table.tracks[t].instances[j].frame_end, 0, 16777216);
+                if frame_end != 0 && (frame_end <= table.tracks[t].instances[j].offset_frames ||
+                    frame_end > table.tracks[t].instances[j].clip.frames) { self.failed = true; }
+                let original_bpm: i32 = self.number(table.tracks[t].instances[j].original_bpm, 0, 400);
+                if original_bpm > 0 && original_bpm < 20 { self.failed = true; }
+                let algorithm: i32 = self.number(table.tracks[t].instances[j].stretch_algorithm, 0, 5);
+                let pitch: i32 = self.number(table.tracks[t].instances[j].pitch, -24, 24);
+                if pitch != 0 && algorithm < 2 { self.failed = true; }
+                let resample: i32 = self.number(table.tracks[t].instances[j].resample, 0, 3);
+                let loop_mode: i32 = self.number(table.tracks[t].instances[j].loop_mode, 0, 2);
+                if self.reading {
+                    table.tracks[t].instances[j].frame_end = frame_end;
+                    table.tracks[t].instances[j].original_bpm = original_bpm;
+                    table.tracks[t].instances[j].stretch_algorithm = algorithm;
+                    table.tracks[t].instances[j].pitch = pitch;
+                    table.tracks[t].instances[j].resample = resample;
+                    table.tracks[t].instances[j].loop_mode = loop_mode;
+                }
             }
-            track.instances = placements; tracks.push(track);
         }
-        if self.reading { table.tracks = tracks; }
         return table;
     }
-    fn sequence_data(self: &mut Self, source: &SequenceTable, samples: list<AudioClip>) -> SequenceTable {
-        var table: SequenceTable = SequenceTable {}; table = source;
+    fn sequence_data(self: &mut Self, source: &SequenceTable, samples: &list<AudioClip>) -> SequenceTable {
+        var table: SequenceTable = SequenceTable::empty();
+        if !self.reading { table.release(); table = source.copy_pattern(); }
         if self.reading {
-            table = SequenceTable::empty();
             let old: list<TableRow> = table.rows; for row in old { let cells: list<str8> = row.cells; for cell in cells { free(cell); } }
             table.rows = [];
         }
@@ -785,8 +787,10 @@ impl SessionCodec {
         table.horizontal_scrollbar = self.flag(table.horizontal_scrollbar); table.vertical_scrollbar = self.flag(table.vertical_scrollbar);
         table.alternate_group_text = self.flag(table.alternate_group_text);
         let tracks: i32 = self.number(i32(table.tracks.len()), 0, 64); var track_list: list<SequenceTrack> = [];
+        var reversed_tracks: list<SequenceTrack> = [];
+        if !self.reading { while table.tracks.len() > 0 { reversed_tracks.push(table.tracks.pop()); } }
         for i in 0..tracks {
-            var track: SequenceTrack = SequenceTrack {}; if !self.reading { track = table.tracks[i]; }
+            var track: SequenceTrack = SequenceTrack {}; if !self.reading { track = reversed_tracks.pop(); }
             track.name = self.text(self.reading ? "" : track.name); track.muted = self.flag(track.muted);
             track.volume = self.number(track.volume, 0, 127); track.pan = self.number(track.pan, -100, 100);
             track.audio = self.flag(track.audio); track.instrument = self.flag(track.instrument);
@@ -814,29 +818,32 @@ impl SessionCodec {
             for j in 0..instances {
                 var instance: AudioInstance = AudioInstance {}; var sample_id: i32 = -1;
                 if !self.reading {
-                    instance = track.instances[j];
                     for k in 0..samples.len() {
-                        let sample: AudioClip = samples[k];
-                        if sample.source == instance.clip.source && sample.frames == instance.clip.frames && sample.frames_per_row == instance.clip.frames_per_row { sample_id = i32(k); }
+                        if samples[k].source == track.instances[j].clip.source && samples[k].frames == track.instances[j].clip.frames &&
+                            samples[k].frames_per_row == track.instances[j].clip.frames_per_row { sample_id = i32(k); }
                     }
                 }
                 sample_id = self.number(sample_id, 0, i32(samples.len()) - 1);
-                instance.start_row = self.number(instance.start_row, 0, 16383); instance.length_ticks = self.number(instance.length_ticks, 0, 245760000);
-                instance.offset_frames = self.integer(instance.offset_frames, 0, 16777216);
-                if self.reading && !self.failed { let sample: AudioClip = samples[sample_id]; instance.clip = sample.copy(); placements.push(instance); }
+                let start_row: i32 = self.number(self.reading ? 0 : track.instances[j].start_row, 0, 16383);
+                let length_ticks: i32 = self.number(self.reading ? 0 : track.instances[j].length_ticks, 0, 245760000);
+                let offset_frames: i64 = self.integer(self.reading ? 0 : track.instances[j].offset_frames, 0, 16777216);
+                instance.start_row = start_row; instance.length_ticks = length_ticks; instance.offset_frames = offset_frames;
+                if self.reading && !self.failed { instance.clip = samples[sample_id].copy(); placements.push(instance); }
             }
             if self.reading { track.instances = placements; }
             track_list.push(track);
         }
-        if self.reading { table.tracks = track_list; table.rebuild_columns(); }
+        table.tracks = track_list; if self.reading { table.rebuild_columns(); }
         let rows: i32 = self.number(i32(table.rows.len()), 1, 16384); var row_list: list<TableRow> = [];
+        var reversed_rows: list<TableRow> = [];
+        if !self.reading { while table.rows.len() > 0 { reversed_rows.push(table.rows.pop()); } }
         for r in 0..rows {
             if self.failed { break; }
-            var row: TableRow = TableRow {}; if !self.reading { row = table.rows[r]; }
+            var row: TableRow = TableRow {}; if !self.reading { row = reversed_rows.pop(); }
             let count: i32 = self.number(i32(row.cells.len()), 1, 20000);
             self.cells = self.cells + count;
-            var audio_tracks: i32 = 0; let tracks_for_row: list<SequenceTrack> = table.tracks;
-            for track in tracks_for_row { if track.audio { audio_tracks = audio_tracks + 1; } }
+            var audio_tracks: i32 = 0;
+            for t in 0..table.tracks.len() { if table.tracks[t].audio { audio_tracks = audio_tracks + 1; } }
             let expected: i32 = i32(table.columns.len()) - (self.reading && !self.audio_off ? audio_tracks : 0);
             if self.cells > 8000000 || count != expected { self.failed = true; break; }
             var cells: list<str8> = [];
@@ -844,17 +851,16 @@ impl SessionCodec {
                 var legacy_off: bool = false;
                 if self.reading && !self.audio_off {
                     for t in 0..table.tracks.len() {
-                        let track: SequenceTrack = table.tracks[t];
-                        if track.audio && i32(c) == table.audio_offset_column(i32(t)) { legacy_off = true; }
+                        if table.tracks[t].audio && i32(c) == table.audio_offset_column(i32(t)) { legacy_off = true; }
                     }
                 }
                 let value: str8 = legacy_off ? clone("") : self.text(self.reading ? "" : row.cells[c]); cells.push(value);
                 let column: TableColumn = table.columns[c];
                 if !column.read_only && !column.validate(value) { self.failed = true; }
             }
-            if self.reading { row.cells = cells; row_list.push(row); }
+            if self.reading { row.cells = cells; } row_list.push(row);
         }
-        if self.reading { table.rows = row_list; }
+        table.rows = row_list;
         return table;
     }
     fn view(self: &mut Self, value: SessionView) -> SessionView {
@@ -921,17 +927,20 @@ impl SessionCodec {
         let sample_count: i32 = self.number(i32(library.audio.samples.len()), 0, 256);
         for i in 0..sample_count {
             if self.failed { break; }
-            var clip: AudioClip = AudioClip {}; if !self.reading { clip = library.audio.samples[i]; }
+            var clip: AudioClip = AudioClip {}; if !self.reading { clip = library.audio.samples[i].copy(); }
             let decoded: AudioClip = project ? self.clip_file(clip, i, self.reading ? "" : library.audio.group_of(i)) : self.clip(clip);
             if self.reading {
-                library.audio.samples.push(decoded);
+                var group: str8 = clone("");
                 // A project file's folder below Audio/ is its sample's group.
                 if project && !self.failed {
                     let skip: i64 = std::strbuf::len(self.root) + 1;
                     let relative: str8 = std::strbuf::sub(decoded.source, skip, std::strbuf::len(decoded.source) - skip);
-                    let group: str8 = path_group(relative); library.audio.set_group(i, group); free(group); free(relative);
+                    free(group); group = path_group(relative); free(relative);
                 }
-            }
+                library.audio.samples.push(decoded);
+                if project && !self.failed { library.audio.set_group(i, group); }
+                free(group);
+            } else { decoded.release(); }
         }
         if self.reading { library.audio.rebuild(); }
         var count: i32 = audio.processor_path != "" ? 1 : 0;
@@ -968,17 +977,22 @@ impl SessionCodec {
         let patterns: i32 = self.number(i32(library.patterns.len()), 1, 1024);
         for i in 0..patterns {
             if self.failed { break; }
-            var entry: PatternEntry = PatternEntry {}; if !self.reading { entry = library.patterns[i]; }
+            var entry: PatternEntry = PatternEntry {};
+            if !self.reading {
+                entry = PatternEntry { id: library.patterns[i].id, name: clone(library.patterns[i].name),
+                    data: library.patterns[i].data.copy_pattern() };
+            }
             entry.id = self.number(entry.id, 1, library.next_id - 1); entry.name = self.text(self.reading ? "" : entry.name);
-            if !self.reading && entry.id == library.active_id { entry.data = library.table; }
+            if !self.reading && entry.id == library.active_id {
+                entry.data.release(); entry.data = library.table.copy_pattern();
+            }
             entry.data = self.sequence_data(entry.data, library.audio.samples);
             if self.reading {
                 if library.index_of(entry.id) >= 0 { self.failed = true; }
                 library.patterns.push(entry);
-                let tracks: list<SequenceTrack> = entry.data.tracks;
-                for track in tracks {
-                    if track.instrument_id > 0 {
-                        var found: bool = false; for plugin in plugins { if plugin.slot == track.instrument_id { found = true; } }
+                for t in 0..library.patterns[i].data.tracks.len() {
+                    if library.patterns[i].data.tracks[t].instrument_id > 0 {
+                        var found: bool = false; for plugin in plugins { if plugin.slot == library.patterns[i].data.tracks[t].instrument_id { found = true; } }
                         if !found { self.failed = true; }
                     }
                 }
@@ -994,7 +1008,7 @@ impl SessionCodec {
             library.song = song;
             let index: i32 = library.index_of(library.active_id);
             if index < 0 { self.failed = true; }
-            if !self.failed { let entry: PatternEntry = library.patterns[index]; library.table.release(); library.table = entry.data.copy_pattern(); }
+            if !self.failed { library.table.release(); library.table = library.patterns[index].data.copy_pattern(); }
             library.audio_mode = state.sidebar == 2; library.instruments_mode = state.sidebar == 3;
             library.refresh(); library.view.selected = state.list_selected; library.view.scroll = state.list_scroll;
             library.audio.view.selected = state.audio_selected; library.audio.view.scroll = state.audio_scroll;
@@ -1054,33 +1068,32 @@ impl SessionCodec {
                     for p in 0..params {
                         let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, p, 4), 0, 4294967295);
                         let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, p, 2), 0.0, 1.0);
-                        let ids: list<i64> = plugin.ids; for old in ids { if old == id { self.failed = true; } }
+                        for k in 0..plugin.ids.len() { if plugin.ids[k] == id { self.failed = true; } }
                         plugin.ids.push(id); plugin.values.push(value);
                     }
                 }
                 plugins.push(plugin);
             }
             // Sends follow pattern track order, not global plugin/library slots.
-            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
-            for p in 0..patterns.len() {
+            for p in 0..library.patterns.len() {
                 if self.failed { break; }
-                var entry: PatternEntry = patterns[p];
-                if !self.reading && entry.id == library.active_id { entry.data = library.table; }
-                let track_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
-                if track_count != entry.data.tracks.len() { self.failed = true; break; }
-                var tracks: list<SequenceTrack> = [];
+                let active: bool = !self.reading && library.patterns[p].id == library.active_id;
+                let stored_count: i32 = active ? i32(library.table.tracks.len()) : i32(library.patterns[p].data.tracks.len());
+                let track_count: i32 = self.number(stored_count, 0, 64);
+                if track_count != stored_count { self.failed = true; break; }
                 for t in 0..track_count {
-                    var track: SequenceTrack = entry.data.tracks[t]; var sends: list<i32> = [];
-                    for fx in 0..count { sends.push(self.number(track.send_level(i32(fx)), 0, 100)); }
-                    if self.reading { track.sends = sends; } tracks.push(track);
+                    var sends: list<i32> = [];
+                    for fx in 0..count {
+                        let value: i32 = active ? library.table.tracks[t].send_level(i32(fx)) : library.patterns[p].data.tracks[t].send_level(i32(fx));
+                        sends.push(self.number(value, 0, 100));
+                    }
+                    if self.reading { library.patterns[p].data.tracks[t].sends = sends; }
                 }
-                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
             }
             state.effect_focus = self.flag(state.effect_focus); state.effect_selected = self.number(state.effect_selected, 0, count > 0 ? count - 1 : 0);
             if self.reading && !self.failed {
-                library.patterns = updated;
-                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
-                library.table.release(); library.table = entry.data.copy_pattern();
+                let active_index: i32 = library.index_of(library.active_id);
+                if active_index >= 0 { library.table.release(); library.table = library.patterns[active_index].data.copy_pattern(); }
             }
         }
         let inserts_extension: bool = self.reading ? self.reader.remaining() > 0 : audio.insert_paths.len() > 0 || library.table.group_detail_rows > 0 || audio.pads.len() > 0 || library.extra_lanes.len() > 0 || routed || gridded || mastered;
@@ -1099,34 +1112,34 @@ impl SessionCodec {
                     for p in 0..params {
                         let id: i64 = self.integer(self.reading ? 0 : audio.output.parameter_info(slot, p, 4), 0, 4294967295);
                         let value: f64 = self.real(self.reading ? 0.0 : audio.output.parameter_info(slot, p, 2), 0.0, 1.0);
-                        let ids: list<i64> = plugin.ids; for old in ids { if old == id { self.failed = true; } }
+                        for k in 0..plugin.ids.len() { if plugin.ids[k] == id { self.failed = true; } }
                         plugin.ids.push(id); plugin.values.push(value);
                     }
                 }
                 plugins.push(plugin);
             }
-            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
-            for p in 0..patterns.len() {
+            for p in 0..library.patterns.len() {
                 if self.failed { break; }
-                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
-                let tracks_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
-                if tracks_count != entry.data.tracks.len() { self.failed = true; break; }
-                var tracks: list<SequenceTrack> = [];
+                let active: bool = !self.reading && library.patterns[p].id == library.active_id;
+                let stored_count: i32 = active ? i32(library.table.tracks.len()) : i32(library.patterns[p].data.tracks.len());
+                let tracks_count: i32 = self.number(stored_count, 0, 64);
+                if tracks_count != stored_count { self.failed = true; break; }
                 for t in 0..tracks_count {
-                    var track: SequenceTrack = entry.data.tracks[t]; var ids: list<i32> = [];
-                    for n in 0..4 { ids.push(self.number(track.insert_id(i32(n)), 0, count)); }
-                    if self.reading { track.inserts = ids; } tracks.push(track);
+                    var ids: list<i32> = [];
+                    for n in 0..4 {
+                        let value: i32 = active ? library.table.tracks[t].insert_id(i32(n)) : library.patterns[p].data.tracks[t].insert_id(i32(n));
+                        ids.push(self.number(value, 0, count));
+                    }
+                    if self.reading { library.patterns[p].data.tracks[t].inserts = ids; }
                 }
-                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
             }
             let visible: bool = self.flag(library.table.group_detail_rows > 0);
             // Hidden insert rows load as -1; write that canonically so a
             // reopened session saves byte-identically.
             let selected: i32 = self.number(library.table.group_detail_rows > 0 ? library.table.selected_group_detail : -1, -1, 3);
             if self.reading && !self.failed {
-                library.patterns = updated;
-                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
-                library.table.release(); library.table = entry.data.copy_pattern();
+                let active_index: i32 = library.index_of(library.active_id);
+                if active_index >= 0 { library.table.release(); library.table = library.patterns[active_index].data.copy_pattern(); }
                 library.table.group_detail_rows = visible ? 4 : 0; library.table.selected_group_detail = visible ? (selected < 0 ? 0 : selected) : -1;
             }
         }
@@ -1158,17 +1171,15 @@ impl SessionCodec {
             var restored: list<SongLane> = [];
             for l in 0..lanes {
                 if self.failed { break; }
-                var column: SongLane = SongLane {}; if !self.reading { column = library.extra_lanes[l]; }
                 let count: i32 = self.number(i32(library.song.len()), 0, 65536);
                 if count != library.song.len() { self.failed = true; break; }
                 var slots: list<i32> = [];
                 for r in 0..count {
-                    let stored: i32 = self.reading ? 0 : (r < column.slots.len() ? song_cell_id(column.slots[r]) : 0);
+                    let stored: i32 = self.reading ? 0 : (r < library.extra_lanes[l].slots.len() ? song_cell_id(library.extra_lanes[l].slots[r]) : 0);
                     let id: i32 = self.number(stored, 0, 1000000);
                     // 0 is an empty cell; anything else must be a real pattern.
                     var known: bool = id == 0;
-                    let entries: list<PatternEntry> = library.patterns;
-                    for entry in entries { if entry.id == id { known = true; } }
+                    for p in 0..library.patterns.len() { if library.patterns[p].id == id { known = true; } }
                     if !known { self.failed = true; }
                     if self.reading { slots.push(id); }
                 }
@@ -1182,26 +1193,22 @@ impl SessionCodec {
         let outputs_extension: bool = self.reading ? self.reader.remaining() > 0 : routed || gridded || mastered;
         if outputs_extension && !self.failed {
             let tag: str8 = self.text("TRACK_OUTPUTS"); if tag != "TRACK_OUTPUTS" { self.failed = true; } if self.reading { free(tag); }
-            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
-            for p in 0..patterns.len() {
+            for p in 0..library.patterns.len() {
                 if self.failed { break; }
-                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
-                let track_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
-                if track_count != entry.data.tracks.len() { self.failed = true; break; }
-                var tracks: list<SequenceTrack> = [];
+                let active: bool = !self.reading && library.patterns[p].id == library.active_id;
+                let stored_count: i32 = active ? i32(library.table.tracks.len()) : i32(library.patterns[p].data.tracks.len());
+                let track_count: i32 = self.number(stored_count, 0, 64);
+                if track_count != stored_count { self.failed = true; break; }
                 for t in 0..track_count {
-                    var track: SequenceTrack = entry.data.tracks[t];
-                    let destination: i32 = self.number(track.output, 0, track_count);
+                    let value: i32 = active ? library.table.tracks[t].output : library.patterns[p].data.tracks[t].output;
+                    let destination: i32 = self.number(value, 0, track_count);
                     if destination - 1 == i32(t) { self.failed = true; break; }
-                    if self.reading { track.output = destination; }
-                    tracks.push(track);
+                    if self.reading { library.patterns[p].data.tracks[t].output = destination; }
                 }
-                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
             }
             if self.reading && !self.failed {
-                library.patterns = updated;
-                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
-                library.table.release(); library.table = entry.data.copy_pattern();
+                let active_index: i32 = library.index_of(library.active_id);
+                if active_index >= 0 { library.table.release(); library.table = library.patterns[active_index].data.copy_pattern(); }
             }
         }
         // Optional MATRIX_GRID extension: how many pattern rows one matrix row
@@ -1274,32 +1281,29 @@ impl SessionCodec {
         let aux_extension: bool = self.reading ? self.reader.remaining() > 0 : aux_routed;
         if aux_extension && !self.failed {
             let tag: str8 = self.text("AUX_OUTPUTS"); if tag != "AUX_OUTPUTS" { self.failed = true; } if self.reading { free(tag); }
-            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
-            for p in 0..patterns.len() {
+            for p in 0..library.patterns.len() {
                 if self.failed { break; }
-                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
-                let track_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
-                if track_count != entry.data.tracks.len() { self.failed = true; break; }
-                var tracks: list<SequenceTrack> = [];
+                let active: bool = !self.reading && library.patterns[p].id == library.active_id;
+                let stored_count: i32 = active ? i32(library.table.tracks.len()) : i32(library.patterns[p].data.tracks.len());
+                let track_count: i32 = self.number(stored_count, 0, 64);
+                if track_count != stored_count { self.failed = true; break; }
                 for t in 0..track_count {
-                    var track: SequenceTrack = entry.data.tracks[t];
-                    let buses: i32 = self.number(i32(track.aux_outputs.len()), 0, 15);
+                    let stored_buses: i32 = active ? i32(library.table.tracks[t].aux_outputs.len()) : i32(library.patterns[p].data.tracks[t].aux_outputs.len());
+                    let buses: i32 = self.number(stored_buses, 0, 15);
                     var aux: list<i32> = [];
                     for b in 0..buses {
                         // -2 .. -9 feed an aux effect channel, -10 nowhere.
-                        let destination: i32 = self.number(self.reading ? 0 : track.aux_outputs[b], -10, track_count);
+                        let stored: i32 = self.reading ? 0 : (active ? library.table.tracks[t].aux_outputs[b] : library.patterns[p].data.tracks[t].aux_outputs[b]);
+                        let destination: i32 = self.number(stored, -10, track_count);
                         if destination - 1 == i32(t) { self.failed = true; }
                         aux.push(destination);
                     }
-                    if self.reading { track.aux_outputs = aux; }
-                    tracks.push(track);
+                    if self.reading { library.patterns[p].data.tracks[t].aux_outputs = aux; }
                 }
-                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
             }
             if self.reading && !self.failed {
-                library.patterns = updated;
-                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
-                library.table.release(); library.table = entry.data.copy_pattern();
+                let active_index: i32 = library.index_of(library.active_id);
+                if active_index >= 0 { library.table.release(); library.table = library.patterns[active_index].data.copy_pattern(); }
             }
         }
         // Optional PAD_MARKERS extension: slice markers set by hand, per
@@ -1334,26 +1338,22 @@ impl SessionCodec {
         let inputs_extension: bool = self.reading ? self.reader.remaining() > 0 : inputs_routed;
         if inputs_extension && !self.failed {
             let tag: str8 = self.text("INSTRUMENT_INPUTS"); if tag != "INSTRUMENT_INPUTS" { self.failed = true; } if self.reading { free(tag); }
-            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
-            for p in 0..patterns.len() {
+            for p in 0..library.patterns.len() {
                 if self.failed { break; }
-                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
-                let track_count: i32 = self.number(i32(entry.data.tracks.len()), 0, 64);
-                if track_count != entry.data.tracks.len() { self.failed = true; break; }
-                var tracks: list<SequenceTrack> = [];
+                let active: bool = !self.reading && library.patterns[p].id == library.active_id;
+                let stored_count: i32 = active ? i32(library.table.tracks.len()) : i32(library.patterns[p].data.tracks.len());
+                let track_count: i32 = self.number(stored_count, 0, 64);
+                if track_count != stored_count { self.failed = true; break; }
                 for t in 0..track_count {
-                    var track: SequenceTrack = entry.data.tracks[t];
-                    let source: i32 = self.number(track.input, -1, track_count);
+                    let stored: i32 = active ? library.table.tracks[t].input : library.patterns[p].data.tracks[t].input;
+                    let source: i32 = self.number(stored, -1, track_count);
                     if source - 1 == i32(t) { self.failed = true; }
-                    if self.reading { track.input = source; }
-                    tracks.push(track);
+                    if self.reading { library.patterns[p].data.tracks[t].input = source; }
                 }
-                if self.reading { entry.data.tracks = tracks; updated.push(entry); }
             }
             if self.reading && !self.failed {
-                library.patterns = updated;
-                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
-                library.table.release(); library.table = entry.data.copy_pattern();
+                let active_index: i32 = library.index_of(library.active_id);
+                if active_index >= 0 { library.table.release(); library.table = library.patterns[active_index].data.copy_pattern(); }
             }
         }
         // Optional AUDIO_PROPERTIES extension: per pattern, the Sample
@@ -1361,17 +1361,15 @@ impl SessionCodec {
         let properties_extension: bool = self.reading ? self.reader.remaining() > 0 : propertied;
         if properties_extension && !self.failed {
             let tag: str8 = self.text("AUDIO_PROPERTIES"); if tag != "AUDIO_PROPERTIES" { self.failed = true; } if self.reading { free(tag); }
-            let patterns: list<PatternEntry> = library.patterns; var updated: list<PatternEntry> = [];
-            for p in 0..patterns.len() {
+            for p in 0..library.patterns.len() {
                 if self.failed { break; }
-                var entry: PatternEntry = patterns[p]; if !self.reading && entry.id == library.active_id { entry.data = library.table; }
-                let restored: SequenceTable = self.audio_properties(entry.data);
-                if self.reading { entry.data = restored; updated.push(entry); }
+                if self.reading { library.patterns[p].data = self.audio_properties(library.patterns[p].data); }
+                else if library.patterns[p].id == library.active_id { self.audio_properties(library.table); }
+                else { self.audio_properties(library.patterns[p].data); }
             }
             if self.reading && !self.failed {
-                library.patterns = updated;
-                let entry: PatternEntry = library.patterns[library.index_of(library.active_id)];
-                library.table.release(); library.table = entry.data.copy_pattern();
+                let active_index: i32 = library.index_of(library.active_id);
+                if active_index >= 0 { library.table.release(); library.table = library.patterns[active_index].data.copy_pattern(); }
             }
         }
         // Optional AUDIO_GROUPS extension: the Audio-list groups, as paths
@@ -1420,8 +1418,7 @@ impl SessionCodec {
         // 1") sit in a group named after their original.
         if self.reading && !groups_read && !project && !self.failed {
             for i in 0..library.audio.samples.len() {
-                let clip: AudioClip = library.audio.samples[i];
-                let group: str8 = audio_group(clip.source);
+                let group: str8 = audio_group(library.audio.samples[i].source);
                 if group != "" { library.audio.set_group(i32(i), group); }
                 free(group);
             }
@@ -1452,17 +1449,17 @@ impl SessionCodec {
         let created: result<SessionBuffer, str8> = SessionBuffer::new(4096);
         if created.is_err() { return false; }
         var codec: SessionCodec = SessionCodec { binary: created.unwrap() };
-        var table: SequenceTable = SequenceTable {}; table = source;
+        var table: SequenceTable = source.copy_pattern();
         // Collect only clips placed in this pattern, including detached placements.
-        var clips: list<AudioClip> = []; let tracks: list<SequenceTrack> = table.tracks;
-        for track in tracks {
-            let instances: list<AudioInstance> = track.instances;
-            for instance in instances {
+        var clips: list<AudioClip> = [];
+        for t in 0..table.tracks.len() {
+            for j in 0..table.tracks[t].instances.len() {
                 var found: bool = false;
-                for clip in clips {
-                    if clip.source == instance.clip.source && clip.frames == instance.clip.frames && clip.frames_per_row == instance.clip.frames_per_row { found = true; }
+                for k in 0..clips.len() {
+                    if clips[k].source == table.tracks[t].instances[j].clip.source && clips[k].frames == table.tracks[t].instances[j].clip.frames &&
+                        clips[k].frames_per_row == table.tracks[t].instances[j].clip.frames_per_row { found = true; }
                 }
-                if !found { clips.push(instance.clip); }
+                if !found { clips.push(table.tracks[t].instances[j].clip.copy()); }
             }
         }
         codec.text("MLAPATT"); codec.number(1, 1, 1); codec.minor = codec.number(2, 0, 2); codec.audio_off = true; codec.text(name);

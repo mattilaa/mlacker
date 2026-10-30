@@ -73,28 +73,25 @@ impl NotePlayback {
         let period: i64 = wide(i32(table.rows.len())) * 15000;
         if period <= 0 { return; }
         for r in 0..table.rows.len() {
-            let data: TableRow = table.rows[r];
             for t in 0..table.tracks.len() {
-                let track: SequenceTrack = table.tracks[t];
-                if track.audio || track.muted || i32(t) == table.recording_track { continue; }
+                if table.tracks[t].audio || table.tracks[t].muted || i32(t) == table.recording_track { continue; }
                 // A SYSEX cell goes first on its row, before the row's CCs and
                 // notes, so it can set up the sound they play. MIDI tracks send
                 // it to the master processor.
                 let sysex: i32 = table.sysex_column(i32(t));
-                if sysex >= 0 && data.cells[sysex + 1] != "" && (!track.instrument || track.instrument_id > 0) {
+                if sysex >= 0 && table.rows[r].cells[sysex + 1] != "" && (!table.tracks[t].instrument || table.tracks[t].instrument_id > 0) {
                     var start: i64 = self.epoch + r * 15000;
                     if start < from { start = start + (from - start + period - 1) / period * period; }
                     self.score.push(ScheduledNote { track: t, start: start, control: 2, text: r + 1,
-                        instrument: track.instrument ? wide(track.instrument_id) : 0 });
+                        instrument: table.tracks[t].instrument ? wide(table.tracks[t].instrument_id) : 0 });
                 }
                 // Automation plays in 1/64 steps of its row, independent of
                 // NOTE/LEN/OFF and visibility.
-                for slot in 0..track.automation.len() {
-                    let definition: AutomationSlot = track.automation[slot];
-                    let controller: i64 = automation_controller(definition.parameter);
+                for slot in 0..table.tracks[t].automation.len() {
+                    let controller: i64 = automation_controller(table.tracks[t].automation[slot].parameter);
                     let column: i32 = table.automation_column(i32(t), i32(slot) + 1);
-                    if controller < 0 || data.cells[column] == "" { continue; }
-                    let steps: list<str8> = automation_steps(data.cells[column]);
+                    if controller < 0 || table.rows[r].cells[column] == "" { continue; }
+                    let steps: list<str8> = automation_steps(table.rows[r].cells[column]);
                     for step in 0..steps.len() {
                         if steps[step] == "" { continue; }
                         let parsed: result<i64, str8> = table_integer(steps[step]);
@@ -107,18 +104,18 @@ impl NotePlayback {
                         if start < from { start = start + (from - start + period - 1) / period * period; }
                         self.score.push(ScheduledNote { track: t, line: wide(i32(slot)) + 1, note: controller,
                             velocity: controller == 129 ? value + 8192 : value, start: start, control: 1,
-                            instrument: track.instrument ? (track.instrument_id > 0 ? wide(track.instrument_id) : -1) : 0 });
+                            instrument: table.tracks[t].instrument ? (table.tracks[t].instrument_id > 0 ? wide(table.tracks[t].instrument_id) : -1) : 0 });
                     }
                     free_steps(steps);
                 }
                 // A TEXT cell goes to the instrument with the row's first note.
                 let comment: i32 = table.comment_column(i32(t));
-                var text: i64 = comment >= 0 && track.instrument && track.instrument_id > 0 && data.cells[comment] != "" ? r + 1 : 0;
-                for line in 0..track.note_lines {
+                var text: i64 = comment >= 0 && table.tracks[t].instrument && table.tracks[t].instrument_id > 0 && table.rows[r].cells[comment] != "" ? r + 1 : 0;
+                for line in 0..table.tracks[t].note_lines {
                     let column: i32 = table.track_start(i32(t)) + i32(line) * 4;
-                    if data.cells[column] == "" { continue; }
-                    let note: i32 = table.note_index(data.cells[column]);
-                    let velocity: result<i64, str8> = table_integer(data.cells[column + 1]);
+                    if table.rows[r].cells[column] == "" { continue; }
+                    let note: i32 = table.note_index(table.rows[r].cells[column]);
+                    let velocity: result<i64, str8> = table_integer(table.rows[r].cells[column + 1]);
                     if note < 0 || velocity.is_err() { continue; }
                     let value: i64 = velocity.unwrap(); if value <= 0 || value > 127 { continue; }
                     var start: i64 = self.epoch + r * 15000 + table.note_offset(i32(r), column);
@@ -127,7 +124,7 @@ impl NotePlayback {
                     if start < from { start = start + (from - start + period - 1) / period * period; }
                     let length: i64 = table.note_length(i32(r), column);
                     self.score.push(ScheduledNote { track: t, line: line, note: wide(note), velocity: value, start: start, length: length,
-                        instrument: track.instrument ? (track.instrument_id > 0 ? wide(track.instrument_id) : -1) : 0, text: text });
+                        instrument: table.tracks[t].instrument ? (table.tracks[t].instrument_id > 0 ? wide(table.tracks[t].instrument_id) : -1) : 0, text: text });
                     text = 0;
                 }
                 // Text on a row without a note is spoken on its own.
@@ -135,7 +132,7 @@ impl NotePlayback {
                     var start: i64 = self.epoch + r * 15000;
                     if start < from { start = start + (from - start + period - 1) / period * period; }
                     self.score.push(ScheduledNote { track: t, line: 0, note: speech_note(), velocity: 100, start: start, length: 15000,
-                        instrument: wide(track.instrument_id), text: text });
+                        instrument: wide(table.tracks[t].instrument_id), text: text });
                 }
             }
         }
@@ -201,9 +198,9 @@ impl NotePlayback {
         if horizon < self.horizon { horizon = self.horizon; }
         while true {
             var event_tick: i64 = horizon + 1;
-            let voices: list<PlayingNote> = self.active;
+            let voices: list<PlayingNote> = std::copy(self.active);
             for voice in voices { if voice.end < event_tick { event_tick = voice.end; } }
-            let score: list<ScheduledNote> = self.score;
+            let score: list<ScheduledNote> = std::copy(self.score);
             for note in score { if note.start < event_tick { event_tick = note.start; } }
             if event_tick > horizon { break; }
             self.finish_at(event_tick, false);

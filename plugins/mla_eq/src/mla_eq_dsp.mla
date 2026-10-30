@@ -93,7 +93,7 @@ fn mlaeq_section_create(rate: f32) -> ptr<EqSection> {
     }
     return handle;
 }
-fn mlaeq_section_destroy(handle: ptr<EqSection>) { free(handle); }
+fn mlaeq_section_destroy(handle: ptr<EqSection>) { unsafe { free(handle); } }
 fn mlaeq_section_reset(handle: ptr<EqSection>) {
     unsafe { (*handle).left.reset(); (*handle).right.reset(); }
 }

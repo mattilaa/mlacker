@@ -1018,7 +1018,7 @@ fn mla08_create(sample_rate: f32) -> ptr<M08> {
 }
 
 /// @brief Release an instance created by `mla08_create`.
-fn mla08_destroy(handle: ptr<M08>) { free(handle); }
+fn mla08_destroy(handle: ptr<M08>) { unsafe { free(handle); } }
 
 /// @brief Silence every voice and clear filters; settings stay.
 fn mla08_reset(handle: ptr<M08>) { unsafe { (*handle).reset(); } }

@@ -13,8 +13,8 @@ fn mlagated_create(rate: f32) -> ptr<GatedVerb> {
     return handle;
 }
 fn mlagated_destroy(handle: ptr<GatedVerb>) {
-    unsafe { let dead: GatedVerb = *handle; dead.reset(); }
-    free(handle);
+    unsafe { var dead: GatedVerb = *handle; dead.reset(); }
+    unsafe { free(handle); }
 }
 fn mlagated_reset(handle: ptr<GatedVerb>) { unsafe { (*handle).reset(); } }
 
