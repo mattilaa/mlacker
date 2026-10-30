@@ -36,8 +36,8 @@ Options:
   --test       After building, run the tests of the selected targets: mlacker's
                MLang unit tests and CTest suite (--app), the plugins' CTest
                suite (--plugins)
-  --update     Fetch the latest MLang into subprojects/mlang (subproject mode)
-               and fast-forward its current branch. Local commits and
+  --update     Fetch the configured MLang tag (keeps the release pinned),
+               or fast-forward its current development branch. Local commits and
                uncommitted changes are kept; a diverged branch is reported,
                not merged. Alone it only updates; with targets it updates,
                then builds
@@ -51,8 +51,8 @@ Examples:
   ./build.sh --install --app     # build and install only mlacker (to BIN_DIR)
   ./build.sh --install --plugins # build and install only the plugins
   ./build.sh --install --mlang   # build and install only MLang (e.g. subprojects/mlang)
-  ./build.sh --update            # pull the latest MLang into subprojects/mlang
-  ./build.sh --update --all      # pull the latest MLang, then build everything
+  ./build.sh --update            # fetch the configured MLang release or branch
+  ./build.sh --update --all      # fetch MLang, then build everything
   ./build.sh --test              # build everything, then run all tests
 
 Without --mlang only the MLang compiler and runtime that mlacker links against
@@ -80,8 +80,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "build.sh: $CONFIG_FILE not found; run ./bootstrap.sh first." >&2
-    exit 1
+    echo "[mlacker] Configuring the MLang release subproject"
+    ./bootstrap.sh --mlang-subproject --no-build -y
 fi
 
 # Read KEY="value" lines without executing the file.
@@ -100,6 +100,8 @@ expand_path() {
 
 mlang_mode=$(conf_get MLANG_MODE)
 mlang_dir=$(conf_get MLANG_DIR)
+mlang_ref=$(conf_get MLANG_BRANCH)
+[ -n "$mlang_ref" ] || mlang_ref="v0.4.3"
 mlang_toolchain=$(conf_get MLANG_TOOLCHAIN)
 mlang_prefix=$(conf_get MLANG_PREFIX)
 plugin_dir=$(conf_get PLUGIN_DIR)
@@ -120,6 +122,12 @@ if [ -n "$all" ] || { [ -z "$update_only" ] && [ -z "$do_app" ] && [ -z "$do_plu
 fi
 
 mlang_root=$(expand_path "$mlang_dir")
+if [ "$mlang_mode" = "subproject" ] && [ ! -d "$mlang_root" ]; then
+    mlang_repo=$(conf_get MLANG_REPO)
+    [ -n "$mlang_repo" ] || mlang_repo="https://github.com/mattilaa/mlang.git"
+    mkdir -p "$(dirname "$mlang_root")"
+    git clone --branch "$mlang_ref" "$mlang_repo" "$mlang_root"
+fi
 [ -d "$mlang_root" ] || { echo "build.sh: MLang checkout not found: $mlang_root (run ./bootstrap.sh)" >&2; exit 1; }
 mlang_root=$(cd "$mlang_root" && pwd)
 mlang_prefix=$(expand_path "$mlang_prefix")
@@ -132,6 +140,25 @@ run() {
     "$@"
 }
 
+# Select configured release tags before building or updating. Branch checkouts
+# remain available for MLang development.
+if [ "$mlang_mode" = "subproject" ]; then
+    case "$mlang_ref" in
+        v[0-9]*)
+            if ! git -C "$mlang_root" show-ref --verify --quiet "refs/tags/$mlang_ref"; then
+                run git -C "$mlang_root" fetch origin "refs/tags/$mlang_ref:refs/tags/$mlang_ref"
+            fi
+            if [ "$(git -C "$mlang_root" rev-parse HEAD)" != "$(git -C "$mlang_root" rev-parse "refs/tags/$mlang_ref^{commit}")" ]; then
+                if [ -n "$(git -C "$mlang_root" status --porcelain)" ]; then
+                    echo "build.sh: MLang checkout has local changes; commit or stash them before switching to $mlang_ref" >&2
+                    exit 1
+                fi
+                run git -C "$mlang_root" checkout --detach "refs/tags/$mlang_ref"
+            fi
+            ;;
+    esac
+fi
+
 # --- Update the MLang subproject -------------------------------------------------------
 update_mlang() {
     if [ "$mlang_mode" != "subproject" ]; then
@@ -142,6 +169,11 @@ update_mlang() {
     if [ ! -d "$mlang_root/.git" ]; then
         echo "build.sh: $mlang_root is not a git checkout; run ./bootstrap.sh" >&2
         return 1
+    fi
+    if git -C "$mlang_root" show-ref --verify --quiet "refs/tags/$mlang_ref"; then
+        run git -C "$mlang_root" fetch origin "refs/tags/$mlang_ref:refs/tags/$mlang_ref"
+        echo "[mlacker] MLang remains pinned to $mlang_ref"
+        return 0
     fi
     local branch upstream behind ahead
     branch=$(git -C "$mlang_root" symbolic-ref --quiet --short HEAD || true)

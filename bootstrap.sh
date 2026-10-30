@@ -29,13 +29,13 @@ Chooses the MLang toolchain mlacker builds against and the install locations,
 writes mlacker.conf, and offers to run ./build.sh.
 
 MLang toolchain (pick one):
-  --mlang-subproject    Clone MLang's development repository into
+  --mlang-subproject    Clone MLang's repository into
                         $SUBPROJECT_DIR. Make stdlib/compiler changes needed by
                         mlacker there and commit them to the MLang repository.
   --mlang-dir DIR       Use an existing MLang checkout (e.g. ../mlang); changes
                         to MLang are made in that checkout.
   --mlang-repo URL      Repository to clone for --mlang-subproject
-  --mlang-branch NAME   Branch to clone (default: main)
+  --mlang-branch NAME   Branch or tag to clone (default: v0.4.3)
 
 Full MLang toolchain (asked in subproject mode):
   --mlang-toolchain     Make ./build.sh --all also build the full MLang
@@ -156,7 +156,7 @@ if [ -z "$mode" ]; then
         if is_mlang_checkout "../mlang"; then default_mode="external"; else default_mode="subproject"; fi
     fi
     echo "MLang toolchain:"
-    echo "  subproject: clone MLang's development repository into $SUBPROJECT_DIR;"
+    echo "  subproject: clone MLang's repository into $SUBPROJECT_DIR;"
     echo "              commit MLang changes needed by mlacker there"
     echo "  external:   use your own MLang checkout and make MLang changes there"
     while true; do
@@ -189,14 +189,25 @@ if [ "$mode" = "subproject" ]; then
     if [ -z "$mlang_branch" ]; then
         default_branch=$(conf_get MLANG_BRANCH)
         if [ -d "$SUBPROJECT_DIR/.git" ]; then
-            mlang_branch="${default_branch:-main}"
+            mlang_branch="${default_branch:-v0.4.3}"
         else
-            ask mlang_branch "MLang branch" "${default_branch:-main}"
+            ask mlang_branch "MLang branch or tag" "${default_branch:-v0.4.3}"
         fi
     fi
     if [ -d "$SUBPROJECT_DIR/.git" ]; then
-        current=$(git -C "$SUBPROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
-        echo "Using the existing MLang checkout in $SUBPROJECT_DIR (branch $current); not touching it."
+        if ! git -C "$SUBPROJECT_DIR" rev-parse --verify "$mlang_branch^{commit}" >/dev/null 2>&1; then
+            git -C "$SUBPROJECT_DIR" fetch origin "$mlang_branch"
+        fi
+        if git -C "$SUBPROJECT_DIR" show-ref --verify --quiet "refs/tags/$mlang_branch"; then
+            if [ "$(git -C "$SUBPROJECT_DIR" rev-parse HEAD)" != "$(git -C "$SUBPROJECT_DIR" rev-parse "refs/tags/$mlang_branch^{commit}")" ]; then
+                if [ -n "$(git -C "$SUBPROJECT_DIR" status --porcelain)" ]; then
+                    echo "bootstrap.sh: MLang checkout has local changes; commit or stash them before switching to $mlang_branch" >&2
+                    exit 1
+                fi
+                git -C "$SUBPROJECT_DIR" checkout --detach "refs/tags/$mlang_branch"
+            fi
+        fi
+        echo "Using the existing MLang checkout in $SUBPROJECT_DIR ($(git -C "$SUBPROJECT_DIR" describe --always --tags))."
     else
         mkdir -p "$(dirname "$SUBPROJECT_DIR")"
         echo "git clone --branch $mlang_branch $mlang_repo $SUBPROJECT_DIR"
@@ -269,7 +280,7 @@ cat > "$CONFIG_FILE" <<EOF
 # mlacker build configuration, written by ./bootstrap.sh and read by ./build.sh.
 # Re-run ./bootstrap.sh to change it (current values become the defaults).
 
-# subproject: $SUBPROJECT_DIR is a clone of MLang's development repository
+# subproject: $SUBPROJECT_DIR is a clone of MLang's repository
 # external:   MLANG_DIR is your own MLang checkout
 MLANG_MODE="$mode"
 MLANG_DIR="$mlang_dir"
@@ -312,7 +323,7 @@ agent_notes_block() {
     echo "  ${tick}stdlib/include/$tick, MLang docs) in $where, never in another MLang checkout."
     if [ "$mode" = "subproject" ]; then
         echo "- $where is a clone of the MLang development repository ($mlang_repo,"
-        echo "  branch $tick$mlang_branch$tick) and is ignored by mlacker's git. Commit MLang changes"
+        echo "  branch or tag $tick$mlang_branch$tick) and is ignored by mlacker's git. Commit MLang changes"
         echo "  inside it (${tick}git -C $mlang_dir ...$tick), separately from mlacker commits."
     else
         echo "- $where is its own git repository; commit MLang changes there,"
@@ -322,7 +333,7 @@ agent_notes_block() {
     echo "- ${tick}./build.sh$tick rebuilds the MLang compiler and runtime in that checkout before"
     echo "  mlacker, so MLang changes are picked up by a normal build."
     if [ "$mode" = "subproject" ]; then
-        echo "- ${tick}./build.sh --update$tick fast-forwards $where to the latest upstream MLang."
+        echo "- ${tick}./build.sh --update$tick keeps the configured release tag pinned, or fast-forwards a development branch."
     fi
     echo "$NOTES_END"
 }

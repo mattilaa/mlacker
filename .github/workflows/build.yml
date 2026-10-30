@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       mlang_ref:
-        description: MLang branch to build against
+        description: MLang branch or tag to build against
         required: false
-        default: main
+        default: v0.4.3
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,7 +24,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 150
     env:
-      MLANG_REF: ${{ github.event.inputs.mlang_ref || 'main' }}
+      MLANG_REF: ${{ github.event.inputs.mlang_ref || 'v0.4.3' }}
       # The PTY tests never open audio/MIDI devices; keep any manual run the same.
       MLANG_TUI_NO_HARDWARE: "1"
 
