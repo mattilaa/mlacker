@@ -582,7 +582,7 @@ fn mla06_create(sample_rate: f32) -> ptr<M06> {
 }
 
 /// @brief Release an instance created by `mla06_create`.
-fn mla06_destroy(handle: ptr<M06>) { free(handle); }
+fn mla06_destroy(handle: ptr<M06>) { unsafe { free(handle); } }
 
 /// @brief Silence every voice and clear filters; settings stay.
 fn mla06_reset(handle: ptr<M06>) { unsafe { (*handle).reset(); } }
