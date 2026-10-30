@@ -100,6 +100,8 @@ pub struct SessionView {
     var move_unasked: bool; var editor_fullscreen: bool{true};
     /// Project settings: MIDI knobs 0 as in Settings, 1 absolute, 2 relative.
     var knob_mode: i32;
+    /// Optional song credits/rights notice, shown each time the document opens.
+    var copyright_notice: str8{""};
 };
 /// Plugin preset outcome. Kit presets (MLAPRE 1.1) also carry sampler pads:
 /// `pads[i]` is loaded from `clips[i]`; the caller owns the clips.
@@ -111,7 +113,7 @@ impl SessionData {
         let plugins: list<PluginSnapshot> = self.plugins; for plugin in plugins { free(plugin.path); }
         self.plugins = [];
     }
-    pub fn release(self: &mut Self) -> void { self.library.release(); self.release_plugins(); }
+    pub fn release(self: &mut Self) -> void { self.library.release(); self.release_plugins(); if self.view.copyright_notice != "" { free(self.view.copyright_notice); } self.view.copyright_notice = ""; }
     /// Construct a replacement without touching the running session.
     pub fn prepare_audio(self: SessionData, source: &AudioSystem) -> result<AudioSystem, str8> {
         var current: AudioSystem = AudioSystem {}; current = source;
@@ -895,7 +897,8 @@ impl SessionCodec {
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
         // Project settings that override Settings (written last).
-        let knobbed: bool = !self.reading && view.knob_mode != 0;
+        let credited: bool = !self.reading && view.copyright_notice != "";
+        let knobbed: bool = !self.reading && (view.knob_mode != 0 || credited);
         // Project options (written, perhaps with default flags, whenever
         // MIDI_KNOBS follows, so everything before it is too).
         let optioned: bool = !self.reading && ((self.root != "" && (view.move_unasked || !view.editor_fullscreen)) || knobbed);
@@ -1436,7 +1439,15 @@ impl SessionCodec {
         let knobs_extension: bool = self.reading ? options_extension && self.reader.remaining() > 0 : knobbed;
         if knobs_extension && !self.failed {
             let tag: str8 = self.text("MIDI_KNOBS"); if tag != "MIDI_KNOBS" { self.failed = true; } if self.reading { free(tag); }
-            state.knob_mode = self.number(state.knob_mode, 1, 2);
+            state.knob_mode = self.number(state.knob_mode, 0, 2);
+        }
+        // Optional final extension. Empty notices need no extra bytes; old
+        // sessions retain their existing layout and open without a popup.
+        let copyright_extension: bool = self.reading ? knobs_extension && self.reader.remaining() > 0 : credited;
+        if copyright_extension && !self.failed {
+            let tag: str8 = self.text("COPYRIGHT_NOTICE");
+            if tag != "COPYRIGHT_NOTICE" { self.failed = true; } if self.reading { free(tag); }
+            state.copyright_notice = self.text(state.copyright_notice);
         }
         if self.reading { library.audio.rebuild(); }
         if state.editor_slot > 32 {

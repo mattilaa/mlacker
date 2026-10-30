@@ -105,6 +105,8 @@ use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::instrument_editor;
 use mlacker_ui::instrument_editor::InstrumentEditor;
 use mlacker_ui::settings_dialog::SettingsDialog;
+mod mlacker_ui::copyright_notice;
+use mlacker_ui::copyright_notice::paint_copyright_notice;
 mod mlacker_ui::project_settings;
 use mlacker_ui::project_settings::ProjectSettingsDialog;
 use mlacker_ui::project_settings::knobs_relative;
@@ -519,6 +521,7 @@ pub fn run() -> i32 {
     let preferences_file: str8 = preferences_path();
     var preferences: Preferences = Preferences::load(preferences_file);
     var project_knobs: i32 = 0;
+    var project_copyright: str8 = "";
     var instrument_editor: InstrumentEditor = InstrumentEditor {};
     var note_playback: NotePlayback = NotePlayback {};
     var pending_length: i32 = 0;
@@ -638,7 +641,7 @@ pub fn run() -> i32 {
                     editor: instrument_editor.active, editor_slot: i32(instrument_editor.slot), editor_selected: instrument_editor.selected, editor_scroll: instrument_editor.scroll,
                     spectrum: spectrum.visible, spectrum_detail: spectrum.detail, spectrum_fps: spectrum.fps, master: spectrum.bus,
                     master_saved: spectrum.visible || spectrum.detail != 0 || spectrum.fps != 30 || !spectrum.bus.is_default(),
-                    move_unasked: move_unasked, editor_fullscreen: editor_fullscreen, knob_mode: project_knobs };
+                    move_unasked: move_unasked, editor_fullscreen: editor_fullscreen, knob_mode: project_knobs, copyright_notice: project_copyright };
                 var serializer: SessionCodec = SessionCodec {};
                 if session_request == 4 {
                     let saved: result<str8, str8> = serializer.save_project(request_path, library, view, midi);
@@ -678,6 +681,7 @@ pub fn run() -> i32 {
                                 }
                             }
                             let v: SessionView = data.view;
+                            if project_copyright != "" { free(project_copyright); } project_copyright = v.copyright_notice;
                             transport = TransportStatus { bpm: v.bpm, beats_per_bar: v.beats, beat_unit: v.unit, row: v.row, phase: v.phase,
                                 ticks: wide(v.row) * 15000 + v.phase, elapsed_ms: i32((wide(v.row) * 15000 + v.phase) / wide(v.bpm)) };
                             focus.selected = v.pane; move_unasked = v.move_unasked; editor_fullscreen = v.editor_fullscreen; project_knobs = v.knob_mode;
@@ -700,6 +704,12 @@ pub fn run() -> i32 {
                             }
                             free(session_path); session_path = session_request == 3 ? clone("") : (project ? project_folder(request_path) : clone(request_path));
                             project_open = project;
+                            if session_request != 3 && project_copyright != "" {
+                                free(alert_text); alert_text = clone(project_copyright);
+                                paste_error.title = "Copyright notice"; paste_error.question = alert_text;
+                                paste_error.width = 88; paste_error.height = 18;
+                                paste_error.open(); focus.set_menu_active(true);
+                            }
                             session_status = session_request == 3 ? clone("New empty session") : (project ? format!("Opened project: {}", session_path) : format!("Opened: {}", session_path));
                         }
                     }
@@ -1830,7 +1840,11 @@ pub fn run() -> i32 {
             piano.paint(surface, area, Theme::dark_blue());
             settings.paint(surface, area, Theme::dark_blue());
             project_settings.paint(surface, area, Theme::dark_blue());
-            paste_error.paint(surface, area, Theme::dark_blue());
+            if paste_error.active && paste_error.title == "Copyright notice" {
+                let notice_frame: Rect = paste_error.paint_frame(surface, area, Theme::dark_blue());
+                let notice_area: Rect = notice_frame.inset(1);
+                paint_copyright_notice(surface, notice_area, alert_text, Theme::dark_blue());
+            } else { paste_error.paint(surface, area, Theme::dark_blue()); }
             terminal.present(surface);
             surface.release();
             previous_width = area.width;
@@ -3769,6 +3783,7 @@ pub fn run() -> i32 {
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
     sidebar_clipboard.release();
     free_objs(library, dialog, bpm_dialog); free(message);
+    if project_copyright != "" { free(project_copyright); }
     terminal.finish();
     return 0;
 }

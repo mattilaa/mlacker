@@ -12,6 +12,9 @@ speech synthesizer that says a pattern's comment texts),
 [Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
+The [Turbo OutRun projects](examples/turbo_outrun) include the C64 loading music
+and title tune for Mla SID, with song credits and a copyright notice on opening.
+
 ## Build and run
 
 Prerequisites: macOS, Xcode command-line tools, CMake, Git, Python 3, and what

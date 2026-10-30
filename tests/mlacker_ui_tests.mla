@@ -5129,3 +5129,36 @@ fn tui_project_settings_dialog() {
     dialog.open(0); verify(dialog.knob_mode() == 0);
     dialog.release();
 }
+
+
+#[test]
+fn tui_copyright_notice_session_and_project_roundtrip() {
+    let directory: str8 = clone("/private/tmp/mlacker-copyright-XXXXXX"); mkdtemp(directory);
+    let session: str8 = format!("{}/credits.mlack", directory);
+    let target: str8 = format!("{}/Credits", directory);
+    let copy: str8 = format!("{}/Saved as", directory);
+    let notice: str8 = "Magical Sound Shower\nMusic: Hiroshi Kawaguchi. C64 arrangement: Jeroen Tel.\nCopyright belongs to the respective rights holders.";
+    var library: PatternLibrary = PatternLibrary::new();
+    var audio: AudioSystem = AudioSystem {}; var codec: SessionCodec = SessionCodec {};
+    // Inherited MIDI knob mode (0) is still valid when credits force the
+    // preceding optional extensions to be written.
+    let view: SessionView = SessionView { copyright_notice: notice };
+    verify(codec.save(session, library, view, audio));
+    let opened: result<SessionData, str8> = SessionCodec::load(session); verify(opened.is_ok());
+    var plain: SessionData = opened.unwrap(); verify(plain.view.copyright_notice == notice && plain.view.knob_mode == 0); plain.release();
+    let saved: result<str8, str8> = codec.save_project(target, library, view, audio); verify(saved.is_ok());
+    let folder: str8 = saved.unwrap();
+    let loaded: result<SessionData, str8> = SessionCodec::load_project(folder); verify(loaded.is_ok());
+    var data: SessionData = loaded.unwrap(); verify(data.view.copyright_notice == notice);
+    let resaved: result<str8, str8> = codec.save_project(folder, data.library, data.view, audio); verify(resaved.is_ok()); free(resaved.unwrap());
+    let copied: result<str8, str8> = codec.save_project(copy, data.library, data.view, audio); verify(copied.is_ok());
+    let copied_folder: str8 = copied.unwrap(); data.release();
+    let reopened: result<SessionData, str8> = SessionCodec::load_project(copied_folder); verify(reopened.is_ok());
+    var again: SessionData = reopened.unwrap(); verify(again.view.copyright_notice == notice); again.release();
+    // Ordinary documents remain free of notices.
+    verify(codec.save(session, library, SessionView {}, audio));
+    let uncredited: result<SessionData, str8> = SessionCodec::load(session); verify(uncredited.is_ok());
+    var empty: SessionData = uncredited.unwrap(); verify(empty.view.copyright_notice == ""); empty.release();
+    library.release(); std::fs::remove_tree(directory);
+    free(copied_folder); free(folder); free(copy); free(target); free(session); free(directory);
+}

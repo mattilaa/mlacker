@@ -1,0 +1,26 @@
+mod mlacker_ui::copyright_notice;
+mod tui::surface;
+mod tui::geometry;
+mod tui::theme;
+mod std::strbuf;
+mod std::testing;
+use mlacker_ui::copyright_notice::paint_copyright_notice;
+use tui::surface::Surface;
+use tui::geometry::*;
+use tui::theme::Theme;
+use std::testing::verify;
+
+#[test]
+fn copyright_notice_renders_newlines_and_wrapped_credits() {
+    let surface: Surface = Surface::new(42, 10);
+    paint_copyright_notice(surface, Rect::new(1, 1, 40, 8),
+        "Magical Sound Shower\nMusic: Hiroshi Kawaguchi.\nC64 arrangement: Jeroen Tel.\nMusic rights remain with their respective owners.", Theme::dark_blue());
+    let rendered: str8 = surface.encode(false);
+    verify(std::strbuf::contains(rendered, "Magical Sound Shower") == 1);
+    verify(std::strbuf::contains(rendered, "Music: Hiroshi Kawaguchi.") == 1);
+    verify(std::strbuf::contains(rendered, "C64 arrangement: Jeroen Tel.") == 1);
+    verify(std::strbuf::contains(rendered, "respective owners.") == 1);
+    let first: Cell = surface.cell(1, 1); let second: Cell = surface.cell(1, 2);
+    verify(first.glyph == 77 && second.glyph == 77);
+    std::strbuf::free(rendered); surface.release();
+}
