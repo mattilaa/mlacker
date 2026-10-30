@@ -17,8 +17,8 @@ fn mlastutter_create(rate: f32) -> ptr<StereoStutter> {
     return handle;
 }
 fn mlastutter_destroy(handle: ptr<StereoStutter>) {
-    unsafe { let dead: StereoStutter = *handle; dead.reset(); }
-    free(handle);
+    unsafe { var dead: StereoStutter = *handle; dead.reset(); }
+    unsafe { free(handle); }
 }
 fn mlastutter_reset(handle: ptr<StereoStutter>) { unsafe { (*handle).reset(); } }
 

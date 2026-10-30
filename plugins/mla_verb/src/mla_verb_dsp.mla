@@ -57,10 +57,10 @@ fn mlaverb_destroy(handle: ptr<Reverb2>) {
     // Move the struct into a local so MLang drops its heap-backed delay buffers,
     // then free the (now buffer-less) block.
     unsafe {
-        let dead: Reverb2 = *handle;
+        var dead: Reverb2 = *handle;
         dead.reset();
     }
-    free(handle);
+    unsafe { free(handle); }
 }
 
 /// @brief Clear all reverb history without reallocating.

@@ -367,7 +367,7 @@ impl Jp8Voice {
 /// @brief Allocate an idle voice for a sample rate (8 kHz .. 384 kHz).
 fn mla8000_voice_create(sample_rate: f32) -> ptr<Jp8Voice> {
     let rate: f32 = clampf(sample_rate, 8000.0f, 384000.0f);
-    let voice: ptr<Jp8Voice> = calloc(1, size_of(Jp8Voice));
+    var voice: ptr<Jp8Voice> = calloc(1, size_of(Jp8Voice));
     unsafe {
         (*voice).rate = rate;
         (*voice).seed = 22695477;
@@ -394,7 +394,7 @@ fn mla8000_voice_seed(voice: ptr<Jp8Voice>, seed: i64) {
 }
 
 /// @brief Release a voice created by `mla8000_voice_create`.
-fn mla8000_voice_destroy(voice: ptr<Jp8Voice>) { free(voice); }
+fn mla8000_voice_destroy(voice: ptr<Jp8Voice>) { unsafe { free(voice); } }
 
 /// @brief Set one setting (see plugin.cpp's DspIndex):
 /// 0 OSC 1 wave (0-6), 1 CTRL 1, 2 CTRL 2 (0-1), 3 OSC 1 Hz, 4 OSC 2 wave

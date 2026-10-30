@@ -63,7 +63,7 @@ fn mladrum_voice_create(sample_rate: f32) -> ptr<DrumVoice> {
 
 /// @brief Release a voice created by `mladrum_voice_create`.
 fn mladrum_voice_destroy(voice: ptr<DrumVoice>) {
-    free(voice);
+    unsafe { free(voice); }
 }
 
 /// @brief Amp envelope times in seconds and sustain level 0..1. Takes effect

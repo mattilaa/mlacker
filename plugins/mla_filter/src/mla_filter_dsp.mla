@@ -12,7 +12,7 @@ fn mlafilter_create(rate: f32) -> ptr<StereoMultimodeFilter> {
     unsafe { *handle = StereoMultimodeFilter::new(rate, 2000.0f); }
     return handle;
 }
-fn mlafilter_destroy(handle: ptr<StereoMultimodeFilter>) { free(handle); }
+fn mlafilter_destroy(handle: ptr<StereoMultimodeFilter>) { unsafe { free(handle); } }
 fn mlafilter_reset(handle: ptr<StereoMultimodeFilter>) { unsafe { (*handle).reset(); } }
 
 /// `model` indexes FilterModel: 0 LP12, 1 LP24, 2 HP12, 3 HP24, 4 BP12,

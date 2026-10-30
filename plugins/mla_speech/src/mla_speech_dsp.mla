@@ -629,8 +629,8 @@ fn mlaspeech_create(sample_rate: f32) -> ptr<Speech> {
 /// @brief Release an instance created by `mlaspeech_create`.
 fn mlaspeech_destroy(handle: ptr<Speech>) {
     // Move the value out so its lists are dropped, then free the block.
-    unsafe { let dead: Speech = *handle; dead.clear(); }
-    free(handle);
+    unsafe { var dead: Speech = *handle; dead.clear(); }
+    unsafe { free(handle); }
 }
 
 /// @brief Silence and clear filters; the utterance and settings stay.
