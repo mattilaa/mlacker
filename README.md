@@ -27,7 +27,7 @@ build/cmake/bin/mlacker        # run
 ignored `mlacker.conf`, which `build.sh` reads. Re-run it to change them; the
 current values are the defaults.
 
-- **subproject**: clones MLang's development repository into
+- **subproject**: clones MLang's `v0.4.3` release tag into
   `subprojects/mlang` (ignored by this repository). Make compiler/stdlib changes
   that mlacker needs there and commit them to the MLang repository (see
   [Developing MLang alongside mlacker](#developing-mlang-alongside-mlacker)).
@@ -57,6 +57,9 @@ instead (`--mlang-subproject`, `--mlang-dir DIR`, `--mlang-toolchain`/
 `--build`/`--no-build`, `--install`/`--no-install`, `-y`); see
 `./bootstrap.sh --help`.
 
+`build.sh` automatically runs bootstrap with subproject defaults in a clean
+workspace and clones the configured MLang tag if its subproject is missing.
+
 `build.sh` always builds the MLang compiler and runtime (`mlang`,
 `libmlang_std.a`) that mlacker links against in the chosen checkout, then the
 selected targets. Targets can be combined; none means `--all`:
@@ -70,12 +73,13 @@ selected targets. Targets can be combined; none means `--all`:
 ./build.sh --install --all     # build and install everything configured
 ./build.sh --install --plugins # build and install only the plugins
 ./build.sh --install --mlang   # build and install MLang under MLANG_PREFIX
-./build.sh --update            # pull the latest MLang into subprojects/mlang
-./build.sh --update --all      # pull the latest MLang, then build everything
+./build.sh --update            # fetch the configured MLang release or branch
+./build.sh --update --all      # fetch MLang, then build everything
 ./build.sh --test              # build everything, then run all tests
 ```
 
-`--update` fetches MLang's upstream into `subprojects/mlang` and fast-forwards
+`--update` keeps the configured release tag pinned. For a development branch,
+it fetches MLang's upstream into `subprojects/mlang` and fast-forwards
 the checked-out branch. It never merges: uncommitted changes are kept (git
 refuses only if the update would overwrite them), and when the branch has local
 commits that are not upstream yet it stops and asks you to rebase or merge in
@@ -187,7 +191,7 @@ same name are replaced. The destinations come from `mlacker.conf`. When running
 
 Releases on GitHub come with `mlacker-<version>-macos-arm64.pkg` (Apple
 silicon): mlacker, the Mla VST3 plugins and the MLang toolchain from MLang's
-`main` at release time. It installs for the current user and asks where each
+`v0.4.3` release. It installs for the current user and asks where each
 part goes, defaulting to the locations above (`~/.local`, `~/.local/bin`,
 `~/.local/plugins/VST3`), then offers to add the tool directories to the PATH
 if they are not on it. Compiling MLang programs needs the Xcode Command Line
@@ -1706,8 +1710,8 @@ Current scope:
 ```
 
 CI (`.github/workflows/build.yml`) runs the same on macOS for every push and
-pull request, building against MLang's `main` from GitHub; a manual run can pick
-another MLang branch. For mlacker's tests, `--test` runs `mlang pkg run test`,
+pull request, building against MLang's `v0.4.3` tag from GitHub; a manual run can pick
+another MLang branch or tag. For mlacker's tests, `--test` runs `mlang pkg run test`,
 which runs the MLang unit tests in `tests/*.mla`, then builds two local test bundles (never installed in system plugin folders),
 loads them through the real module loader, and checks instrument/effect output,
 frame-accurate event offsets, live MIDI lane independence, panic, failed
