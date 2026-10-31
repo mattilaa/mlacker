@@ -1,10 +1,13 @@
 /// MLACK binary session 1.0. All lengths and integers are little endian.
 /// A project (1.4) is a `.mlaproj` folder: Project.mlack refers to float WAVs
-/// in Audio/ and plugin presets in Presets/ by paths relative to the folder.
+/// in Audio/ by relative paths. Version 1.5 embeds plugin settings alongside
+/// notes and automation in a text Project.mlack; older preset references load too.
 mod std::serde::detail;
 mod std::fs;
 mod std::bytes;
 mod std::audio;
+mod mlacker_ui::project_text;
+use mlacker_ui::project_text::*;
 mod mlacker_ui::patterns;
 mod mlacker_ui::audio_controller;
 mod mlacker_ui::audio_library;
@@ -29,36 +32,55 @@ use tui::geometry::*;
 use std::strbuf::clone;
 use std::strbuf::free;
 use std::strbuf::len;
-extern fn __mlang_std_serde_binary_write_atomic(handle: i64, path: str8) -> i32;
 extern fn rename(from: str8, to: str8) -> i32;
 // Small session-specific adapters avoid pulling unrelated generic serde traits
 // into the widget demo. Encoding is the std::serde primitive wire format.
-pub struct SessionBuffer { var handle: i64; };
+pub struct SessionBuffer { var handle: i64; var text: i64; };
 impl SessionBuffer {
     pub fn new(capacity: i64) -> result<SessionBuffer, str8> {
         let h: i64 = __mlang_std_serde_binary_new(capacity);
         if h == 0 { return Err<SessionBuffer, str8>("Allocation failed"); }
         return Ok<SessionBuffer, str8>(SessionBuffer { handle: h });
     }
+    pub fn new_project(capacity: i64) -> result<SessionBuffer, str8> {
+        let created: result<SessionBuffer, str8> = SessionBuffer::new(capacity);
+        if created.is_err() { return created; }
+        var buffer: SessionBuffer = created.unwrap(); buffer.text = project_text_new_writer();
+        if buffer.text == 0 { buffer.close(); return Err<SessionBuffer, str8>("Allocation failed"); }
+        return Ok<SessionBuffer, str8>(buffer);
+    }
     pub fn len(self: SessionBuffer) -> i64 { return __mlang_std_serde_binary_len(self.handle); }
-    pub fn close(self: SessionBuffer) -> void { __mlang_std_serde_binary_free(self.handle); }
+    pub fn close(self: SessionBuffer) -> void { __mlang_std_serde_binary_free(self.handle); if self.text != 0 { std::strbuf::builder_free(self.text); } }
     pub fn write_i64(self: SessionBuffer, value: i64) -> result<i32, str8> {
+        if self.text != 0 { let text: str8 = format!("{}", value); project_text_append_record(self.text, "integer", text); free(text); }
         if __mlang_std_serde_binary_append_i64(self.handle, value) != 0 { return Err<i32, str8>("Write failed"); } return Ok<i32, str8>(0);
     }
     pub fn write_f64(self: SessionBuffer, value: f64) -> result<i32, str8> {
+        if self.text != 0 { project_text_append_real(self.text, value); }
         if __mlang_std_serde_binary_append_f64(self.handle, value) != 0 { return Err<i32, str8>("Write failed"); } return Ok<i32, str8>(0);
     }
     pub fn write_string(self: SessionBuffer, value: str8) -> result<i32, str8> {
+        if self.text != 0 { let text: str8 = format!("{:json}", value); project_text_append_record(self.text, "string", text); free(text); }
         if __mlang_std_serde_binary_append_string(self.handle, value) != 0 { return Err<i32, str8>("Write failed"); } return Ok<i32, str8>(0);
     }
     pub fn write_atomic(self: SessionBuffer, path: str8) -> result<i32, str8> {
+        if self.text != 0 {
+            if project_text_write_atomic(self.text, path) != 0 { return Err<i32, str8>("Save failed"); }
+            return Ok<i32, str8>(0);
+        }
         if __mlang_std_serde_binary_write_atomic(self.handle, path) != 0 { return Err<i32, str8>("Save failed"); } return Ok<i32, str8>(0);
     }
 }
 pub struct SessionReader { var handle: i64; };
 impl SessionReader {
     pub fn from_file(path: str8) -> result<SessionReader, str8> {
-        let binary: i64 = __mlang_std_serde_binary_read_file(path);
+        var binary: i64 = __mlang_std_serde_binary_read_file(path);
+        if binary != 0 && __mlang_std_serde_binary_get_u8(binary, 0) == 123 {
+            __mlang_std_serde_binary_free(binary);
+            let decoded: result<i64, str8> = project_text_read_binary(path);
+            if decoded.is_err() { return Err<SessionReader, str8>(decoded.unwrap_err()); }
+            binary = decoded.unwrap();
+        }
         if binary == 0 { return Err<SessionReader, str8>("Read failed"); }
         let h: i64 = __mlang_std_serde_reader_new(binary); __mlang_std_serde_binary_free(binary);
         if h == 0 { return Err<SessionReader, str8>("Read failed"); } return Ok<SessionReader, str8>(SessionReader { handle: h });
@@ -924,7 +946,7 @@ impl SessionCodec {
         let magic: str8 = self.text("MLACK"); if magic != "MLACK" { self.failed = true; } if self.reading { free(magic); }
         // A project session (1.4) also permits Audio/group/sample.wav.
         let project: bool = self.root != "";
-        self.number(1, 1, 1); self.minor = self.number(project ? 4 : 2, project ? 2 : 0, project ? 4 : 2);
+        self.number(1, 1, 1); self.minor = self.number(project ? 5 : 2, project ? 2 : 0, project ? 5 : 2);
         self.audio_off = !self.reading || (project ? self.minor >= 3 : self.minor >= 2);
         var state: SessionView = self.view(view);
         let sample_count: i32 = self.number(i32(library.audio.samples.len()), 0, 256);
@@ -964,7 +986,7 @@ impl SessionCodec {
             let path: str8 = self.text(self.reading ? "" : (slot == 0 ? audio.processor_path : paths[slot - 1]));
             var plugin: PluginSnapshot = PluginSnapshot { slot: slot, path: path };
             if path == "" { self.failed = true; }
-            if project { plugin = self.preset_reference(plugin, audio.output, slot == 0); }
+            if project && self.minor < 5 { plugin = self.preset_reference(plugin, audio.output, slot == 0); }
             else {
                 let params: i32 = self.number(self.reading ? 0 : i32(audio.output.parameter_info(slot, 0, 0)), 0, 16384);
                 for j in 0..params {
@@ -1064,7 +1086,7 @@ impl SessionCodec {
                 effect.path = self.text(effect.path); effect.volume = self.number(effect.volume, 0, 100); effect_volumes.push(effect.volume);
                 let slot: i32 = i32(fx) + 33;
                 var plugin: PluginSnapshot = PluginSnapshot { slot: slot, path: effect.path };
-                if project { plugin = self.preset_reference(plugin, audio.output, true); }
+                if project && self.minor < 5 { plugin = self.preset_reference(plugin, audio.output, true); }
                 else {
                     let params: i32 = self.number(!self.reading && effect.path != "" ? i32(audio.output.parameter_info(slot, 0, 0)) : 0, 0, 16384);
                     if effect.path == "" && params != 0 { self.failed = true; }
@@ -1109,7 +1131,7 @@ impl SessionCodec {
                 let path: str8 = self.text(self.reading ? "" : audio.insert_paths[n]);
                 if path == "" { self.failed = true; }
                 var plugin: PluginSnapshot = PluginSnapshot { slot: slot, path: path };
-                if project { plugin = self.preset_reference(plugin, audio.output, true); }
+                if project && self.minor < 5 { plugin = self.preset_reference(plugin, audio.output, true); }
                 else {
                     let params: i32 = self.number(self.reading ? 0 : i32(audio.output.parameter_info(slot, 0, 0)), 0, 16384);
                     for p in 0..params {
@@ -1523,7 +1545,8 @@ impl SessionCodec {
         codec.binary.close(); return ok;
     }
     /// Save the project folder `path` (`.mlaproj` appended when missing):
-    /// Project.mlack, Audio/ and Presets/. It is written beside the target and
+    /// Project.mlack holds all sequence and plugin state; Audio/ holds WAVs
+    /// only when needed. It is written beside the target and
     /// swapped in only when complete, so a failed save keeps the previous
     /// project. Returns the owned folder path.
     pub fn save_project(self: &mut Self, path: str8, library: &PatternLibrary, view: SessionView, audio: &AudioSystem) -> result<str8, str8> {
@@ -1536,14 +1559,16 @@ impl SessionCodec {
         }
         let staging: str8 = format!("{}.saving", folder); let previous: str8 = format!("{}.previous", folder);
         if std::fs::file_exists(staging) == 1 { std::fs::remove_tree(staging); }
-        let audio_dir: str8 = format!("{}/Audio", staging); let presets_dir: str8 = format!("{}/Presets", staging);
-        let audio_made: result<i32, str8> = std::fs::mkdir_p(audio_dir);
-        let presets_made: result<i32, str8> = std::fs::mkdir_p(presets_dir);
-        let made: bool = audio_made.is_ok() && presets_made.is_ok();
-        free(audio_dir); free(presets_dir);
+        let folder_made: result<i32, str8> = std::fs::mkdir_p(staging);
+        var made: bool = folder_made.is_ok();
+        if made && library.audio.samples.len() > 0 {
+            let audio_dir: str8 = format!("{}/Audio", staging);
+            let audio_made: result<i32, str8> = std::fs::mkdir_p(audio_dir);
+            made = audio_made.is_ok(); free(audio_dir);
+        }
         var status: str8 = "";
         if made {
-            let created: result<SessionBuffer, str8> = SessionBuffer::new(4096);
+            let created: result<SessionBuffer, str8> = SessionBuffer::new_project(4096);
             if created.is_ok() {
                 var codec: SessionCodec = SessionCodec { binary: created.unwrap(), root: staging };
                 codec.contents(library, view, audio);

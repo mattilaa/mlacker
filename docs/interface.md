@@ -514,3 +514,13 @@ a cell holds one integer or four 1/64-note steps (`12 . 31 40`).
 Shift+Backspace requires a terminal that reports the modifier (CSI-u or
 modifyOtherKeys). If it sends the same byte as plain Backspace, the shortcut
 cannot be distinguished; plain Backspace never clears a whole row.
+
+
+### Playback cursor following
+
+**Pattern → Follow the row** (**Ctrl+T**) toggles cursor following without
+stopping playback. Turn it off to edit a stationary row while the song plays.
+When enabled, patterns shown during matrix playback follow their local row,
+including continued patterns and loop repeats. Navigation can pause following
+for the current pattern; Esc resumes it. Explicitly turning following off
+keeps it off across pattern changes.

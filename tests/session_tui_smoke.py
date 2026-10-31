@@ -88,7 +88,7 @@ def main():
             assert b"Save session (.mlack)" in frame, frame[-4000:]
             frame = tui.send(b"\x15" + os.fsencode(path) + b"\r", 0.7)
             assert b"Saved:" in frame, frame[-4000:]
-            # A plain session is format 1.2 (projects are 1.4).
+            # A plain session is format 1.2 (projects are 1.5).
             assert path.read_bytes().startswith(struct.pack("<q", 5) + b"MLACK" + struct.pack("<qq", 1, 2))
             assert b"Instrument track created" in tui.send(F1 + b"lll" + b"jj\r")
             assert b"Add VST3 instrument" in tui.send(F1 + b"llllll\r")

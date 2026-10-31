@@ -1,0 +1,113 @@
+/// Text transport for the sequencer codec. Records retain primitive types so
+/// the same validated session reader handles both legacy and text projects.
+/// This module contains no song, instrument or plugin-specific behavior.
+mod std::fs;
+mod std::bytes;
+mod std::strbuf;
+mod std::serde::detail;
+mod std::json::detail;
+use std::strbuf::builder_new;
+use std::strbuf::builder_append;
+use std::strbuf::builder_len;
+use std::strbuf::builder_to_string;
+use std::strbuf::with_capacity;
+use std::strbuf::free;
+use std::strbuf::len;
+use std::bytes::*;
+use std::serde::detail::*;
+use std::json::detail::*;
+extern pub fn __mlang_std_serde_binary_write_atomic(handle: i64, path: str8) -> i32;
+extern fn snprintf(dst: str8, size: i64, fmt: str8, ...) -> i32;
+
+fn header() -> str8 { return "{\n  \"format\": \"mlacker-project\",\n  \"version\": 1,\n  \"records\": [\n"; }
+pub fn project_text_new_writer() -> i64 {
+    let writer: i64 = builder_new(4096);
+    if writer != 0 { builder_append(writer, header()); }
+    return writer;
+}
+pub fn project_text_append_record(writer: i64, kind: str8, value: str8) -> void {
+    if builder_len(writer) > len(header()) { builder_append(writer, ",\n"); }
+    let line: str8 = format!("    [\"{}\", {}]", kind, value);
+    builder_append(writer, line); free(line);
+}
+pub fn project_text_append_real(writer: i64, value: f64) -> void {
+    // Seventeen significant digits round-trip every finite IEEE double.
+    let text: str8 = with_capacity(64);
+    snprintf(text, 64, "%.17g", value);
+    project_text_append_record(writer, "real", text); free(text);
+}
+pub fn project_text_write_atomic(writer: i64, path: str8) -> i32 {
+    builder_append(writer, "\n  ]\n}\n");
+    let text: str8 = builder_to_string(writer);
+    let bytes_result: result<Bytes, str8> = Bytes::from_string(text); free(text);
+    if bytes_result.is_err() { return -1; }
+    let bytes: Bytes = bytes_result.unwrap();
+    if bytes.len() > 268435456 { bytes.close(); return -1; }
+    let binary: i64 = __mlang_std_serde_binary_new(bytes.len());
+    if binary == 0 { bytes.close(); return -1; }
+    var ok: bool = true;
+    for index in 0..bytes.len() {
+        if __mlang_std_serde_binary_append_u8(binary, bytes.get(index)) != 0 { ok = false; break; }
+    }
+    bytes.close();
+    let status: i32 = ok ? __mlang_std_serde_binary_write_atomic(binary, path) : -1;
+    __mlang_std_serde_binary_free(binary); return status;
+}
+
+/// Return an owned binary buffer for the existing sequencer validator.
+pub fn project_text_read_binary(path: str8) -> result<i64, str8> {
+    let read: result<str8, str8> = std::fs::read_all_text(path);
+    if read.is_err() { return Err<i64, str8>("Cannot read text project"); }
+    let text: str8 = read.unwrap();
+    let document: i64 = __mlang_std_json_parse(text); free(text);
+    if document == 0 { return Err<i64, str8>("Invalid project JSON"); }
+    let root: i64 = __mlang_std_json_doc_root(document);
+    let format_node: i64 = __mlang_std_json_object_get(root, "format");
+    let version_node: i64 = __mlang_std_json_object_get(root, "version");
+    let records: i64 = __mlang_std_json_object_get(root, "records");
+    var ok: bool = __mlang_std_json_value_kind(format_node) == 4 && __mlang_std_json_value_kind(version_node) == 3 && __mlang_std_json_value_kind(records) == 5;
+    if ok {
+        let format: str8 = __mlang_std_json_value_as_string(format_node);
+        ok = format == "mlacker-project"; free(format);
+        let version: i64 = __mlang_std_json_value_as_i64(version_node);
+        if version != 1 || __mlang_std_json_last_error() != "" { ok = false; }
+    }
+    let binary: i64 = __mlang_std_serde_binary_new(4096);
+    if binary == 0 { ok = false; }
+    if ok {
+        let count: i64 = __mlang_std_json_value_size(records);
+        if count < 1 || count > 8000000 { ok = false; }
+        for index in 0..count {
+            if !ok { break; }
+            let record: i64 = __mlang_std_json_array_get(records, index);
+            if __mlang_std_json_value_kind(record) != 5 || __mlang_std_json_value_size(record) != 2 {
+                __mlang_std_json_value_free(record); ok = false; break;
+            }
+            let type_node: i64 = __mlang_std_json_array_get(record, 0);
+            let value: i64 = __mlang_std_json_array_get(record, 1);
+            if __mlang_std_json_value_kind(type_node) == 4 {
+                let kind: str8 = __mlang_std_json_value_as_string(type_node);
+                if kind == "integer" && __mlang_std_json_value_kind(value) == 3 {
+                    let number: i64 = __mlang_std_json_value_as_i64(value);
+                    if __mlang_std_json_last_error() != "" { ok = false; }
+                    else if __mlang_std_serde_binary_append_i64(binary, number) != 0 { ok = false; }
+                } else if kind == "real" && __mlang_std_json_value_kind(value) == 3 {
+                    let number: f64 = __mlang_std_json_value_as_f64(value);
+                    if __mlang_std_serde_binary_append_f64(binary, number) != 0 { ok = false; }
+                } else if kind == "string" && __mlang_std_json_value_kind(value) == 4 {
+                    let string: str8 = __mlang_std_json_value_as_string(value);
+                    if len(string) > 4096 { ok = false; }
+                    else if __mlang_std_serde_binary_append_string(binary, string) != 0 { ok = false; }
+                    free(string);
+                } else { ok = false; }
+                free(kind);
+            } else { ok = false; }
+            __mlang_std_json_value_free(value); __mlang_std_json_value_free(type_node); __mlang_std_json_value_free(record);
+            if __mlang_std_serde_binary_len(binary) > 268435456 { ok = false; }
+        }
+    }
+    __mlang_std_json_value_free(records); __mlang_std_json_value_free(version_node);
+    __mlang_std_json_value_free(format_node); __mlang_std_json_value_free(root); __mlang_std_json_doc_free(document);
+    if !ok { if binary != 0 { __mlang_std_serde_binary_free(binary); } return Err<i64, str8>("Invalid text project records"); }
+    return Ok<i64, str8>(binary);
+}

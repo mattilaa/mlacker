@@ -1,4 +1,4 @@
-"""File > Save/Open project: a .mlaproj folder with Audio/ and Presets/ that
+"""File > Save/Open project: a .mlaproj folder with inline plugin settings and Audio/ that
 opens from any location, including as the startup argument."""
 import os
 import shutil
@@ -49,13 +49,14 @@ def main():
         project = Path(directory) / "Song.mlaproj"
         session = (project / "Project.mlack").read_bytes()
         assert (project / "Audio" / "stereo_tone.wav").is_file()
-        assert len(list((project / "Presets").glob("Instrument 01 - *.mlapre"))) == 1
-        assert len(list((project / "Presets").glob("Effect 1 - *.mlafxpre"))) == 1
+        assert not list((project / "Presets").glob("*.mlapre"))
+        assert not list((project / "Presets").glob("*.mlafxpre"))
         assert not (Path(directory) / "Song.mlaproj.saving").exists()
         assert not (Path(directory) / "Song.mlaproj.previous").exists()
         # Content is referenced relative to the folder, never by absolute path.
         assert os.fsencode(directory) not in session and b"fixtures" not in session
-        assert b"Audio/stereo_tone.wav" in session and b"Presets/Instrument 01 - " in session
+        assert b"Audio/stereo_tone.wav" in session and b"Presets/" not in session
+        assert session.lstrip().startswith(b"{")  # native text project with inline settings
 
         moved = Path(directory) / "elsewhere" / "Moved.mlaproj"
         moved.parent.mkdir()
@@ -90,7 +91,7 @@ def main():
         finally:
             tui.close()
         assert (Path(directory) / "Fresh.mlaproj" / "Project.mlack").is_file()
-    print("PASS: project save with Audio/ and Presets/, in-place resave, relocated open, missing-file error, new project")
+    print("PASS: project save with Audio/ and inline settings, in-place resave, relocated open, missing-file error, new project")
 
 
 if __name__ == "__main__":

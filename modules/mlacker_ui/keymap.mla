@@ -47,6 +47,7 @@ pub fn default_keymap() -> list<KeyBinding> {
         bind(Action::SaveSession, [key(115, true, false)], true),              // <C-s>
         bind(Action::TogglePaneFullscreen, [key(102, true, false)], false),    // <C-f>
         bind(Action::ToggleViewPane, [key(103, true, false)], false),          // <C-g>
+        bind(Action::FollowRow, [key(116, true, false)], false),              // <C-t>
         // Ctrl+Shift, not Ctrl: macOS keeps Ctrl+F1-F3 for keyboard focus.
         bind(Action::ViewPatterns, [fkey(1, true, true)], false),             // <C-S-F1>
         bind(Action::ViewAudio, [fkey(2, true, true)], false),                // <C-S-F2>

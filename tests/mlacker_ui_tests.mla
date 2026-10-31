@@ -623,7 +623,7 @@ fn tui_project_roundtrip_relocation_and_resave() {
     let expected: str8 = format!("{}/My song.mlaproj", directory); verify(folder == expected);
     let session: str8 = format!("{}/Project.mlack", folder); let first: str8 = format!("{}/Audio/kick.wav", folder);
     let second: str8 = format!("{}/Audio/kick 2.wav", folder); let presets: str8 = format!("{}/Presets", folder);
-    verify(std::fs::file_exists(session) == 1 && std::fs::file_exists(first) == 1 && std::fs::file_exists(second) == 1 && std::fs::is_dir(presets) == 1);
+    verify(std::fs::file_exists(session) == 1 && std::fs::file_exists(first) == 1 && std::fs::file_exists(second) == 1 && std::fs::is_dir(presets) == 0);
     // Content paths are relative: the project opens after moving the folder.
     let parent: str8 = format!("{}/moved", directory); std::fs::mkdir_p(parent);
     let moved: str8 = format!("{}/Renamed.mlaproj", parent); verify(rename(folder, moved) == 0);
@@ -2898,6 +2898,9 @@ fn tui_keymap_matches_every_terminal_spelling_and_labels_menus() {
     let f1: KeyMatch = keymap.feed(decode_input("\x1bOP")); verify(f1.action == Action::None && !f1.waiting);
     let m: KeyMatch = keymap.feed(decode_input("m")); verify(m.action == Action::None);
     let save_label: str8 = keymap.shortcut_for(Action::SaveSession); verify(save_label == "<C-s>");
+    let follow_label: str8 = keymap.shortcut_for(Action::FollowRow); verify(follow_label == "<C-t>");
+    let legacy_follow: KeyMatch = keymap.feed(decode_input("\x14")); verify(legacy_follow.action == Action::FollowRow);
+    let enhanced_follow: KeyMatch = keymap.feed(decode_input("\x1b[116;5u")); verify(enhanced_follow.action == Action::FollowRow);
     let fullscreen_label: str8 = keymap.shortcut_for(Action::TogglePaneFullscreen); verify(fullscreen_label == "<C-f>");
     let view_label: str8 = keymap.shortcut_for(Action::ToggleViewPane); verify(view_label == "<C-g>");
     let matrix_label: str8 = keymap.shortcut_for(Action::ViewSongMatrix); verify(matrix_label == "<S-m>");
@@ -5161,4 +5164,41 @@ fn tui_copyright_notice_session_and_project_roundtrip() {
     var empty: SessionData = uncredited.unwrap(); verify(empty.view.copyright_notice == ""); empty.release();
     library.release(); std::fs::remove_tree(directory);
     free(copied_folder); free(folder); free(copy); free(target); free(session); free(directory);
+}
+
+
+#[test]
+fn tui_matrix_playing_pattern_row_follows_slices_and_loops() {
+    var library: PatternLibrary = loop_test_library();
+    verify(library.set_song_at(0, 0, 1) && library.set_song_at(0, 1, 2));
+    library.select(2);
+    // Pattern 2 spans four 16-row matrix rows in the second lane.
+    verify(library.playing_pattern_row(0, 7) == 7);
+    verify(library.playing_pattern_row(1, 3) == 19);
+    verify(library.playing_pattern_row(3, 15) == 63);
+    verify(library.playing_pattern_row(4, 0) == -1);
+    verify(library.playing_pattern_row(-1, 0) == -1 && library.playing_pattern_row(0, -1) == -1);
+    library.select(1);
+    verify(library.playing_pattern_row(0, 12) == 12);
+    verify(library.playing_pattern_row(1, 0) == -1);
+    verify(library.toggle_song_loop(0, 0) == 0);
+    verify(library.playing_pattern_row(3, 9) == 9);
+    // A shorter pattern repeats inside a larger matrix row, too.
+    library.matrix_steps = 64;
+    verify(library.playing_pattern_row(0, 35) == 3);
+    // Browsing unrelated patterns and recording takes must not move their cursor.
+    library.select(3); verify(library.playing_pattern_row(0, 9) == -1);
+    library.select(1); library.recording_pattern = 1;
+    verify(library.playing_pattern_row(0, 9) == -1);
+    library.release();
+}
+
+
+#[test]
+fn tui_legacy_project_presets_still_load() {
+    let loaded: result<SessionData, str8> = SessionCodec::load_project("examples/mlasidtest.mlaproj");
+    verify(loaded.is_ok());
+    var data: SessionData = loaded.unwrap();
+    verify(data.plugins.len() > 0 && data.plugins[0].ids.len() > 0);
+    data.release();
 }
