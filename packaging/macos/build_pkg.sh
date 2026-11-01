@@ -19,7 +19,7 @@
 #
 # Options:
 #   --version V     Package version, MAJOR.MINOR.PATCH[.BUILD] (default: the
-#                   VERSION file, plus .$MLACKER_BUILD_NUMBER when that is set)
+#                   version reported by the built mlacker binary)
 #   --out DIR       Output directory (default build/release)
 # Environment:
 #   MLACKER_BIN                      mlacker binary (default build/cmake/bin/mlacker)
@@ -35,7 +35,7 @@ cd "$(dirname "$0")/../.."
 root=$(pwd)
 here="$root/packaging/macos"
 
-version="$(head -1 "$root/VERSION")${MLACKER_BUILD_NUMBER:+.$MLACKER_BUILD_NUMBER}"
+version=""
 out="build/release"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,12 +46,20 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+mlacker_bin="${MLACKER_BIN:-$root/build/cmake/bin/mlacker}"
+[ -x "$mlacker_bin" ] || { echo "build_pkg.sh: no mlacker build at $mlacker_bin" >&2; exit 1; }
+binary_version=$("$mlacker_bin" --version)
+binary_version="${binary_version#mlacker }"
+version="${version:-$binary_version}"
+[ "$version" = "$binary_version" ] || {
+    echo "build_pkg.sh: requested version $version differs from binary $binary_version" >&2; exit 2;
+}
+
 echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' ||
     { echo "build_pkg.sh: version must be MAJOR.MINOR.PATCH[.BUILD], not '$version'" >&2; exit 2; }
 
 mlang_root="$root/subprojects/mlang"
 mlang_build="$mlang_root/build"
-mlacker_bin="${MLACKER_BIN:-$root/build/cmake/bin/mlacker}"
 plugin_dir="$root/build/plugins/VST3/Release"
 work="$root/build/pkg-work"
 stage="$work/stage"

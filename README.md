@@ -206,19 +206,46 @@ CurrentUserHomeDirectory`) uses the defaults, or the answers in
 `~/.config/mlacker/installer.conf` (`MLANG_PREFIX=`, `BIN_DIR=`, `PLUGIN_DIR=`,
 `ADD_TO_PATH=yes|no`).
 
-Versions are `v<major>.<minor>.<patch>[.<build>]`: `VERSION` holds
-`MAJOR.MINOR.PATCH` (PATCH counts new features and bug fixes; keep `version` in
-`mlang.toml` the same), and a fourth build part is appended when a build number
-is enabled (`MLACKER_BUILD_NUMBER`); `mlacker --version` prints it. Pushing a tag that matches `VERSION`, such as
-`v0.2.0` or `v0.2.0.7` (build 7), runs `.github/workflows/release.yml`, which
-builds the package and creates the release; a manual run makes a draft, with
-the run number as build number if you tick "build number". To build the
-package locally:
+The public version lives in the root `version.txt` as `MAJOR.MINOR.PATCH`.
+Keep `[package].version` in `mlang.toml` synchronized; CI checks this before
+building. PATCH counts new features and bug fixes.
+
+Local CMake configurations append an incrementing fourth build number, stored
+in `build/cmake/.mlacker_build_number`: for example, `0.3.1.1`, then `0.3.1.2`.
+Only configuring increments it; an ordinary incremental build keeps its version.
+`mlacker --version` reports the full version. CI uses the workflow run number
+instead of a local counter, so retries build the same version.
+
+For reproducible builds, set `MLACKER_RELEASE_VERSION=0.3.1` (or `0.3.1.7`)
+before the first configure. `MLACKER_BUILD_NUMBER=7` also remains supported for
+an explicit fourth part. Existing build directories retain these CMake cache
+options; change them with `-DMLACKER_RELEASE_VERSION=...` or
+`-DMLACKER_BUILD_NUMBER=...`. `MLACKER_AUTO_INCREMENT_BUILD=OFF` freezes the
+local counter, and `MLACKER_VERSION_BUILD` supplies its initial value.
+
+Push a tag matching `version.txt`, such as `v0.3.1` or `v0.3.1.7`, to run
+`.github/workflows/release.yml`. The binary, installer and GitHub Release all
+use that exact version. A manual run creates a draft, optionally appending its
+run number; the optional `release_tag` input rebuilds an existing tag. A tag
+and a separate run number cannot be combined.
+
+After a published tag release, the workflow opens a PR proposing the next
+patch version in `version.txt` and `mlang.toml`. Merge that PR to confirm the
+bump. Reruns reuse an existing proposal and leave a newer development version
+alone. GitHub Actions must be allowed to create pull requests in the repository's
+Actions settings. You can also prepare the proposal locally after a release:
 
 ```sh
-rm -rf build/cmake                            # the options are read on first configure
+python3 scripts/bump_release_version.py --release-tag v0.3.1
+```
+
+The local command verifies the published release and asks before editing files;
+it does not commit, tag or push. To build the package locally:
+
+```sh
+# Set MLACKER_STATIC_OPENSSL on the first configure of the build directory.
 MLACKER_STATIC_OPENSSL=1 ./build.sh --all     # with MLANG_TOOLCHAIN="yes"
-packaging/macos/build_pkg.sh                  # -> build/release/mlacker-0.2.0-macos-arm64.pkg
+packaging/macos/build_pkg.sh                  # uses the built binary's exact version
 ```
 
 ## Sessions (.mlack 1.2)
