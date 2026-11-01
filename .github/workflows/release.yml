@@ -4,12 +4,10 @@ name: Release
 # MLang toolchain from MLang's v0.4.4 release, and attaches it to a GitHub
 # Release.
 #
-# Versions are v<major>.<minor>.<patch>[.<build>]: the VERSION file holds
-# MAJOR.MINOR.PATCH (PATCH counts new features and bug fixes), and a build
-# number is appended when enabled. A pushed tag matching VERSION
-# (git tag v0.2.0 && git push origin v0.2.0, or v0.2.0.7 with build 7) makes
-# a published release; a manual run makes a draft release, with the run
-# number as build number when "build number" is ticked.
+# version.txt holds MAJOR.MINOR.PATCH. Tags vMAJOR.MINOR.PATCH[.BUILD]
+# build that exact version. Manual builds make drafts, optionally with the run
+# number; release_tag can rebuild an existing tag. A published tag release
+# proposes the next patch version as a separate reviewable PR.
 #
 # Unsigned unless these repository secrets exist:
 #   MACOS_CERTIFICATES_P12           base64 .p12 with the Developer ID
@@ -27,15 +25,19 @@ on:
   workflow_dispatch:
     inputs:
       build_number:
-        description: Append the run number as build number (v<VERSION>.<run>)
+        description: Append the run number to a manual draft version
         type: boolean
         default: false
+      release_tag:
+        description: Optional existing tag to rebuild (for example v0.3.1)
+        required: false
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -43,6 +45,8 @@ jobs:
     name: macOS installer
     runs-on: macos-latest
     timeout-minutes: 150
+    permissions:
+      contents: write
     env:
       MLANG_TUI_NO_HARDWARE: "1"
       # mlacker links OpenSSL statically, so it runs without Homebrew.
@@ -51,40 +55,28 @@ jobs:
     steps:
       - name: Check out mlacker
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Version
         id: version
         env:
-          BUILD_NUMBER_INPUT: ${{ github.event.inputs.build_number }}
+          BUILD_NUMBER_INPUT: ${{ inputs.build_number }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
-          base=$(head -1 VERSION)
-          manifest=$(sed -n 's/^version = "\(.*\)"$/\1/p' mlang.toml | head -1)
-          if [ "$manifest" != "$base" ]; then
-            echo "::error::mlang.toml has version $manifest but VERSION has $base"
-            exit 1
-          fi
-          build=""
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            [ "$BUILD_NUMBER_INPUT" = "true" ] && build="$GITHUB_RUN_NUMBER"
-          else
-            if ! echo "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-              echo "::error::Tag $GITHUB_REF_NAME is not v<major>.<minor>.<patch>[.<build>]"
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            args+=(--release-tag "$GITHUB_REF_NAME")
+          elif [ -n "$RELEASE_TAG_INPUT" ]; then
+            args+=(--release-tag "$RELEASE_TAG_INPUT")
+            if [ "$BUILD_NUMBER_INPUT" = "true" ]; then
+              echo "::error::release_tag and build_number cannot be combined"
               exit 1
             fi
-            tag_version="${GITHUB_REF_NAME#v}"
-            tag_base=$(echo "$tag_version" | cut -d. -f1-3)
-            if [ "$tag_base" != "$base" ]; then
-              echo "::error::Tag $GITHUB_REF_NAME does not match VERSION ($base)"
-              exit 1
-            fi
-            build=$(echo "$tag_version" | cut -s -d. -f4)
+          elif [ "$BUILD_NUMBER_INPUT" = "true" ]; then
+            args+=(--build-number "$GITHUB_RUN_NUMBER")
           fi
-          version="$base${build:+.$build}"
-          # CMake and build_pkg.sh append the build number from here on.
-          echo "MLACKER_BUILD_NUMBER=$build" >> "$GITHUB_ENV"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "mlacker $version" >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/ci_version.py "${args[@]}" --github
 
       - name: Install MLang build dependencies
         run: |
@@ -105,6 +97,11 @@ jobs:
 
       - name: Build MLang, mlacker and plugins
         run: ./build.sh --all -j 3
+
+      - name: Verify binary version
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: test "$(build/cmake/bin/mlacker --version)" = "mlacker $EXPECTED_VERSION"
 
       - name: Import signing certificates
         id: signing
@@ -172,7 +169,7 @@ jobs:
           notes="$RUNNER_TEMP/notes.md"
           {
             echo "mlacker $VERSION for macOS (Apple silicon), with the Mla VST3 plugins and the MLang toolchain"
-            echo "(MLang main at [\`$MLANG_COMMIT\`](https://github.com/mattilaa/mlang/commit/$MLANG_COMMIT): $MLANG_SUBJECT)."
+            echo "(MLang v0.4.4 at [\`$MLANG_COMMIT\`](https://github.com/mattilaa/mlang/commit/$MLANG_COMMIT): $MLANG_SUBJECT)."
             echo
             echo "Open \`mlacker-$VERSION-macos-arm64.pkg\`. The installer asks where to install each part"
             echo "(defaults: \`~/.local\` for MLang, \`~/.local/bin\` for mlacker, \`~/.local/plugins/VST3\` for the plugins)"
@@ -191,3 +188,66 @@ jobs:
             gh release create "$TAG" build/release/*.pkg --title "mlacker $VERSION" \
               --notes-file "$notes" --target "$GITHUB_SHA" $flags
           fi
+
+  bump-version:
+    name: Propose next patch version
+    needs: macos-pkg
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    concurrency:
+      group: release-version-bump
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+    steps:
+      - name: Check out development branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEFAULT_BRANCH }}
+          fetch-depth: 0
+
+      - name: Prepare version bump
+        run: python3 scripts/bump_release_version.py --release-tag "$RELEASE_TAG" --yes
+
+      - name: Open confirmation pull request
+        shell: bash
+        run: |
+          if git diff --quiet -- version.txt mlang.toml; then
+            exit 0
+          fi
+          branch="release/bump-after-$RELEASE_TAG"
+          existing=$(gh pr list --state all --head "$branch" --base "$DEFAULT_BRANCH" --json url --jq '.[0].url // empty')
+          if [[ -n "$existing" ]]; then
+            echo "Version bump already proposed: $existing"
+            echo "Review the existing PR; a closed PR can be reopened or the local script used."
+            exit 0
+          fi
+          # Recover if an earlier run pushed the branch but failed to create the PR.
+          remote_branch=$(git ls-remote --heads origin "refs/heads/$branch")
+          if [[ -n "$remote_branch" ]]; then
+            git fetch origin "refs/heads/$branch"
+            git diff --exit-code FETCH_HEAD -- version.txt mlang.toml
+          else
+            git switch -c "$branch"
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add version.txt mlang.toml
+            git commit -m "Bump patch version after $RELEASE_TAG"
+            git push origin "$branch"
+          fi
+          cat > "$RUNNER_TEMP/version-bump-pr.md" <<EOF
+          Release $RELEASE_TAG has been published and its assets uploaded.
+
+          Increment version.txt and synchronize mlang.toml by one patch version for subsequent development builds.
+
+          Review the diff and merge this PR to confirm the bump.
+          EOF
+          gh pr create --base "$DEFAULT_BRANCH" --head "$branch" \
+            --title "Bump patch version after $RELEASE_TAG" \
+            --body-file "$RUNNER_TEMP/version-bump-pr.md"

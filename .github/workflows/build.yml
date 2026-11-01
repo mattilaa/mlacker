@@ -18,6 +18,16 @@ permissions:
   contents: read
 
 jobs:
+  versioning:
+    name: Versioning checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate source and versioning behavior
+        run: |
+          python3 scripts/ci_version.py
+          python3 -m unittest discover -s tests -p 'test_*version*.py'
+
   build-and-test:
     name: Build and test (macOS)
     # mlacker uses macOS AUHAL audio output and CoreMIDI.
@@ -31,6 +41,9 @@ jobs:
     steps:
       - name: Check out mlacker
         uses: actions/checkout@v4
+
+      - name: Set CI build version
+        run: python3 scripts/ci_version.py --build-number "$GITHUB_RUN_NUMBER" --github
 
       - name: Install MLang build dependencies
         run: |
@@ -48,6 +61,9 @@ jobs:
 
       - name: Build MLang, mlacker and plugins
         run: ./build.sh --all -j 3
+
+      - name: Verify binary version
+        run: test "$(build/cmake/bin/mlacker --version)" = "mlacker $MLACKER_RELEASE_VERSION"
 
       - name: Test mlacker and plugins
         id: tests

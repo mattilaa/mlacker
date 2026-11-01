@@ -1,20 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-# Version: MAJOR.MINOR.PATCH from VERSION (PATCH counts new features and bug
-# fixes), with a fourth BUILD part when a build number is enabled through
-# MLACKER_BUILD_NUMBER (cache variable or environment of the first configure).
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" MLACKER_BASE_VERSION LIMIT_COUNT 1)
-if(NOT MLACKER_BASE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
-    message(FATAL_ERROR "VERSION must hold MAJOR.MINOR.PATCH, not '${MLACKER_BASE_VERSION}'")
-endif()
-set(MLACKER_BUILD_NUMBER "$ENV{MLACKER_BUILD_NUMBER}" CACHE STRING
-    "Build number appended as a fourth version part (empty: none)")
-set(MLACKER_VERSION "${MLACKER_BASE_VERSION}")
-if(NOT MLACKER_BUILD_NUMBER STREQUAL "")
-    if(NOT MLACKER_BUILD_NUMBER MATCHES "^[0-9]+$")
-        message(FATAL_ERROR "MLACKER_BUILD_NUMBER must be a number, not '${MLACKER_BUILD_NUMBER}'")
-    endif()
-    string(APPEND MLACKER_VERSION ".${MLACKER_BUILD_NUMBER}")
-endif()
+include(cmake/MlackerVersion.cmake)
 project(mlacker VERSION ${MLACKER_VERSION} LANGUAGES C CXX OBJCXX)
 message(STATUS "mlacker ${MLACKER_VERSION}")
 if(NOT APPLE)
@@ -88,6 +73,7 @@ target_link_libraries(mlacker_vst3_tests PRIVATE mlacker_host)
 add_dependencies(mlacker_vst3_tests MlackerTestInstrument MlackerTestEffect)
 add_test(NAME vst3_host COMMAND mlacker_vst3_tests "$<TARGET_BUNDLE_DIR:MlackerTestInstrument>" "$<TARGET_BUNDLE_DIR:MlackerTestEffect>")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME versioning COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "test_*version*.py")
 # Sampler-pad end to end runs when mla_drum has been built (./build.sh --plugins).
 set(MLA_DRUM_VST3 "${CMAKE_CURRENT_SOURCE_DIR}/build/plugins/VST3/Release/MlaDrum.vst3")
 set(MLA_DELAY_VST3 "${CMAKE_CURRENT_SOURCE_DIR}/build/plugins/VST3/Release/MlaDelay.vst3")
