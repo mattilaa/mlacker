@@ -1,0 +1,328 @@
+mod std::strbuf;
+mod tui::dialog;
+mod tui::textfield;
+mod mlacker_ui::keymap;
+mod mlacker_ui::actions;
+use tui::dialog::Dialog;
+use tui::textfield::TextField;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use tui::menu::Key;
+use std::strbuf::*;
+use mlacker_ui::keymap::Keymap;
+use mlacker_ui::keymap::chord_matches;
+use mlacker_ui::keymap::key;
+use mlacker_ui::actions::Action;
+
+pub fn help_title(topic: i32) -> str8 {
+    if topic == 1 { return "Patterns sidebar"; }
+    if topic == 2 { return "Audio library"; }
+    if topic == 3 { return "Instruments sidebar"; }
+    if topic == 4 { return "Pattern editor"; }
+    if topic == 5 { return "Song matrix"; }
+    if topic == 6 { return "Mixer and FX bus"; }
+    if topic == 7 { return "Sample waveform and editor"; }
+    if topic == 8 { return "Sampler"; }
+    if topic == 9 { return "Virtual keyboard"; }
+    if topic == 10 { return "Instrument parameters"; }
+    if topic == 11 { return "Spectrum analyzer and MPD218 pads"; }
+    if topic == 12 { return "File browser"; }
+    return "Navigation and global shortcuts";
+}
+
+pub fn help_body(topic: i32, keys: &Keymap) -> str8 {
+    if topic == 1 { return clone("Browse and select patterns, then edit them in the Pattern pane.\n# Navigation\nj/k or Up/Down\tMove through the pattern list\nEnter\tSelect a pattern for editing\n# Pattern menu\nAdd / Clone\tCreate a pattern or copy the active one\nRename / Set length\tChange the name or number of rows\nRemove\tRemove the active pattern\nSave / Load pattern\tStore or import a .mlapatt file\n# Arrange a song\nView > Song matrix places patterns into parallel lanes and song steps."); }
+    if topic == 2 { return clone("View > Audio opens the sample library. Samples can be organized into groups.\n# Browse and preview\nj/k or Up/Down\tBrowse samples and groups\nEnter\tExpand a group or insert a sample into the pattern\nCtrl+P\tPreview / stop the selected sample on the master output\nShift+Backspace\tRemove the selected library item\nMoving away from the sample stops its preview.\n# Audio menu\nAdd audio\tImport samples\nAdd group / Move to group\tOrganize samples\nEdit sample\tOpen the waveform editor\nClip operations\tCopy, cut, paste, reverse, trim or slice pattern audio"); }
+    if topic == 3 { return clone("View > Instruments opens the list of loaded VST3 instruments.\n# Assign an instrument\nj/k or Up/Down\tBrowse loaded instruments\nEnter\tAssign the instrument to the current track\n# Instrument menu\nAdd instrument\tLoad a VST3 instrument\nOpen VST3 editor\tOpen the selected plugin's editor\nPresets\tSave or load plugin presets\nMIDI learn\tSave or load controller mappings\nDrum pads\tLoad samples into instrument pads\nRemove instrument\tRemove the selected instrument\nTrack > Set output channel also assigns a track to an instrument."); }
+    if topic == 4 { return clone("Edit notes, velocity, length, offset and automation in the pattern grid.\n# Move and edit\nh/j/k/l or arrows\tMove between cells\nEnter\tEdit the selected field\nJ/K (Shift+j/k)\tAdjust the selected value\nBackspace / Esc\tClear a field / leave editing\nCtrl+Z\tCycle vertical detail: 1/16, 1/32, 1/64\nz\tExpand a track to show more fields\n# Rows and selections\no / O\tInsert a blank row below / above\ndd\tRemove a row\nv / Shift+V\tStart a rectangle / whole-row selection\nMove\tExtend the selection\ny / d / p\tCopy / cut or clear / paste\nBackspace\tClear selected cells without replacing the clipboard\nEsc or v\tCancel a selection\ngg / G\tGo to the first / last position\n# Playback and audio\nSpace\tPlay / stop the pattern\ns over an audio clip\tOpen the Sample pane\nTrack menus create tracks, note lines and automation columns. Pattern > Follow the row toggles playback following."); }
+    if topic == 5 { return clone("Rows are song steps; columns are parallel lanes. Patterns on a row play together.\n# Navigate and place\nh/j/k/l or arrows\tMove between cells\nEnter / Backspace\tChoose a pattern / empty the cell\ny / p\tCopy / paste a cell\n# Arrange\no / O\tInsert a whole row below / above\nCtrl+O\tInsert a cell below in this lane\nCtrl+Shift+O\tInsert a cell above in this lane\ndd\tRemove a whole row\nr\tLoop a pattern down its lane, or stop looping\ns\tSplit a loop or long pattern at this row\nShift+R\tArm / disarm the cell's pattern for recording\nv\tMark rows for Record > Bounce selection\n# Playback\nSpace / Ctrl+P\tPlay / stop the matrix from the cursor row\nShift+M\tClose the matrix"); }
+    if topic == 6 { return clone("Mix track levels and route audio through auxiliary effect channels.\n# Focus and levels\nm\tShow / hide the mixer\nTab\tMove focus to the mixer or FX bus\nLeft/Right\tNavigate strips or expanded sends\nJ/K\tAdjust the selected value\nz\tExpand a track's sends\nSpace\tStart / stop transport\n# Routing and plugins\nTrack menu\tMute / unmute or set the output channel\nEffect > Add effect channel\tCreate an aux bus\nEffect menu\tLoad, edit or remove plugins; set sends; manage presets\nInstrument > Open VST3 editor opens the selected instrument's editor."); }
+    if topic == 7 { return clone("Press s over an audio clip for the Sample pane, or Audio > Edit sample for the editor.\n# Cursor and selection\nh/l or Left/Right\tMove the waveform cursor\nH/L\tMove in larger steps\n+ / -\tZoom in / out\nv\tStart a selection; move to extend it\nEsc\tClear the selection\nCtrl+H/L\tJump between transients\nShift+T\tToggle transient navigation\n# Preview and edit\nCtrl+P\tPreview / stop the selection or whole sample\nt / x\tTrim to the selection / delete it\nu (editor)\tUndo an edit\nCtrl+S (editor)\tSave\nEsc (editor)\tClose; press again to discard unsaved edits\nAudio operations can alter clips. Save a copy when you need the original."); }
+    if topic == 8 { return clone("View > Show sampler (Shift+S) opens the Mla Sampler pane. Tab moves focus in or out.\n# Slots and controls\nh/j/k/l or arrows\tSelect slots and controls\nEnter / Backspace\tLoad / clear a slot\nJ/K\tAdjust the selected value\n[ / ]\tMake larger adjustments\ne\tCycle parameter pages\n# Preview and routing\np\tAudition the slot\no\tRoute the slot's output\nShift+E\tEdit the slot's sample\nShift+W / Shift+R\tSave / load a slot preset\nw / v\tToggle the waveform / key map\nSpace\tStart / stop transport\nShift+S\tHide the sampler\nThe sampler and virtual keyboard share the lower pane."); }
+    if topic == 9 { return clone("The computer-keyboard piano plays the selected track's instrument or MIDI output.\n# Open and focus\nShift+P\tShow / hide the virtual keyboard\nTab\tMove focus to or away from the keyboard\n# Play notes\nZ row\tz s x d c v g b h n j m ... plays from C\nQ row\tq 2 w 3 e r 5 t ... plays an octave higher\nLeft/Right or -/+\tChange octave\nSpace\tStart / stop transport\n# Holding notes\nHold several keys for chords. Key releases stop notes in terminals that report releases. Other terminals use a short timeout after repeating stops."); }
+    if topic == 10 { return clone("Browse and change the plugin's exposed instrument parameters.\n# Controls\nh/j/k/l or arrows\tBrowse parameters\nJ/K\tAdjust a value\nEnter\tEdit a value\nShift+L\tStart MIDI learn\nEsc\tClose the editor\nTab\tMove focus out while leaving the editor open\nCtrl+S\tSave the session, including exposed parameter values\n# Presets and mappings\nUse the Instrument menu for plugin presets and MIDI-learn files."); }
+    if topic == 11 { return clone("Visualize audio output and incoming or sequenced pad notes.\n# Spectrum analyzer\nView > Show spectrum analyzer toggles the analyzer. View > Spectrum analyzer changes its details and update rate.\n# MPD218 pads\nView > Show MPD218 pads shows a 4x4 mirror of the hardware pads. Pads light as notes play or pads are hit; the display follows the last note's bank.\nBanks A-C cover MIDI notes 36-83. Configure MIDI input in File > Settings.\n# Navigation\nSpace\tStart / stop transport\nTab\tCycle panes"); }
+    if topic == 12 { return clone("Choose files without leaving the current session. Esc cancels the chooser.\n# Navigate\nTab / Shift+Tab\tCycle Path, Directories, Files and buttons\nj/k (Directories)\tMove through directories\nEnter or l / h\tExpand / collapse a directory\n/ or ~\tStart an absolute path\nCtrl+U\tClear the path field and focus it\nRelative paths resolve against the browsed directory.\n# Select and preview\nSpace\tMark / unmark a file in multi-file import choosers\nEnter\tOpen marked files, or the current file if none are marked\nCtrl+P\tPreview / stop the current file in audio choosers\nMoving to another file or closing the chooser stops preview."); }
+    return format!("Use Tab to focus a pane. Its guide explains the controls available there.\n# Navigate and play\nTab / Shift+Tab\tCycle panes\nSpace\tStart / stop transport outside text entry, menus and dialogs\nF1-F10\tOpen / close File through Help\nArrows or h/j/k/l\tNavigate menus; Enter chooses, Esc closes\n# Session and layout\n{}\tSave the session\n{}\tToggle the focused content pane fullscreen\n{}\tShow / hide the View sidebar\n{}\tToggle Follow the row\n# Switch views\n{}\tShow Patterns\n{}\tShow Audio\n{}\tShow Instruments\n{}\tShow Song matrix\n{}\tToggle the spectrum analyzer\n{}\tToggle the virtual keyboard\n{}\tToggle the sampler\n# Read shortcut labels\nC means Ctrl; S means Shift. Lowercase letters are plain keys; uppercase means Shift. Labels reflect the active keymap.\n# Using Help\n/\tSearch pane names, instructions and shortcuts with fuzzy matching\nCtrl+J/K or Up/Down\tSelect a row; the preview describes its topic\nEnter\tOpen the selected topic\nCtrl+J/K or j/k\tScroll a guide\ng\tReturn to the top\nCtrl+O / Ctrl+I\tBrowse back / forward, restoring search and scroll position\nEsc\tGo back\nq / F10\tClose Help (q types normally in the search prompt)", keys.shortcut_for(Action::SaveSession), keys.shortcut_for(Action::TogglePaneFullscreen), keys.shortcut_for(Action::ToggleViewPane), keys.shortcut_for(Action::FollowRow), keys.shortcut_for(Action::ViewPatterns), keys.shortcut_for(Action::ViewAudio), keys.shortcut_for(Action::ViewInstruments), keys.shortcut_for(Action::ViewSongMatrix), keys.shortcut_for(Action::ToggleSpectrum), keys.shortcut_for(Action::ToggleVirtualKeyboard), keys.shortcut_for(Action::ToggleSampler));
+}
+
+/// Case-insensitive subsequence matching; spaces in the query are ignored.
+pub fn help_matches(query: str8, candidate: str8) -> bool {
+    var at: i64 = 0;
+    let query_length: i64 = std::strbuf::len(query);
+    for i in 0..query_length {
+        var wanted: i32 = byte_at(query, i); if wanted == 32 { continue; }
+        if wanted >= 65 && wanted <= 90 { wanted = wanted + 32; }
+        var found: bool = false;
+        while at < std::strbuf::len(candidate) {
+            var letter: i32 = byte_at(candidate, at); at = at + 1;
+            if letter >= 65 && letter <= 90 { letter = letter + 32; }
+            if letter == wanted { found = true; break; }
+        }
+        if !found { return false; }
+    }
+    return true;
+}
+
+fn help_contains(query: str8, candidate: str8) -> bool {
+    let count: i64 = std::strbuf::len(query); let size: i64 = std::strbuf::len(candidate);
+    if count > size { return false; }
+    let limit: i64 = size - count + 1;
+    for start in 0..limit {
+        var same: bool = true;
+        for i in 0..count {
+            var a: i32 = byte_at(query, i); var b: i32 = byte_at(candidate, start + i);
+            if a >= 65 && a <= 90 { a = a + 32; }
+            if b >= 65 && b <= 90 { b = b + 32; }
+            if a != b { same = false; break; }
+        }
+        if same { return true; }
+    }
+    return false;
+}
+
+/// Prefer compact title matches so "smplr" ranks Sampler before Sample editor.
+fn title_score(query: str8, candidate: str8) -> i64 {
+    var at: i64 = 0; var gaps: i64 = 0;
+    let size: i64 = std::strbuf::len(candidate);
+    let count: i64 = std::strbuf::len(query);
+    for i in 0..count {
+        var wanted: i32 = byte_at(query, i); if wanted == 32 { continue; }
+        if wanted >= 65 && wanted <= 90 { wanted = wanted + 32; }
+        while at < size {
+            var letter: i32 = byte_at(candidate, at); at = at + 1;
+            if letter >= 65 && letter <= 90 { letter = letter + 32; }
+            if letter == wanted { break; }
+            gaps = gaps + 1;
+        }
+    }
+    return size + gaps * 4;
+}
+
+/// A display row: headings and shortcut labels have distinct colors.
+struct HelpRow { var key: str8; var text: str8; var heading: bool; var full_width: bool; };
+
+struct HelpLocation {
+    var query: str8; var searching: bool; var reading: bool;
+    var selected: i32; var topic: i32; var scroll: i32;
+};
+
+pub struct HelpDialog : Dialog {
+    var query: TextField; var searching: bool; var reading: bool;
+    var selected: i32; var topic: i32; var scroll: i32;
+    var matches: list<i32>; var bodies: list<str8>;
+    var history: list<HelpLocation>; var history_at: i32;
+};
+impl HelpDialog {
+    pub fn new() -> HelpDialog {
+        return HelpDialog { title: "Help", width: 88, height: 25, query: TextField::new("") };
+    }
+    pub fn open(self: &mut Self, topic: i32, keys: &Keymap) -> void {
+        let previous: list<str8> = self.bodies; for body in previous { free(body); }
+        self.bodies = [];
+        for i in 0..13 { self.bodies.push(help_body(i32(i), keys)); }
+        self.query.set_text(""); self.searching = false; self.reading = topic >= 0;
+        self.topic = topic >= 0 ? topic : 0; self.selected = self.topic; self.scroll = 0;
+        self.filter(); self.active = true;
+        self.clear_history(); self.history.push(self.location());
+    }
+    fn filter(self: &mut Self) -> void {
+        var matches: list<i32> = [];
+        // Rank title matches, then exact text, then fuzzy guide-text matches.
+        for pass in 0..3 {
+            for i in 0..13 {
+                let title_match: bool = help_matches(self.query.text, help_title(i32(i)));
+                let exact: bool = help_contains(self.query.text, self.bodies[i]);
+                if (pass == 0 && title_match) || (pass == 1 && !title_match && exact) ||
+                        (pass == 2 && !title_match && !exact && help_matches(self.query.text, self.bodies[i])) {
+                    matches.push(i32(i));
+                    if pass == 0 && self.query.text != "" {
+                        var at: i64 = matches.len() - 1;
+                        while at > 0 && title_score(self.query.text, help_title(matches[at])) < title_score(self.query.text, help_title(matches[at - 1])) {
+                            let previous: i32 = matches[at - 1];
+                            matches[at - 1] = matches[at]; matches[at] = previous; at = at - 1;
+                        }
+                    }
+                }
+            }
+        }
+        self.matches = matches;
+        if self.selected >= self.matches.len() { self.selected = 0; }
+    }
+    fn location(self: HelpDialog) -> HelpLocation {
+        return HelpLocation { query: clone(self.query.text), searching: self.searching, reading: self.reading,
+            selected: self.selected, topic: self.topic, scroll: self.scroll };
+    }
+    fn clear_history(self: &mut Self) -> void {
+        let history: list<HelpLocation> = self.history; for location in history { free(location.query); }
+        self.history = []; self.history_at = 0;
+    }
+    fn save_location(self: &mut Self) -> void {
+        var updated: list<HelpLocation> = [];
+        for i in 0..self.history.len() {
+            let old: HelpLocation = self.history[i];
+            if i == self.history_at { free(old.query); updated.push(self.location()); }
+            else { updated.push(old); }
+        }
+        self.history = updated;
+    }
+    fn remember(self: &mut Self) -> void {
+        var retained: list<HelpLocation> = [];
+        for i in 0..self.history.len() {
+            let old: HelpLocation = self.history[i];
+            if i <= self.history_at { retained.push(old); } else { free(old.query); }
+        }
+        retained.push(self.location()); self.history = retained; self.history_at = i32(self.history.len()) - 1;
+    }
+    fn browse_history(self: &mut Self, direction: i32) -> void {
+        let next: i32 = self.history_at + direction;
+        if next < 0 || next >= self.history.len() { return; }
+        self.save_location(); self.history_at = next;
+        let location: HelpLocation = self.history[next];
+        self.query.set_text(location.query); self.searching = location.searching; self.reading = location.reading;
+        self.selected = location.selected; self.topic = location.topic; self.scroll = location.scroll; self.filter();
+    }
+    pub fn on_event(self: &mut Self, event: InputEvent) -> void {
+        if event.kind == InputKind::None && event.code == 0 { return; }
+        // Handle control bytes before Enter: legacy Ctrl+J is LF and Ctrl+I is Tab.
+        if chord_matches(key(111, true, false), event) { self.browse_history(-1); return; }
+        if chord_matches(key(105, true, false), event) { self.browse_history(1); return; }
+        let up: bool = (event.kind == InputKind::Menu && event.key == Key::Up && event.code == 0) ||
+            (!self.searching && event.code == 107 && event.modifiers == 1) || chord_matches(key(107, true, false), event);
+        let down: bool = (event.kind == InputKind::Menu && event.key == Key::Down && event.code == 0) ||
+            (!self.searching && event.code == 106 && event.modifiers == 1) || chord_matches(key(106, true, false), event);
+        if up || down {
+            if self.reading { self.scroll = down ? self.scroll + 1 : (self.scroll > 0 ? self.scroll - 1 : 0); }
+            else if up { self.selected = self.selected > 0 ? self.selected - 1 : 0; }
+            else if self.selected + 1 < self.matches.len() { self.selected = self.selected + 1; }
+            return;
+        }
+        if event.kind == InputKind::Menu && event.key == Key::Escape && event.code < 32 {
+            if self.searching { self.searching = false; }
+            else if self.reading { self.save_location(); self.reading = false; self.remember(); }
+            else { self.active = false; }
+            return;
+        }
+        if !self.searching && event.code == 113 && event.modifiers == 1 { self.active = false; return; }
+        if event.kind == InputKind::Menu && event.key == Key::Function10 { self.active = false; return; }
+        if event.kind == InputKind::Menu && event.key == Key::Enter {
+            if !self.reading && self.matches.len() > 0 {
+                self.save_location();
+                self.topic = self.matches[self.selected]; self.reading = true; self.searching = false; self.scroll = 0;
+                self.remember();
+            }
+            return;
+        }
+        if !self.searching && event.code == 47 && event.modifiers == 1 {
+            self.save_location();
+            self.query.set_text(""); self.searching = true; self.reading = false; self.selected = 0; self.filter();
+            self.remember(); return;
+        }
+        if self.reading {
+            if event.code == 103 && event.modifiers == 1 { self.scroll = 0; }
+            return;
+        }
+        if self.searching { self.query.on_event(event); self.selected = 0; self.filter(); }
+    }
+    pub fn paint(self: &mut Self, surface: Surface, area: Rect, theme: Theme) -> void {
+        if !self.active { return; }
+        let body: Rect = self.paint_frame(surface, area, theme);
+        if body.height < 3 || body.width < 3 { return; }
+        surface.text(Rect::new(body.x, body.y, 2, 1), "/ ", theme.accent, theme.panel);
+        self.query.paint(surface, Rect::new(body.x + 2, body.y, body.width - 2, 1), theme.foreground, theme.selection, self.searching);
+        let rows: i32 = body.height - 3;
+        if self.reading {
+            surface.text(Rect::new(body.x, body.y + 1, body.width, 1), help_title(self.topic), theme.accent, theme.panel);
+            let text: str8 = self.bodies[self.topic];
+            var lines: list<HelpRow> = []; var start: i64 = 0;
+            let length: i64 = std::strbuf::len(text);
+            let key_width: i32 = body.width >= 60 ? 25 : (body.width / 3);
+            let description_width: i32 = body.width - key_width - 2;
+            for index in 0..length + 1 {
+                if index < length && byte_at(text, index) != 10 { continue; }
+                let paragraph: str8 = sub(text, start, index - start);
+                let heading: bool = starts_with(paragraph, "# ") == 1;
+                let tab: i64 = find(paragraph, "\t");
+                if heading {
+                    lines.push(HelpRow { key: "", text: "" });
+                    let label: str8 = sub(paragraph, 2, std::strbuf::len(paragraph) - 2);
+                    let wrapped: list<str8> = wrap_words(label, wide(body.width));
+                    for line in wrapped { lines.push(HelpRow { key: "", text: line, heading: true }); }
+                    free(label);
+                } else if tab >= 0 {
+                    let key: str8 = sub(paragraph, 0, tab);
+                    let description: str8 = sub(paragraph, tab + 1, std::strbuf::len(paragraph) - tab - 1);
+                    // Long key labels get their own row, avoiding truncation.
+                    let stacked: bool = std::strbuf::len(key) > key_width;
+                    if stacked {
+                        let labels: list<str8> = wrap_words(key, wide(body.width));
+                        for label in labels { lines.push(HelpRow { key: "", text: label, heading: true }); }
+                    }
+                    let wrapped: list<str8> = wrap_words(description, wide(description_width));
+                    var first: bool = true;
+                    for line in wrapped {
+                        lines.push(HelpRow { key: first && !stacked ? clone(key) : "", text: line }); first = false;
+                    }
+                    free(key); free(description);
+                } else {
+                    let wrapped: list<str8> = wrap_words(paragraph, wide(body.width));
+                    for line in wrapped { lines.push(HelpRow { key: "", text: line, full_width: true }); }
+                }
+                free(paragraph); start = index + 1;
+            }
+            let last: i32 = i32(lines.len()) > rows ? i32(lines.len()) - rows : 0;
+            if self.scroll > last { self.scroll = last; }
+            for row in 0..rows {
+                let index: i32 = self.scroll + i32(row); if index >= lines.len() { break; }
+                let line: HelpRow = lines[index];
+                let y: i32 = body.y + 2 + i32(row);
+                if line.key != "" { surface.text(Rect::new(body.x, y, key_width, 1), line.key, theme.accent, theme.panel); }
+                let indent: i32 = line.heading || line.full_width || line.text == "" ? 0 : key_width + 2;
+                surface.text(Rect::new(body.x + indent, y, body.width - indent, 1), line.text, line.heading ? theme.accent : theme.foreground, theme.panel);
+            }
+            for line in lines { if line.key != "" { free(line.key); } if line.text != "" { free(line.text); } }
+        } else {
+            let count: str8 = format!("Topics ({})   Enter opens the selected topic", self.matches.len());
+            surface.text(Rect::new(body.x, body.y + 1, body.width, 1), count, theme.muted, theme.panel); free(count);
+            if self.matches.len() == 0 { surface.text(Rect::new(body.x, body.y + 2, body.width, 1), "No matching help. Edit the search or press / to start again.", theme.muted, theme.panel); }
+            let preview_rows: i32 = rows >= 10 ? 6 : (rows >= 5 ? 3 : 0);
+            let list_rows: i32 = rows - preview_rows;
+            let start: i32 = self.selected >= list_rows && list_rows > 0 ? self.selected - list_rows + 1 : 0;
+            for row in 0..list_rows {
+                let index: i32 = start + i32(row); if index >= self.matches.len() { break; }
+                let rectangle: Rect = Rect::new(body.x, body.y + 2 + i32(row), body.width, 1);
+                let selected: bool = index == self.selected;
+                let bg: i32 = selected ? theme.selection : theme.panel;
+                surface.fill(rectangle, Cell { glyph: 32, foreground: theme.foreground, background: bg });
+                let label: str8 = format!("{} {}", selected ? ">" : " ", help_title(self.matches[index]));
+                surface.text(rectangle, label, theme.foreground, bg); free(label);
+            }
+            if preview_rows > 0 && self.matches.len() > 0 {
+                let topic: i32 = self.matches[self.selected];
+                let y: i32 = body.y + 2 + list_rows;
+                let label: str8 = format!("Preview: {}", help_title(topic));
+                surface.text(Rect::new(body.x, y, body.width, 1), label, theme.accent, theme.panel); free(label);
+                let text: str8 = self.bodies[topic];
+                let end: i64 = find(text, "\n");
+                let summary: str8 = sub(text, 0, end >= 0 ? end : std::strbuf::len(text));
+                let wrapped: list<str8> = wrap_words(summary, wide(body.width));
+                var row: i32 = 0;
+                for line in wrapped {
+                    if row < preview_rows - 1 { surface.text(Rect::new(body.x, y + 1 + row, body.width, 1), line, theme.foreground, theme.panel); }
+                    row = row + 1; if line != "" { free(line); }
+                }
+                free(summary);
+            }
+        }
+        // Keep history keys visible even in narrow terminals.
+        let history_y: i32 = body.y + body.height - 1;
+        surface.text(Rect::new(body.x, history_y, body.width, 1), self.searching ? "Up/Down choose | C-j/k | Enter open | C-o/i history | Esc done" : (self.reading ? "j/k or arrows scroll | C-j/k | C-o/i history | q quit" : "Up/Down choose | C-j/k | Enter open | C-o/i history | q quit"), theme.muted, theme.panel);
+    }
+
+    pub fn release(self: &mut Self) -> void {
+        let bodies: list<str8> = self.bodies; for body in bodies { free(body); }
+        self.bodies = []; self.matches = []; self.query.release(); self.clear_history();
+    }
+}

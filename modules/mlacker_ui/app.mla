@@ -105,6 +105,8 @@ use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::instrument_editor;
 use mlacker_ui::instrument_editor::InstrumentEditor;
 use mlacker_ui::settings_dialog::SettingsDialog;
+mod mlacker_ui::help;
+use mlacker_ui::help::HelpDialog;
 mod mlacker_ui::copyright_notice;
 use mlacker_ui::copyright_notice::paint_copyright_notice;
 mod mlacker_ui::project_settings;
@@ -295,9 +297,12 @@ fn demo_menus(fixture: bool, follow_matrix: bool, follow_row: bool, metronome: b
                         MenuItem::submenu("Metronome", [
                             menu_item(!metronome_always ? "[x] On recording" : "[ ] On recording", Action::MetronomeOnRecording, true, keymap),
                             menu_item(metronome_always ? "[x] Always" : "[ ] Always", Action::MetronomeAlways, true, keymap)]),
-                        menu_item("Bounce selection to sample", Action::BounceSelection, true, keymap)] }
+                        menu_item("Bounce selection to sample", Action::BounceSelection, true, keymap)] },
+                    Menu { title: "Help", items: [
+                        menu_item("Focused pane", Action::HelpFocused, true, keymap),
+                        menu_item("Browse / search help", Action::HelpTopics, true, keymap)] }
             ]);
-    // F1 File, F2 Edit, ... F9 Record, shown before each title.
+    // F1 File, F2 Edit, ... F9 Record, F10 Help, shown before each title.
     bar.shortcuts = true;
     return bar;
 }
@@ -517,6 +522,7 @@ pub fn run() -> i32 {
     // applied on the frame after the dialog closes with OK.
     var curve_dialog: CurveDialog = CurveDialog::new(); var curve_pending: bool = false;
     var settings: SettingsDialog = SettingsDialog::new();
+    var help: HelpDialog = HelpDialog::new();
     var project_settings: ProjectSettingsDialog = ProjectSettingsDialog::new();
     // Settings kept between runs, and the project's MIDI knob mode (0 as in
     // Settings, 1 absolute, 2 relative), saved with the session.
@@ -1759,7 +1765,7 @@ pub fn run() -> i32 {
         }
         let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
         focus.reconcile(panes);
-        focus.set_menu_active((instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || group_picker.active || move_notice.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || project_settings.active || library.table.edit_mode > 0 || library.renaming);
+        focus.set_menu_active(help.active || (instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || group_picker.active || move_notice.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || project_settings.active || library.table.edit_mode > 0 || library.renaming);
         if curve_pending {
             curve_pending = false;
             let written: i32 = library.table.apply_curve(curve_dialog.selected);
@@ -1862,6 +1868,7 @@ pub fn run() -> i32 {
                 let notice_area: Rect = notice_frame.inset(1);
                 paint_copyright_notice(surface, notice_area, alert_text, Theme::dark_blue());
             } else { paste_error.paint(surface, area, Theme::dark_blue()); }
+            help.paint(surface, area, Theme::dark_blue());
             terminal.present(surface);
             surface.release();
             previous_width = area.width;
@@ -1905,6 +1912,16 @@ pub fn run() -> i32 {
             // discard them before they can reach either the main view or a
             // modal widget here.
             if event.kind == InputKind::Pane { continue; }
+            if help.active {
+                help.on_event(event); dirty = true; continue;
+            }
+            // Editors and file choosers keep their own keys; F10 can still
+            // show their guide without dismissing the work underneath.
+            if event.kind == InputKind::Menu && event.key == Key::Function10 && event.modifiers == 1 &&
+                    (dialog.active || sample_editor.active || (instrument_editor.active && instrument_editor.focused)) {
+                help.open(dialog.active ? 12 : (sample_editor.active ? 7 : 10), keymap);
+                focus.set_menu_active(true); dirty = true; continue;
+            }
             // Any edit may change the next row: prepare it again afterwards.
             if prepared_row >= 0 && !prepared_playback.started() && (event.kind != InputKind::None || event.code != 0) {
                 prepared_table.release(); prepared_mixer.release();
@@ -3366,6 +3383,22 @@ pub fn run() -> i32 {
                     question.open(); focus.set_menu_active(true);
                 }
             }
+            else if command == Action::HelpFocused || command == Action::HelpTopics {
+                var topic: i32 = -1;
+                if command == Action::HelpFocused {
+                    if instrument_editor.active && instrument_editor.focused { topic = 10; }
+                    else if sample_editor.active { topic = 7; }
+                    else if focus.selected == 0 { topic = library.audio_mode ? 2 : (library.instruments_mode ? 3 : 1); }
+                    else if focus.selected == 1 { topic = matrix.visible ? 5 : 4; }
+                    else if mixer.bus_focus { topic = 6; }
+                    else if sampler.visible { topic = 8; }
+                    else if keyboard.visible { topic = 9; }
+                    else if spectrum.visible || pads.visible { topic = 11; }
+                    else if sample.visible && library.table.audio_under_cursor() { topic = 7; }
+                    else { topic = 6; }
+                }
+                help.open(topic, keymap); focus.set_menu_active(true); dirty = true;
+            }
             else if command == Action::ViewPatterns {
                 matrix.visible = false; library.show_patterns(); view_pane_visible = true;
                 focus.selected = 0; mixer.bus_focus = false; instrument_editor.focused = false;
@@ -3816,6 +3849,7 @@ pub fn run() -> i32 {
     free(preset_path); free(preview_path);
     free(group_target); free(group_prompt); free(move_note); group_dialog.release(); free(alert_text);
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
+    help.release();
     sidebar_clipboard.release();
     free_objs(library, dialog, bpm_dialog); free(message);
     if project_copyright != "" { free(project_copyright); }

@@ -1,14 +1,14 @@
-"""F1-F9 open the nine menus directly; the bar shows [F1]File  [F2]Edit ..."""
+"""F1-F10 open the ten menus directly; the bar shows [F1]File  [F2]Edit ..."""
 import re
 
 from session_tui_smoke import Terminal
 
-# SS3 spellings for F1-F4, CSI n~ for F5-F9.
-KEYS = [b"\x1bOP", b"\x1bOQ", b"\x1bOR", b"\x1bOS", b"\x1b[15~", b"\x1b[17~", b"\x1b[18~", b"\x1b[19~", b"\x1b[20~"]
+# SS3 spellings for F1-F4, CSI n~ for F5-F10.
+KEYS = [b"\x1bOP", b"\x1bOQ", b"\x1bOR", b"\x1bOS", b"\x1b[15~", b"\x1b[17~", b"\x1b[18~", b"\x1b[19~", b"\x1b[20~", b"\x1b[21~"]
 CTRL_SHIFT_F = [b"\x1b[1;6P", b"\x1b[1;6Q", b"\x1b[13;6~"]
 # Each menu's first item.
 FIRST = [b"New session", b"Undo", b"Patterns", b"Create MIDI track", b"Add pattern", b"Add audio",
-         b"Add instrument", b"Add effect channel", b"Play metronome"]
+         b"Add instrument", b"Add effect channel", b"Play metronome", b"Focused pane"]
 
 
 def main():
@@ -51,7 +51,7 @@ def main():
         assert b"Track 1" in tui.send(KEYS[3] + b"\r", 0.6)
     finally:
         tui.close()
-    print("PASS: F1-F9 open, switch and close menus; shortcut labels in the menu bar")
+    print("PASS: F1-F10 open, switch and close menus; shortcut labels in the menu bar")
 
 
 if __name__ == "__main__":
