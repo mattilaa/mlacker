@@ -51,7 +51,7 @@ impl VirtualKeyboard {
     pub fn handles(event: InputEvent) -> bool {
         if event.kind == InputKind::None || event.kind == InputKind::Pane { return false; }
         if event.modifiers != 1 && event.modifiers != 2 { return false; }
-        if event.kind == InputKind::Menu && (event.key == Key::Toggle || event.key == Key::Function1 || event.key == Key::Escape) { return false; }
+        if event.kind == InputKind::Menu && (event.key == Key::Toggle || tui::menu::function_number(event.key) > 0 || event.key == Key::Escape) { return false; }
         if event.code == 32 || event.code == 77 || event.code == 80 || event.code == 83 { return false; }
         if event.modifiers == 2 && (event.code == 109 || event.code == 112 || event.code == 115) { return false; }
         if event.code == 13 || event.code == 10 { return true; }

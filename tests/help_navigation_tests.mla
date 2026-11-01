@@ -1,0 +1,66 @@
+mod mlacker_ui::help;
+mod mlacker_ui::keymap;
+mod tui::table;
+use tui::table::*;
+mod tui::dialog;
+use tui::dialog::Dialog;
+mod tui::input;
+mod tui::menu;
+mod std::bytes;
+mod std::testing;
+use mlacker_ui::help::HelpDialog;
+use mlacker_ui::keymap::*;
+use tui::input::*;
+use tui::menu::Key;
+use std::bytes::Bytes;
+use std::testing::verify;
+
+fn help_input(text: str8) -> InputEvent {
+    var decoder: InputDecoder = InputDecoder::new();
+    let raw: result<Bytes, str8> = Bytes::from_string(text);
+    let bytes: Bytes = raw.unwrap();
+    var event: InputEvent = InputEvent {};
+    for i in 0..bytes.len() { event = decoder.feed(bytes.get(i)); }
+    bytes.close(); return event;
+}
+
+#[test]
+fn help_control_navigation_and_search_text() {
+    var help: HelpDialog = HelpDialog::new(); let keys: Keymap = Keymap::new(default_keymap());
+    help.open(-1, keys);
+    help.on_event(help_input("\n")); verify(help.selected == 1 && !help.reading);
+    help.on_event(help_input("\x1b[106;5u")); verify(help.selected == 2);
+    help.on_event(help_input("\x0b")); verify(help.selected == 1);
+    help.on_event(help_input("\x1b[107;5u")); verify(help.selected == 0);
+    help.on_event(help_input("/"));
+    help.on_event(help_input("j")); help.on_event(help_input("k"));
+    verify(help.query.text == "jk" && help.searching);
+    help.on_event(help_input("\x15"));
+    help.on_event(help_input("\n")); verify(help.selected == 1 && help.searching && !help.reading);
+    help.on_event(help_input("\r")); verify(help.topic == 1 && help.reading);
+    help.on_event(help_input("\n")); verify(help.scroll == 1);
+    help.on_event(help_input("\x1b[106;5u")); verify(help.scroll == 2);
+    help.on_event(help_input("\x0b")); verify(help.scroll == 1);
+    help.on_event(help_input("\x1b[107;5u")); verify(help.scroll == 0);
+    help.on_event(help_input("\r")); verify(help.scroll == 0 && help.topic == 1);
+    help.release();
+}
+
+#[test]
+fn help_history_restores_views_and_discards_forward_branch() {
+    var help: HelpDialog = HelpDialog::new(); let keys: Keymap = Keymap::new(default_keymap());
+    help.open(4, keys); help.scroll = 7;
+    help.on_event(help_input("/")); help.on_event(help_input("\n"));
+    help.on_event(help_input("\r")); verify(help.topic == 1 && help.reading);
+    help.scroll = 3;
+    help.on_event(help_input("\x0f")); verify(!help.reading && help.searching && help.selected == 1);
+    help.on_event(help_input("\x1b[111;5u")); verify(help.reading && help.topic == 4 && help.scroll == 7);
+    help.on_event(help_input("\t")); verify(help.searching && help.selected == 1);
+    help.on_event(help_input("\x1b[105;5u")); verify(help.reading && help.topic == 1 && help.scroll == 3);
+    help.on_event(help_input("\x0f")); help.on_event(help_input("\n"));
+    help.on_event(help_input("\r")); verify(help.topic == 2);
+    help.on_event(help_input("\t")); verify(help.topic == 2);
+    help.open(-1, keys); help.on_event(help_input("\x0f")); help.on_event(help_input("\t"));
+    verify(!help.reading && help.selected == 0);
+    help.release();
+}

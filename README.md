@@ -274,7 +274,7 @@ replaced. A folder that is not an mlacker project is never overwritten.
 
 Each menu opens with its function key, shown before its title in the menu bar:
 **F1** File, **F2** Edit, **F3** View, **F4** Track, **F5** Pattern, **F6** Audio,
-**F7** Instrument, **F8** Effect and **F9** Record. While a menu is open, another
+**F7** Instrument, **F8** Effect, **F9** Record and **F10** Help. While a menu is open, another
 function key switches to that menu and the open menu's own key closes it. Each
 menu starts with what it creates, then what it changes, then what it removes;
 related entries live in submenus.
@@ -323,6 +323,7 @@ dialog or text field has the keyboard.
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
 | Record | Play metronome, Extend pattern when playing, Metronome ▸, Bounce selection to sample |
+| Help | Focused pane, Browse / search help |
 
 ## Song matrix
 
@@ -523,7 +524,7 @@ list.
 
 ## Keys and panes
 
-**F1**–**F9** open and close the menus (F1 File … F9 Record). **Tab** and **Shift+Tab** cycle forwards and
+**F1**–**F10** open and close the menus (F1 File … F10 Help). **Tab** and **Shift+Tab** cycle forwards and
 backwards through every pane of the main view: the sidebar, the pattern editor,
 the inspector/mixer, the FX bus (when the mixer shows effect channels) and the
 VST3 editor (while it is open). The pattern pane is skipped while the VST3 editor
@@ -542,6 +543,21 @@ restores the normal split and the sidebar.
 **Space** starts and stops the sequencer from every pane, including the mixer,
 the FX bus and the VST3 editor. Text entry, modal dialogs and an open menu keep
 Space for themselves.
+
+**F10 → Focused pane** opens a popup guide for the current pane; **Browse / search
+help** opens the topic list. Press `/` for a fuzzy search prompt. Search matches
+pane names, instructions and shortcuts without requiring consecutive letters
+(for example, `vrtlky` finds Virtual keyboard). A preview describes the selected
+row, and Enter opens its full topic.
+**Ctrl+J/K** or arrows select rows, including while typing a search. In a guide,
+Ctrl+J/K, j/k or arrows scroll; g returns to the top. **Ctrl+O / Ctrl+I** browse
+back / forward, restoring the search, selection and scroll position. Legacy
+terminals send Ctrl+I as Tab, so Tab also goes forward inside Help. Esc
+leaves search, returns to the topic list, then closes. **q** or F10 closes Help
+immediately; q types normally while the search prompt is active. Guides group
+controls under section headings, with shortcuts aligned beside their actions.
+In a file chooser, sample editor or instrument parameter editor, F10 opens its
+guide directly and preserves the work underneath.
 
 Inside a dialog, Tab keeps cycling that dialog's own panes.
 
