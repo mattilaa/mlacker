@@ -12,6 +12,9 @@ speech synthesizer that says a pattern's comment texts),
 [Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
+The [Turbo OutRun projects](examples/turbo_outrun) include the C64 loading music
+and title tune for Mla SID, with song credits and a copyright notice on opening.
+
 ## Build and run
 
 Prerequisites: macOS, Xcode command-line tools, CMake, Git, Python 3, and what
@@ -59,6 +62,9 @@ instead (`--mlang-subproject`, `--mlang-dir DIR`, `--mlang-toolchain`/
 
 `build.sh` automatically runs bootstrap with subproject defaults in a clean
 workspace and clones the configured MLang tag if its subproject is missing.
+
+The pinned MLang `v0.4.3` receives the small stdlib compatibility patch in
+`patches/mlang-v0.4.3-stdlib.patch` when built; it adds no song-specific behavior.
 
 `build.sh` always builds the MLang compiler and runtime (`mlang`,
 `libmlang_std.a`) that mlacker links against in the chosen checkout, then the
@@ -239,15 +245,13 @@ ordinary files:
 
 ```
 My song.mlaproj/
-  Project.mlack      session (format 1.4)
+  Project.mlack      native JSON text: notes, automation and plugin settings (1.5)
   Audio/             ordinary Audio-list samples, as float32 WAV
     SampleAudio.aif/ destructive slices grouped by their original filename
-  Presets/           each plugin's parameters: Instrument 01 - <name>.mlapre,
-                     Master / Effect N / Insert N - <name>.mlafxpre
 ```
 
-**File → Project → Save project** consolidates the samples and plugin presets
-into the folder (the first save asks for a name; `.mlaproj` is appended when
+**File → Project → Save project** stores all sequencer data and plugin settings
+in `Project.mlack`, with samples in `Audio/` only when needed (the first save asks for a name; `.mlaproj` is appended when
 missing), and **Save project as** picks another folder. **File → New project**
 confirms, starts an empty session and asks where to save it as a project. While a project is open, Ctrl+S
 and **Save session** save the project in place. **Open project** opens a
@@ -257,8 +261,10 @@ and **Save session** save the project in place. **Open project** opens a
 build/cmake/bin/mlacker "/path/to/My song.mlaproj"
 ```
 
-The session refers to `Audio/` and `Presets/` files by paths relative to the
-folder, so a project can be moved, copied or opened from any location. VST3
+All notes, per-row parameter changes, instrument settings and effect settings
+are in `Project.mlack`. Sample paths are relative to the project folder.
+Legacy binary projects and their `Presets/` references still load.
+A project can be moved, copied or opened from any location. VST3
 plugins stay where they are installed and are referenced by their bundle path.
 A save writes the whole folder beside the target and swaps it in only when it
 is complete; the previous folder, including any files added to it by hand, is
@@ -312,7 +318,7 @@ dialog or text field has the keyboard.
 | Edit | Undo, Redo, Copy/Cut/Paste clip |
 | View | Patterns, Song matrix, Audio, Instruments, Sample view ▸, Meter ▸, Show spectrum analyzer, Spectrum analyzer ▸, Show virtual keyboard, Show sampler, Reset layout, Show details |
 | Track | Create MIDI/AUDIO/Instrument track, Rename, Duplicate, Mute, Set output channel, Note lines ▸, Automation ▸, Clear pattern, Delete, Route plugin outputs, Set instrument input |
-| Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern |
+| Pattern | Add, Clone, Rename, Set length, Follow matrix patterns, Set matrix row length, Remove, Save pattern, Load pattern, Follow the row (Ctrl+T) |
 | Audio | Add audio, Edit sample (destructive), Clip ▸, Remove audio, Bounce tail, Bounce tail length ▸, Bounce second pass, Make track clips destructive, Add group, Remove group, Move to group, Always open sample editor full screen |
 | Instrument | Add instrument, Open VST3 editor, Drum pads ▸, Presets ▸, MIDI learn ▸, Remove instrument |
 | Effect | Add effect channel, Load/Edit effect plugin, Set track send, Master ▸, Remove effect plugin |
@@ -451,6 +457,13 @@ takes the next row's routing with it.
 
 The matrix replaces the pattern editor in that pane while it is open, and menus
 open above it. A session with no song yet starts the matrix on one empty row.
+
+**Ctrl+T** toggles **Pattern → Follow the row** during playback. With it off,
+the cursor stays available for editing while playback continues. Turning it
+on resumes following the playing row, including the correct local row for
+long or looping patterns in the song matrix. Manual row navigation pauses
+following for the current pattern; Esc resumes it. An explicitly disabled
+follow option stays off when switching patterns.
 
 **Pattern → Follow matrix patterns** (on by default, shown as `[x]` in the menu)
 keeps the rest of the app on the pattern the matrix points at:

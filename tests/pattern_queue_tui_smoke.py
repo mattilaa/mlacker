@@ -69,6 +69,9 @@ def main():
     matrix_clone_editing()
     matrix_cell_change()
     cursor_stays_put()
+    pattern_change_resumes_following()
+    live_follow_toggle()
+    matrix_pattern_cursor_follows()
     print("PASS: a pattern change queues the next pattern; the matrix plays on, also while a clone is edited"
           " and while a matrix cell gets another pattern;"
           " moving the cursor during playback keeps it put until Esc")
@@ -171,6 +174,83 @@ def cursor_stays_put():
         frame += tui.read(2.6)
         assert b"PLAY" in frame and LATER_ROWS.search(frame), frame[-4000:]
         assert b"STOP" in tui.send(b" ", .4)
+    finally:
+        tui.close()
+
+
+def follow_setup(tui):
+    """Two populated 64-row patterns at a tempo that completes a loop quickly."""
+    tui.read(.6)
+    tui.send(b"\x1b")
+    tui.send(b"\x02\x15400\r")
+    tui.send(F1 + b"llll\r")
+    tui.send(F1 + b"llll\r")
+    tui.send(F1 + b"ll\r")
+    tui.send(b"k")  # pattern 2, in the sidebar
+
+
+def pattern_change_resumes_following():
+    """A navigation pause must not leak to a newly chosen pattern."""
+    tui = Terminal()
+    try:
+        follow_setup(tui)
+        tui.send(b" ", .05)
+        tui.send(b"\t", .1)
+        assert b"Esc follows playback again" in tui.send(b"j", .1)
+        tui.send(b"\x1b[Z", .1)
+        frame = tui.send_until(b"j", b"Playing pattern 3", timeout=5)
+        frame += tui.read(2.8)
+        assert b"PLAY" in frame and LATER_ROWS.search(frame), frame[-5000:]
+    finally:
+        tui.close()
+
+
+def live_follow_toggle():
+    """Ctrl+T toggles following without interrupting playback or edits."""
+    tui = Terminal()
+    try:
+        follow_setup(tui)
+        frame = tui.send(F1 + b"llll", .2)
+        assert b"[x] Follow the row" in frame and b"<C-t>" in frame, frame[-5000:]
+        tui.send(b"\x1b")
+        tui.send(b"\t ", .1)
+        frame = tui.send(b"\x14", .2)
+        assert b"Follow the row: off" in frame and b"PLAY" in frame, frame[-5000:]
+        tui.send(b"gg", .1)
+        frame = tui.read(2.8)
+        assert b"PLAY" in frame and not LATER_ROWS.search(frame), frame[-5000:]
+        assert b"Editing:" in tui.send(b"\r", .2)
+        tui.send(b"\x1b", .2)
+        # Explicitly disabled following stays disabled across pattern selection.
+        tui.send(b"\x1b[Z", .1)
+        tui.send_until(b"j", b"Playing pattern 3", timeout=5)
+        frame = tui.read(2.8)
+        assert not LATER_ROWS.search(frame), frame[-5000:]
+        frame = tui.send(b"\x1b[116;5u", .2)  # enhanced-terminal Ctrl+T
+        assert b"Follow the row: on" in frame and b"PLAY" in frame, frame[-5000:]
+        frame += tui.read(2.8)
+        assert LATER_ROWS.search(frame), frame[-5000:]
+    finally:
+        tui.close()
+
+
+def matrix_pattern_cursor_follows():
+    """The visible pattern follows the matrix's local row, with a live off switch."""
+    tui = Terminal()
+    try:
+        follow_setup(tui)
+        tui.send(b"\tM", .2)
+        assert b"Playing the matrix" in tui.send(b"\x10", .2)
+        tui.send(b"M", .2)
+        frame = tui.read(2.8)
+        assert b"PLAY" in frame and LATER_ROWS.search(frame), frame[-5000:]
+        assert b"Follow the row: off" in tui.send(b"\x14", .2)
+        tui.send(b"gg", .1)
+        frame = tui.read(2.8)
+        assert b"PLAY" in frame and not LATER_ROWS.search(frame), frame[-5000:]
+        assert b"Follow the row: on" in tui.send(b"\x14", .2)
+        frame = tui.read(2.8)
+        assert LATER_ROWS.search(frame), frame[-5000:]
     finally:
         tui.close()
 

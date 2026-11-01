@@ -105,6 +105,8 @@ use mlacker_ui::cpu_meter::CpuMeter;
 mod mlacker_ui::instrument_editor;
 use mlacker_ui::instrument_editor::InstrumentEditor;
 use mlacker_ui::settings_dialog::SettingsDialog;
+mod mlacker_ui::copyright_notice;
+use mlacker_ui::copyright_notice::paint_copyright_notice;
 mod mlacker_ui::project_settings;
 use mlacker_ui::project_settings::ProjectSettingsDialog;
 use mlacker_ui::project_settings::knobs_relative;
@@ -144,7 +146,7 @@ fn menu_item(label: str8, action: Action, enabled: bool, keymap: &Keymap) -> Men
     return MenuItem { label: label, action: i32(action), enabled: enabled, shortcut: keys.shortcut_for(action) };
 }
 
-fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, pads: bool, bounce: BounceOptions, editor_fullscreen: bool, keymap: &Keymap) -> MenuBar {
+fn demo_menus(fixture: bool, follow_matrix: bool, follow_row: bool, metronome: bool, extend: bool, metronome_always: bool, spectrum: bool, keyboard: bool, sampler: bool, pads: bool, bounce: BounceOptions, editor_fullscreen: bool, keymap: &Keymap) -> MenuBar {
     // Grouped like a DAW's menu bar: each menu starts with what it creates,
     // then what it changes, then what it removes; families use submenus.
     let plugins: bool = AudioController::processor_support();
@@ -238,7 +240,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, metronome: bool, extend: bool,
                                 menu_item("Set matrix row length", Action::SetMatrixRowLength, true, keymap),
                                 menu_item("Remove pattern", Action::RemovePattern, true, keymap),
                                 menu_item("Save pattern", Action::SavePattern, true, keymap),
-                                menu_item("Load pattern", Action::LoadPattern, true, keymap)] },
+                                menu_item("Load pattern", Action::LoadPattern, true, keymap),
+                                menu_item(follow_row ? "[x] Follow the row" : "[ ] Follow the row", Action::FollowRow, true, keymap)] },
                     Menu {title: "Audio", items: [
                                 menu_item("Add audio", Action::AddAudio, true, keymap),
                                 menu_item("Edit sample (destructive)", Action::EditSample, true, keymap),
@@ -423,6 +426,7 @@ pub fn run() -> i32 {
     // Browsing or playing the matrix shows that pattern: editor, sidebar and
     // the mixer's channels. Pattern > Follow matrix patterns turns it off.
     var follow_matrix: bool = true;
+    var follow_row: bool = true;
     // Channels of the playing song row, one strip per channel even when
     // parallel patterns share it. Only the mixer reads it.
     var mixer_table: SequenceTable = SequenceTable {};
@@ -443,7 +447,7 @@ pub fn run() -> i32 {
     var sampler: SamplerView = SamplerView {};
     // Shortcuts for menu actions; the menus label their items from it.
     var keymap: Keymap = Keymap::new(default_keymap());
-    var menus: MenuBar = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+    var menus: MenuBar = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
     if fixture { menus.open(0); }
     var focus: PaneFocus = PaneFocus::new(0);
     // -1 is the normal split; 1 and 2 expand that pane around the protected
@@ -519,6 +523,7 @@ pub fn run() -> i32 {
     let preferences_file: str8 = preferences_path();
     var preferences: Preferences = Preferences::load(preferences_file);
     var project_knobs: i32 = 0;
+    var project_copyright: str8 = "";
     var instrument_editor: InstrumentEditor = InstrumentEditor {};
     var note_playback: NotePlayback = NotePlayback {};
     var pending_length: i32 = 0;
@@ -584,6 +589,7 @@ pub fn run() -> i32 {
     // Moving the pattern cursor while the pattern plays leaves it where it
     // is, for changes in place, until Esc makes it follow playback again.
     var follow_paused: bool = false;
+    var cursor_pattern: i32 = library.active_id;
     // Matrix recording: the pattern armed with Shift+R in the matrix (0 when
     // none), whether a take is running into it, the pattern time where the
     // take began, and the track the take armed itself (-1 when it was armed).
@@ -638,7 +644,7 @@ pub fn run() -> i32 {
                     editor: instrument_editor.active, editor_slot: i32(instrument_editor.slot), editor_selected: instrument_editor.selected, editor_scroll: instrument_editor.scroll,
                     spectrum: spectrum.visible, spectrum_detail: spectrum.detail, spectrum_fps: spectrum.fps, master: spectrum.bus,
                     master_saved: spectrum.visible || spectrum.detail != 0 || spectrum.fps != 30 || !spectrum.bus.is_default(),
-                    move_unasked: move_unasked, editor_fullscreen: editor_fullscreen, knob_mode: project_knobs };
+                    move_unasked: move_unasked, editor_fullscreen: editor_fullscreen, knob_mode: project_knobs, copyright_notice: project_copyright };
                 var serializer: SessionCodec = SessionCodec {};
                 if session_request == 4 {
                     let saved: result<str8, str8> = serializer.save_project(request_path, library, view, midi);
@@ -678,6 +684,7 @@ pub fn run() -> i32 {
                                 }
                             }
                             let v: SessionView = data.view;
+                            if project_copyright != "" { free(project_copyright); } project_copyright = v.copyright_notice;
                             transport = TransportStatus { bpm: v.bpm, beats_per_bar: v.beats, beat_unit: v.unit, row: v.row, phase: v.phase,
                                 ticks: wide(v.row) * 15000 + v.phase, elapsed_ms: i32((wide(v.row) * 15000 + v.phase) / wide(v.bpm)) };
                             focus.selected = v.pane; move_unasked = v.move_unasked; editor_fullscreen = v.editor_fullscreen; project_knobs = v.knob_mode;
@@ -686,7 +693,7 @@ pub fn run() -> i32 {
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
-                            menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                            menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                             frame_rate.set(v.meter_fps, now_ms()); note_playback = NotePlayback {}; play_pattern = library.active_id;
                             instrument_editor.release();
                             instrument_editor.slot = v.editor_slot;
@@ -700,6 +707,12 @@ pub fn run() -> i32 {
                             }
                             free(session_path); session_path = session_request == 3 ? clone("") : (project ? project_folder(request_path) : clone(request_path));
                             project_open = project;
+                            if session_request != 3 && project_copyright != "" {
+                                free(alert_text); alert_text = clone(project_copyright);
+                                paste_error.title = "Copyright notice"; paste_error.question = alert_text;
+                                paste_error.width = 88; paste_error.height = 18;
+                                paste_error.open(); focus.set_menu_active(true);
+                            }
                             session_status = session_request == 3 ? clone("New empty session") : (project ? format!("Opened project: {}", session_path) : format!("Opened: {}", session_path));
                         }
                     }
@@ -776,6 +789,7 @@ pub fn run() -> i32 {
         }
         if song_request != 0 {
             let start: bool = song_request == 1; song_request = 0;
+            if start && follow_paused { follow_row = true; follow_paused = false; menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap); }
             if prepared_row >= 0 {
                 // End what the next row already sent ahead.
                 prepared_playback.update(prepared_table, transport.ticks, false);
@@ -1255,6 +1269,13 @@ pub fn run() -> i32 {
         }
         if cpu_meter.update(now) { transport.cpu_percent = cpu_meter.percent; dirty = true; }
         let ui_steps: i64 = (now - ui_clock) / 10; ui_clock = ui_clock + ui_steps * 10;
+        // A manual cursor hold belongs to the displayed pattern. Selecting
+        // another pattern (including returning to the playing one) resumes
+        // following; an edit or visual selection still keeps its own cursor.
+        if cursor_pattern != library.active_id {
+            cursor_pattern = library.active_id;
+            if follow_paused { follow_row = true; follow_paused = false; menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap); }
+        }
         // Back on the pattern that is still playing: it simply plays on.
         if pattern_held && play_pattern == library.active_id {
             held_table.release(); held_table = SequenceTable {}; pattern_held = false;
@@ -1283,7 +1304,7 @@ pub fn run() -> i32 {
         // editor cursor just stops following the transport (see `cursor_held`)
         // so an edit never commits to a moving row. A queued pattern is not the
         // one playing, so its length and the truncation question are free too.
-        let cursor_held: bool = library.table.editing || library.table.visual || follow_paused;
+        let cursor_held: bool = library.table.editing || library.table.visual || !follow_row;
         // Placing a pattern in the matrix (its picker and the clash question)
         // keeps playing too; the change is heard when its row next starts.
         if dialog.active || (question.active && !pattern_held) || paste_error.active || settings.active || project_settings.active || sample_editor.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || outputs.active || curve_dialog.active { transport.playing = false; }
@@ -1397,6 +1418,12 @@ pub fn run() -> i32 {
             let cursor: i32 = library.table.selected_row < 0 ? 0 : library.table.selected_row;
             if transport.row != cursor { transport.follow_row(cursor); dirty = true; }
         }
+        if song_playing && transport.playing && !matrix_recording && !cursor_held {
+            let playing_row: i32 = library.playing_pattern_row(song_row, transport.row);
+            if playing_row >= 0 && playing_row != library.table.selected_row {
+                library.table.selected_row = playing_row; playback_dirty = true;
+            }
+        }
         if play_metronome && transport.playing && (metronome_always || transport.recording) {
             let beat: i32 = transport.metronome_beat(); if beat >= 0 { midi.metronome(beat == 0); }
         }
@@ -1505,7 +1532,7 @@ pub fn run() -> i32 {
             if pads.advance(transport.ticks, transport.playing, now, pads_clock) { dirty = true; }
             pads_clock = now;
         }
-        if follow_paused && (!transport.playing || song_playing) { follow_paused = false; }
+        if follow_paused && !transport.playing { follow_row = true; follow_paused = false; menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap); }
         if pattern_held && (!transport.playing || song_playing) {
             // Stopped (or the matrix took over) before the queued pattern began.
             held_table.release(); held_table = SequenceTable {}; pattern_held = false;
@@ -1830,7 +1857,11 @@ pub fn run() -> i32 {
             piano.paint(surface, area, Theme::dark_blue());
             settings.paint(surface, area, Theme::dark_blue());
             project_settings.paint(surface, area, Theme::dark_blue());
-            paste_error.paint(surface, area, Theme::dark_blue());
+            if paste_error.active && paste_error.title == "Copyright notice" {
+                let notice_frame: Rect = paste_error.paint_frame(surface, area, Theme::dark_blue());
+                let notice_area: Rect = notice_frame.inset(1);
+                paint_copyright_notice(surface, notice_area, alert_text, Theme::dark_blue());
+            } else { paste_error.paint(surface, area, Theme::dark_blue()); }
             terminal.present(surface);
             surface.release();
             previous_width = area.width;
@@ -2728,8 +2759,9 @@ pub fn run() -> i32 {
                 } else {
                     let navigation: bool = (event.modifiers == 1 && (event.code == 104 || event.code == 106 || event.code == 107 || event.code == 108)) ||
                         (event.kind == InputKind::Menu && (event.key == Key::Up || event.key == Key::Down || event.key == Key::Left || event.key == Key::Right));
-                    if navigation && transport.playing && !song_playing && !library.table.editing && !follow_paused {
-                        follow_paused = true;
+                    if navigation && transport.playing && !library.table.editing && follow_row {
+                        follow_row = false; follow_paused = true;
+                        menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                         free(message); message = clone("Cursor stays put while playing: Esc follows playback again");
                     }
                     if library.table.edit_event(event, panes[1].bounds.inset(1)) { dirty = true; }
@@ -3468,7 +3500,7 @@ pub fn run() -> i32 {
             else if command == Action::ToggleEditorFullscreen {
                 editor_fullscreen = !editor_fullscreen;
                 free(message); message = clone(editor_fullscreen ? "The sample editor opens full screen" : "The sample editor opens in the Pattern pane");
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
             }
             else if command == Action::ToggleBounceTail || command == Action::ToggleBounceSecondPass ||
                 command == Action::BounceTail5 || command == Action::BounceTail10 || command == Action::BounceTail20 {
@@ -3481,14 +3513,14 @@ pub fn run() -> i32 {
                 free(message);
                 message = !bounce_options.tail ? clone(bounce_options.second_pass ? "Bounce: no tail, second pass" : "Bounce: no tail")
                     : format!("Bounce: tail up to {} s{}", bounce_options.tail_seconds, bounce_options.second_pass ? ", second pass" : "");
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 dirty = true;
             }
             else if command == Action::ToggleMetronome || command == Action::ToggleExtendRecording || command == Action::MetronomeOnRecording || command == Action::MetronomeAlways {
                 if command == Action::ToggleMetronome { play_metronome = !play_metronome; }
                 else if command == Action::ToggleExtendRecording { extend_recording = !extend_recording; }
                 else { metronome_always = command == Action::MetronomeAlways; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
             }
             else if command == Action::AddPattern || command == Action::ClonePattern { library.add(command == Action::ClonePattern); }
             else if command == Action::RenamePattern {
@@ -3499,9 +3531,19 @@ pub fn run() -> i32 {
                 bpm_dialog.open_matrix_steps(library.matrix_steps);
                 focus.set_menu_active(true);
             }
+            else if command == Action::FollowRow {
+                follow_row = !follow_row; follow_paused = false;
+                if follow_row && song_playing && follow_matrix && !matrix_recording {
+                    library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id;
+                }
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                free(message);
+                message = follow_row ? clone("Follow the row: on") : clone("Follow the row: off; edit while playback continues");
+                dirty = true;
+            }
             else if command == Action::FollowMatrix {
                 follow_matrix = !follow_matrix;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 free(message);
                 if follow_matrix {
                     if song_playing { library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id; }
@@ -3519,7 +3561,7 @@ pub fn run() -> i32 {
             else if command == Action::MeterUpdateRate { bpm_dialog.open_meter_rate(frame_rate.fps); }
             else if command == Action::ToggleSpectrum {
                 spectrum.visible = !spectrum.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 free(message);
                 message = spectrum.visible ? clone("Spectrum / Master: Left/Right picks HP, EQ1-4 or Master; Enter picks gain/freq/Q; Up/Down adjusts")
                     : clone("Spectrum analyzer closed");
@@ -3533,7 +3575,7 @@ pub fn run() -> i32 {
                     terminal.report_key_releases(false); input.releases = false;
                 }
                 if pads.visible && fullscreen_pane == 2 { fullscreen_pane = -1; }
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 free(message);
                 message = pads.visible ? clone("MPD218 pads: they light as the selected track plays its notes 36-83 and as you hit the pads")
                     : clone("MPD218 pads closed");
@@ -3546,7 +3588,7 @@ pub fn run() -> i32 {
                 // Kitty-protocol terminals then report key releases: a note
                 // lasts exactly as long as its key is held.
                 terminal.report_key_releases(keyboard.visible); input.releases = keyboard.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 // Keys only play while the pane has focus.
                 if keyboard.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
@@ -3561,7 +3603,7 @@ pub fn run() -> i32 {
                 // Kitty-protocol terminals then report key releases, so an
                 // audition (p) lasts exactly as long as the key is held.
                 terminal.report_key_releases(sampler.visible); input.releases = sampler.visible;
-                menus = demo_menus(fixture, follow_matrix, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
                 // Keys only reach the sampler while the pane has focus.
                 if sampler.visible { focus.selected = 2; mixer.bus_focus = false; instrument_editor.focused = false; }
                 free(message);
@@ -3738,8 +3780,15 @@ pub fn run() -> i32 {
                     library.table.edit_event(event, panes[1].bounds.inset(1)); dirty = true;
                 }
                 else if follow_paused && menus.active < 0 && focus.selected == 1 && !matrix.visible {
-                    follow_paused = false;
-                    if !pattern_held && transport.row >= 0 { library.table.selected_row = transport.row; }
+                    follow_row = true; follow_paused = false;
+                    menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
+                    if song_playing {
+                        if follow_matrix && !matrix_recording {
+                            library.follow_pattern(library.song_row_pattern(song_row)); play_pattern = library.active_id;
+                        }
+                        let playing_row: i32 = library.playing_pattern_row(song_row, transport.row);
+                        if playing_row >= 0 { library.table.selected_row = playing_row; }
+                    } else if !pattern_held && transport.row >= 0 { library.table.selected_row = transport.row; }
                     free(message); message = clone("Cursor follows playback"); dirty = true;
                 }
                 else if event.kind == InputKind::Menu {
@@ -3769,6 +3818,7 @@ pub fn run() -> i32 {
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
     sidebar_clipboard.release();
     free_objs(library, dialog, bpm_dialog); free(message);
+    if project_copyright != "" { free(project_copyright); }
     terminal.finish();
     return 0;
 }

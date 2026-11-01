@@ -205,6 +205,21 @@ impl PatternLibrary {
         }
         return true;
     }
+    /// Local playing row of the displayed pattern, or -1 when it is not
+    /// in this song row. Long patterns continue across matrix rows; short
+    /// patterns and loop repeats wrap exactly like `copy_slice` does.
+    pub fn playing_pattern_row(self: &Self, song_row: i32, row: i32) -> i32 {
+        let count: i32 = i32(self.table.rows.len());
+        if row < 0 || count <= 0 || self.active_id == self.recording_pattern { return -1; }
+        let unit: i32 = self.matrix_steps < 1 ? 1 : self.matrix_steps;
+        for lane in 0..self.song_lanes() {
+            let cover: SongCover = self.song_cover(song_row, i32(lane));
+            if cover.id == self.active_id {
+                return i32((wide(cover.offset) * wide(unit) + wide(row)) % wide(count));
+            }
+        }
+        return -1;
+    }
     /// Pattern a song row starts from: its lowest lane holding one, or 0.
     pub fn song_row_pattern(self: &Self, row: i32) -> i32 {
         for lane in 0..self.song_lanes() {

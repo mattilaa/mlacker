@@ -1,0 +1,25 @@
+/// Multiline, word-wrapped song credits inside the existing OK dialog.
+mod tui::surface;
+mod tui::geometry;
+mod tui::theme;
+mod std::strbuf;
+use tui::surface::Surface;
+use tui::geometry::*;
+use tui::theme::Theme;
+
+pub fn paint_copyright_notice(surface: Surface, area: Rect, notice: str8, theme: Theme) -> void {
+    if area.width <= 0 || area.height <= 0 { return; }
+    let length: i64 = std::strbuf::len(notice);
+    var start: i64 = 0; var row: i32 = 0;
+    for index in 0..length + 1 {
+        if index < length && std::strbuf::byte_at(notice, index) != 10 { continue; }
+        let paragraph: str8 = std::strbuf::sub(notice, start, index - start);
+        let lines: list<str8> = std::strbuf::wrap_words(paragraph, wide(area.width));
+        for line in lines {
+            if row < area.height { surface.text(Rect::new(area.x, area.y + row, area.width, 1), line, theme.foreground, theme.panel); }
+            row = row + 1;
+            if line != "" { std::strbuf::free(line); }
+        }
+        std::strbuf::free(paragraph); start = index + 1;
+    }
+}

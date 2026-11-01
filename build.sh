@@ -215,6 +215,21 @@ if [ -n "$update" ]; then
     fi
 fi
 
+# Keep the release pin while carrying the stdlib API fixes needed by native
+# text projects. Check both directions so repeated builds are idempotent and
+# incompatible local changes are never overwritten.
+if [ "$mlang_mode" = "subproject" ] && [ "$mlang_ref" = "v0.4.3" ]; then
+    stdlib_patch="$ROOT_DIR/patches/mlang-v0.4.3-stdlib.patch"
+    if git -C "$mlang_root" apply --reverse --check "$stdlib_patch" 2>/dev/null; then
+        : # Already applied.
+    elif git -C "$mlang_root" apply --check "$stdlib_patch" 2>/dev/null; then
+        run git -C "$mlang_root" apply "$stdlib_patch"
+    else
+        echo "build.sh: MLang stdlib patch conflicts with local changes in $mlang_root" >&2
+        exit 1
+    fi
+fi
+
 # --- MLang ---------------------------------------------------------------------------------
 echo "[mlacker] MLang checkout: $mlang_root ($mlang_mode)"
 if [ ! -f "$mlang_build/CMakeCache.txt" ]; then

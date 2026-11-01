@@ -60,7 +60,9 @@ pub enum Action : i32 {
     // View > Show MPD218 pads.
     TogglePadGrid = 186,
     // File > Project > Project settings.
-    ProjectSettings = 187
+    ProjectSettings = 187,
+    // Pattern > Follow the row.
+    FollowRow = 188
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).
