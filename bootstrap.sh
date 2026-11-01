@@ -35,7 +35,7 @@ MLang toolchain (pick one):
   --mlang-dir DIR       Use an existing MLang checkout (e.g. ../mlang); changes
                         to MLang are made in that checkout.
   --mlang-repo URL      Repository to clone for --mlang-subproject
-  --mlang-branch NAME   Branch or tag to clone (default: v0.4.3)
+  --mlang-branch NAME   Branch or tag to clone (default: v0.4.4)
 
 Full MLang toolchain (asked in subproject mode):
   --mlang-toolchain     Make ./build.sh --all also build the full MLang
@@ -189,9 +189,9 @@ if [ "$mode" = "subproject" ]; then
     if [ -z "$mlang_branch" ]; then
         default_branch=$(conf_get MLANG_BRANCH)
         if [ -d "$SUBPROJECT_DIR/.git" ]; then
-            mlang_branch="${default_branch:-v0.4.3}"
+            mlang_branch="${default_branch:-v0.4.4}"
         else
-            ask mlang_branch "MLang branch or tag" "${default_branch:-v0.4.3}"
+            ask mlang_branch "MLang branch or tag" "${default_branch:-v0.4.4}"
         fi
     fi
     if [ -d "$SUBPROJECT_DIR/.git" ]; then

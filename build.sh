@@ -101,7 +101,7 @@ expand_path() {
 mlang_mode=$(conf_get MLANG_MODE)
 mlang_dir=$(conf_get MLANG_DIR)
 mlang_ref=$(conf_get MLANG_BRANCH)
-[ -n "$mlang_ref" ] || mlang_ref="v0.4.3"
+[ -n "$mlang_ref" ] || mlang_ref="v0.4.4"
 mlang_toolchain=$(conf_get MLANG_TOOLCHAIN)
 mlang_prefix=$(conf_get MLANG_PREFIX)
 plugin_dir=$(conf_get PLUGIN_DIR)

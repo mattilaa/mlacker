@@ -27,7 +27,7 @@ build/cmake/bin/mlacker        # run
 ignored `mlacker.conf`, which `build.sh` reads. Re-run it to change them; the
 current values are the defaults.
 
-- **subproject**: clones MLang's `v0.4.3` release tag into
+- **subproject**: clones MLang's `v0.4.4` release tag into
   `subprojects/mlang` (ignored by this repository). Make compiler/stdlib changes
   that mlacker needs there and commit them to the MLang repository (see
   [Developing MLang alongside mlacker](#developing-mlang-alongside-mlacker)).
@@ -191,7 +191,7 @@ same name are replaced. The destinations come from `mlacker.conf`. When running
 
 Releases on GitHub come with `mlacker-<version>-macos-arm64.pkg` (Apple
 silicon): mlacker, the Mla VST3 plugins and the MLang toolchain from MLang's
-`v0.4.3` release. It installs for the current user and asks where each
+`v0.4.4` release. It installs for the current user and asks where each
 part goes, defaulting to the locations above (`~/.local`, `~/.local/bin`,
 `~/.local/plugins/VST3`), then offers to add the tool directories to the PATH
 if they are not on it. Compiling MLang programs needs the Xcode Command Line
@@ -1710,7 +1710,7 @@ Current scope:
 ```
 
 CI (`.github/workflows/build.yml`) runs the same on macOS for every push and
-pull request, building against MLang's `v0.4.3` tag from GitHub; a manual run can pick
+pull request, building against MLang's `v0.4.4` tag from GitHub; a manual run can pick
 another MLang branch or tag. For mlacker's tests, `--test` runs `mlang pkg run test`,
 which runs the MLang unit tests in `tests/*.mla`, then builds two local test bundles (never installed in system plugin folders),
 loads them through the real module loader, and checks instrument/effect output,
