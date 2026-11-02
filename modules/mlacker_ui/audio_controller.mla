@@ -30,6 +30,16 @@ use std::strbuf::clone;
 use std::strbuf::free;
 
 /// Control-thread owner. AUHAL owns rendering; MIDI uses its separate lane.
+extern fn __mlang_std_audio_processor_asset_load(instance: i64, path: str8) -> str8;
+extern fn __mlang_std_audio_processor_asset_path(instance: i64) -> str8;
+/// Owned path of the loaded convolution response, or an empty string.
+pub fn impulse_path(output: AudioController, slot: i64) -> str8 {
+    return __mlang_std_audio_processor_asset_path(i64(output.parameter_info(slot, 0, 5)));
+}
+/// Caller has stopped audio; loading and preparing the IR may allocate.
+pub fn restore_impulse(output: AudioController, slot: i64, path: str8) -> str8 {
+    return __mlang_std_audio_processor_asset_load(i64(output.parameter_info(slot, 0, 5)), path);
+}
 pub struct EffectChannel { var path: str8{""}; var volume: i32{100}; };
 /// Sampler-instrument pad (0-based) filled from the session sample list.
 pub struct PadAssignment { var slot: i32; var pad: i32; var sample: i32; };
@@ -197,6 +207,15 @@ impl AudioSystem {
                 if next.load_insert(i + 1, self.insert_paths[i]) != 0 || next.copy_parameters_from(self.output, i + 41) != 0 {
                     next.close(); return Err<i32, str8>("Cannot preserve insert plugin; settings unchanged");
                 }
+            }
+            for slot in 0..297 {
+                if slot > 0 && slot < 33 { continue; }
+                let path: str8 = impulse_path(self.output, slot);
+                if path != "" {
+                    let error: str8 = restore_impulse(next, slot, path); free(path);
+                    if error != "" { free(error); next.close(); return Err<i32, str8>("Cannot preserve convolution response; settings unchanged"); }
+                    free(error);
+                } else { free(path); }
             }
             if output_id != -2 { if next.start() != 0 { next.close(); return Err<i32, str8>(__mlang_std_audio_last_error()); } }
         }
@@ -695,6 +714,14 @@ impl AudioSystem {
             if t < table.tracks.len() { on = table.tracks[t].audio && table.tracks[t].input_armed; }
             self.output.input_monitor(t + 1, on);
         }
+    }
+    pub fn load_impulse(self: &mut Self, slot: i64, path: str8) -> str8 {
+        let worker: bool = self.midi.worker.raw != 0; self.midi.release();
+        let restart: bool = self.output.hardware_output();
+        if self.output.stop() != 0 { self.resume_midi(worker); return clone("Cannot stop audio; impulse unchanged"); }
+        var error: str8 = restore_impulse(self.output, slot, path);
+        if restart && self.output.start() != 0 { free(error); error = clone("Impulse loaded but audio restart failed; reopen Settings"); }
+        self.resume_midi(worker); return error;
     }
     pub fn add_effect(self: &mut Self) -> bool {
         if self.effects.len() >= 8 { return false; }

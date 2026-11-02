@@ -1,0 +1,78 @@
+diff --git a/stdlib/include/mlang_audio_processor.h b/stdlib/include/mlang_audio_processor.h
+index 3d6be0c1..f59c7619 100644
+--- a/stdlib/include/mlang_audio_processor.h
++++ b/stdlib/include/mlang_audio_processor.h
+@@ -5,6 +5,12 @@
+ extern "C"
+ {
+ #endif
++    /* Optional control-thread asset bridge. Functions return malloc-owned text;
++     * load returns an empty string on success. Host instance IDs come from
++     * parameter_info key 5. Caller stops audio before loading an asset. */
++    void mlang_audio_register_asset_loader(
++        char* (*load)(int64_t instance, const char* path),
++        char* (*path)(int64_t instance));
+     /* Optional native master processor. No SDK dependency in the runtime.
+      * Install the factory on the control thread before creating audio
+      * controllers. Load/destroy are control-thread calls; begin/note/process
+@@ -42,7 +48,7 @@ extern "C"
+             int32_t value,
+             int32_t offset);
+         /* Cached metadata, control-thread queries. key: 0=count, 1=steps,
+-         * 2=normalized value, 3=read-only, 4=stable parameter ID.
++         * 2=normalized value, 3=read-only, 4=stable parameter ID, 5=host instance ID (optional).
+          * Names borrowed until destruction. */
+         double (*parameter_info)(void* context, int32_t index, int32_t key);
+         const char* (*parameter_name)(void* context, int32_t index);
+diff --git a/stdlib/src/std_audio.c b/stdlib/src/std_audio.c
+index 3da179f7..73898996 100644
+--- a/stdlib/src/std_audio.c
++++ b/stdlib/src/std_audio.c
+@@ -5,6 +5,20 @@
+ #include <stdlib.h>
+ #include <string.h>
+
++/* Optional host asset callbacks. Registration and queries run on the control
++ * thread. Standalone stdlib users have no plugin assets. Returned text is owned. */
++static char* (*audio_asset_load)(int64_t, const char*) = NULL;
++static char* (*audio_asset_path)(int64_t) = NULL;
++void mlang_audio_register_asset_loader(char* (*load)(int64_t, const char*), char* (*path)(int64_t)) {
++    audio_asset_load = load; audio_asset_path = path;
++}
++char* __mlang_std_audio_processor_asset_load(int64_t instance, const char* path) {
++    return audio_asset_load ? audio_asset_load(instance, path) : strdup("Plugin assets unavailable");
++}
++char* __mlang_std_audio_processor_asset_path(int64_t instance) {
++    return audio_asset_path ? audio_asset_path(instance) : strdup("");
++}
++
+ /* Output-only AUHAL event controller is implemented below the shared helpers. */
+
+ #if defined(__APPLE__)
+diff --git a/stdlib/src/std_audio_controller.inc b/stdlib/src/std_audio_controller.inc
+index e9b5391f..f00d3e43 100644
+--- a/stdlib/src/std_audio_controller.inc
++++ b/stdlib/src/std_audio_controller.inc
+@@ -1960,7 +1960,7 @@ int32_t __mlang_std_audio_controller_load_effect(int64_t handle, int64_t fx, con
+ }
+ double __mlang_std_audio_controller_parameter_info(int64_t handle, int64_t slot, int64_t index, int64_t key) {
+     ac_controller *c = (ac_controller*)(intptr_t)handle;
+-    if(!c || slot < 0 || slot > 296 || index < 0 || index > 16383 || key < 0 || key > 4) return -1;
++    if(!c || slot < 0 || slot > 296 || index < 0 || index > 16383 || key < 0 || key > 5) return -1;
+     mlang_audio_processor *p = ac_plugin(c, slot);
+     return p->context && p->parameter_info ? p->parameter_info(p->context, (int32_t)index, (int32_t)key) : -1;
+ }
+diff --git a/stdlib/std/audio/controller.mla b/stdlib/std/audio/controller.mla
+index eed8c2a3..5c00c181 100644
+--- a/stdlib/std/audio/controller.mla
++++ b/stdlib/std/audio/controller.mla
+@@ -200,7 +200,8 @@ impl AudioController {
+         return 0;
+     }
+     /// Cached metadata: key 0=count, 1=steps (0 continuous), 2=normalized value,
+-    /// 3=read-only, 4=stable parameter ID. Slot 0 queries the master processor.
++    /// 3=read-only, 4=stable parameter ID, 5=optional host instance ID (-1 unavailable).
++    /// Slot 0 queries the master processor. Instance IDs are transient, never serialized.
+     pub fn parameter_info(self: AudioController, slot: i64, index: i64, key: i64) -> f64 { return __mlang_std_audio_controller_parameter_info(self.handle, slot, index, key); }
+     pub fn parameter_name(self: AudioController, slot: i64, index: i64) -> str8 { return __mlang_std_audio_controller_parameter_name(self.handle, slot, index); }
+     /// UI producer only. Continuous values 0..1; stepped values integer 0..steps.

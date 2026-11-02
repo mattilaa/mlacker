@@ -1395,6 +1395,13 @@ For reverb/delay aux use, set the plugin's wet mix to 100%; mlacker does not for
 plugin-specific wet/dry parameters. Effects continue processing silence for tails.
 Effect-to-effect sends are not supported.
 
+[Mla Convolution](plugins/mla_convolution/README.md) uses a WAV impulse response
+for convolution reverb. Load its VST3 bundle on an FX channel, then choose
+**Effect → Load convolution WAV...**, select the WAV and confirm the popup.
+Keep Mix at 100% for an aux return. For a track insert or master instance, open
+its parameter editor before choosing the WAV. Sessions retain the WAV path;
+keep that external file available when reopening the session.
+
 Send levels belong to each pattern. Tracks sharing a VST instrument instance
 share its PCM send levels, just as they share output gain. `.mlack` saves effect
 paths, exposed parameters, return levels, sends, and effect-bank selection.

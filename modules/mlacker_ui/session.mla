@@ -21,6 +21,8 @@ use mlacker_ui::audio_clip::*;
 use mlacker_ui::audio_library::*;
 use mlacker_ui::audio_controller::AudioSystem;
 use mlacker_ui::audio_controller::EffectChannel;
+use mlacker_ui::audio_controller::impulse_path;
+use mlacker_ui::audio_controller::restore_impulse;
 use mlacker_ui::audio_controller::PadAssignment;
 use mlacker_ui::audio_controller::PadMarkers;
 use mlacker_ui::patterns::SongLane;
@@ -104,7 +106,7 @@ impl SessionReader {
     }
 }
 
-pub struct PluginSnapshot { var slot: i32; var path: str8; var ids: list<i64>; var values: list<f64>; };
+pub struct PluginSnapshot { var impulse: str8{""}; var slot: i32; var path: str8; var ids: list<i64>; var values: list<f64>; };
 pub struct SessionView {
     var bpm: i32{120}; var beats: i32{4}; var unit: i32{4}; var row: i32; var phase: i64;
     var pane: i32; var sidebar: i32; var list_selected: i32; var list_scroll: i32;
@@ -132,7 +134,7 @@ pub struct MidiLearnSnapshot { var key: i32; var slot: i32; var parameter_id: i6
 pub struct SessionData { var library: PatternLibrary; var plugins: list<PluginSnapshot>; var view: SessionView; var midi_learn: list<MidiLearnSnapshot>; var effect_volumes: list<i32>; var pads: list<PadAssignment>; var markers: list<PadMarkers>; };
 impl SessionData {
     pub fn release_plugins(self: &mut Self) -> void {
-        let plugins: list<PluginSnapshot> = self.plugins; for plugin in plugins { free(plugin.path); }
+        let plugins: list<PluginSnapshot> = self.plugins; for plugin in plugins { free(plugin.path); if plugin.impulse != "" { free(plugin.impulse); } }
         self.plugins = [];
     }
     pub fn release(self: &mut Self) -> void { self.library.release(); self.release_plugins(); if self.view.copyright_notice != "" { free(self.view.copyright_notice); } self.view.copyright_notice = ""; }
@@ -201,6 +203,13 @@ impl SessionData {
             for frame in marks { frames.push(f64(frame)); }
             if next.output.instrument_set_markers(wide(entry.slot), wide(entry.pad), frames, false) != 0 {
                 next.release(); return Err<AudioSystem, str8>("Cannot restore a pad's slice markers; session retained");
+            }
+        }
+        for plugin in plugins {
+            if plugin.impulse != "" {
+                let error: str8 = restore_impulse(next.output, plugin.slot, plugin.impulse);
+                if error != "" { free(error); next.release(); return Err<AudioSystem, str8>("Cannot reload convolution WAV; session retained"); }
+                free(error);
             }
         }
         next.pad_markers = markers;
@@ -919,7 +928,11 @@ impl SessionCodec {
         // Looping cells and loop splits in the song matrix.
         let looped: bool = !self.reading && library.has_song_loops();
         // Project settings that override Settings (written last).
-        let credited: bool = !self.reading && view.copyright_notice != "";
+        var convoluted: bool = false;
+        if !self.reading { for slot in 0..297 {
+            let path: str8 = impulse_path(audio.output, slot); if path != "" { convoluted = true; } free(path);
+        } }
+        let credited: bool = !self.reading && (view.copyright_notice != "" || convoluted);
         let knobbed: bool = !self.reading && (view.knob_mode != 0 || credited);
         // Project options (written, perhaps with default flags, whenever
         // MIDI_KNOBS follows, so everything before it is too).
@@ -1470,6 +1483,20 @@ impl SessionCodec {
             let tag: str8 = self.text("COPYRIGHT_NOTICE");
             if tag != "COPYRIGHT_NOTICE" { self.failed = true; } if self.reading { free(tag); }
             state.copyright_notice = self.text(state.copyright_notice);
+        }
+        let convolution_extension: bool = self.reading ? copyright_extension && self.reader.remaining() > 0 : convoluted;
+        if convolution_extension && !self.failed {
+            let tag: str8 = self.text("CONVOLUTION_WAV"); if tag != "CONVOLUTION_WAV" { self.failed = true; } if self.reading { free(tag); }
+            // Every plugin has an entry, including empty paths, in snapshot order.
+            var restored: list<PluginSnapshot> = [];
+            for plugin in plugins {
+                var entry: PluginSnapshot = PluginSnapshot {}; entry = plugin;
+                let path: str8 = self.reading ? "" : impulse_path(audio.output, entry.slot);
+                entry.impulse = self.text(path);
+                if !self.reading { free(path); }
+                restored.push(entry);
+            }
+            plugins = restored;
         }
         if self.reading { library.audio.rebuild(); }
         if state.editor_slot > 32 {

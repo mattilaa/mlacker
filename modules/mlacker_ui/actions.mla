@@ -64,7 +64,7 @@ pub enum Action : i32 {
     // Pattern > Follow the row.
     FollowRow = 188,
     // Help > Focused pane / Browse and search.
-    HelpFocused = 189, HelpTopics = 190
+    HelpFocused = 189, HelpTopics = 190, LoadImpulse = 191
 };
 
 /// Actions the sequence table runs itself (SequenceTable::track_action).

@@ -73,6 +73,11 @@ target_link_libraries(mlacker_vst3_tests PRIVATE mlacker_host)
 add_dependencies(mlacker_vst3_tests MlackerTestInstrument MlackerTestEffect)
 add_test(NAME vst3_host COMMAND mlacker_vst3_tests "$<TARGET_BUNDLE_DIR:MlackerTestInstrument>" "$<TARGET_BUNDLE_DIR:MlackerTestEffect>")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(MLA_CONVOLUTION_VST3 "${CMAKE_CURRENT_SOURCE_DIR}/build/plugins/VST3/Release/MlaConvolution.vst3")
+if(EXISTS "${MLA_CONVOLUTION_VST3}")
+    add_test(NAME convolution_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/convolution_tui_smoke.py" "$<TARGET_FILE:mlacker>" "${MLA_CONVOLUTION_VST3}")
+endif()
+
 add_test(NAME versioning COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "test_*version*.py")
 # Sampler-pad end to end runs when mla_drum has been built (./build.sh --plugins).
 set(MLA_DRUM_VST3 "${CMAKE_CURRENT_SOURCE_DIR}/build/plugins/VST3/Release/MlaDrum.vst3")

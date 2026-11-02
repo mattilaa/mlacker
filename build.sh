@@ -230,6 +230,17 @@ if [ "$mlang_mode" = "subproject" ] && [ "$mlang_ref" = "v0.4.3" ]; then
     fi
 fi
 
+# Optional plugin assets and host instance metadata, used by convolution IRs.
+asset_patch="$ROOT_DIR/patches/mlang-plugin-assets.patch"
+if git -C "$mlang_root" apply --reverse --check "$asset_patch" 2>/dev/null; then
+    : # Already applied.
+elif git -C "$mlang_root" apply --check "$asset_patch" 2>/dev/null; then
+    run git -C "$mlang_root" apply "$asset_patch"
+else
+    echo "build.sh: plugin asset API patch conflicts with $mlang_root" >&2
+    exit 1
+fi
+
 # --- MLang ---------------------------------------------------------------------------------
 echo "[mlacker] MLang checkout: $mlang_root ($mlang_mode)"
 if [ ! -f "$mlang_build/CMakeCache.txt" ]; then

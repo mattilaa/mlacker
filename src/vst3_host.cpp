@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
 
 namespace {
 using namespace Steinberg;
@@ -31,8 +32,14 @@ class Application final : public HostApplication {
 };
 Application application;
 
+class Processor;
+// Control-thread instance IDs avoid exposing pointers through the MLang ABI.
+std::map<int64_t, Processor*> instances;
+int64_t nextInstance = 1;
 class Processor {
 public:
+    const int64_t instanceId = nextInstance++;
+    Processor() { instances.emplace(instanceId, this); }
     VST3::Hosting::Module::Ptr module;
     IPtr<PlugProvider> provider;
     IPtr<IComponent> component;
@@ -51,6 +58,7 @@ public:
     std::unique_ptr<CachedParameter[]> cached;
     int32 parameterCount = 0;
     std::string name;
+    std::string impulsePath;
     // Output buses 1..n-1 (multi-output instruments), interleaved stereo after
     // each process call, with their names.
     std::vector<std::vector<float>> aux;
@@ -74,6 +82,7 @@ public:
     int32 maxFrames = 0;
 
     ~Processor() {
+        instances.erase(instanceId);
         // Called after AUHAL has stopped, on the owning main thread.
         if(processing) processor->setProcessing(false);
         if(active) component->setActive(false);
@@ -299,6 +308,7 @@ public:
     }
 
     double parameterInfo(int32 index, int32 key) const noexcept {
+        if(key == 5) return double(instanceId);
         if(key == 0) return parameterCount;
         if(index < 0 || index >= parameterCount) return -1;
         const auto &p = cached[index];
@@ -521,12 +531,37 @@ int32_t load(const char *path, double rate, int32_t frames,
 }
 } // namespace
 
+// Control thread, with audio stopped by the caller. Result is owned str8.
+static char* loadImpulse(int64_t instance, const char* path) {
+    auto it = instances.find(instance);
+    if(it == instances.end() || it->second->name != "Mla Convolution")
+        return strdup("Select a loaded Mla Convolution effect");
+    auto connection = U::cast<IConnectionPoint>(it->second->component);
+    if(!connection || !path) return strdup("Convolution plugin unavailable");
+    auto message = owned(new HostMessage);
+    message->setMessageID("mla.convolution.load");
+    auto* a = message->getAttributes();
+    a->setBinary("path", path, static_cast<uint32>(std::strlen(path)));
+    try { if(connection->notify(message) == kResultOk) { it->second->impulsePath = path; return strdup(""); } }
+    catch(...) { return strdup("Cannot prepare impulse response"); }
+    const void* error = nullptr; uint32 size = 0;
+    if(a->getBinary("error", error, size) == kResultOk && error)
+        return strdup(std::string(static_cast<const char*>(error), size).c_str());
+    return strdup("Cannot load impulse response");
+}
+
+static char* impulsePath(int64_t instance) {
+    auto it = instances.find(instance);
+    return strdup(it == instances.end() ? "" : it->second->impulsePath.c_str());
+}
+
 // mlacker's version for `mlacker --version`, as an owned (malloc'd) str8.
 extern "C" char* mlacker_version() { return strdup(MLACKER_VERSION); }
 
 extern "C" void mlacker_install_vst3_host() {
     PluginContextFactory::instance().setPluginContext(&application);
     // SDK diagnostics must not corrupt the terminal screen.
+    mlang_audio_register_asset_loader(loadImpulse, impulsePath);
     PlugProvider::setErrorStream(nullptr);
     mlang_audio_register_processor_factory(load<false>);
     mlang_audio_register_instrument_factory(load<true>);

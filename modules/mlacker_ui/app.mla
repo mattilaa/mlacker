@@ -290,7 +290,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, follow_row: bool, metronome: b
                                 menu_item("Remove effect plugin", Action::RemoveEffectPlugin, plugins, keymap),
                                 MenuItem::submenu("Presets", [
                                                 menu_item("Load plugin preset", Action::LoadEffectPreset, plugins, keymap),
-                                                menu_item("Save plugin preset", Action::SaveEffectPreset, plugins, keymap)])] },
+                                                menu_item("Save plugin preset", Action::SaveEffectPreset, plugins, keymap)]),
+                                menu_item("Load convolution WAV...", Action::LoadImpulse, plugins, keymap)] },
                     Menu { title: "Record", items: [
                         menu_item(metronome ? "[x] Play metronome" : "[ ] Play metronome", Action::ToggleMetronome, true, keymap),
                         menu_item(extend ? "[x] Extend pattern when playing" : "[ ] Extend pattern when playing", Action::ToggleExtendRecording, true, keymap),
@@ -539,6 +540,7 @@ pub fn run() -> i32 {
     var last_tick: i64 = now_ms(); var ui_clock: i64 = last_tick;
     var frame_rate: FrameRate = FrameRate {};
     var playback_dirty: bool = false; var play_pattern: i32 = library.active_id;
+    var impulse_slot: i64 = -1; var choosing_impulse: bool = false; var impulse_file: str8 = clone("");
     var question: QuestionDialog = QuestionDialog::new("New session", "Start a new session?");
     var paste_error: QuestionDialog = QuestionDialog::new("Cannot paste selection", "");
     // The text of a save/open failure shown in `paste_error`.
@@ -894,6 +896,7 @@ pub fn run() -> i32 {
             if transport.row >= 0 { library.table.selected_row = transport.row; }
             dirty = true;
         }
+        if choosing_impulse && !dialog.active && !dialog.accepted && !accept_pending { choosing_impulse = false; }
         if accept_pending {
             // One place for every chooser result, whichever way it was accepted
             // (Enter in the browser, or the OK button). Multi-selected files
@@ -903,12 +906,20 @@ pub fn run() -> i32 {
             let paths: list<str8> = std::copy(dialog.accepted_paths);
             let first: str8 = dialog.accepted_path;
             if pattern_action != Action::None { free(last_pattern_dir); last_pattern_dir = clone(dialog.directory); }
-            else if adding_audio || adding_pad_file { free(last_audio_dir); last_audio_dir = clone(dialog.directory); }
+            else if choosing_impulse || adding_audio || adding_pad_file { free(last_audio_dir); last_audio_dir = clone(dialog.directory); }
             else if adding_plugin || adding_instrument || adding_effect >= 0 || adding_insert_track >= 0 { free(last_plugin_dir); last_plugin_dir = clone(dialog.directory); }
             else if learn_action != Action::None { free(last_preset_dir); last_preset_dir = clone(dialog.directory); }
             else { free(last_session_dir); last_session_dir = clone(dialog.directory); }
             free(message);
-            if pattern_action != Action::None {
+            if choosing_impulse {
+                choosing_impulse = false; free(impulse_file); impulse_file = clone(first);
+                question.title = "Load convolution impulse response";
+                let impulse_name: str8 = base_name(first);
+                question.question = format!("Use {} as the reverb impulse response?", impulse_name); free(impulse_name);
+                confirm_track_action = Action::LoadImpulse; question.open();
+                message = clone("Confirm the WAV impulse response");
+            }
+            else if pattern_action != Action::None {
                 if pattern_action == Action::SavePattern {
                     var saved_table: SequenceTable = library.table.copy_pattern();
                     let saved: bool = SessionCodec::save_pattern(first, library.active_name(), saved_table);
@@ -1732,11 +1743,13 @@ pub fn run() -> i32 {
                 if !question.active {
                     if confirm_track_action != Action::None {
                         if question.result == 1 {
-                            if confirm_track_action == Action::SetPatternLength { library.table.set_length(length_target, terminal_bounds()); }
+                            if confirm_track_action == Action::LoadImpulse { free(message); message = midi.load_impulse(impulse_slot, impulse_file); if message == "" { free(message); message = clone("Convolution impulse response loaded"); } }
+                            else if confirm_track_action == Action::SetPatternLength { library.table.set_length(length_target, terminal_bounds()); }
                             else { library.table.track_action(confirm_track_action, terminal_bounds()); }
                         }
+                        if confirm_track_action != Action::LoadImpulse { free(message); message = clone("Track action finished."); }
+                        else if question.result != 1 { free(message); message = clone("Cancelled."); }
                         confirm_track_action = Action::None;
-                        free(message); message = clone("Track action finished.");
                     } else {
                         let what: str8 = new_project_pending ? "New project" : "New session";
                         free(message); message = format!("{} {}.", what, question.result == 1 ? "confirmed" : "cancelled");
@@ -2373,7 +2386,7 @@ pub fn run() -> i32 {
                     focus.set_menu_active(dialog.active);
                     let pad_file_dialog: bool = adding_pad_file;
                     if dialog.accepted { accept_pending = true; }
-                    if pad_file_dialog && !dialog.active && !dialog.accepted { adding_pad_file = false; }
+                    if !dialog.active && !dialog.accepted { choosing_impulse = false; if pad_file_dialog { adding_pad_file = false; } }
                     dirty = true;
                 }
             }
@@ -2946,6 +2959,23 @@ pub fn run() -> i32 {
                         dialog.path_field.set_text(suggested); free(suggested);
                     }
                     focus.set_menu_active(true);
+                }
+            }
+            else if command == Action::LoadImpulse {
+                impulse_slot = instrument_editor.active ? instrument_editor.slot : mixer.selected_effect + 33;
+                if !instrument_editor.active && focus.selected == 1 && library.table.group_detail_rows > 0 {
+                    let track: i32 = library.table.active_track();
+                    if track >= 0 { let id: i32 = library.table.tracks[track].insert_id(library.table.selected_group_detail); impulse_slot = id > 0 ? id + 40 : -1; }
+                }
+                let impulse_plugin_name: str8 = midi.output.instrument_name(impulse_slot);
+                if impulse_plugin_name != "Mla Convolution" {
+                    free(message); message = clone("Load/select Mla Convolution in Mixer, or open its editor first");
+                } else {
+                    choosing_impulse = true; adding_audio = false; adding_pad_file = false; adding_plugin = false; adding_instrument = false;
+                    adding_effect = -1; adding_insert_track = -1; learn_action = Action::None; pattern_action = Action::None; saving_session = false;
+                    transport.playing = false; dialog.save_mode = false; dialog.multi_select = false; dialog.bundle_pattern = "";
+                    dialog.title = "Choose convolution impulse response WAV"; dialog.file_pattern = ".*\\.[wW][aA][vV]";
+                    dialog.open(last_audio_dir); focus.set_menu_active(true);
                 }
             }
             else if command == Action::AddEffectChannel {
@@ -3846,7 +3876,7 @@ pub fn run() -> i32 {
     free(session_path); free(request_path);
     free_objs(instrument_editor, sample_editor, sample_dialog, piano, picker,
               outputs, group_picker, song_table, held_table, mixer_table);
-    free(preset_path); free(preview_path);
+    free(preset_path); free(preview_path); free(impulse_file);
     free(group_target); free(group_prompt); free(move_note); group_dialog.release(); free(alert_text);
     free(last_pattern_dir); free(last_session_dir); free(last_audio_dir); free(last_plugin_dir); free(last_preset_dir);
     help.release();

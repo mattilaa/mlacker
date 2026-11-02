@@ -1,0 +1,8 @@
+[package]
+name = "mla_convolution"
+version = "0.1.0"
+[tool.mlang.options]
+mlang_root = "../../subprojects/mlang"
+[[task]]
+name = "compile-dsp"
+commands = ["true"]

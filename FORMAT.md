@@ -212,6 +212,16 @@ are accepted. Unsupported major or minor versions fail closed.
     only when the project overrides the application setting; a session
     without it takes the knob mode from File > Settings.
 
+24. Optional `COPYRIGHT_NOTICE` follows `MIDI_KNOBS`: one string containing
+    the project's copyright notice, empty when only a later extension needs
+    this record. The notice is shown on project open.
+25. Optional `CONVOLUTION_WAV` follows `COPYRIGHT_NOTICE`: one WAV path string
+    per plugin, in the combined snapshot order (master/instruments, aux effects,
+    inserts). Empty strings mean no response. Paths refer to external files,
+    which must remain available. Written when any response is loaded, with all
+    preceding extension records. Restoration loads each response while audio is
+    stopped; a missing or invalid response rejects the replacement session.
+
 The active pattern is serialized from the live editor, not its older library
 snapshot. Audio placements reference the embedded sample list; plugin assignments
 reference stable slots, including holes left by removed instruments.
