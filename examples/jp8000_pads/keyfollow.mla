@@ -1,0 +1,130 @@
+/// Sequencer-controlled ascending fifths: key follow (CC20/21) or 12/24 dB
+/// slopes (CC22/23). Saved controls start at zero; pattern rows select the sound.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::session::PresetResult;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::note_playback::NotePlayback;
+use std::audio::PcmBlock;
+use std::env::detail::__env_get_var;
+use std::strbuf::clone;
+use std::strbuf::free;
+use tui::geometry::*;
+extern fn mlacker_install_vst3_host() -> void;
+
+fn set_id(audio: &AudioSystem, slot: i64, id: i64, value: f64) -> bool {
+    var system: AudioSystem = AudioSystem {}; system = audio;
+    let count: i64 = i64(system.output.parameter_info(slot, 0, 0));
+    for i in 0..count { if system.output.parameter_info(slot, i, 4) == f64(id) { return system.output.restore_parameter(slot, i, value) == 0; } }
+    return false;
+}
+fn value_id(audio: &AudioSystem, slot: i64, id: i64) -> f64 {
+    var system: AudioSystem = AudioSystem {}; system = audio;
+    let count: i64 = i64(system.output.parameter_info(slot, 0, 0));
+    for i in 0..count { if system.output.parameter_info(slot, i, 4) == f64(id) { return system.output.parameter_info(slot, i, 2); } }
+    return -1.0;
+}
+fn fifths(slot: i32, label: str8, full: bool, slope: i32) -> SequenceTable {
+    var table: SequenceTable = SequenceTable::empty();
+    let area: Rect = Rect::new(0, 0, 160, 35);
+    table.set_length(128, area); table.create_instrument_track(slot, area);
+    table.rename_track(label); table.ensure_note_lines(0, 2); table.rebuild_columns();
+    table.selected_column = table.track_start(0);
+    table.configure_slot(1, "cc:20"); let lower: i32 = table.add_automation(0, "cc:21");
+    var upper_slope: i32 = 0; var lower_slope: i32 = 0;
+    if slope >= 0 { upper_slope = table.add_automation(0, "cc:22"); lower_slope = table.add_automation(0, "cc:23"); }
+    let roots: list<str8> = ["C-3", "C-4", "C-5", "C-6"];
+    let fifth: list<str8> = ["G-3", "G-4", "G-5", "G-6"];
+    for chord in 0..4 {
+        let row: i32 = i32(chord) * 32;
+        for line in 0..2 {
+            let column: i32 = table.track_start(0) + i32(line) * 4;
+            table.set_cell(row, column, clone(line == 0 ? roots[chord] : fifth[chord]));
+            table.set_cell(row, column + 1, clone("100"));
+            table.set_cell(row, column + 2, clone("28.00"));
+            table.set_cell(row, column + 3, clone("0.00"));
+        }
+        table.set_cell(row, table.automation_column(0, 1), clone(full ? "127" : "0"));
+        table.set_cell(row, table.automation_column(0, lower), clone(full ? "127" : "0"));
+        if slope >= 0 {
+            table.set_cell(row, table.automation_column(0, upper_slope), clone(slope == 1 ? "127" : "0"));
+            table.set_cell(row, table.automation_column(0, lower_slope), clone(slope == 1 ? "127" : "0"));
+        }
+    }
+    return table;
+}
+fn main() -> i32 {
+    mlacker_install_vst3_host();
+    let root: str8 = __env_get_var("JP8000_ROOT");
+    let demo_mode: str8 = __env_get_var("JP8000_FILTER_DEMO");
+    let slope_demo: bool = demo_mode == "1";
+    let bundle: str8 = format!("{}/build/plugins/VST3/Release/MlaJP8000.vst3", root);
+    let names: list<str8> = ["Obsession Atmosphere", "Velvet PWM", "Silver Horizon"];
+    let labels: list<str8> = ["Atmosphere", "Velvet", "Silver"];
+    var audio: AudioSystem = AudioSystem::start(false);
+    var library: PatternLibrary = PatternLibrary::empty();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(256);
+    if allocated.is_err() { println!("Cannot allocate verification block"); return 1; }
+    let block: PcmBlock = allocated.unwrap();
+    for i in 0..3 {
+        let slot: i64 = i + 1;
+        let error: str8 = audio.add_instrument(bundle);
+        if error != "" { println!("Plugin: {}", error); return 1; }
+        library.add_instrument(i32(slot), "Mla JP8000");
+        let path: str8 = format!("{}/plugins/mla_jp8000/presets/{}.mlapre", root, names[i]);
+        let loaded: PresetResult = SessionCodec::preset_file(path, audio.output, slot, false, [], []); free(path);
+        if !loaded.ok { println!("Preset: {}", loaded.status); return 1; } free(loaded.status);
+        // Fixed 800 Hz base, neutral filter envelope/LFOs; retain the pad's
+        // oscillator layers, chorus and delay. A shorter release separates chords.
+        for offset in [0, 1000] {
+            if !set_id(audio, slot, 136 + offset, 0.5340199971) ||
+               !set_id(audio, slot, 138 + offset, 0.0) || !set_id(audio, slot, 140 + offset, 0.5) ||
+               !set_id(audio, slot, 139 + offset, 0.5) || !set_id(audio, slot, 117 + offset, 0.5) ||
+               !set_id(audio, slot, 111 + offset, 0.0) || !set_id(audio, slot, 150 + offset, 0.6747425011) {
+                println!("Cannot configure filter demonstration"); return 1;
+            }
+        }
+        for mode in 0..2 {
+            let full: bool = slope_demo || mode == 0;
+            let slope: i32 = slope_demo ? (mode == 0 ? 1 : 0) : -1;
+            let label: str8 = format!("{} {}", labels[i], slope_demo ? (slope == 1 ? "24dB" : "12dB") : (full ? "full" : "fixed"));
+            var table: SequenceTable = fifths(i32(slot), label, full, slope);
+            // Exercise the actual mlacker sequencer and audio-controller path,
+            // starting from the opposite amount, before saving the example.
+            set_id(audio, slot, 138, full ? 0.0 : 1.0); set_id(audio, slot, 1138, full ? 0.0 : 1.0);
+            if slope_demo { set_id(audio, slot, 135, slope == 1 ? 0.0 : 1.0); set_id(audio, slot, 1135, slope == 1 ? 0.0 : 1.0); }
+            // Loading/stopping requests a deferred controller reset. Consume
+            // it before posting score events, as the first device callback does.
+            if audio.output.process(block, 256) != 0 { println!("Cannot settle audio controller"); return 1; }
+            var playback: NotePlayback = NotePlayback {};
+            playback.update(table, 0, true); audio.sequencer_events(playback.events, table);
+            let processed: i32 = audio.output.process(block, 256);
+            if processed != 0 || value_id(audio, slot, 138) != (full ? 1.0 : 0.0) || value_id(audio, slot, 1138) != (full ? 1.0 : 0.0) {
+                println!("Sequencer CC20/CC21 failed for {}: process {}, upper {}, lower {}, events {}", label, processed, value_id(audio, slot, 138), value_id(audio, slot, 1138), playback.events.len());
+                return 1;
+            }
+            if slope_demo && (value_id(audio, slot, 135) != f64(slope) || value_id(audio, slot, 1135) != f64(slope)) {
+                println!("Sequencer CC22/CC23 failed for {}", label); return 1;
+            }
+            playback.update(table, 15000, false); audio.sequencer_events(playback.events, table); audio.output.process(block, 256);
+            if i == 0 && mode == 0 { library.table.release(); library.table = table; if !library.rename(label) { println!("Cannot name pattern: {}", library.error); return 1; } }
+            else { if !library.import_pattern(label, table, []) { println!("Cannot import pattern"); return 1; } }
+            free(label);
+        }
+        set_id(audio, slot, 138, 0.0); set_id(audio, slot, 1138, 0.0);
+        if slope_demo { set_id(audio, slot, 135, 0.0); set_id(audio, slot, 1135, 0.0); }
+    }
+    library.song = [1, 2, 3, 4, 5, 6]; library.select(1); library.refresh();
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project(slope_demo ? "examples/jp8000_filter24.mlaproj" : "examples/jp8000_keyfollow.mlaproj", library,
+        SessionView { bpm: 120, sidebar: 1, pane: 1, editor_slot: 1 }, audio);
+    if saved.is_err() { println!("Save: {}", saved.unwrap_err()); return 1; }
+    println!("Saved {}; sequencer key follow verified on all three pads", saved.unwrap());
+    if slope_demo { println!("Sequencer CC22/CC23 verified for both 12 and 24 dB/oct on both layers"); }
+    block.close(); audio.release(); return 0;
+}

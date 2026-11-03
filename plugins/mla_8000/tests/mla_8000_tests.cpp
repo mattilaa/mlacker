@@ -47,7 +47,7 @@ constexpr int32 kBlock = 256;
 
 // Parameter IDs (see plugin.cpp).
 constexpr ParamID kKeyMode = 101, kPortamento = 103, kPortaTime = 104, kModWheel = 107, kWheelCutoff = 108,
-                  kOsc1Wave = 119, kCtrl1 = 120, kCtrl2 = 121, kCutoff = 136, kResonance = 137, kKeyFollow = 138,
+                  kOsc1Wave = 119, kCtrl1 = 120, kCtrl2 = 121, kFilterType = 134, kFilterSlope = 135, kCutoff = 136, kResonance = 137, kKeyFollow = 138,
                   kAmpAttack = 147, kAmpRelease = 150, kChorus = 153, kDelay = 157, kDelaySync = 158,
                   kDelayTime = 159, kDelayFeedback = 160, kDelayLevel = 161, kVelocityAmp = 110;
 
@@ -379,6 +379,69 @@ void testFilter(const std::string &path)
     CHECK(finite(peaked));
 }
 
+void testFilterSlope(const std::string &path)
+{
+    Instance metadata;CHECK(metadata.open(path));
+    auto controller=metadata.provider->getControllerPtr();
+    String128 label{};
+    CHECK(controller->getParamStringByValue(kFilterSlope,0,label)==kResultOk);
+    CHECK(std::u16string(label)==u"12 dB/oct");
+    CHECK(controller->getParamStringByValue(kFilterSlope,1,label)==kResultOk);
+    CHECK(std::u16string(label)==u"24 dB/oct");
+    const auto shallow=play(path,45,.5,{DRY,{kOsc1Wave,waveNorm(kSaw)},
+        {kCutoff,cutoffNorm(200)},{kResonance,0},{kFilterSlope,0}});
+    const auto steep=play(path,45,.5,{DRY,{kOsc1Wave,waveNorm(kSaw)},
+        {kCutoff,cutoffNorm(200)},{kResonance,0},{kFilterSlope,1}});
+    const auto ratio=[&](double hz){return tone(steep.left,at(.1),at(.5),hz)/tone(shallow.left,at(.1),at(.5),hz);};
+    // Above cutoff, the extra two poles add about 12 dB/oct of attenuation.
+    const double extraSlope=20*std::log10(ratio(1760)/ratio(880));
+    CHECK(extraSlope < -9 && extraSlope > -15);
+    CHECK(ratio(1760)<.1);CHECK(finite(steep));
+    Instance live;CHECK(live.open(path));
+    for(auto p:{std::make_pair(kChorus,0.),std::make_pair(kDelay,0.),std::make_pair(kKeyFollow,0.),
+                std::make_pair(kCutoff,cutoffNorm(400)),std::make_pair(kOsc1Wave,waveNorm(kSaw))})live.param(p.first,p.second);
+    live.cc(22,0);live.noteOn(45,1);const auto twelve=live.render(.4);
+    live.cc(22,127);const auto twentyFour=live.render(.4);
+    CHECK(tone(twentyFour.left,at(.1),at(.4),1760)<.15*tone(twelve.left,at(.1),at(.4),1760));
+}
+
+void testFilterKeyFollow(const std::string &path)
+{
+    Instance metadata;
+    CHECK(metadata.open(path));
+    auto controller = metadata.provider->getControllerPtr();
+    bool found=false;
+    for(int32 i=0;i<controller->getParameterCount();++i) {
+        ParameterInfo info{};controller->getParameterInfo(i,info);
+        if(info.id!=kKeyFollow)continue;
+        found=true;CHECK(std::u16string(info.title)==u"Filter Key Follow");
+        CHECK(info.stepCount==0 && (info.flags & ParameterInfo::kCanAutomate));
+    }
+    CHECK(found);
+    // Compare rendered audio with a manually tuned cutoff at the same pitch.
+    // Covers no/half/full tracking, both sides of C4 and all filter modes.
+    for(int filter=0;filter<3;++filter)for(int pitch:{48,60,72})for(double amount:{0.,.5,1.}) {
+        const double expected=400.*std::exp2(amount*(pitch-60)/12.);
+        const auto tracked=play(path,pitch,.25,{DRY,{kOsc1Wave,waveNorm(kSaw)},
+            {kFilterType,filter/2.},{kResonance,.15},{kCutoff,cutoffNorm(400)},{kKeyFollow,amount}});
+        const auto fixed=play(path,pitch,.25,{DRY,{kOsc1Wave,waveNorm(kSaw)},
+            {kFilterType,filter/2.},{kResonance,.15},{kCutoff,cutoffNorm(expected)}});
+        double error=0;
+        for(size_t i=at(.08);i<tracked.left.size();++i)
+            error=std::max(error,double(std::abs(tracked.left[i]-fixed.left[i])));
+        CHECK(error<1e-5);
+    }
+    // A sequencer CC reaches the active voice, without retriggering its note.
+    Instance live;CHECK(live.open(path));
+    for(auto p:{std::make_pair(kChorus,0.),std::make_pair(kDelay,0.),std::make_pair(kKeyFollow,0.),
+                std::make_pair(kCutoff,cutoffNorm(400)),std::make_pair(kOsc1Wave,waveNorm(kSaw))})live.param(p.first,p.second);
+    live.noteOn(72,1);const auto dark=live.render(.35);
+    live.cc(20,127);const auto bright=live.render(.35);
+    CHECK(rms(bright.left,at(.08))>1.3*rms(dark.left,at(.08)));
+    live.cc(20,0);const auto darkAgain=live.render(.35);
+    CHECK(rms(darkAgain.left,at(.08))<.8*rms(bright.left,at(.08)));
+}
+
 void testModWheel(const std::string &path)
 {
     // CC 1 moves the mod wheel; Wheel > Cutoff +8 octaves opens a closed filter.
@@ -565,6 +628,8 @@ int main(int argc, char **argv)
     testPitch(path);
     testSuperSaw(path, wavDir);
     testFilter(path);
+    testFilterSlope(path);
+    testFilterKeyFollow(path);
     testModWheel(path);
     testEnvelope(path);
     testKeyModes(path);

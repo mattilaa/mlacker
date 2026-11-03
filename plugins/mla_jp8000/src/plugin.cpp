@@ -559,6 +559,18 @@ public:
         case 7:
             id = kMaster;
             return kResultOk;
+        case 20:
+            id = partId(0, mla_8000::kKeyFollowParam);
+            return kResultOk;
+        case 21:
+            id = partId(1, mla_8000::kKeyFollowParam);
+            return kResultOk;
+        case 22:
+            id = partId(0, mla_8000::kFilterSlopeParam);
+            return kResultOk;
+        case 23:
+            id = partId(1, mla_8000::kFilterSlopeParam);
+            return kResultOk;
         case 64:
             id = kSustain;
             return kResultOk;

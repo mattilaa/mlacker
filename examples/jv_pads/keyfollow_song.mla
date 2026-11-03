@@ -69,7 +69,7 @@ fn set_named(system: &AudioSystem, slot: i64, name: str8, value: f64) -> bool {
 fn arp_patch(system: &AudioSystem, slot: i64, follow: f64) -> bool {
     var ok: bool = set_named(system, slot, "OSC 1 Wave", 5.0) && set_named(system, slot, "Filter Slope", 1.0);
     ok = ok && set_named(system, slot, "Cutoff", 0.534) && set_named(system, slot, "Resonance", 0.45);
-    ok = ok && set_named(system, slot, "Key Follow", follow) && set_named(system, slot, "Filter Env Depth", 0.5);
+    ok = ok && set_named(system, slot, "Filter Key Follow", follow) && set_named(system, slot, "Filter Env Depth", 0.5);
     ok = ok && set_named(system, slot, "Amp Attack", 0.0) && set_named(system, slot, "Amp Decay", 0.6193);
     ok = ok && set_named(system, slot, "Amp Sustain", 0.5) && set_named(system, slot, "Amp Release", 0.544);
     ok = ok && set_named(system, slot, "Velocity > Amp", 0.0) && set_named(system, slot, "Chorus", 0.0);
@@ -169,7 +169,7 @@ fn main() -> i32 {
     ok = ok && set_named(audio, 5, "Key Mode", 1.0) && set_named(audio, 5, "OSC 1 Wave", 5.0);
     ok = ok && set_named(audio, 5, "OSC 2 Wave", 0.0) && set_named(audio, 5, "OSC 2 Range", 12.0);
     ok = ok && set_named(audio, 5, "OSC Balance", 0.4) && set_named(audio, 5, "Cutoff", 0.392);
-    ok = ok && set_named(audio, 5, "Resonance", 0.2) && set_named(audio, 5, "Key Follow", 1.0);
+    ok = ok && set_named(audio, 5, "Resonance", 0.2) && set_named(audio, 5, "Filter Key Follow", 1.0);
     ok = ok && set_named(audio, 5, "Filter Env Depth", 0.5 + 2.0 / 16.0) && set_named(audio, 5, "Filter Decay", 0.544);
     ok = ok && set_named(audio, 5, "Filter Sustain", 0.1) && set_named(audio, 5, "Amp Release", 0.4247);
     ok = ok && set_named(audio, 5, "Chorus", 0.0) && set_named(audio, 5, "Delay", 0.0);

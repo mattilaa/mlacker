@@ -59,7 +59,31 @@ def main():
                 tui.send(b" ")
             finally:
                 tui.close()
-    print("PASS: JP8000 bundle load, factory bank, editor, session round trip, audition project playback")
+        if len(sys.argv) > 5:
+            project = Path(folder) / "Filter key follow.mlaproj"
+            shutil.copytree(sys.argv[5], project)
+            tui = Terminal(str(project))
+            try:
+                frame = tui.read(1)
+                assert b"Atmosphere full" in frame and b"CC20" in frame and b"CC21" in frame, frame[-5000:]
+                frame = tui.send(b"M ", .8)
+                assert b"PLAY" in frame, frame[-5000:]
+                tui.send(b" ")
+            finally:
+                tui.close()
+        if len(sys.argv) > 6:
+            project = Path(folder) / "Filter slopes.mlaproj"
+            shutil.copytree(sys.argv[6], project)
+            tui = Terminal(str(project))
+            try:
+                frame = tui.read(1)
+                assert b"Atmosphere 24dB" in frame and b"CC22" in frame and b"CC23" in frame, frame[-5000:]
+                frame = tui.send(b"M ", .8)
+                assert b"PLAY" in frame, frame[-5000:]
+                tui.send(b" ")
+            finally:
+                tui.close()
+    print("PASS: JP8000 bundle load, factory bank, editor, session round trip, audition, sequencer key-follow and filter-slope project playback")
 
 
 if __name__ == "__main__":

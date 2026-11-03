@@ -128,7 +128,7 @@ fn arp_patch(system: &AudioSystem, slot: i64, follow: f64) -> bool {
     ok = ok && set_named(system, slot, "OSC 2 Range", 36.0) && set_named(system, slot, "OSC Balance", 0.2);
     ok = ok && set_named(system, slot, "Filter Type", 0.0) && set_named(system, slot, "Filter Slope", 0.0);
     ok = ok && set_named(system, slot, "Cutoff", 0.6) && set_named(system, slot, "Resonance", 0.12);
-    ok = ok && set_named(system, slot, "Key Follow", follow) && set_named(system, slot, "Mod Wheel", 0.0);
+    ok = ok && set_named(system, slot, "Filter Key Follow", follow) && set_named(system, slot, "Mod Wheel", 0.0);
     ok = ok && set_named(system, slot, "Wheel > Cutoff", 0.5 + 5.0 / 16.0);
     ok = ok && set_named(system, slot, "Filter Env Depth", 0.5 + 3.0 / 16.0);
     ok = ok && envelope(system, slot, "Filter", ms("1ms"), 0.6, 0.3, ms("150ms"));
@@ -296,7 +296,7 @@ fn main() -> i32 {
     var ok: bool = set_named(audio, 2, "Key Mode", 1.0) && set_named(audio, 2, "OSC 1 Wave", 5.0);
     ok = ok && set_named(audio, 2, "OSC 2 Wave", 2.0) && set_named(audio, 2, "OSC 2 Range", 12.0);
     ok = ok && set_named(audio, 2, "OSC Balance", 0.5) && set_named(audio, 2, "Cutoff", 0.3637);
-    ok = ok && set_named(audio, 2, "Resonance", 0.25) && set_named(audio, 2, "Key Follow", 1.0);
+    ok = ok && set_named(audio, 2, "Resonance", 0.25) && set_named(audio, 2, "Filter Key Follow", 1.0);
     ok = ok && set_named(audio, 2, "Filter Env Depth", 0.5 + 2.5 / 16.0);
     ok = ok && envelope(audio, 2, "Filter", ms("1ms"), ms("150ms"), 0.1, ms("50ms"));
     ok = ok && envelope(audio, 2, "Amp", ms("1ms"), ms("250ms"), 0.6, ms("50ms"));
@@ -312,7 +312,7 @@ fn main() -> i32 {
     ok = ok && set_named(audio, 3, "OSC Balance", 0.2) && set_named(audio, 3, "Tone Bass", 0.6667);
     ok = ok && set_named(audio, 3, "Tone Treble", 0.75);
     ok = ok && set_named(audio, 3, "Cutoff", 0.3333) && set_named(audio, 3, "Resonance", 0.15);
-    ok = ok && set_named(audio, 3, "Key Follow", 0.5) && set_named(audio, 3, "Wheel > Cutoff", 0.5 + 7.0 / 16.0);
+    ok = ok && set_named(audio, 3, "Filter Key Follow", 0.5) && set_named(audio, 3, "Wheel > Cutoff", 0.5 + 7.0 / 16.0);
     ok = ok && envelope(audio, 3, "Amp", ms("700ms"), ms("1s"), 1.0, ms("2s"));
     ok = ok && effects(audio, 3, 3.0, 0.6, 1.0, 4.0, 0.4, 0.2);
     // The two arpeggios: the same patch, Key Follow 0 % and 100 %.

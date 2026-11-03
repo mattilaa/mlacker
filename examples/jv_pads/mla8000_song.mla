@@ -98,7 +98,7 @@ fn supersaw(system: &AudioSystem, slot: i64, detune: f64, mix: f64, cutoff: f64,
     ok = ok && set_named(system, slot, "OSC 1 Ctrl 2", mix) && set_named(system, slot, "OSC Balance", 0.0);
     ok = ok && set_named(system, slot, "Filter Type", 0.0) && set_named(system, slot, "Filter Slope", 1.0);
     ok = ok && set_named(system, slot, "Cutoff", cutoff) && set_named(system, slot, "Resonance", resonance);
-    ok = ok && set_named(system, slot, "Key Follow", 0.5) && set_named(system, slot, "Mod Wheel", 0.0);
+    ok = ok && set_named(system, slot, "Filter Key Follow", 0.5) && set_named(system, slot, "Mod Wheel", 0.0);
     ok = ok && set_named(system, slot, "Wheel > Cutoff", 0.5 + wheel_octaves / 16.0);
     return ok;
 }

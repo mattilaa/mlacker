@@ -1,0 +1,217 @@
+/// Original 138 BPM pad studies guided by analysis of the Obsession reference.
+/// All notes, filter movement and slope changes are played by mlacker's sequencer.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::session::PresetResult;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::note_playback::NotePlayback;
+use mlacker_ui::bounce::Bounce;
+use std::audio::PcmBlock;
+use std::audio::PcmWavWriter;
+use std::env::detail::__env_get_var;
+use std::strbuf::clone;
+use std::strbuf::free;
+use tui::geometry::*;
+extern fn mlacker_install_vst3_host() -> void;
+
+fn tempo() -> i32 { return 138; }
+fn set_id(audio: &AudioSystem, slot: i64, id: i64, value: f64) -> bool {
+    var a: AudioSystem = AudioSystem {}; a = audio;
+    let count: i64 = i64(a.output.parameter_info(slot, 0, 0));
+    for i in 0..count {
+        if a.output.parameter_info(slot, i, 4) == f64(id) { return a.output.restore_parameter(slot, i, value) == 0; }
+    }
+    return false;
+}
+fn value_id(audio: &AudioSystem, slot: i64, id: i64) -> f64 {
+    var a: AudioSystem = AudioSystem {}; a = audio;
+    let count: i64 = i64(a.output.parameter_info(slot, 0, 0));
+    for i in 0..count {
+        if a.output.parameter_info(slot, i, 4) == f64(id) { return a.output.parameter_info(slot, i, 2); }
+    }
+    return -1.0;
+}
+fn project_name(project: i32) -> str8 {
+    if project == 0 { return "horizon"; }
+    if project == 1 { return "pulse"; }
+    return "glass";
+}
+fn preset_name(project: i32, slot: i32) -> str8 {
+    if project == 0 { return "Obsession Atmosphere"; }
+    if project == 1 { return slot == 1 ? "Velvet PWM" : "Silver Horizon"; }
+    return slot == 1 ? "Glass Tide" : "Warm Fifths";
+}
+fn section_name(project: i32, section: i32) -> str8 {
+    if project == 0 {
+        let names: list<str8> = ["Mist 24", "Rise 24", "Air 12", "Home 24"]; return names[section];
+    }
+    if project == 1 {
+        let names: list<str8> = ["Pulse 24", "Pulse opening", "Silver 12", "Pulse closing"]; return names[section];
+    }
+    let names: list<str8> = ["Glass 24", "Warm answer 24", "Glass octave 12", "Warm resolve 24"]; return names[section];
+}
+fn section_slot(project: i32, section: i32) -> i32 {
+    if project == 0 { return 1; }
+    if project == 1 { return section == 2 ? 2 : 1; }
+    return section % 2 == 1 ? 2 : 1;
+}
+fn slope_of(section: i32) -> i32 { return section == 2 ? 0 : 1; }
+fn sweep_start(section: i32) -> i32 {
+    if section == 0 { return 35; } if section == 1 { return 55; }
+    if section == 2 { return 78; } return 98;
+}
+fn sweep_end(section: i32) -> i32 {
+    if section == 0 { return 55; } if section == 1 { return 78; }
+    if section == 2 { return 98; } return 35;
+}
+fn chord_note(chord: i32, line: i32, high: bool, resolve: bool) -> str8 {
+    let roots: list<str8> = high ? ["F-4", "C#4", "G#4", "D#4"] : ["F-3", "C#3", "G#3", "D#3"];
+    let fifths: list<str8> = high ? ["C-5", "G#4", "D#5", "A#4"] : ["C-4", "G#3", "D#4", "A#3"];
+    let home_roots: list<str8> = ["C#3", "D#3", "F-3", "F-3"];
+    let home_fifths: list<str8> = ["G#3", "A#3", "C-4", "C-4"];
+    if resolve { return line == 0 ? home_roots[chord] : home_fifths[chord]; }
+    return line == 0 ? roots[chord] : fifths[chord];
+}
+fn note_at(table: &mut SequenceTable, row: i32, line: i32, note: str8, velocity: i32, length: str8) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let column: i32 = t.track_start(0) + line * 4;
+    t.set_cell(row, column, clone(note)); t.set_cell(row, column + 1, format!("{}", velocity));
+    t.set_cell(row, column + 2, clone(length)); t.set_cell(row, column + 3, clone("0.00")); table = t;
+}
+fn ramp(table: &mut SequenceTable, column: i32, rows: i32, first: i32, last: i32) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let span: i32 = rows * 4 - 1;
+    for r in 0..rows {
+        let step: i32 = i32(r) * 4;
+        let a: i32 = first + (last - first) * step / span;
+        let b: i32 = first + (last - first) * (step + 1) / span;
+        let c: i32 = first + (last - first) * (step + 2) / span;
+        let d: i32 = first + (last - first) * (step + 3) / span;
+        t.set_cell(i32(r), column, format!("{} {} {} {}", a, b, c, d));
+    }
+    table = t;
+}
+fn make_section(project: i32, section: i32) -> SequenceTable {
+    let pulse: bool = project == 1;
+    let rows: i32 = pulse ? 64 : 128;
+    let spacing: i32 = pulse ? 16 : 32;
+    let area: Rect = Rect::new(0, 0, 180, 40);
+    var t: SequenceTable = SequenceTable::empty(); t.set_length(rows, area);
+    t.create_instrument_track(section_slot(project, section), area);
+    t.rename_track(section_name(project, section)); t.ensure_note_lines(0, 2); t.rebuild_columns();
+    let cc20: i32 = t.add_automation(0, "cc:20"); let cc21: i32 = t.add_automation(0, "cc:21");
+    let cc22: i32 = t.add_automation(0, "cc:22"); let cc23: i32 = t.add_automation(0, "cc:23");
+    let cc74: i32 = t.add_automation(0, "cc:74"); let cc7: i32 = t.add_automation(0, "cc:7");
+    for chord in 0..4 {
+        let start: i32 = i32(chord) * spacing;
+        let hits: i32 = pulse ? 8 : 1;
+        for hit in 0..hits {
+            let row: i32 = start + i32(hit) * 2;
+            let velocity: i32 = pulse ? (hit % 2 == 0 ? 100 : 82) : 100;
+            for line in 0..2 {
+                note_at(&mut t, row, i32(line), chord_note(i32(chord), i32(line), section == 2, section == 3), velocity, pulse ? "1.40" : "28.00");
+            }
+        }
+        t.set_cell(start, t.automation_column(0, cc20), clone("127"));
+        t.set_cell(start, t.automation_column(0, cc21), clone("127"));
+        t.set_cell(start, t.automation_column(0, cc22), clone(slope_of(section) == 1 ? "127" : "0"));
+        t.set_cell(start, t.automation_column(0, cc23), clone(slope_of(section) == 1 ? "127" : "0"));
+    }
+    ramp(&mut t, t.automation_column(0, cc74), rows, sweep_start(section), sweep_end(section));
+    let wheel_start: list<i32> = [0, 12, 32, 48]; let wheel_end: list<i32> = [12, 32, 48, 0];
+    ramp(&mut t, t.automation_column(0, 1), rows, wheel_start[section], wheel_end[section]);
+    ramp(&mut t, t.automation_column(0, cc7), rows, project == 0 && section == 0 ? 109 : 127, section == 3 ? 111 : 127);
+    t.selected_column = t.track_start(0); return t;
+}
+fn verify(audio: &mut AudioSystem, table: &SequenceTable, section: i32, block: PcmBlock) -> bool {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let slot: i64 = i64(t.tracks[0].instrument_id);
+    set_id(audio, slot, 138, 0.0); set_id(audio, slot, 1138, 0.0);
+    set_id(audio, slot, 135, slope_of(section) == 1 ? 0.0 : 1.0); set_id(audio, slot, 1135, slope_of(section) == 1 ? 0.0 : 1.0);
+    audio.output.process(block, 256);
+    var playback: NotePlayback = NotePlayback {}; playback.update(t, 0, true);
+    audio.sequencer_events(playback.events, t); let status: i32 = audio.output.process(block, 256);
+    let ok: bool = status == 0 && value_id(audio, slot, 138) == 1.0 && value_id(audio, slot, 1138) == 1.0 &&
+        value_id(audio, slot, 135) == f64(slope_of(section)) && value_id(audio, slot, 1135) == f64(slope_of(section)) &&
+        value_id(audio, slot, 2012) == f64(sweep_start(section)) / 127.0;
+    playback.update(t, 15000, false); audio.sequencer_events(playback.events, t); audio.output.process(block, 256);
+    return ok;
+}
+fn preview(audio: &mut AudioSystem, library: &mut PatternLibrary, project: i32, folder: str8) -> bool {
+    if folder == "" { return true; }
+    let parts: i64 = audio.instrument_paths.len();
+    for slot in 1..parts + 1 { set_id(audio, slot, 2001, 0.0); set_id(audio, slot, 2001, 2.0 / 3.0); }
+    var job: Bounce = audio.bounce_begin(tempo()); if !job.ok() { println!("Preview: {}", job.error); return false; }
+    for section in 0..4 { library.select(i32(section) + 1); audio.bounce_segment(&mut job, library.table, 0, i32(library.table.rows.len()), []); }
+    let rate: i64 = job.rate;
+    let samples: list<f32> = audio.bounce_finish(job, library.table, 4);
+    var peak: f32 = 0.0f; var energy: f64 = 0.0;
+    for s in samples { if s != s { println!("Non-finite preview sample"); return false; } let v: f32 = s < 0.0f ? 0.0f - s : s; if v > peak { peak = v; } energy = energy + f64(s) * f64(s); }
+    if peak >= 0.98f || samples.len() == 0 || energy / f64(samples.len()) < 0.000001 { println!("Preview level invalid: peak {}", peak); return false; }
+    let path: str8 = format!("{}/{}.wav", folder, project_name(project));
+    let opened: result<PcmWavWriter, str8> = PcmWavWriter::create(path, rate); free(path);
+    if opened.is_err() { println!("Cannot create preview WAV"); return false; }
+    let writer: PcmWavWriter = opened.unwrap();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(256); if allocated.is_err() { return false; }
+    let block: PcmBlock = allocated.unwrap(); var at: i64 = 0;
+    while at < samples.len() / 2 {
+        let count: i64 = samples.len() / 2 - at < 256 ? samples.len() / 2 - at : 256;
+        for f in 0..count { block.set_stereo(f, samples[(at + f) * 2], samples[(at + f) * 2 + 1]); }
+        let written: result<i64, str8> = writer.write_pcm_block(block, count); if written.is_err() { block.close(); writer.close(); return false; }
+        at = at + count;
+    }
+    block.close(); let closed: result<i32, str8> = writer.close();
+    println!("Rendered {}: peak {}", project_name(project), peak); library.select(1); return closed.is_ok();
+}
+fn generate(project: i32, root: str8, render_folder: str8) -> bool {
+    let bundle: str8 = format!("{}/build/plugins/VST3/Release/MlaJP8000.vst3", root);
+    var audio: AudioSystem = AudioSystem::start(false); var library: PatternLibrary = PatternLibrary::empty();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(256); if allocated.is_err() { return false; }
+    let block: PcmBlock = allocated.unwrap(); let instruments: i32 = project == 0 ? 1 : 2;
+    for index in 0..instruments {
+        let slot: i64 = index + 1; let error: str8 = audio.add_instrument(bundle);
+        if error != "" { println!("Plugin: {}", error); return false; }
+        library.add_instrument(i32(slot), "Mla JP8000");
+        let path: str8 = format!("{}/plugins/mla_jp8000/presets/{}.mlapre", root, preset_name(project, i32(slot)));
+        let loaded: PresetResult = SessionCodec::preset_file(path, audio.output, slot, false, [], []); free(path);
+        if !loaded.ok { println!("Preset: {}", loaded.status); return false; } free(loaded.status);
+        for offset in [0, 1000] {
+            if !set_id(audio, slot, 134 + offset, 0.0) || !set_id(audio, slot, 135 + offset, 0.0) || !set_id(audio, slot, 138 + offset, 0.0) ||
+               !set_id(audio, slot, 136 + offset, project == 0 ? 0.5801208965 : (project == 1 ? 0.5510708379 : 0.6343633290)) ||
+               !set_id(audio, slot, 150 + offset, project == 1 ? 0.5197953115 : 0.7697953115) { println!("Cannot configure pad"); return false; }
+            if project == 1 && !set_id(audio, slot, 147 + offset, 0.3494850022) { return false; }
+        }
+        if !set_id(audio, slot, 2007, project == 1 ? 0.82 : 0.90) || !set_id(audio, slot, 2008, project == 1 ? 0.18 : 0.10) ||
+           !set_id(audio, slot, 2000, 1.0) { return false; }
+    }
+    free(bundle);
+    for section in 0..4 {
+        var table: SequenceTable = make_section(project, i32(section));
+        if !verify(&mut audio, table, i32(section), block) { println!("Sequencer verification failed in {}", section_name(project, i32(section))); return false; }
+        if section == 0 { library.table.release(); library.table = table; if !library.rename(section_name(project, 0)) { return false; } }
+        else { if !library.import_pattern(section_name(project, i32(section)), table, []) { return false; } }
+    }
+    for slot in 1..instruments + 1 {
+        set_id(audio, slot, 138, 0.0); set_id(audio, slot, 1138, 0.0);
+        set_id(audio, slot, 135, 0.0); set_id(audio, slot, 1135, 0.0);
+        set_id(audio, slot, 2012, 0.5); set_id(audio, slot, 2010, 0.0); set_id(audio, slot, 2000, 1.0);
+    }
+    library.song = [1, 2, 3, 4]; library.select(1); library.refresh();
+    let path: str8 = format!("examples/jp8000_obsession_{}.mlaproj", project_name(project));
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project(path, library, SessionView { bpm: tempo(), sidebar: 1, pane: 1, editor_slot: 1 }, audio); free(path);
+    if saved.is_err() { println!("Save: {}", saved.unwrap_err()); return false; }
+    println!("Saved {}; sequencer controls verified", saved.unwrap());
+    let ok: bool = preview(&mut audio, &mut library, project, render_folder);
+    block.close(); audio.release(); library.release(); return ok;
+}
+fn main() -> i32 {
+    mlacker_install_vst3_host(); let root: str8 = __env_get_var("JP8000_ROOT"); let folder: str8 = __env_get_var("JP8000_RENDER_DIR");
+    for project in 0..3 { if !generate(i32(project), root, folder) { return 1; } }
+    return 0;
+}

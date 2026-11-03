@@ -1451,6 +1451,41 @@ preset**. The default is a slowly opening Super Saw/PWM pad.
 after building the plugins or moving the checkout. The generator uses the
 built bundle directly and does not require installing it.
 
+For a sequencer-controlled filter key-follow comparison, run:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_keyfollow.mlaproj
+```
+
+Press **Shift+M**, then **Space**. Three pads play ascending C–G fifths, each
+at 100% then 0% tracking. The sequencer's CC20/CC21 columns control the two
+layers (`127` full, `0` off). Regenerate with
+`examples/jp8000_pads/build.sh keyfollow`.
+
+For the **24 dB/oct versus 12 dB/oct** comparison using those same pads:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_filter24.mlaproj
+```
+
+Press **Shift+M**, then **Space**. CC22/CC23 select the two layers' filter
+slopes (`127` for 24 dB/oct, `0` for 12 dB/oct), while CC20/CC21 keep key
+follow full. Regenerate with `examples/jp8000_pads/build.sh filter24`.
+
+Three more original **Obsession-inspired studies at 138 BPM** develop these
+pads into a slow build, an eighth-note pulse and a glassy pad exchange:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_obsession_horizon.mlaproj
+./build/cmake/bin/mlacker examples/jp8000_obsession_pulse.mlaproj
+./build/cmake/bin/mlacker examples/jp8000_obsession_glass.mlaproj
+```
+
+Open one at a time, then press **Shift+M**, **Space**. Each has four sequenced
+sections with full key follow, 24/12 dB slope changes and brightness sweeps.
+See [the example guide](examples/jp8000_pads#obsession-studies) for reference
+notes, regeneration and optional WAV previews.
+
 ## JV-style pad demos
 
 Three example projects show sampled pads in Mla Sampler, each through Juno

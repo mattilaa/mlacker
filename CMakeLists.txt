@@ -75,8 +75,10 @@ add_test(NAME vst3_host COMMAND mlacker_vst3_tests "$<TARGET_BUNDLE_DIR:MlackerT
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(MLA_JP8000_VST3 "${CMAKE_CURRENT_SOURCE_DIR}/build/plugins/VST3/Release/MlaJP8000.vst3")
 if(EXISTS "${MLA_JP8000_VST3}")
-    add_test(NAME jp8000_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/jp8000_tui_smoke.py" "$<TARGET_FILE:mlacker>" "${MLA_JP8000_VST3}" "${CMAKE_CURRENT_SOURCE_DIR}/plugins/mla_jp8000/presets" "${CMAKE_CURRENT_SOURCE_DIR}/examples/jp8000_pads.mlaproj")
+    add_test(NAME jp8000_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/jp8000_tui_smoke.py" "$<TARGET_FILE:mlacker>" "${MLA_JP8000_VST3}" "${CMAKE_CURRENT_SOURCE_DIR}/plugins/mla_jp8000/presets" "${CMAKE_CURRENT_SOURCE_DIR}/examples/jp8000_pads.mlaproj" "${CMAKE_CURRENT_SOURCE_DIR}/examples/jp8000_keyfollow.mlaproj" "${CMAKE_CURRENT_SOURCE_DIR}/examples/jp8000_filter24.mlaproj")
     set_tests_properties(jp8000_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 90)
+    add_test(NAME jp8000_obsession_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/jp8000_obsession_tui_smoke.py" "$<TARGET_FILE:mlacker>" "${CMAKE_CURRENT_SOURCE_DIR}/examples")
+    set_tests_properties(jp8000_obsession_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 45)
 endif()
 
 add_test(NAME versioning COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "test_*version*.py")

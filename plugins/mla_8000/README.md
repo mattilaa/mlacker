@@ -48,15 +48,54 @@ mod wheel every 16 frames. The effects run after the voices.
 - **Pitch envelope:** attack, decay and a depth of ±63 semitones, applied to
   both oscillators.
 - **Filter:** LPF, BPF or HPF at −12 or −24 dB/octave.
+  - **Filter Slope** selects **12 dB/oct** or **24 dB/oct**. CC22 switches
+    slope from mlacker: 0 for 12 dB/oct, 127 for 24 dB/oct.
   - It is built from topology-preserving state-variable filters. At −24 dB
     two run in series, with the resonance on the second.
   - Cutoff runs from 20 Hz to 20 kHz.
-  - Key Follow (0–100 %) is measured from C-4.
+  - **Filter Key Follow** (0–100 %) moves cutoff with the played note,
+    measured from C-4 (MIDI 60). At 0% cutoff stays fixed; at 100% an octave
+    up/down doubles/halves cutoff; 50% moves it half an octave per octave.
+    The existing parameter ID 138 and default 50% are retained.
+    In mlacker, a `cc:20` sequencer column sets its amount: 0 off, 127 full.
   - The envelope depth is ±8 octaves.
   - The input saturates gently, and the resonant peak saturates instead of
     growing without bound.
 - **Amp:** an ADSR with a linear attack and exponential decay and release
   (times to −60 dB), velocity sensitivity, and LFO tremolo.
+
+## Sequencer filter key follow
+
+In mlacker, add/configure a track automation column as `cc:20` and put `127`
+on the chord's row for full filter key follow. The sequencer sends that amount
+before the notes, so every voice's filter follows its own played pitch. Use
+`0` for a fixed cutoff, or about `64` for half tracking. This controls the
+amount of key tracking; it does not write the Cutoff knob itself (CC74).
+
+`examples/jp8000_keyfollow.mlaproj` uses the earlier two-part pad bank on
+Mla JP8000: CC20 controls its Upper filter and CC21 its Lower filter. Both
+columns contain `127` in the full-on patterns. Ascending C–G fifths make the
+same patches easy to compare against their 0% patterns:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_keyfollow.mlaproj
+```
+
+Press **Shift+M**, then **Space**. Generate it with
+`examples/jp8000_pads/build.sh keyfollow` after building the plugins.
+
+## Sequencer filter-slope comparison
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_filter24.mlaproj
+```
+
+Press **Shift+M**, then **Space**. The earlier Atmosphere, Velvet and Silver
+pads each play matching **24dB** and **12dB** patterns. Full key follow and
+ascending C–G fifths remain the same. CC22/CC23 select the slope of the
+JP8000's Upper/Lower filters; CC20/CC21 keep both at full key tracking.
+For Mla 8000, CC22 controls its single filter. This uses the existing slope
+parameter IDs, so previous presets remain compatible.
 
 ## Playing
 
@@ -106,6 +145,8 @@ mod wheel every 16 frames. The effects run after the voices.
 | 16, 17 | OSC 1 Ctrl 1, Ctrl 2 (Super Saw Detune, Mix) |
 | 18 | OSC Balance |
 | 19 | Filter Env Depth |
+| 20 | Filter Key Follow |
+| 22 | Filter Slope (0: 12 dB/oct, 127: 24 dB/oct) |
 | 71 | Resonance |
 | 72, 73, 75 | Amp Release, Attack, Decay |
 | 74 | Cutoff |
@@ -128,7 +169,7 @@ full list in ID order:
   OSC 2 Range, OSC 2 Fine, OSC 2 PW, OSC Sync, Ring Mod, Cross Mod,
   OSC Balance, LFO 1 Pitch, Pitch Env Depth, Pitch Env Attack,
   Pitch Env Decay.
-- **Filter:** Filter Type, Filter Slope, Cutoff, Resonance, Key Follow,
+- **Filter:** Filter Type, Filter Slope, Cutoff, Resonance, Filter Key Follow,
   LFO 1 Filter, Filter Env Depth, Filter Attack, Filter Decay,
   Filter Sustain, Filter Release.
 - **Amp:** Level, LFO 1 Amp, Amp Attack, Amp Decay, Amp Sustain, Amp Release.

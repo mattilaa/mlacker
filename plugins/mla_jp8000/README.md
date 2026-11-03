@@ -25,6 +25,12 @@ generic editor; stepped controls show their labels. Useful starting controls:
 
 - **Brightness** opens/closes both filters, independently of their individual
   settings. It is centered at 0.5 and has a ±4 octave range.
+- **Filter Slope** selects **12 dB/oct** or **24 dB/oct** for each layer.
+  Sequencer **CC22 / CC23** select Upper / Lower slope: `0` is 12 dB/oct,
+  `127` is 24 dB/oct.
+- **CC20 / CC21** from mlacker sequencer columns set Upper / Lower **Filter
+  Key Follow**. Put `127` in both for full tracking, or `0` for fixed cutoff.
+  Each note then moves its own filter around C4.
 - **Mod Wheel** follows each part's **Wheel > Cutoff** and **Wheel > LFO 1 Pitch**
   depths. The factory pads use it for a gradual lift in brightness.
 - **Part Detune**, **Upper Pan**, and **Lower Pan** set the layer spread.
@@ -106,6 +112,28 @@ Each is an isolated chord followed by space for its release and effects.
 The generator uses the bundle in this checkout; regenerate the project if the
 checkout moves. It does not require plugins installed into your home directory.
 
+`examples/jp8000_keyfollow.mlaproj` compares three of these pads at full and
+zero tracking, with ascending root–fifth chords. The sequencer's CC20/CC21
+columns drive both filter amounts; the saved patch amounts start at zero.
+Run `examples/jp8000_pads/build.sh keyfollow` to regenerate it, then:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_keyfollow.mlaproj
+```
+
+Press **Shift+M**, then **Space**. See the [example guide](../../examples/jp8000_pads/README.md).
+
+For a matching **24 dB versus 12 dB** pad comparison, run:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_filter24.mlaproj
+```
+
+Press **Shift+M**, then **Space**. CC22/CC23 select both filter slopes, and
+CC20/CC21 keep key follow full. Regenerate with
+`examples/jp8000_pads/build.sh filter24`. The generator verifies the actual
+sequencer-to-plugin selection of both slopes on both parts before saving.
+
 ## Validation and renders
 
 ```sh
@@ -125,9 +153,12 @@ bundle, imports every factory preset, opens its editor and reopens a session.
 ## Reference and limits
 
 The requested pad reference is [Matti Laamanen — Obsession (Original mix)](https://www.youtube.com/watch?v=GdwwJXsTSUo).
-YouTube metadata was available during development, but audio retrieval failed.
-The named performance is an original slow trance-pad design; an auditory or
-spectral match to that recording has **not** been verified.
+The original factory bank was designed before reference audio could be retrieved.
+The additional [Obsession studies](../../examples/jp8000_pads#obsession-studies)
+use analysis of the recording: an estimated 138 BPM and the wider, less
+bass-heavy passage around 3:20–4:00. Their notes and arrangements are original;
+an exact sound match has **not** been verified. The upload description credits
+both a JP-8000 and a JV-1080, so the recording is not a JP-8000-only reference.
 
 Architecture and control names were checked against Roland's
 [JP-8000 brochure](https://cdn.roland.com/assets/media/pdf/JP-8000.pdf) and

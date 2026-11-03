@@ -348,6 +348,61 @@ int main(int argc, char** argv)
                   id == kSustain,
               "sustain mapping");
     }
+    {
+        Fixture f;
+        f.dry(kDual);
+        ParamID upper = 0, lower = 0;
+        check(f.processor.getMidiControllerAssignment(0, 0, 20, upper) ==
+                      kResultOk &&
+                  upper == partId(0, mla_8000::kKeyFollowParam),
+              "CC20 maps upper filter key follow");
+        check(f.processor.getMidiControllerAssignment(0, 0, 21, lower) ==
+                      kResultOk &&
+                  lower == partId(1, mla_8000::kKeyFollowParam),
+              "CC21 maps lower filter key follow");
+        ParamID upperSlope = 0, lowerSlope = 0;
+        check(f.processor.getMidiControllerAssignment(0, 0, 22, upperSlope) ==
+                      kResultOk &&
+                  upperSlope == partId(0, mla_8000::kFilterSlopeParam),
+              "CC22 maps upper filter slope");
+        check(f.processor.getMidiControllerAssignment(0, 0, 23, lowerSlope) ==
+                      kResultOk &&
+                  lowerSlope == partId(1, mla_8000::kFilterSlopeParam),
+              "CC23 maps lower filter slope");
+        f.set(upperSlope, 1);
+        f.set(lowerSlope, 1);
+        f.set(upper, 1);
+        f.set(lower, 1);
+        f.note(72);
+        auto out = f.render(4096);
+        MemoryStream state;
+        f.processor.getState(&state);
+        state.seek(0, IBStream::kIBSeekSet, nullptr);
+        IBStreamer saved(&state, kLittleEndian);
+        uint32 magic, version, id;
+        int32 count;
+        double value;
+        saved.readInt32u(magic);
+        saved.readInt32u(version);
+        saved.readInt32(count);
+        bool u = false, l = false, us = false, ls = false;
+        for(int i = 0; i < count; ++i)
+        {
+            saved.readInt32u(id);
+            saved.readDouble(value);
+            if(id == upper)
+                u = value == 1;
+            if(id == lower)
+                l = value == 1;
+            if(id == upperSlope)
+                us = value == 1;
+            if(id == lowerSlope)
+                ls = value == 1;
+        }
+        check(us && ls, "both layers retain 24 dB filter selection");
+        check(u && l && rms(out.left) > .02,
+              "both layers retain sequencer key follow at 100 percent");
+    }
     for(int mode : {kSingleUpper, kSingleLower, kDual})
     {
         Fixture f;

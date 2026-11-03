@@ -361,11 +361,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         addMapped(kPitchEnvDecayParam, "Pitch Env Decay", nullptr, normFor(0.2, timeFromNorm), formatTime);
 
         addList(kFilterTypeParam, "Filter Type", {"LPF", "BPF", "HPF"}, 0);
-        addList(kFilterSlopeParam, "Filter Slope", {"-12 dB", "-24 dB"}, 1);
+        addList(kFilterSlopeParam, "Filter Slope", {"12 dB/oct", "24 dB/oct"}, 1);
         addMapped(kCutoffParam, "Cutoff", "Hz", normFor(8000.0, cutoffFromNorm),
                   [](double n, char *s, size_t z) { std::snprintf(s, z, "%.0f", cutoffFromNorm(n)); });
         addPercent(kResonanceParam, "Resonance", 0.15);
-        addPercent(kKeyFollowParam, "Key Follow", 0.5);
+        addPercent(kKeyFollowParam, "Filter Key Follow", 0.5);
         addBipolar(kLfo1FilterParam, "LFO 1 Filter", "oct", 0.5, 4.0);
         addBipolar(kFilterEnvDepthParam, "Filter Env Depth", "oct", 0.5, 8.0);
         addMapped(kFilterAttackParam, "Filter Attack", nullptr, 0.0, formatTime);
@@ -415,6 +415,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             case 17: id = kOsc1Ctrl2Param; return kResultOk; // Super Saw Mix
             case 18: id = kBalanceParam; return kResultOk;
             case 19: id = kFilterEnvDepthParam; return kResultOk;
+            case 20: id = kKeyFollowParam; return kResultOk; // Filter key tracking from sequencer CC20
+            case 22: id = kFilterSlopeParam; return kResultOk; // 0=12 dB/oct, 127=24 dB/oct
             case 71: id = kResonanceParam; return kResultOk;
             case 72: id = kAmpReleaseParam; return kResultOk;
             case 73: id = kAmpAttackParam; return kResultOk;
@@ -977,7 +979,10 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         const double hz1 = 440.0 * std::exp2((semis - 69.0) / 12.0);
         const double range = stepValue(kOsc2RangeParam, -24) + bi(kOsc2FineParam, 50.0) / 100.0;
         const double velocity = std::clamp(static_cast<double>(voice.velocity), 0.0, 1.0);
-        const double octaves = norm(kKeyFollowParam) * (voice.pitch + partPitch_ - 60.0) / 12.0 + brightness_ + lfo1 * bi(kLfo1FilterParam, 4.0) +
+        // The sequencer's note pitch moves the cutoff around C4: at 100%,
+        // each octave played moves the filter by one octave. CC20 sets the amount.
+        const double keyOctaves = norm(kKeyFollowParam) * (voice.pitch + partPitch_ - 60.0) / 12.0;
+        const double octaves = keyOctaves + brightness_ + lfo1 * bi(kLfo1FilterParam, 4.0) +
                                lfo2 * bi(kLfo2FilterParam, 4.0) + wheel * bi(kWheelCutoffParam, 8.0) -
                                norm(kVelocityFilterParam) * 4.0 * (1.0 - velocity);
         const double cutoff = std::clamp(cutoffFromNorm(norm(kCutoffParam)) * std::exp2(octaves), 10.0, 22000.0);
