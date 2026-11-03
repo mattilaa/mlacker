@@ -63,21 +63,22 @@ fn clampf(value: f32, low: f32, high: f32) -> f32 {
 }
 
 /// Szabo's fit of the JP-8000's Detune knob (0-1) to the scale of the side
-/// saws' frequency offsets: gentle up to about 0.6, then steep.
+/// saws' frequency offsets: gentle up to about 0.6, then steep. Evaluate
+/// in f64: cancellation near full detune otherwise shifts the outer saws.
 fn supersaw_detune(x: f32) -> f32 {
-    var y: f32 = 10028.7312891634f;
-    y = y * x - 50818.8652045924f;
-    y = y * x + 111363.4808729368f;
-    y = y * x - 138150.6761080548f;
-    y = y * x + 106649.6679158292f;
-    y = y * x - 53046.9642751875f;
-    y = y * x + 17019.9518580080f;
-    y = y * x - 3425.0836591318f;
-    y = y * x + 404.2703938388f;
-    y = y * x - 24.1878824391f;
-    y = y * x + 0.6717417634f;
-    y = y * x + 0.0030115596f;
-    return y;
+    var y: f64 = 10028.7312891634;
+    y = y * f64(x) - 50818.8652045924;
+    y = y * f64(x) + 111363.4808729368;
+    y = y * f64(x) - 138150.6761080548;
+    y = y * f64(x) + 106649.6679158292;
+    y = y * f64(x) - 53046.9642751875;
+    y = y * f64(x) + 17019.9518580080;
+    y = y * f64(x) - 3425.0836591318;
+    y = y * f64(x) + 404.2703938388;
+    y = y * f64(x) - 24.1878824391;
+    y = y * f64(x) + 0.6717417634;
+    y = y * f64(x) + 0.0030115596;
+    return f32(y);
 }
 
 /// The seven saws' frequency offsets at full detune, centre saw at 0.
@@ -112,9 +113,10 @@ fn wrap(phase: f32) -> f32 {
 
 fn saw(t: f32, dt: f32) -> f32 { return 2.0f * t - 1.0f - blep(t, dt); }
 
-/// A pulse high for `width` of the cycle: the difference of two saws.
+/// A zero-mean pulse, high for `width` of the cycle. The saw difference
+/// already removes DC; adding the duty offset back biases the filter on PWM.
 fn pulse(t: f32, dt: f32, width: f32) -> f32 {
-    return saw(t, dt) - saw(wrap(t + width), dt) + 2.0f * width - 1.0f;
+    return saw(t, dt) - saw(wrap(t + width), dt);
 }
 
 fn triangle(t: f32) -> f32 { return 4.0f * fabsf(t - 0.5f) - 1.0f; }
@@ -256,8 +258,7 @@ impl Jp8Voice {
         }
     }
 
-    fn supersaw(self: &mut Self) -> f32 {
-        let base: f32 = self.dt1;
+    fn supersaw(self: &mut Self, base: f32) -> f32 {
         var out: f32 = 0.0f;
         let d: f32 = self.spread;
         let d0: f32 = base * (1.0f + supersaw_offset(0) * d);
@@ -334,7 +335,7 @@ impl Jp8Voice {
         if self.cross > 0.0f { dt = clampf(dt * (1.0f + self.cross * 4.0f * self.last2), 0.0f, 0.45f); }
         var one: f32 = 0.0f;
         if self.wave1 == 0 {
-            one = self.supersaw();
+            one = self.supersaw(dt);
             self.phase1 = wrap(before + dt);
         } else {
             one = self.osc1(dt);

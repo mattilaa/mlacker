@@ -1,0 +1,66 @@
+/// Original pad audition project. Uses the built bundle and the shipped preset
+/// bank; no installed plugins or audio hardware are needed to generate it.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+mod mlacker_ui::patterns;
+mod mlacker_ui::sequence;
+mod mlacker_ui::session;
+mod mlacker_ui::audio_controller;
+mod std::env::detail;
+mod tui::geometry;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::session::PresetResult;
+use mlacker_ui::audio_controller::AudioSystem;
+use std::env::detail::__env_get_var;
+use std::strbuf::clone;
+use std::strbuf::free;
+use tui::geometry::*;
+extern fn mlacker_install_vst3_host() -> void;
+
+fn pattern(slot: i32, name: str8) -> SequenceTable {
+    var table: SequenceTable = SequenceTable::empty();
+    let area: Rect = Rect::new(0, 0, 160, 35);
+    table.set_length(96, area);
+    table.create_instrument_track(slot, area); table.rename_track(name);
+    table.ensure_note_lines(0, 4); table.rebuild_columns();
+    let notes: list<str8> = slot == 6 ? ["C-2", "C-4", "D#4", "G-4"] : ["C-3", "G-3", "C-4", "D#4"];
+    for line in 0..4 {
+        let column: i32 = table.track_start(0) + i32(line) * 4;
+        table.set_cell(0, column, clone(notes[line]));
+        table.set_cell(0, column + 1, clone("100"));
+        table.set_cell(0, column + 2, clone("48.00"));
+        table.set_cell(0, column + 3, clone("0.00"));
+    }
+    return table;
+}
+fn main() -> i32 {
+    mlacker_install_vst3_host();
+    let root: str8 = __env_get_var("JP8000_ROOT");
+    let bundle: str8 = format!("{}/build/plugins/VST3/Release/MlaJP8000.vst3", root);
+    let names: list<str8> = ["Obsession Atmosphere", "Velvet PWM", "Silver Horizon", "Glass Tide", "Warm Fifths", "Midnight Split"];
+    var audio: AudioSystem = AudioSystem::start(false);
+    var library: PatternLibrary = PatternLibrary::empty();
+    for i in 0..6 {
+        let error: str8 = audio.add_instrument(bundle);
+        if error != "" { println!("Cannot load JP8000: {}", error); audio.release(); return 1; }
+        library.add_instrument(i32(i) + 1, "Mla JP8000");
+        let path: str8 = format!("{}/plugins/mla_jp8000/presets/{}.mlapre", root, names[i]);
+        let loaded: PresetResult = SessionCodec::preset_file(path, audio.output, i + 1, false, [], []);
+        free(path);
+        if !loaded.ok { println!("Preset {}: {}", names[i], loaded.status); audio.release(); return 1; }
+        free(loaded.status);
+        var table: SequenceTable = pattern(i32(i) + 1, names[i]);
+        if i == 0 { library.table.release(); library.table = table; library.rename(names[i]); }
+        else { if !library.import_pattern(names[i], table, []) { println!("Cannot add pattern"); audio.release(); return 1; } }
+    }
+    library.song = [1, 2, 3, 4, 5, 6]; library.select(1); library.refresh();
+    let view: SessionView = SessionView { bpm: 120, sidebar: 1, editor_slot: 1 };
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project("examples/jp8000_pads.mlaproj", library, view, audio);
+    if saved.is_err() { println!("Save failed: {}", saved.unwrap_err()); audio.release(); return 1; }
+    println!("Saved {}", saved.unwrap()); audio.release(); return 0;
+}

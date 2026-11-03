@@ -9,7 +9,9 @@ own carrier synth), [Mla Speech](plugins/mla_speech) (an Atari ST style
 speech synthesizer that says a pattern's comment texts),
 [Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines),
 [Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write) and
-[Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+[Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) and
+[Mla JP8000](plugins/mla_jp8000) (a two-part, eight-voice performance synth with
+Single/Dual/Split modes and an original pad bank) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 The [Turbo OutRun projects](examples/turbo_outrun) include the C64 loading music
@@ -1435,6 +1437,19 @@ pads) and play along while the song (Song matrix) or a pattern plays.
 
 The status line also shows the last MIDI message received, when it fits:
 `CH10 C-2 v100`, `CH1 CC74=64`, `CH1 PB 0`, `KNOB 7=64`.
+
+## JP8000 layered pads
+
+[Mla JP8000](plugins/mla_jp8000) has independent Upper/Lower patches, a shared
+eight-voice budget, separate chorus/delay settings, MIDI-channel assignments,
+and six original pad performances. Load `MlaJP8000.vst3`, then choose a preset
+from `plugins/mla_jp8000/presets` with **Instrument > Presets > Load plugin
+preset**. The default is a slowly opening Super Saw/PWM pad.
+
+`examples/jp8000_pads.mlaproj` auditions all six performances. Open it, press
+**Shift+M**, then **Space**. Regenerate it with `examples/jp8000_pads/build.sh`
+after building the plugins or moving the checkout. The generator uses the
+built bundle directly and does not require installing it.
 
 ## JV-style pad demos
 
