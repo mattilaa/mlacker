@@ -121,3 +121,103 @@ the actual sequencer/audio controller in every pattern. Optional WAVs are
 `horizon.wav`, `pulse.wav` and `glass.wav` in the render directory, with a
 four-second maximum tail. Their levels include mlacker's normal playback gain;
 no separate preview normalization is applied. Reference audio is not included.
+
+## Super Saw detune studies
+
+Three more projects focus on oscillator detune, all at 138 BPM:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_detune_steps.mlaproj
+./build/cmake/bin/mlacker examples/jp8000_detune_sweep.mlaproj
+./build/cmake/bin/mlacker examples/jp8000_detune_layers.mlaproj
+```
+
+Open one, press **Shift+M**, then **Space** to play all four patterns.
+
+| Project | What to listen for |
+| --- | --- |
+| Steps | The same C4, then C4/G4 fifth at CC16 values 0, 32, 64 and 127 (approximately 0%, 25%, 50% and 100% detune). Single Upper, fixed 8000 Hz cutoff and 24 dB filter, no chorus or delay. |
+| Sweep | A held C4/G4 fifth widens 0→127, then narrows 127→0. Next, detune stays at 96 while Super Saw Mix rises 0→127; the final section holds that wide detune and maximum mix. No chorus or delay. |
+| Layers | Two Super Saw parts, panned apart, play F–Db–Ab–Eb fifths. Detune is first tight/wide (20/100), then wide/tight (100/20), then both widen 20→100 and return 100→20. A darker 24 dB filter, full saved key follow, slower envelopes and panning delay make a musical pad. Chorus is off. |
+
+These use **OSC 1 Ctrl 1**, the Super Saw detune control, rather than Unison
+Detune or Part Detune. Those additional pitch offsets and pitch LFOs are
+neutralized. Both parts use Super Saw alone (OSC Balance = 0). The dry
+comparisons keep settings and velocities fixed; natural level changes from
+interference are retained rather than individually normalized. The detune
+control has a nonlinear curve, so halfway on the knob is not halfway to the
+maximum frequency spread.
+
+| Sequencer column | Parameter |
+| --- | --- |
+| CC16 | Upper OSC 1 Ctrl 1: Super Saw detune |
+| CC17 | Upper OSC 1 Ctrl 2: Super Saw mix |
+| CC24 | Lower OSC 1 Ctrl 1: Super Saw detune |
+| CC25 | Lower OSC 1 Ctrl 2: Super Saw mix |
+
+For the other OSC 1 waveforms these same controls retain their waveform-specific
+meaning. Detune and mix are saved at zero in these projects; their sequencer
+columns supply the values on playback. Continuous examples use four automation
+substeps per row, including while notes sustain. Rebuild the plugin for the
+new Lower-part CC24/CC25 mappings, then regenerate if the checkout moves:
+
+```sh
+./build.sh --plugins
+examples/jp8000_pads/build.sh detune
+# Optional original WAV previews through the normal playback pipeline:
+JP8000_RENDER_DIR="$PWD/build/jp8000/detune" examples/jp8000_pads/build.sh detune
+```
+
+The generator verifies both layers' detune and mix through the actual
+sequencer/audio controller at the first and last rows of every pattern.
+Optional previews are `detune_steps.wav`, `detune_sweep.wav` and
+`detune_layers.wav`; Steps lasts about 28 seconds, Sweep and Layers about
+56 seconds, before the release/effect tail.
+
+## Trance lead: cutoff, resonance and envelope boost
+
+`jp8000_trance_lead.mlaproj` is an original 138 BPM late-1990s trance lead
+study, prompted by the requested System F / Out Of The Blue reference. It
+uses its own syncopated melody, rather than a transcription of that song.
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_trance_lead.mlaproj
+```
+
+Press **Shift+M**, then **Space**. Four eight-bar patterns repeat the same
+original notes and velocities so the filter changes are clear:
+
+| Section | Cutoff movement (CC74) | Resonance (CC71) | Filter envelope boost (CC19) |
+| --- | --- | --- | --- |
+| Veiled lead | 26→42 | 20 | 68→76 |
+| Filter opening | 42→82 | 20 | 76→88 |
+| Resonant crest | 82 | 20→82 | 88 |
+| Filter return | 82→26 | 82→20 | 88→68 |
+
+The plugin's **CC74 Brightness** moves cutoff around a fixed 1000 Hz base.
+With key follow, filter LFOs and velocity-to-filter disabled, the base cutoff
+opens approximately **195→391→2240 Hz**, before the per-note filter envelope.
+The envelope adds a short positive boost on each note: **4 ms attack, 300 ms
+decay, 12% sustain, 100 ms release**. CC19 controls its bipolar depth: 64 is
+near neutral; 68, 76 and 88 give approximately +0.57, +1.57 and +3.09 octaves
+at the envelope peak. The stronger envelope accents make the opening build
+more pronounced; they then recede on the return. It is a filter envelope,
+not an output-volume boost.
+
+The single Upper part uses Super Saw, CC16 detune 78, CC17 mix 102 and a
+sequencer-selected 24 dB/oct low-pass filter (CC22 = 127). Chorus is off;
+a dotted-eighth panning delay fills the gaps. All six automation columns
+play from the sequencer, with four substeps per row for the continuous ramps.
+
+Regenerate and optionally render a preview:
+
+```sh
+examples/jp8000_pads/build.sh lead
+JP8000_RENDER_DIR="$PWD/build/jp8000/lead" examples/jp8000_pads/build.sh lead
+```
+
+The optional output is `trance_lead.wav` (about 56 seconds plus its tail).
+The generator verifies cutoff, resonance, envelope depth, detune, mix and
+filter slope through the actual sequencer/audio controller at two phrase
+boundaries in every section. Saved controls are neutral; playback sets the
+filter treatment from the sequence.

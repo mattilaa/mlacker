@@ -9,7 +9,9 @@ case "${1:-pads}" in
     keyfollow) task_source=examples/jp8000_pads/keyfollow.mla ;;
     filter24) task_source=examples/jp8000_pads/keyfollow.mla; task_filter=1 ;;
     obsession) task_source=examples/jp8000_pads/obsession.mla ;;
-    *) echo "Usage: $0 [pads|keyfollow|filter24|obsession]" >&2; exit 2 ;;
+    detune) task_source=examples/jp8000_pads/detune.mla ;;
+    lead) task_source=examples/jp8000_pads/trance_lead.mla ;;
+    *) echo "Usage: $0 [pads|keyfollow|filter24|obsession|detune|lead]" >&2; exit 2 ;;
 esac
 task_work="$task_root/build/jp8000"
 mkdir -p "$task_work"

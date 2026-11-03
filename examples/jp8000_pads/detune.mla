@@ -1,0 +1,205 @@
+/// Super Saw detune studies: dry steps, continuous sweeps and independent layers.
+/// All notes, filter movement and slope changes are played by mlacker's sequencer.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::session::PresetResult;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::note_playback::NotePlayback;
+use mlacker_ui::bounce::Bounce;
+use std::audio::PcmBlock;
+use std::audio::PcmWavWriter;
+use std::env::detail::__env_get_var;
+use std::strbuf::clone;
+use std::strbuf::free;
+use tui::geometry::*;
+extern fn mlacker_install_vst3_host() -> void;
+
+fn tempo() -> i32 { return 138; }
+fn project_name(project: i32) -> str8 {
+    if project == 0 { return "detune_steps"; }
+    if project == 1 { return "detune_sweep"; }
+    return "detune_layers";
+}
+fn section_name(project: i32, section: i32) -> str8 {
+    if project == 0 { let names: list<str8> = ["Dry zero", "Dry quarter", "Dry half", "Dry maximum"]; return names[section]; }
+    if project == 1 { let names: list<str8> = ["Slow widening", "Slow narrowing", "Wide with center", "Wide side mix"]; return names[section]; }
+    let names: list<str8> = ["Tight and wide", "Wide and tight", "Both opening", "Both returning"]; return names[section];
+}
+fn first_detune(project: i32, section: i32, lower: bool) -> i32 {
+    if project == 0 { let levels: list<i32> = [0, 32, 64, 127]; return levels[section]; }
+    if project == 1 { return section == 0 ? 0 : (section == 1 ? 127 : 96); }
+    let upper: list<i32> = [20, 100, 20, 100]; let bottom: list<i32> = [100, 20, 20, 100];
+    return lower ? bottom[section] : upper[section];
+}
+fn last_detune(project: i32, section: i32, lower: bool) -> i32 {
+    if project == 0 { return first_detune(project, section, lower); }
+    if project == 1 { return section == 0 ? 127 : (section == 1 ? 0 : 96); }
+    if section == 2 { return 100; } if section == 3 { return 20; }
+    return first_detune(project, section, lower);
+}
+fn first_mix(project: i32, section: i32) -> i32 { return project == 1 ? (section == 2 ? 0 : (section == 3 ? 127 : 100)) : 100; }
+fn last_mix(project: i32, section: i32) -> i32 { return project == 1 && section >= 2 ? 127 : 100; }
+fn set_id(audio: &AudioSystem, slot: i64, id: i64, value: f64) -> bool {
+    var a: AudioSystem = AudioSystem {}; a = audio;
+    let count: i64 = i64(a.output.parameter_info(slot, 0, 0));
+    for i in 0..count {
+        if a.output.parameter_info(slot, i, 4) == f64(id) { return a.output.restore_parameter(slot, i, value) == 0; }
+    }
+    return false;
+}
+fn value_id(audio: &AudioSystem, slot: i64, id: i64) -> f64 {
+    var a: AudioSystem = AudioSystem {}; a = audio;
+    let count: i64 = i64(a.output.parameter_info(slot, 0, 0));
+    for i in 0..count {
+        if a.output.parameter_info(slot, i, 4) == f64(id) { return a.output.parameter_info(slot, i, 2); }
+    }
+    return -1.0;
+}
+fn note_at(table: &mut SequenceTable, row: i32, line: i32, note: str8, velocity: i32, length: str8) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let column: i32 = t.track_start(0) + line * 4;
+    t.set_cell(row, column, clone(note)); t.set_cell(row, column + 1, format!("{}", velocity));
+    t.set_cell(row, column + 2, clone(length)); t.set_cell(row, column + 3, clone("0.00")); table = t;
+}
+fn ramp(table: &mut SequenceTable, column: i32, rows: i32, first: i32, last: i32) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let span: i32 = rows * 4 - 1;
+    for r in 0..rows {
+        let step: i32 = i32(r) * 4;
+        let a: i32 = first + (last - first) * step / span;
+        let b: i32 = first + (last - first) * (step + 1) / span;
+        let c: i32 = first + (last - first) * (step + 2) / span;
+        let d: i32 = first + (last - first) * (step + 3) / span;
+        t.set_cell(i32(r), column, format!("{} {} {} {}", a, b, c, d));
+    }
+    table = t;
+}
+fn make_section(project: i32, section: i32) -> SequenceTable {
+    let rows: i32 = project == 0 ? 64 : 128;
+    let area: Rect = Rect::new(0, 0, 180, 40);
+    var t: SequenceTable = SequenceTable::empty(); t.set_length(rows, area);
+    t.create_instrument_track(1, area); t.rename_track(section_name(project, section));
+    t.ensure_note_lines(0, 2); t.rebuild_columns();
+    t.configure_slot(1, "cc:16"); let mix: i32 = t.add_automation(0, "cc:17");
+    let lower_detune: i32 = t.add_automation(0, "cc:24"); let lower_mix: i32 = t.add_automation(0, "cc:25");
+    ramp(&mut t, t.automation_column(0, 1), rows, first_detune(project, section, false), last_detune(project, section, false));
+    ramp(&mut t, t.automation_column(0, mix), rows, first_mix(project, section), last_mix(project, section));
+    ramp(&mut t, t.automation_column(0, lower_detune), rows, first_detune(project, section, true), last_detune(project, section, true));
+    ramp(&mut t, t.automation_column(0, lower_mix), rows, 100, 100);
+    if project == 0 {
+        note_at(&mut t, 0, 0, "C-4", 100, "24.00");
+        note_at(&mut t, 32, 0, "C-4", 100, "24.00"); note_at(&mut t, 32, 1, "G-4", 100, "24.00");
+    } else if project == 1 {
+        // Hold one fifth while both widening and narrowing continue through the sustain.
+        note_at(&mut t, 0, 0, "C-4", 100, "120.00"); note_at(&mut t, 0, 1, "G-4", 100, "120.00");
+    } else {
+        let roots: list<str8> = ["F-3", "C#3", "G#3", "D#3"];
+        let fifths: list<str8> = ["C-4", "G#3", "D#4", "A#3"];
+        for chord in 0..4 {
+            note_at(&mut t, i32(chord) * 32, 0, roots[chord], 100, "28.00");
+            note_at(&mut t, i32(chord) * 32, 1, fifths[chord], 100, "28.00");
+        }
+    }
+    t.selected_column = t.track_start(0); return t;
+}
+fn verify(audio: &mut AudioSystem, table: &SequenceTable, project: i32, section: i32, block: PcmBlock) -> bool {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    // Exercise both the first and final ramp values via actual sequencer events.
+    for end in 0..2 {
+        for id in [120, 121, 1120, 1121] { if !set_id(audio, 1, id, 0.123) { return false; } }
+        if audio.output.process(block, 256) != 0 { return false; }
+        var playback: NotePlayback = NotePlayback {};
+        let row: i64 = end == 0 ? 0 : t.rows.len() - 1;
+        playback.update(t, row * 15000, true);
+        audio.sequencer_events(playback.events, t); if audio.output.process(block, 256) != 0 { return false; }
+        // At the final row this first block receives the row's first substep.
+        let span: i32 = i32(t.rows.len()) * 4 - 1;
+        let step: i32 = i32(row) * 4;
+        let u: i32 = first_detune(project, section, false) + (last_detune(project, section, false) - first_detune(project, section, false)) * step / span;
+        let l: i32 = first_detune(project, section, true) + (last_detune(project, section, true) - first_detune(project, section, true)) * step / span;
+        let m: i32 = first_mix(project, section) + (last_mix(project, section) - first_mix(project, section)) * step / span;
+        if value_id(audio, 1, 120) != f64(u) / 127.0 || value_id(audio, 1, 1120) != f64(l) / 127.0 ||
+           value_id(audio, 1, 121) != f64(m) / 127.0 || value_id(audio, 1, 1121) != 100.0 / 127.0 { return false; }
+        playback.update(t, row * 15000 + 15000, false); audio.sequencer_events(playback.events, t); audio.output.process(block, 256);
+    }
+    return true;
+}
+fn preview(audio: &mut AudioSystem, library: &mut PatternLibrary, project: i32, folder: str8) -> bool {
+    if folder == "" { return true; }
+    let parts: i64 = audio.instrument_paths.len();
+    for slot in 1..parts + 1 { set_id(audio, slot, 2001, 1.0 / 3.0); set_id(audio, slot, 2001, project == 2 ? 2.0 / 3.0 : 0.0); }
+    var job: Bounce = audio.bounce_begin(tempo()); if !job.ok() { println!("Preview: {}", job.error); return false; }
+    for section in 0..4 { library.select(i32(section) + 1); audio.bounce_segment(&mut job, library.table, 0, i32(library.table.rows.len()), []); }
+    let rate: i64 = job.rate;
+    let samples: list<f32> = audio.bounce_finish(job, library.table, 4);
+    var peak: f32 = 0.0f; var energy: f64 = 0.0;
+    for s in samples { if s != s { println!("Non-finite preview sample"); return false; } let v: f32 = s < 0.0f ? 0.0f - s : s; if v > peak { peak = v; } energy = energy + f64(s) * f64(s); }
+    if peak >= 0.98f || samples.len() == 0 || energy / f64(samples.len()) < 0.000001 { println!("Preview level invalid: peak {}", peak); return false; }
+    let path: str8 = format!("{}/{}.wav", folder, project_name(project));
+    let opened: result<PcmWavWriter, str8> = PcmWavWriter::create(path, rate); free(path);
+    if opened.is_err() { println!("Cannot create preview WAV"); return false; }
+    let writer: PcmWavWriter = opened.unwrap();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(256); if allocated.is_err() { return false; }
+    let block: PcmBlock = allocated.unwrap(); var at: i64 = 0;
+    while at < samples.len() / 2 {
+        let count: i64 = samples.len() / 2 - at < 256 ? samples.len() / 2 - at : 256;
+        for f in 0..count { block.set_stereo(f, samples[(at + f) * 2], samples[(at + f) * 2 + 1]); }
+        let written: result<i64, str8> = writer.write_pcm_block(block, count); if written.is_err() { block.close(); writer.close(); return false; }
+        at = at + count;
+    }
+    block.close(); let closed: result<i32, str8> = writer.close();
+    println!("Rendered {}: peak {}", project_name(project), peak); library.select(1); return closed.is_ok();
+}
+fn generate(project: i32, root: str8, render_folder: str8) -> bool {
+    let bundle: str8 = format!("{}/build/plugins/VST3/Release/MlaJP8000.vst3", root);
+    var audio: AudioSystem = AudioSystem::start(false); var library: PatternLibrary = PatternLibrary::empty();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(256); if allocated.is_err() { return false; }
+    let block: PcmBlock = allocated.unwrap();
+    let error: str8 = audio.add_instrument(bundle); free(bundle);
+    if error != "" { println!("Plugin: {}", error); return false; }
+    library.add_instrument(1, "Mla JP8000");
+    let path: str8 = format!("{}/plugins/mla_jp8000/presets/Obsession Atmosphere.mlapre", root);
+    let loaded: PresetResult = SessionCodec::preset_file(path, audio.output, 1, false, [], []); free(path);
+    if !loaded.ok { println!("Preset: {}", loaded.status); return false; } free(loaded.status);
+    for offset in [0, 1000] {
+        // Remove other pitch movement, oscillator 2, EQ and distortion so detune is audible.
+        let ids: list<i64> = [101, 108, 109, 110, 111, 116, 117, 118, 119, 124, 126, 127, 128, 129, 130, 131, 132, 134, 135, 136, 137, 138, 139, 140, 145, 146, 147, 148, 149, 150, 151, 152, 153, 157, 162];
+        let values: list<f64> = [0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0, 0.8673533304, 0.1, 0.0, 0.5, 0.5, 0.8, 0.0, 0.4757724967, 0.75, 1.0, 0.6505149978, 0.5, 0.5, 0.0, 0.0, 0.0];
+        let count: i64 = ids.len();
+        for i in 0..count { if !set_id(audio, 1, ids[i] + offset, values[i]) { println!("Cannot configure Super Saw"); return false; } }
+        if project == 2 {
+            // Return the darker pad cutoff and slow envelope, with panning echoes only.
+            if !set_id(audio, 1, 136 + offset, 0.6666666667) || !set_id(audio, 1, 138 + offset, 1.0) ||
+               !set_id(audio, 1, 147 + offset, 0.6945378126) || !set_id(audio, 1, 150 + offset, 0.7697953115) ||
+               !set_id(audio, 1, 157 + offset, 2.0 / 5.0) || !set_id(audio, 1, 161 + offset, 0.16) { return false; }
+        }
+    }
+    if !set_id(audio, 1, 2001, project == 2 ? 2.0 / 3.0 : 0.0) || !set_id(audio, 1, 2000, 1.0) ||
+       !set_id(audio, 1, 2004, 0.5) || !set_id(audio, 1, 2005, 0.5) || !set_id(audio, 1, 2006, 0.5) ||
+       !set_id(audio, 1, 2007, project == 2 ? 0.9 : 0.5) || !set_id(audio, 1, 2008, project == 2 ? 0.1 : 0.5) { return false; }
+    for section in 0..4 {
+        var table: SequenceTable = make_section(project, i32(section));
+        if !verify(&mut audio, table, project, i32(section), block) { println!("Detune sequencer verification failed in {}", section_name(project, i32(section))); return false; }
+        if section == 0 { library.table.release(); library.table = table; if !library.rename(section_name(project, 0)) { return false; } }
+        else { if !library.import_pattern(section_name(project, i32(section)), table, []) { return false; } }
+    }
+    for id in [120, 121, 1120, 1121] { set_id(audio, 1, id, 0.0); }
+    library.song = [1, 2, 3, 4]; library.select(1); library.refresh();
+    let save_path: str8 = format!("examples/jp8000_{}.mlaproj", project_name(project));
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project(save_path, library, SessionView { bpm: tempo(), sidebar: 1, pane: 1, editor_slot: 1 }, audio); free(save_path);
+    if saved.is_err() { println!("Save: {}", saved.unwrap_err()); return false; }
+    println!("Saved {}; sequencer detune and mix verified", saved.unwrap());
+    let ok: bool = preview(&mut audio, &mut library, project, render_folder);
+    block.close(); audio.release(); library.release(); return ok;
+}
+fn main() -> i32 {
+    mlacker_install_vst3_host(); let root: str8 = __env_get_var("JP8000_ROOT"); let folder: str8 = __env_get_var("JP8000_RENDER_DIR");
+    for project in 0..3 { if !generate(i32(project), root, folder) { return 1; } }
+    return 0;
+}

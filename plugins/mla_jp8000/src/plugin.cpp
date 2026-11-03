@@ -571,6 +571,12 @@ public:
         case 23:
             id = partId(1, mla_8000::kFilterSlopeParam);
             return kResultOk;
+        case 24:
+            id = partId(1, mla_8000::kOsc1Ctrl1Param);
+            return kResultOk;
+        case 25:
+            id = partId(1, mla_8000::kOsc1Ctrl2Param);
+            return kResultOk;
         case 64:
             id = kSustain;
             return kResultOk;

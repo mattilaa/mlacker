@@ -1,0 +1,179 @@
+/// Original late-1990s trance lead: sequenced filter opening, resonance and envelope boost.
+/// All notes, filter movement and slope changes are played by mlacker's sequencer.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::session::PresetResult;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::note_playback::NotePlayback;
+use mlacker_ui::bounce::Bounce;
+use std::audio::PcmBlock;
+use std::audio::PcmWavWriter;
+use std::env::detail::__env_get_var;
+use std::strbuf::clone;
+use std::strbuf::free;
+use tui::geometry::*;
+extern fn mlacker_install_vst3_host() -> void;
+
+fn tempo() -> i32 { return 138; }
+fn project_name(project: i32) -> str8 { return "trance_lead"; }
+fn section_name(section: i32) -> str8 {
+    let names: list<str8> = ["Veiled lead", "Filter opening", "Resonant crest", "Filter return"];
+    return names[section];
+}
+fn cutoff_start(section: i32) -> i32 { let values: list<i32> = [26, 42, 82, 82]; return values[section]; }
+fn cutoff_end(section: i32) -> i32 { let values: list<i32> = [42, 82, 82, 26]; return values[section]; }
+fn resonance_start(section: i32) -> i32 { return section == 3 ? 82 : 20; }
+fn resonance_end(section: i32) -> i32 { return section == 2 ? 82 : 20; }
+fn boost_start(section: i32) -> i32 { let values: list<i32> = [68, 76, 88, 88]; return values[section]; }
+fn boost_end(section: i32) -> i32 { let values: list<i32> = [76, 88, 88, 68]; return values[section]; }
+fn set_id(audio: &AudioSystem, slot: i64, id: i64, value: f64) -> bool {
+    var a: AudioSystem = AudioSystem {}; a = audio;
+    let count: i64 = i64(a.output.parameter_info(slot, 0, 0));
+    for i in 0..count {
+        if a.output.parameter_info(slot, i, 4) == f64(id) { return a.output.restore_parameter(slot, i, value) == 0; }
+    }
+    return false;
+}
+fn value_id(audio: &AudioSystem, slot: i64, id: i64) -> f64 {
+    var a: AudioSystem = AudioSystem {}; a = audio;
+    let count: i64 = i64(a.output.parameter_info(slot, 0, 0));
+    for i in 0..count {
+        if a.output.parameter_info(slot, i, 4) == f64(id) { return a.output.parameter_info(slot, i, 2); }
+    }
+    return -1.0;
+}
+fn note_at(table: &mut SequenceTable, row: i32, line: i32, note: str8, velocity: i32, length: str8) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let column: i32 = t.track_start(0) + line * 4;
+    t.set_cell(row, column, clone(note)); t.set_cell(row, column + 1, format!("{}", velocity));
+    t.set_cell(row, column + 2, clone(length)); t.set_cell(row, column + 3, clone("0.00")); table = t;
+}
+fn ramp(table: &mut SequenceTable, column: i32, rows: i32, first: i32, last: i32) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let span: i32 = rows * 4 - 1;
+    for r in 0..rows {
+        let step: i32 = i32(r) * 4;
+        let a: i32 = first + (last - first) * step / span;
+        let b: i32 = first + (last - first) * (step + 1) / span;
+        let c: i32 = first + (last - first) * (step + 2) / span;
+        let d: i32 = first + (last - first) * (step + 3) / span;
+        t.set_cell(i32(r), column, format!("{} {} {} {}", a, b, c, d));
+    }
+    table = t;
+}
+fn make_section(section: i32) -> SequenceTable {
+    var t: SequenceTable = SequenceTable::empty(); let area: Rect = Rect::new(0, 0, 180, 40);
+    t.set_length(128, area); t.create_instrument_track(1, area); t.rename_track(section_name(section));
+    t.configure_slot(1, "cc:74"); let resonance: i32 = t.add_automation(0, "cc:71");
+    let detune: i32 = t.add_automation(0, "cc:16"); let mix: i32 = t.add_automation(0, "cc:17");
+    let slope: i32 = t.add_automation(0, "cc:22"); let boost: i32 = t.add_automation(0, "cc:19");
+    ramp(&mut t, t.automation_column(0, 1), 128, cutoff_start(section), cutoff_end(section));
+    ramp(&mut t, t.automation_column(0, resonance), 128, resonance_start(section), resonance_end(section));
+    ramp(&mut t, t.automation_column(0, boost), 128, boost_start(section), boost_end(section));
+    // An original syncopated phrase, repeated unchanged across the four filter treatments.
+    let positions: list<i32> = [0, 3, 6, 8, 12, 14, 18, 21, 24, 26, 29];
+    let notes: list<str8> = [
+        "E-4", "G-4", "B-4", "A-4", "F#5", "D-5", "E-5", "B-4", "G-4", "A-4", "F#4",
+        "D-4", "F#4", "A-4", "E-5", "C#5", "B-4", "A-4", "F#4", "E-4", "G-4", "A-4",
+        "C-4", "E-4", "G-4", "D-5", "B-4", "G-4", "A-4", "E-4", "D-4", "G-4", "B-4",
+        "D-4", "A-4", "F#5", "E-5", "C#5", "A-4", "B-4", "F#4", "E-4", "F#4", "D#4"
+    ];
+    for phrase in 0..4 {
+        for n in 0..11 {
+            note_at(&mut t, i32(phrase) * 32 + positions[n], 0, notes[phrase * 11 + n], n % 3 == 0 ? 108 : 94, n == 10 ? "2.40" : "1.65");
+        }
+        let row: i32 = i32(phrase) * 32;
+        t.set_cell(row, t.automation_column(0, detune), clone("78"));
+        t.set_cell(row, t.automation_column(0, mix), clone("102"));
+        t.set_cell(row, t.automation_column(0, slope), clone("127"));
+    }
+    t.selected_column = t.track_start(0); return t;
+}
+fn verify(audio: &mut AudioSystem, table: &SequenceTable, section: i32, block: PcmBlock) -> bool {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    for end in 0..2 {
+        for id in [137, 140, 2012] { if !set_id(audio, 1, id, 0.123) { return false; } }
+        if !set_id(audio, 1, 135, 0.0) || !set_id(audio, 1, 120, 0.0) || !set_id(audio, 1, 121, 0.0) { return false; }
+        if audio.output.process(block, 256) != 0 { return false; }
+        var playback: NotePlayback = NotePlayback {};
+        // Row 96 is also a phrase boundary: cutoff/resonance can be checked with a note-on.
+        let row: i64 = end == 0 ? 0 : 96;
+        playback.update(t, row * 15000, true); audio.sequencer_events(playback.events, t);
+        if audio.output.process(block, 256) != 0 { return false; }
+        let cutoff: i32 = cutoff_start(section) + (cutoff_end(section) - cutoff_start(section)) * i32(row) * 4 / 511;
+        let resonance: i32 = resonance_start(section) + (resonance_end(section) - resonance_start(section)) * i32(row) * 4 / 511;
+        let boost: i32 = boost_start(section) + (boost_end(section) - boost_start(section)) * i32(row) * 4 / 511;
+        if value_id(audio, 1, 140) != f64(boost) / 127.0 || value_id(audio, 1, 2012) != f64(cutoff) / 127.0 || value_id(audio, 1, 137) != f64(resonance) / 127.0 ||
+           value_id(audio, 1, 120) != 78.0 / 127.0 || value_id(audio, 1, 121) != 102.0 / 127.0 || value_id(audio, 1, 135) != 1.0 { return false; }
+        playback.update(t, row * 15000 + 15000, false); audio.sequencer_events(playback.events, t); audio.output.process(block, 256);
+    }
+    return true;
+}
+fn preview(audio: &mut AudioSystem, library: &mut PatternLibrary, project: i32, folder: str8) -> bool {
+    if folder == "" { return true; }
+    let parts: i64 = audio.instrument_paths.len();
+    for slot in 1..parts + 1 { set_id(audio, slot, 2001, 1.0 / 3.0); set_id(audio, slot, 2001, 0.0); }
+    var job: Bounce = audio.bounce_begin(tempo()); if !job.ok() { println!("Preview: {}", job.error); return false; }
+    for section in 0..4 { library.select(i32(section) + 1); audio.bounce_segment(&mut job, library.table, 0, i32(library.table.rows.len()), []); }
+    let rate: i64 = job.rate;
+    let samples: list<f32> = audio.bounce_finish(job, library.table, 4);
+    var peak: f32 = 0.0f; var energy: f64 = 0.0;
+    for s in samples { if s != s { println!("Non-finite preview sample"); return false; } let v: f32 = s < 0.0f ? 0.0f - s : s; if v > peak { peak = v; } energy = energy + f64(s) * f64(s); }
+    if peak >= 0.98f || samples.len() == 0 || energy / f64(samples.len()) < 0.000001 { println!("Preview level invalid: peak {}", peak); return false; }
+    let path: str8 = format!("{}/{}.wav", folder, project_name(project));
+    let opened: result<PcmWavWriter, str8> = PcmWavWriter::create(path, rate); free(path);
+    if opened.is_err() { println!("Cannot create preview WAV"); return false; }
+    let writer: PcmWavWriter = opened.unwrap();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(256); if allocated.is_err() { return false; }
+    let block: PcmBlock = allocated.unwrap(); var at: i64 = 0;
+    while at < samples.len() / 2 {
+        let count: i64 = samples.len() / 2 - at < 256 ? samples.len() / 2 - at : 256;
+        for f in 0..count { block.set_stereo(f, samples[(at + f) * 2], samples[(at + f) * 2 + 1]); }
+        let written: result<i64, str8> = writer.write_pcm_block(block, count); if written.is_err() { block.close(); writer.close(); return false; }
+        at = at + count;
+    }
+    block.close(); let closed: result<i32, str8> = writer.close();
+    println!("Rendered {}: peak {}", project_name(project), peak); library.select(1); return closed.is_ok();
+}
+fn main() -> i32 {
+    mlacker_install_vst3_host(); let root: str8 = __env_get_var("JP8000_ROOT"); let folder: str8 = __env_get_var("JP8000_RENDER_DIR");
+    let bundle: str8 = format!("{}/build/plugins/VST3/Release/MlaJP8000.vst3", root);
+    var audio: AudioSystem = AudioSystem::start(false); var library: PatternLibrary = PatternLibrary::empty();
+    let allocated: result<PcmBlock, str8> = PcmBlock::new(256); if allocated.is_err() { return 1; } let block: PcmBlock = allocated.unwrap();
+    let error: str8 = audio.add_instrument(bundle); free(bundle); if error != "" { println!("Plugin: {}", error); return 1; }
+    library.add_instrument(1, "Mla JP8000");
+    let path: str8 = format!("{}/plugins/mla_jp8000/presets/Obsession Atmosphere.mlapre", root);
+    let loaded: PresetResult = SessionCodec::preset_file(path, audio.output, 1, false, [], []); free(path);
+    if !loaded.ok { println!("Preset: {}", loaded.status); return 1; } free(loaded.status);
+    // Single Upper Super Saw with a fast, positive filter envelope and panning delay.
+    // The tracker controls cutoff, resonance and the envelope boost depth.
+    let ids: list<i64> = [101, 108, 109, 110, 111, 116, 117, 118, 119, 120, 121, 124, 126, 127, 128, 129, 130, 131, 134, 135, 136, 137, 138, 139, 140, 145, 146, 147, 148, 149, 150, 151, 152, 153, 157, 158, 160, 161, 162, 2000, 2001, 2004, 2005, 2007, 2010, 2012];
+    let values: list<f64> = [0.0, 0.5, 0.0, 0.4, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.6666666667, 0.0, 0.0, 0.5, 0.5, 0.8, 0.0, 0.2257724967, 0.6192803137, 0.7, 0.5197953115, 0.5, 0.5, 0.0, 0.2, 0.5, 0.28, 0.22, 0.0, 0.92, 0.0, 0.5, 0.5, 0.5, 0.0, 0.5];
+    let count: i64 = ids.len();
+    for i in 0..count { if !set_id(audio, 1, ids[i], values[i]) { println!("Cannot configure lead parameter {}", ids[i]); return 1; } }
+    // Raise this single-note lead within the existing Output/Master ranges.
+    if !set_id(&audio, 1, 100, 1.0) || !set_id(&audio, 1, 2000, 1.0) { return 1; }
+    // 1000 Hz base cutoff; a 4 ms attack, 300 ms decay, 12 percent sustain,
+    // 100 ms release filter envelope retriggers on each note.
+    if !set_id(&audio, 1, 136, 0.5663233348) || !set_id(&audio, 1, 141, 0.1505149978) ||
+       !set_id(&audio, 1, 142, 0.6192803137) || !set_id(&audio, 1, 143, 0.12) || !set_id(&audio, 1, 144, 0.5) { return 1; }
+    for section in 0..4 {
+        var table: SequenceTable = make_section(i32(section));
+        if !verify(&mut audio, table, i32(section), block) { println!("Filter automation verification failed in {}", section_name(i32(section))); return 1; }
+        if section == 0 { library.table.release(); library.table = table; if !library.rename(section_name(0)) { return 1; } }
+        else { if !library.import_pattern(section_name(i32(section)), table, []) { return 1; } }
+    }
+    // Save neutral controls so playback demonstrates the sequencer selecting the sound.
+    for id in [120, 121, 135, 137] { set_id(&audio, 1, id, 0.0); } set_id(&audio, 1, 2012, 0.5); set_id(&audio, 1, 140, 0.5);
+    library.song = [1, 2, 3, 4]; library.select(1); library.refresh();
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project("examples/jp8000_trance_lead.mlaproj", library, SessionView { bpm: tempo(), sidebar: 1, pane: 1, editor_slot: 1 }, audio);
+    if saved.is_err() { println!("Save: {}", saved.unwrap_err()); return 1; }
+    println!("Saved {}; sequencer cutoff, resonance and filter envelope boost verified", saved.unwrap());
+    let ok: bool = preview(&mut audio, &mut library, 0, folder); block.close(); audio.release(); library.release(); return ok ? 0 : 1;
+}

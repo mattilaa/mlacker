@@ -1486,6 +1486,32 @@ sections with full key follow, 24/12 dB slope changes and brightness sweeps.
 See [the example guide](examples/jp8000_pads#obsession-studies) for reference
 notes, regeneration and optional WAV previews.
 
+For focused **Super Saw detune** examples:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_detune_steps.mlaproj
+./build/cmake/bin/mlacker examples/jp8000_detune_sweep.mlaproj
+./build/cmake/bin/mlacker examples/jp8000_detune_layers.mlaproj
+```
+
+Press **Shift+M**, **Space**. Steps compares 0/25/50/100 percent detune dry;
+Sweep changes detune and oscillator mix during held fifths; Layers moves the
+two parts independently. CC16/CC17 control Upper detune/mix, and CC24/CC25
+control Lower. Regenerate with `examples/jp8000_pads/build.sh detune` after
+building the updated plugin. See the [example guide](examples/jp8000_pads/README.md#super-saw-detune-studies).
+
+An original **trance lead** example adds sequenced cutoff, resonance and
+per-note filter-envelope boost:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_trance_lead.mlaproj
+```
+
+Press **Shift+M**, **Space**. CC74 opens cutoff, CC71 raises resonance and
+CC19 increases filter-envelope depth through four sections of the same
+original melody. Regenerate with `examples/jp8000_pads/build.sh lead`.
+See the [example guide](examples/jp8000_pads/README.md#trance-lead-cutoff-resonance-and-envelope-boost).
+
 ## JV-style pad demos
 
 Three example projects show sampled pads in Mla Sampler, each through Juno

@@ -89,6 +89,11 @@ before applying it, and preserves the current performance on truncated or
 invalid input. Parameter IDs: Upper 100–162, Lower 1100–1162, performance
 2000–2014. No added processing latency is reported.
 
+Sequencer **CC16/CC17** control Upper OSC 1 Ctrl 1/2; **CC24/CC25** control
+Lower OSC 1 Ctrl 1/2. With Super Saw selected these are **detune/mix**.
+The [detune studies](../../examples/jp8000_pads/README.md#super-saw-detune-studies)
+include dry stepped values, sustained sweeps and independent layered pads.
+
 ## Original pad bank and audition project
 
 | Preset | Character |

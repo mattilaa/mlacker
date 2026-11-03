@@ -369,6 +369,16 @@ int main(int argc, char** argv)
                       kResultOk &&
                   lowerSlope == partId(1, mla_8000::kFilterSlopeParam),
               "CC23 maps lower filter slope");
+        for(const auto& mapping : {std::pair<int, ParamID>{16, partId(0, mla_8000::kOsc1Ctrl1Param)},
+                                  {17, partId(0, mla_8000::kOsc1Ctrl2Param)},
+                                  {24, partId(1, mla_8000::kOsc1Ctrl1Param)},
+                                  {25, partId(1, mla_8000::kOsc1Ctrl2Param)}})
+        {
+            ParamID target = 0;
+            check(f.processor.getMidiControllerAssignment(0, 0, mapping.first, target) == kResultOk &&
+                      target == mapping.second,
+                  "sequencer CC maps Super Saw detune and mix independently per part");
+        }
         f.set(upperSlope, 1);
         f.set(lowerSlope, 1);
         f.set(upper, 1);
