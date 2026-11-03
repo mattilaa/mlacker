@@ -13,7 +13,7 @@ def main():
         tui = Terminal(str(project))
         try:
             frame = tui.read(1)
-            for label in (b"Veiled lead", b"CC74", b"CC71", b"CC19"):
+            for label in (b"Blue opening", b"CC74", b"CC71", b"CC19"):
                 assert label in frame, frame[-5000:]
             frame = tui.send(b"M ", .8)
             assert b"PLAY" in frame, frame[-5000:]

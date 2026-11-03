@@ -20,13 +20,27 @@ use tui::geometry::*;
 extern fn mlacker_install_vst3_host() -> void;
 
 fn tempo() -> i32 { return 138; }
-fn project_name(project: i32) -> str8 { return "trance_lead"; }
+fn project_name(project: i32) -> str8 { return "out_of_the_blue_style"; }
 fn section_name(section: i32) -> str8 {
-    let names: list<str8> = ["Veiled lead", "Filter opening", "Resonant crest", "Filter return"];
+    let names: list<str8> = ["Blue opening", "Blue wide sweep", "Blue resonance", "Blue return"];
     return names[section];
 }
-fn cutoff_start(section: i32) -> i32 { let values: list<i32> = [26, 42, 82, 82]; return values[section]; }
-fn cutoff_end(section: i32) -> i32 { let values: list<i32> = [42, 82, 82, 26]; return values[section]; }
+// Wide triangular sweep in every pattern: low at row 0, open at row 64,
+// closed again at the last substep. CC74 is the performance cutoff offset.
+fn sweep_value(section: i32, step: i32) -> i32 {
+    let peaks: list<i32> = [80, 100, 110, 100];
+    let distance: i32 = step <= 256 ? step : 511 - step;
+    let span: i32 = step <= 256 ? 256 : 255;
+    return 8 + (peaks[section] - 8) * distance / span;
+}
+fn cutoff_sweep(table: &mut SequenceTable, column: i32, section: i32) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    for row in 0..128 {
+        let step: i32 = i32(row) * 4;
+        t.set_cell(i32(row), column, format!("{} {} {} {}", sweep_value(section, step), sweep_value(section, step + 1), sweep_value(section, step + 2), sweep_value(section, step + 3)));
+    }
+    table = t;
+}
 fn resonance_start(section: i32) -> i32 { return section == 3 ? 82 : 20; }
 fn resonance_end(section: i32) -> i32 { return section == 2 ? 82 : 20; }
 fn boost_start(section: i32) -> i32 { let values: list<i32> = [68, 76, 88, 88]; return values[section]; }
@@ -72,7 +86,7 @@ fn make_section(section: i32) -> SequenceTable {
     t.configure_slot(1, "cc:74"); let resonance: i32 = t.add_automation(0, "cc:71");
     let detune: i32 = t.add_automation(0, "cc:16"); let mix: i32 = t.add_automation(0, "cc:17");
     let slope: i32 = t.add_automation(0, "cc:22"); let boost: i32 = t.add_automation(0, "cc:19");
-    ramp(&mut t, t.automation_column(0, 1), 128, cutoff_start(section), cutoff_end(section));
+    cutoff_sweep(&mut t, t.automation_column(0, 1), section);
     ramp(&mut t, t.automation_column(0, resonance), 128, resonance_start(section), resonance_end(section));
     ramp(&mut t, t.automation_column(0, boost), 128, boost_start(section), boost_end(section));
     // An original syncopated phrase, repeated unchanged across the four filter treatments.
@@ -96,16 +110,16 @@ fn make_section(section: i32) -> SequenceTable {
 }
 fn verify(audio: &mut AudioSystem, table: &SequenceTable, section: i32, block: PcmBlock) -> bool {
     var t: SequenceTable = SequenceTable {}; t = table;
-    for end in 0..2 {
+    for point in 0..4 {
         for id in [137, 140, 2012] { if !set_id(audio, 1, id, 0.123) { return false; } }
         if !set_id(audio, 1, 135, 0.0) || !set_id(audio, 1, 120, 0.0) || !set_id(audio, 1, 121, 0.0) { return false; }
         if audio.output.process(block, 256) != 0 { return false; }
         var playback: NotePlayback = NotePlayback {};
-        // Row 96 is also a phrase boundary: cutoff/resonance can be checked with a note-on.
-        let row: i64 = end == 0 ? 0 : 96;
+        // Check closed, rising, fully open and falling while notes are played.
+        let row: i64 = point * 32;
         playback.update(t, row * 15000, true); audio.sequencer_events(playback.events, t);
         if audio.output.process(block, 256) != 0 { return false; }
-        let cutoff: i32 = cutoff_start(section) + (cutoff_end(section) - cutoff_start(section)) * i32(row) * 4 / 511;
+        let cutoff: i32 = sweep_value(section, i32(row) * 4);
         let resonance: i32 = resonance_start(section) + (resonance_end(section) - resonance_start(section)) * i32(row) * 4 / 511;
         let boost: i32 = boost_start(section) + (boost_end(section) - boost_start(section)) * i32(row) * 4 / 511;
         if value_id(audio, 1, 140) != f64(boost) / 127.0 || value_id(audio, 1, 2012) != f64(cutoff) / 127.0 || value_id(audio, 1, 137) != f64(resonance) / 127.0 ||
@@ -174,6 +188,11 @@ fn main() -> i32 {
     var codec: SessionCodec = SessionCodec {};
     let saved: result<str8, str8> = codec.save_project("examples/jp8000_trance_lead.mlaproj", library, SessionView { bpm: tempo(), sidebar: 1, pane: 1, editor_slot: 1 }, audio);
     if saved.is_err() { println!("Save: {}", saved.unwrap_err()); return 1; }
+    // Keep the earlier CLI path working, and expose the requested style by name.
+    let named: result<str8, str8> = codec.save_project("examples/jp8000_out_of_the_blue_style.mlaproj", library,
+        SessionView { bpm: tempo(), sidebar: 1, pane: 1, editor_slot: 1 }, audio);
+    if named.is_err() { println!("Save: {}", named.unwrap_err()); return 1; }
+    println!("Saved {}; original melody with four full filter sweeps", named.unwrap());
     println!("Saved {}; sequencer cutoff, resonance and filter envelope boost verified", saved.unwrap());
     let ok: bool = preview(&mut audio, &mut library, 0, folder); block.close(); audio.release(); library.release(); return ok ? 0 : 1;
 }

@@ -11,7 +11,8 @@ case "${1:-pads}" in
     obsession) task_source=examples/jp8000_pads/obsession.mla ;;
     detune) task_source=examples/jp8000_pads/detune.mla ;;
     lead) task_source=examples/jp8000_pads/trance_lead.mla ;;
-    *) echo "Usage: $0 [pads|keyfollow|filter24|obsession|detune|lead]" >&2; exit 2 ;;
+    sub) task_source=examples/jp8000_pads/sub_resonance.mla ;;
+    *) echo "Usage: $0 [pads|keyfollow|filter24|obsession|detune|lead|sub]" >&2; exit 2 ;;
 esac
 task_work="$task_root/build/jp8000"
 mkdir -p "$task_work"
@@ -29,3 +30,11 @@ cmake -S . -B "$task_work/generator" -DCMAKE_BUILD_TYPE=Release \
 cmake --build "$task_work/generator" --target mlacker -j4
 if [ -n "${JP8000_RENDER_DIR:-}" ]; then mkdir -p "$JP8000_RENDER_DIR"; fi
 JP8000_ROOT="$task_root" JP8000_FILTER_DEMO="$task_filter" "$task_work/generator/bin/mlacker"
+
+# Check the rendered signal, in addition to the generator's parameter checks.
+if [ -n "${JP8000_RENDER_DIR:-}" ]; then
+    case "${1:-pads}" in
+        lead) python3 tests/jp8000_sweep_audio.py "$JP8000_RENDER_DIR/out_of_the_blue_style.wav" ;;
+        sub) python3 tests/jp8000_sweep_audio.py "$JP8000_RENDER_DIR/sub_resonance.wav" ;;
+    esac
+fi

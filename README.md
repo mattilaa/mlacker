@@ -1500,17 +1500,30 @@ two parts independently. CC16/CC17 control Upper detune/mix, and CC24/CC25
 control Lower. Regenerate with `examples/jp8000_pads/build.sh detune` after
 building the updated plugin. See the [example guide](examples/jp8000_pads/README.md#super-saw-detune-studies).
 
-An original **trance lead** example adds sequenced cutoff, resonance and
-per-note filter-envelope boost:
+The **Out Of The Blue style** example uses an original trance melody with
+sequenced cutoff, resonance and per-note filter-envelope boost:
 
 ```sh
-./build/cmake/bin/mlacker examples/jp8000_trance_lead.mlaproj
+./build/cmake/bin/mlacker examples/jp8000_out_of_the_blue_style.mlaproj
 ```
 
-Press **Shift+M**, **Space**. CC74 opens cutoff, CC71 raises resonance and
-CC19 increases filter-envelope depth through four sections of the same
-original melody. Regenerate with `examples/jp8000_pads/build.sh lead`.
+Press **Shift+M**, **Space**. Every section opens and closes cutoff through
+CC74; CC71 moves resonance and CC19 controls filter-envelope depth. The earlier
+`jp8000_trance_lead.mlaproj` name still works. Regenerate with `examples/jp8000_pads/build.sh lead`.
 See the [example guide](examples/jp8000_pads/README.md#trance-lead-cutoff-resonance-and-envelope-boost).
+
+To hear a **sub oscillator through the resonant 24 dB filter**:
+
+```sh
+./build/cmake/bin/mlacker examples/jp8000_sub_resonance.mlaproj
+```
+
+Press **Shift+M**, **Space**. OSC 2 is a triangle one octave below the Super
+Saw. All four sections now open and close the filter, comparing saw alone,
+saw plus sub, a stronger resonant blend and the return. CC18 controls oscillator balance; CC22 keeps
+24 dB/oct filtering, while CC74/CC71/CC19 move cutoff, resonance and envelope
+boost. Regenerate with `examples/jp8000_pads/build.sh sub`.
+See the [example guide](examples/jp8000_pads/README.md#sub-oscillator-through-a-resonant-24-db-filter).
 
 ## JV-style pad demos
 
