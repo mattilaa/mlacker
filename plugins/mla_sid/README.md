@@ -149,6 +149,41 @@ Register CCs make tracker-style SID programming possible: a CC 24 column
 switching `64` (noise) on the first row of a note and `32` (pulse) on the
 next is the classic C64 drum or "noise attack" lead.
 
+## Timed SID register programs
+
+Mla SID also accepts non-commercial MIDI SysEx register-frame packets, used by
+the [Central Park reference project](../../examples/last_ninja_2). They bypass
+the keyboard player and drive all three oscillators of one chip with complete
+eight-bit register values. The existing 93 parameters and their IDs are
+unchanged. Output, Chip, Clock and Hard Restart remain the DSP settings.
+
+Without the MIDI F0/F7 delimiters, a packet is:
+
+```
+7D 4D 53 49 44 01 bank count us0 us1 us2 flags [frame ...]
+```
+
+`bank` is 0–3, addressing registers 0–6, 7–13, 14–20 or 21–24. `count` is 1–4.
+The three little-endian seven-bit `us` bytes give the frame interval in
+microseconds (1,000–100,000). Flag 1 resets the chip and queued frames and is
+valid only on bank 0; otherwise flags is 0. Each frame holds a gate-reset byte
+(0/1), a high-bit mask, and seven low-seven-bit register bytes (four on bank 3).
+Mask bit n is register byte n's bit 7. Bank 3's gate-reset byte must be zero.
+A voice gate reset writes its control register with GATE clear before the
+frame's envelope and final control value, preserving same-frame retriggers.
+
+The first frame sounds at the SysEx event's sample offset; later frames remain
+sample-timed across audio blocks. A fixed queue holds up to 64 frames. Invalid
+packets are ignored without changing an active program. All payload bytes
+must be seven-bit MIDI data; a packet is at most 48 bytes before F0/F7.
+
+While this player is active, notes 0 and 1 act as silent stop guards. Their
+last note-off cancels queued writes, clears GATE and mutes chip volume. The
+native project overlaps alternating guards so stopping and pattern changes
+work without hanging notes. An ordinary keyboard note leaves this player,
+resets the chip and restores the patch. Register playback state is transient;
+the score stores the packets themselves.
+
 ## Parameters
 
 | ID  | Name | Range | Notes |

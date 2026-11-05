@@ -1,7 +1,8 @@
-"""Load, play and resave the native Last Ninja 2 project with its credits.
+"""Verify the reference SID program, responsive playback, Stop, and saved credits.
 
 Usage: last_ninja_2_tui_smoke.py <mlacker> <MlaSid.vst3>
 """
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -12,115 +13,73 @@ import time
 from session_tui_smoke import Terminal, F1
 
 
-def check_score(records, at):
-    """Check playable note overlaps and continuing arp in the saved score."""
-    at += 2  # Active ID and next ID.
-    patterns = records[at][1]
-    at += 1
-    bass_notes = {slot: [] for slot in (1, 3, 4, 5)}
-    bass_bends = {slot: {} for slot in (1, 5)}
-    for pattern in range(patterns):
-        at += 2  # Pattern ID and name.
-        tracks = records[at + 8][1]
+def inspect_score(document):
+    records = document["records"]
+    assert records[3] == ["integer", 188]
+    assert records[27:29] == [["integer", 0], ["integer", 1]]
+    assert records[31] == ["integer", 93]
+    params = {records[32 + i * 2][1]: records[33 + i * 2][1] for i in range(93)}
+    assert params[101] == params[102] == params[119] == 0.0
+    at = 32 + 93 * 2
+    assert records[at:at + 3] == [["integer", 1], ["integer", 90], ["integer", 89]]
+    at += 3
+    decoded = []
+    canonical = bytearray()
+    for pattern in range(89):
+        at += 2
+        assert records[at + 8] == ["integer", 4]
         at += 9
-        columns = []
-        column = 1
-        for _ in range(tracks):
-            slot = records[at + 6][1]
-            lines = records[at + 7][1]
-            count = records[at + 10][1]
-            at += 11
-            controls = [records[at + i * 3][1] for i in range(count)]
-            at += count * 3
-            assert records[at][1] == 0
-            at += 1
-            columns.append((slot, column, lines, controls))
-            column += lines * 4 + count
-        rows = records[at][1]
+        for _ in range(4):
+            assert [r[1] for r in records[at + 6:at + 12]] == [1, 1, 2, 1, 0, 0]
+            at += 12
+        assert records[at] == ["integer", 48]
         at += 1
-        arp_notes = 0
-        for row in range(rows):
-            cells = records[at][1]
+        for row in range(48):
+            assert records[at] == ["integer", 25]
             at += 1
-            values = [record[1] for record in records[at:at + cells]]
-            at += cells
-            for slot, column, lines, controls in columns:
-                if slot in bass_notes:
-                    expected = ["cc:83", "cc:5", "cc:74", "cc:71", "cc:80"]
-                    if slot in bass_bends:
-                        expected.append("pitchbend")
-                    assert controls == expected
-                if slot in bass_bends:
-                    text = values[column + lines * 4 + 5]
-                    for step, value in enumerate(text.split()):
-                        if value != ".":
-                            bass_bends[slot][(pattern * rows + row) * 100 + step * 25] = int(value)
-                if slot == 11:
-                    arp_notes += sum(bool(values[column + line * 4]) for line in range(lines))
-                    if row == 0:
-                        assert values[column + lines * 4] == ("106" if pattern == 0 else "94")
-                if slot in bass_notes:
-                    for line in range(lines):
-                        c = column + line * 4
-                        if values[c]:
-                            start = (pattern * rows + row) * 100 + round(float(values[c + 3]) * 100)
-                            end = start + round(float(values[c + 2]) * 100)
-                            bass_notes[slot].append((start, end, values[c]))
-        assert arp_notes == 32, f"Arpeggio missing from pattern {pattern + 1}"
-    for slot, notes in bass_notes.items():
-        assert any(a[2] != b[2] and a[1] > b[0] for a, b in zip(notes, notes[1:])), slot
-        if slot in bass_bends:
-            bends = bass_bends[slot]
-            transitions = [(a, b) for a, b in zip(notes, notes[1:]) if a[2] != b[2] and a[1] > b[0]]
-            for old, new in transitions:
-                approaching = [value for tick, value in bends.items() if new[0] - 400 <= tick < new[0]]
-                assert len(set(approaching)) >= 8, "Bass must slide BEFORE the next note"
-                assert max(abs(value) for value in approaching) > 100
-                assert bends[new[0]] == 0, "Reset bend on arrival at the target key"
+            cells = [r[1] for r in records[at:at + 25]]
+            at += 25
+            absolute = pattern * 48 + row
+            assert cells[1:5] == ["C--1" if absolute % 2 == 0 else "C#-1", "1", "1.02", "0.00"]
+            frames = [[0] * 25 for _ in range(4)]
+            resets = [0] * 4
+            for bank in range(4):
+                start = 1 + bank * 6
+                assert cells[start + 4] == "7D"
+                message = [0x7D] + [int(value, 16) for value in cells[start + 5].split()]
+                n = 4 if bank == 3 else 7
+                assert message[:8] == [0x7D, 0x4D, 0x53, 0x49, 0x44, 1, bank, 4]
+                assert len(message) == 12 + 4 * (n + 2)
+                assert message[8] | message[9] << 7 | message[10] << 14 == 19947
+                assert message[11] == int(absolute == 0 and bank == 0)
+                for f in range(4):
+                    q = message[12 + f * (n + 2):12 + (f + 1) * (n + 2)]
+                    assert q[0] in (0, 1) and q[1] < 1 << n
+                    resets[f] |= q[0] << bank
+                    for register in range(n):
+                        frames[f][bank * 7 + register] = q[2 + register] | ((q[1] >> register & 1) << 7)
+            for frame, reset in zip(frames, resets):
+                canonical += bytes(frame) + bytes([reset])
+            decoded.extend(frames)
+    assert len(decoded) == 17088
+    assert decoded[41][14:16] == [0x6B, 0x2F]  # Reference's first F5 octave band.
+    assert decoded[233][0:2] == [0xED, 0x05]  # First in-game bass entry at 4.65 s.
+    assert decoded[233][7:9] == [0xF6, 0x02]
+    assert decoded[16951][24] == 1 and decoded[16952][24] == 0
+    assert any(frame[11] == 0x15 or frame[18] == 0x15 for frame in decoded)  # Coupled ring modulation.
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def main():
     source = Path(__file__).resolve().parents[1] / "examples/last_ninja_2_loading.mlaproj"
-    with tempfile.TemporaryDirectory(prefix="mlacker-last-ninja-") as folder:
+    with tempfile.TemporaryDirectory(prefix="mlacker-last-ninja-reference-") as folder:
         project = Path(folder) / source.name
         shutil.copytree(source, project)
         path = project / "Project.mlack"
         document = json.loads(path.read_text())
-        # The main bass must be pulse (PW Sweep has no effect on a saw), and
-        # all four bass layers need the requested broad duty-cycle movement.
-        records = document["records"]
-        at = 29
-        pulse_rates = set()
-        for _ in range(records[28][1]):
-            slot, _, count = [record[1] for record in records[at:at + 3]]
-            at += 3
-            preset = {records[at + i * 2][1]: records[at + i * 2 + 1][1] for i in range(count)}
-            at += count * 2
-            if 1 <= slot <= 7:
-                assert preset[200] == 4 / 15 and preset[111] >= 0.65
-                pulse_rates.add(preset[112])
-            if slot in (1, 3, 4, 5):
-                assert preset[111] >= 0.94
-                assert preset[103] == 1 / 3 and preset[104] == 0.0
-                assert preset[123] == 1 / 7 and preset[209] == 1.0
-            if slot in (1, 5):
-                assert preset[231] == 0.75 and preset[250] == 0.0
-                assert preset[204] >= 0.7, "Long legato phrases need a nonzero sustain"
-                assert preset[106] == 1.0, "Approaching-note bends use the 24-semitone range"
-            if slot == 9:
-                assert preset[103] == 1 / 3 and preset[104] == 0.0
-                assert preset[200] == 8 / 15 and preset[106] == 1.0
-                assert preset[205] == 1 / 15, "Snare needs the short SID release"
-            if slot == 11:
-                assert preset[103] == 2 / 3 and preset[117] == 0.0
-                assert preset[200] == 1 / 15 and preset[230] == preset[250] == 0.0
-        assert len(pulse_rates) == 7
-        assert ["string", "SID intro arp"] in records
-        assert ["string", "4096 0 -4096 -8192"] in records, "Snare needs its noise-clock pitch fall"
-        assert ["string", "64 32 . ."] not in records, "Snare must stay on noise"
-        for name in ("cc:5", "cc:83", "cc:74", "cc:71", "cc:80"):
-            assert ["string", name] in records
-        check_score(records, at)
+        fingerprint = inspect_score(document)
+        assert fingerprint == "08262d095262655b9d1b1c482a6b15808fcbd3a8b9010487b65214ef57df0aff"
+        print("Reference program SHA-256:", fingerprint, flush=True)
         for record in document["records"]:
             if record[0] == "string" and record[1].endswith("MlaSid.vst3"):
                 record[1] = str(Path(sys.argv[2]).resolve())
@@ -129,36 +88,28 @@ def main():
         for repeat in range(2):
             tui = Terminal(str(project))
             try:
-                frame = tui.read(1.5)
-                for credit in (b"Copyright notice", b"Last Ninja 2", b"Matt Gray", b"1988 System 3", b"Chris Holm"):
+                frame = tui.read(2.0)
+                for credit in (b"Copyright notice", b"Central Park (in-game)", b"Matt Gray", b"1988 System 3", b"CoGFV_xxR64"):
                     assert credit in frame, frame[-6000:]
-                frame = tui.send(b"\x1b", 0.5)
-                assert b"Central Park" in frame, frame[-6000:]
+                tui.send(b"\x1b", 0.3)
                 if repeat == 0:
-                    # Source bar 33 starts both busy sixteenth-note basses and
-                    # percussion. Exercise this section, not just the intro.
                     tui.send(b"M", 0.3)
-                    tui.send(b"j" * 16, 0.3)
+                    tui.send(b"j" * 20, 0.3)
                 started = time.monotonic()
                 frame = tui.send_until(b" ", b"PLAY", timeout=4.0)
-                assert b"PLAY" in frame, frame[-6000:]
-                assert time.monotonic() - started < 2.0, "Playback start stalled the UI"
+                assert b"PLAY" in frame and time.monotonic() - started < 2.0
                 if repeat == 0:
                     started = time.monotonic()
                     frame = tui.send(F1, 0.15)
-                    assert b"New session" in frame, frame[-6000:]
-                    assert time.monotonic() - started < 1.0, "Menu stalled during dense playback"
+                    assert b"New session" in frame and time.monotonic() - started < 1.0
                     tui.send(b"\x1b", 0.2)
-                    tui.read(4.0)  # Cross a complete two-bar pattern boundary.
+                    tui.read(4.0)
                     frame = tui.send(b"M", 0.3)
-                    assert b"PLAY" in frame and b"Central Park 035-036" in frame, frame[-6000:]
-                    # Space in the editor switches matrix playback to the
-                    # selected pattern; stop the matrix from its own view.
+                    assert b"PLAY" in frame and b"Central Park 01:20" in frame, frame[-6000:]
                     tui.send(b"M", 0.2)
                 started = time.monotonic()
                 frame = tui.send_until(b" ", b"STOP", timeout=4.0)
-                assert b"STOP" in frame, frame[-6000:]
-                assert time.monotonic() - started < 2.0, "Stop stalled during playback"
+                assert b"STOP" in frame and time.monotonic() - started < 2.0
                 if repeat == 0:
                     tui.send(b"M", 0.2)
                 frame = tui.send_until(b"\x13", b"Saved project:", timeout=20.0)
@@ -166,9 +117,8 @@ def main():
             finally:
                 tui.close()
             saved = json.loads(path.read_text())
-            strings = [value for kind, value in saved["records"] if kind == "string"]
-            assert strings == original_strings, "Save changed the score or copyright notice"
-    print("PASS: dense Central Park playback stays responsive across patterns; score and credits survive save/reopen")
+            assert [value for kind, value in saved["records"] if kind == "string"] == original_strings
+    print("PASS: reference program, responsive pattern transitions, stop and copyright save/reopen")
 
 
 if __name__ == "__main__":

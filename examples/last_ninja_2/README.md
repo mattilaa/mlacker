@@ -1,136 +1,102 @@
-# Last Ninja 2 — Central Park, Mla SID MIDI adaptation
+# Last Ninja 2 — Central Park, reference performance
 
 ```sh
 build/cmake/bin/mlacker examples/last_ninja_2_loading.mlaproj
 ```
 
-Escape dismisses the credits. Press **Shift+M**, then **Space** to play the
-whole song from the song matrix. Space in the pattern editor plays the selected
-two-bar pattern. Mla SID must be installed (`./build.sh --plugins --install`).
-The project retains its earlier folder name for existing launch commands.
+Escape dismisses the credits. **Shift+M**, then **Space**, plays the whole song
+from the matrix. Space in the pattern editor loops the selected pattern.
+Requires Mla SID built from this branch with register-frame
+protocol 1 (`./build.sh --plugins --install`). The earlier project folder name
+is retained for existing launch commands.
 
-This version uses the supplied **level-1.mid**, a 124 BPM Yamaha XG arrangement
-of Central Park credited to **Chris Holm**, with original music by **Matt Gray**
-and the MIDI copyright credit **1988 System 3**. The XG instrument and effect
-settings are adapted to SID synthesizer patches. The supplied
-[Central Park in-game recording](https://www.youtube.com/watch?v=CoGFV_xxR64)
-guides the added intro and the bass/snare timbres. The MIDI's melodic pitches
-and arrangement are retained, so its key, phrasing and duration still differ
-from that recording; this is not cycle-exact replay of the C64 player.
+The source of truth is the supplied
+[Central Park in-game recording](https://www.youtube.com/watch?v=CoGFV_xxR64).
+The project follows the matching original C64 player, **HVSC subtune 2**, by
+**Matt Gray**, released by **System 3 in 1988**. The separate loading tune and
+Chris Holm MIDI arrangement are not used to determine this version's notes,
+section order, timing or mix.
 
-The project follows the source MIDI's **7,637 notes**, melodic pitches and song
-structure. The sustained basses' root/octave pairs are voiced by two Unison
-oscillators from one root note, so both octaves slide together; the upper
-octave shares the root's velocity. The MIDI's eight silent setup beats contain
-a synthesized SID intro that continues as a quieter backing arpeggio throughout
-the song. Note starts and ends are
-rounded to the sequencer's 0.01-row precision (at most about 0.6 ms per endpoint).
-Equal-pitch bass retriggers release the old note at the new note's start;
-adjacent pitch changes overlap by 0.02 row for legato. The song lasts **4:38.71**, with **72 two-bar
-patterns** of 32 rows. Small patterns keep scheduling and editing responsive;
-sustained notes carry across matrix rows.
+## Sequence, sound and mix
 
-Everything is synthesized by Mla SID during playback: no recorded backing
-track, original SID binary or external MIDI player is required. The native
-`Project.mlack` contains eleven parts: wide PWM bass, Kanoon pulse, left/right
-pulse basses, a PWM bass layer, Converge, Ana PWM pad, SID kick, snare and shaker,
-and the SID intro arpeggio.
-The source percussion triggers (35, 38 and 82) drive synthesized percussion at
-their original times; their pitches and envelopes are adapted for the SID.
+The original player is traced offline into full eight-bit SID register frames.
+These play through **one Mla SID chip**, keeping all three voices coupled:
+their oscillator phases, ring modulation, pulse-width movement, glide ramps,
+envelopes, waveform changes and shared volume register remain together.
+The original voice programs set their relative levels; there are no extra
+quiet lead presets, doubled MIDI layers or independently scaled drum patches.
+The instrument's overall output is +4 dB with headroom in the checked render.
 
-## Pulse-width modulation
+The snare uses the player's rapid alternation of noise and pulse with changing
+frequency and envelope, rather than a generic noise-only hit or a single noise
+attack followed by a fixed pulse tail. The actual lead, bass, arpeggio and
+percussion programs change roles as the original score plays.
 
-Seven parts use Mla SID's **PW Sweep** player modulation, stepped at the PAL frame
-rate, without streaming thousands of per-frame CC events through the editor.
-All start from pulse width 2048. Each chip's voices have staggered sweep phases.
+The score runs for **5:40.85**, including the video's approximately 0.8-second
+lead-in and a short silent ending. Its original volume fade reaches zero at
+approximately **5:38.14**. The first bass entry is around **0:04.65**.
 
-| Part | PW Sweep | Rate |
-| --- | ---: | ---: |
-| Wide PWM bass | 94% | 0.245 Hz |
-| Kanoon pulse | 70% | 0.60 Hz |
-| Pulse bass L | 95% | 0.37 Hz |
-| Pulse bass R | 95% | 0.43 Hz |
-| PWM bass layer | 94% | 0.16 Hz |
-| Converge | 85% | 0.45 Hz |
-| Ana PWM pad | 75% | 0.35 Hz |
+The sequencer's **188 BPM is a frame timing grid**, not a musical tempo claim.
+Four original PAL frames occupy each row; packets schedule the individual
+register frames inside it. The grid is about 0.018% faster than exact PAL,
+amounting to roughly 0.06 seconds over the tune. The original driver’s writes
+inside a frame are represented by its register state plus gate-reset markers;
+CPU-cycle offsets within that frame are not preserved. Mla SID's own chip
+model remains an approximation of the hardware. For comparison with the
+recording, start at matrix row 1: seeking reconstructs registers, but cannot
+reconstruct the previous oscillator phases and envelope history.
 
-The main bass sweeps approximately 124–3972 on the SID's 0–4095 pulse-width
-range; the left/right basses reach approximately 103–3993. The original saw
-patch is replaced with a pulse wave so width modulation affects its sound.
-All four bass layers use the SID low-pass filter with cutoff and resonance
-automation. The patches are editable in the Mla SID parameter editor. Hard Restart is
-enabled for reliable note attacks, and the kick uses a short pitch-bend drop.
+**89 short patterns** keep the editor and scheduler responsive. The four tracks
+store the programs for SID voices 1–3 and the shared volume/filter registers.
+They feed one instrument, rather than four separately mixed audio parts. There
+is no audio backing track, runtime 6502 emulator or external song dependency.
+The project is self-contained register data; musical note editing remains
+available in the separate MIDI adaptation.
 
-## Bass glide and filtering CCs
-
-Each bass track exposes **CC83** (play mode), **CC5** (glide time), **CC74**
-(cutoff), **CC71** (resonance) and **CC80** (filter mode). The sustained basses
-also have a **pitchbend** column. Pattern starts restore Unison/legato with
-CC83 = 42 and low-pass filtering with CC80 = 18.
-
-The sustained bass approaches its next pitch during the **last beat before
-the note change**, about 484 ms at this tempo. The pitch-bend column encodes a
-linear frequency ramp over sixteen substeps, like a SID player changing FREQ
-registers. Its bend range is 24 semitones. On arrival the next key takes over
-with bend reset to zero; CC5 stays at zero to avoid a second, delayed slide.
-The 0.02-row note overlap keeps the envelope legato across the handoff.
-
-The fast basses use CC5 = 16 (about 32 ms) on connected pitch changes. Repeated
-notes and notes after gaps use CC5 = 0 to retain distinct attacks. Edit these
-columns and note overlaps to program portamento; no plugin update is required.
-The envelopes retain a nonzero sustain so long connected phrases keep sounding.
-
-The sustained bass cutoff falls from CC74 = 108 to 76 across a note. Fast bass
-hits use `100 92 84 76` across their row's four substeps. CC71 sets moderate
-resonance (34 on the sustained basses, 42 on the fast basses). Both sounding
-voices of each sustained octave bass are routed through the filter.
-
-## Intro and snare
-
-The first pattern holds F4, F5, F6 and F7, tuned 35 cents sharp to match the
-reference's octave bands. One triangle oscillator arpeggiates at one step per
-PAL frame, with a new envelope attack on each beat. It continues in every
-following pattern, following the MIDI bass roots in octaves. CC7 lowers its
-output behind the melody; pitch-bend automation removes the initial tuning
-offset after the first pattern. The player's ascending order approximates the
-four-octave effect rather than the original descending register sequence.
-
-The snare stays on the SID noise waveform throughout its hit. A pitch-bend
-column contains `4096 0 -4096 -8192`; with a 24-semitone bend range, its noise
-clock setting falls roughly 1976 → 988 → 494 → 247 Hz. This stepped LFSR clock
-fall and a short decay/release give the grainy SID snare texture without a
-pitched pulse tail. Voice linking is disabled for percussion so unused
-oscillators stay silent.
+Stop guards alternate two otherwise unused low notes with a short overlap.
+Releasing the last guard cancels queued writes and silences the chip, including
+when stopping between two register frames. Normal keyboard notes leave the
+register player and restore the instrument patch. The 93 saved parameter IDs
+and existing keyboard/CC behavior remain compatible.
 
 ## Credits and rights
 
 The notice appears whenever the project opens and survives Save and Save As.
-It credits Matt Gray, the original System 3 release and Chris Holm's MIDI
-arrangement. Music rights remain with their respective owners. The music is
-not covered by mlacker's software license; attribution grants no redistribution,
-publication or commercial-use rights.
+It credits Matt Gray, the original System 3 release and the reference video.
+Music rights remain with their respective owners. The music is not covered by
+mlacker's software license; attribution grants no redistribution, publication
+or commercial-use rights.
 
-The supplied MIDI, rather than the earlier HVSC transcription, is the source
-for this version. The separately suggested
-[Commodore 64 SID Tribute MIDI announcement](https://www.facebook.com/commodore64sidtribute/posts/the-last-ninja-2-soundtrack-is-now-available-in-midi-format-on-my-discord-channe/935092915106044/)
-is reserved for a subsequent comparison; those MIDI files are not included here.
+The reference SID is obtained separately from
+[HVSC](https://hvsc.de/download/C64Music/MUSICIANS/G/Gray_Matt/Last_Ninja_2.sid).
+Its [STIL entry](https://hvsc.de/download/C64Music/DOCUMENTS/STIL.txt) names
+subtune 2 as Central Park (in-game).
 
 ## Reproduce and check
 
-No Python dependencies are needed. The source MIDI is not bundled.
-
 ```sh
-python3 examples/last_ninja_2/generate.py /path/to/level-1.mid
+python3 -m venv build/last_ninja_2/venv
+build/last_ninja_2/venv/bin/pip install py65==1.2.0
+build/last_ninja_2/venv/bin/python examples/last_ninja_2/generate.py /path/to/Last_Ninja_2.sid
 python3 tests/last_ninja_2_tui_smoke.py build/cmake/bin/mlacker ~/.local/plugins/VST3/MlaSid.vst3
 ```
 
-The generator checks source SHA-256
-`45ec658a2820fd2cbc447cd3b8b4a543acdd5de459dda29f57e81d950d1d212a`.
-`--plugin /path/to/MlaSid.vst3` overrides the installation path saved in the
-project; `--output /path/to/Project.mlack` changes the destination.
+The source SID SHA-256 is
+`7686b46aada0a107dd9717b47e76209acca9e47b92a6ea10657fcbd63f24588a`.
+The decoded register/gate-reset program SHA-256 is
+`08262d095262655b9d1b1c482a6b15808fcbd3a8b9010487b65214ef57df0aff`,
+checked against an independent trace of the original player. `--plugin` changes
+the saved bundle path; `--output` changes the project destination.
 
-The integration check starts the dense bass/percussion section, opens a menu
-during playback, crosses a pattern boundary, and checks prompt start/stop
-responses. It also verifies credits on reopening and that saving preserves all
-score text. CTest runs it when the built Mla SID bundle is available. No changes
-to `subprojects/mlang` are required.
+The plugin tests cover timed frames, complete register bytes, queued-write
+cancellation on Stop, restart and malformed packets, alongside the existing
+instrument tests. The project test checks the full program, source landmarks,
+responsive playback, pattern transitions and saved credits. No changes to
+`subprojects/mlang` are required.
+
+## Separate MIDI adaptation
+
+The earlier editable MIDI version is preserved at
+`examples/last_ninja_2_midi.mlaproj`, with its generator at
+`examples/last_ninja_2/generate_midi.py`. It is a comparison arrangement and is
+not the reference performance. See [its notes](MIDI-arrangement.md).

@@ -22,6 +22,7 @@
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -94,6 +95,7 @@ struct Instance {
     ProcessContext context{};
     std::vector<std::string> subCategories;
     int32 lastSilenceFlags = 0;
+    std::vector<std::vector<uint8>> sysexBuffers;
 
     bool open(const std::string &path)
     {
@@ -190,6 +192,18 @@ struct Instance {
         events.addEvent(e);
     }
 
+    void sysex(const std::vector<uint8> &bytes, int32 offset = 0)
+    {
+        sysexBuffers.push_back(bytes);
+        Event e{};
+        e.type = Event::kDataEvent;
+        e.sampleOffset = offset;
+        e.data.type = DataEvent::kMidiSysEx;
+        e.data.size = static_cast<uint32>(sysexBuffers.back().size());
+        e.data.bytes = sysexBuffers.back().data();
+        events.addEvent(e);
+    }
+
     // Render about `seconds` (whole blocks).
     Stereo render(double seconds) { return renderFrames(static_cast<int>(kRate * seconds + kBlock - 1) / kBlock * kBlock); }
 
@@ -200,6 +214,7 @@ struct Instance {
             data.numSamples = kBlock;
             processor->process(data);
             events.clear();
+            sysexBuffers.clear();
             changes.clearQueue();
             const auto &bus = data.outputs[0];
             lastSilenceFlags = static_cast<int32>(bus.silenceFlags);
@@ -876,6 +891,75 @@ void testBounded(const std::string &path)
     CHECK(peak(out.left) < 1.0);
 }
 
+std::vector<uint8> registerPacket(int bank, const std::vector<std::array<uint8, 7>> &frames,
+                                  int micros = 50000, bool reset = false)
+{
+    std::vector<uint8> p{0x7D, 'M', 'S', 'I', 'D', 1, static_cast<uint8>(bank),
+                         static_cast<uint8>(frames.size()), static_cast<uint8>(micros & 127),
+                         static_cast<uint8>((micros >> 7) & 127), static_cast<uint8>((micros >> 14) & 127),
+                         static_cast<uint8>(reset)};
+    for(const auto &frame : frames) {
+        const int n = bank == 3 ? 4 : 7;
+        uint8 mask = 0;
+        for(int i = 0; i < n; ++i)
+            mask |= ((frame[i] >> 7) & 1) << i;
+        p.push_back(0); p.push_back(mask);
+        for(int i = 0; i < n; ++i)
+            p.push_back(frame[i] & 127);
+    }
+    return p;
+}
+
+void testRegisterFrames(const std::string &path)
+{
+    Instance plugin;
+    CHECK(plugin.open(path));
+    plugin.param(kChip, 1.0); // No 6581 volume-DAC click in the silence check.
+    const int a4 = static_cast<int>(std::lround(440.0 * 16777216.0 / 985248.0));
+    const std::array<uint8, 7> silent{0, 0, 0, 0, 0, 0, 0xF0};
+    const std::array<uint8, 7> low{static_cast<uint8>(a4 & 255), static_cast<uint8>(a4 >> 8), 0, 8, 0x11, 0, 0xF0};
+    const std::array<uint8, 7> high{static_cast<uint8>((a4 * 2) & 255), static_cast<uint8>((a4 * 2) >> 8), 0, 8, 0x11, 0, 0xF0};
+    auto off = high; off[4] = 0x10;
+    plugin.sysex(registerPacket(0, {silent, low, high, off}, 50000, true));
+    plugin.sysex(registerPacket(3, {{0, 0, 0, 15, 0, 0, 0}}));
+    plugin.noteOn(0); // The native project's overlapping stop guard.
+    const Stereo out = plugin.render(0.3);
+    CHECK(peak(out.left, 0, at(0.05)) == 0.0);
+    CHECK(std::fabs(zeroCrossingHz(out.left, at(0.065), at(0.095)) / 440.0 - 1.0) < 0.01);
+    CHECK(std::fabs(zeroCrossingHz(out.left, at(0.11), at(0.14)) / 880.0 - 1.0) < 0.01);
+    CHECK(peak(out.left, at(0.23), at(0.3)) < 0.0001);
+
+    // Stop before a queued future gate-on: that write must never fire.
+    plugin.noteOff(0);
+    plugin.sysex(registerPacket(0, {silent, low}, 50000, true));
+    plugin.sysex(registerPacket(3, {{0, 0, 0, 15, 0, 0, 0}}));
+    plugin.noteOn(1);
+    plugin.render(0.02);
+    plugin.noteOff(1);
+    const Stereo stopped = plugin.render(0.15);
+    CHECK(peak(stopped.left) == 0.0);
+
+    // Restart and preserve the high bits of both FREQ and waveform bytes.
+    const std::array<uint8, 7> noise{0, 0x80, 0, 8, 0x81, 0, 0xF0};
+    plugin.sysex(registerPacket(0, {noise}, 50000, true));
+    plugin.sysex(registerPacket(3, {{0, 0, 0, 15, 0, 0, 0}}));
+    plugin.noteOn(0);
+    const Stereo noisy = plugin.render(0.1);
+    CHECK(rms(noisy.left, at(0.02), at(0.1)) > 0.01);
+    CHECK(highShare(noisy.left, at(0.02), at(0.1), 2000) > 0.2);
+
+    // Malformed packets must not reset a playing chip or modify its registers.
+    auto malformed = registerPacket(0, {silent}, 50000, true);
+    malformed.pop_back();
+    plugin.sysex(malformed);
+    malformed = registerPacket(0, {silent}, 50000, true); malformed[13] = 128;
+    plugin.sysex(malformed);
+    const Stereo intact = plugin.render(0.1);
+    CHECK(rms(intact.left) > 0.01);
+    plugin.noteOff(0);
+    CHECK(peak(plugin.render(0.1).left, at(0.05)) < 0.0001);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -904,6 +988,7 @@ int main(int argc, char **argv)
     testModulation(path);
     testState(path);
     testBounded(path);
+    testRegisterFrames(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

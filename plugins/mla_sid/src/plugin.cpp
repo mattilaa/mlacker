@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 
 // --- MLang DSP bridge (compiled from src/mla_sid_dsp.mla) --------------------
@@ -437,6 +438,10 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                     item.kind = Item::kNoteOff;
                     item.pitch = event.noteOff.pitch;
                     item.channel = event.noteOff.channel;
+                } else if(event.type == Event::kDataEvent && event.data.type == DataEvent::kMidiSysEx) {
+                    item.kind = Item::kRegisterFrames;
+                    item.bytes = event.data.bytes;
+                    item.size = event.data.size;
                 } else {
                     continue;
                 }
@@ -454,6 +459,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         if(data.numOutputs < 1 || data.outputs[0].numChannels < 2 || data.outputs[0].channelBuffers32 == nullptr) {
             for(int i = 0; i < count; ++i)
                 apply(items_[i]);
+            sampleClock_ += data.numSamples;
             return kResultOk;
         }
         AudioBusBuffers &out = data.outputs[0];
@@ -461,10 +467,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         float *outR = out.channelBuffers32[1];
 
         // Silent and nothing to do: exact zeros.
-        if(count == 0 && !pushed && !anyGate() && mlasid_active__ptr_struct_Sid(dsp_) == 0) {
+        if(count == 0 && !pushed && rawCount_ == 0 && !anyGate() && mlasid_active__ptr_struct_Sid(dsp_) == 0) {
             std::fill(outL, outL + data.numSamples, 0.0f);
             std::fill(outR, outR + data.numSamples, 0.0f);
             out.silenceFlags = 3;
+            sampleClock_ += data.numSamples;
             return kResultOk;
         }
 
@@ -476,6 +483,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             apply(items_[i]);
         }
         render(outL, outR, rendered, data.numSamples);
+        sampleClock_ += data.numSamples;
         out.silenceFlags = 0;
         return kResultOk;
     }
@@ -531,7 +539,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
   private:
     struct Item {
-        enum Kind : int { kParam, kNoteOn, kNoteOff };
+        enum Kind : int { kParam, kNoteOn, kNoteOff, kRegisterFrames };
         int32 offset = 0;
         int kind = kParam;
         ParamID id = 0;
@@ -540,6 +548,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         int16 channel = 0;
         float velocity = 0;
         int order = 0;
+        const uint8 *bytes = nullptr;
+        uint32 size = 0;
     };
     static constexpr int kMaxItems = 4096;
     static constexpr int kMaxHeld = 128;
@@ -570,6 +580,17 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     int arpCount_ = 0;
     int v3Value_ = 0;
     int layout_ = -1;
+    struct RegisterFrame {
+        int64_t at = 0;
+        int bank = 0;
+        bool gateReset = false;
+        std::array<uint8_t, 7> values{};
+    };
+    std::array<RegisterFrame, 64> rawFrames_{};
+    int rawCount_ = 0;
+    bool rawMode_ = false;
+    bool rawStopped_ = false;
+    int64_t sampleClock_ = 0;
 
     // --- Parameter plumbing -----------------------------------------------
     void registerSlot(ParamID id, double defaultNorm, int steps = 0)
@@ -657,6 +678,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     // A fresh chip (or one just reset): write every register again.
     void restart()
     {
+        rawCount_ = 0;
+        rawMode_ = false;
+        rawStopped_ = false;
         written_.fill(-1);
         for(auto &voice : voices_)
             voice = PlayVoice{};
@@ -779,9 +803,71 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         writeChip();
     }
 
+    // Non-commercial SysEx, without F0/F7:
+    // 7D 'MSID' 01, bank, count, step-us (3 little-endian 7-bit bytes), flags;
+    // each frame: gate-reset, high-bit mask, 7 voice bytes (4 for globals).
+    // This bypasses the keyboard player without changing saved parameter IDs.
+    void registerFrames(const uint8 *p, uint32 size, int64_t at)
+    {
+        static constexpr uint8 magic[] = {0x7D, 'M', 'S', 'I', 'D', 1};
+        if(p == nullptr || size < 12 || size > 48 || std::memcmp(p, magic, sizeof(magic)) != 0)
+            return;
+        for(uint32 i = 0; i < size; ++i)
+            if(p[i] > 127)
+                return;
+        const int bank = p[6], count = p[7];
+        const int micros = p[8] | (p[9] << 7) | (p[10] << 14);
+        if(bank > 3 || count < 1 || count > 4 || micros < 1000 || micros > 100000 ||
+           p[11] > 1 || (p[11] && bank != 0))
+            return;
+        const int n = bank == 3 ? 4 : 7;
+        if(size != static_cast<uint32>(12 + count * (n + 2)))
+            return;
+        std::array<RegisterFrame, 4> decoded{};
+        for(int f = 0; f < count; ++f) {
+            const uint8 *q = p + 12 + f * (n + 2);
+            if(q[0] > 1 || (bank == 3 && q[0]) || q[1] >= (1 << n))
+                return;
+            RegisterFrame &frame = decoded[f];
+            frame.at = at + static_cast<int64_t>(std::llround(f * sampleRate_ * micros / 1000000.0));
+            frame.bank = bank;
+            frame.gateReset = q[0] != 0;
+            for(int r = 0; r < n; ++r)
+                frame.values[r] = static_cast<uint8_t>(q[r + 2] | (((q[1] >> r) & 1) << 7));
+        }
+        if(!rawMode_ || rawStopped_ || p[11]) {
+            mlasid_reset__ptr_struct_Sid(dsp_);
+            rawCount_ = 0;
+            rawMode_ = true;
+            rawStopped_ = false;
+            heldCount_ = 0;
+            written_.fill(-1);
+            set(kDspOutput, gainFromNorm(norm(kOutputParam)));
+            set(kDspModel, step(kChipParam));
+            set(kDspClock, step(kClockParam));
+            set(kDspHardRestart, step(kHardRestartParam));
+            for(int v = 0; v < 3; ++v)
+                set(kDspLevel + v, 1.0);
+            for(int r = 0; r < kRegisters; ++r)
+                poke(r, 0);
+        }
+        if(rawCount_ + count > static_cast<int>(rawFrames_.size()))
+            return;
+        for(int f = 0; f < count; ++f) {
+            int position = rawCount_++;
+            while(position > 0 && rawFrames_[position - 1].at > decoded[f].at) {
+                rawFrames_[position] = rawFrames_[position - 1];
+                --position;
+            }
+            rawFrames_[position] = decoded[f];
+        }
+    }
+
     void apply(const Item &item)
     {
-        if(item.kind == Item::kParam) {
+        if(item.kind == Item::kRegisterFrames) {
+            registerFrames(item.bytes, item.size, sampleClock_ + item.offset);
+        } else if(item.kind == Item::kParam) {
             const int slot = slotOf(item.id);
             if(slot < 0 || !registered_[slot])
                 return;
@@ -874,10 +960,18 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
     void noteOn(int pitch, int channel, float velocity)
     {
+        if(rawMode_ && pitch > 1) {
+            // Ordinary keyboard playing leaves the register player and
+            // restores the instrument patch. Notes 0/1 are its stop guards.
+            mlasid_reset__ptr_struct_Sid(dsp_);
+            restart();
+        }
         removeHeld(pitch, channel);
         const bool wasEmpty = heldCount_ == 0;
         if(heldCount_ < kMaxHeld)
             held_[heldCount_++] = Held{static_cast<int16>(pitch), static_cast<int16>(channel), velocity};
+        if(rawMode_)
+            return;
         switch(mode()) {
             case kPoly: {
                 // A released voice (the longest released first), else the
@@ -921,6 +1015,16 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     void noteOff(int pitch, int channel)
     {
         removeHeld(pitch, channel);
+        if(rawMode_) {
+            if(heldCount_ == 0) {
+                rawCount_ = 0;
+                for(int v = 0; v < 3; ++v)
+                    poke(v * 7 + 4, std::max(0, written_[v * 7 + 4]) & ~1);
+                poke(24, 0);
+                rawStopped_ = true;
+            }
+            return;
+        }
         switch(mode()) {
             case kPoly:
                 for(int v = 0; v < kVoices; ++v)
@@ -1030,6 +1134,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     // Write the registers the patch, the notes and the modulation give now.
     void writeChip()
     {
+        if(rawMode_)
+            return;
         if(dsp_ == nullptr)
             return;
         const bool link = on(kLinkParam);
@@ -1085,6 +1191,34 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     void render(float *outL, float *outR, int32 from, int32 to)
     {
         while(from < to) {
+            if(rawMode_) {
+                const int64_t now = sampleClock_ + from;
+                while(rawCount_ > 0 && rawFrames_[0].at <= now) {
+                    const RegisterFrame frame = rawFrames_[0];
+                    for(int i = 1; i < rawCount_; ++i)
+                        rawFrames_[i - 1] = rawFrames_[i];
+                    --rawCount_;
+                    const int base = frame.bank * 7;
+                    const int n = frame.bank == 3 ? 4 : 7;
+                    if(frame.bank < 3 && frame.gateReset)
+                        poke(base + 4, frame.values[4] & ~1);
+                    for(int r = 0; r < n; ++r)
+                        if(frame.bank == 3 || r != 4)
+                            poke(base + r, frame.values[r]);
+                    if(frame.bank < 3)
+                        poke(base + 4, frame.values[4]);
+                }
+                int32 end = to;
+                if(rawCount_ > 0)
+                    end = static_cast<int32>(std::min<int64_t>(end, rawFrames_[0].at - sampleClock_));
+                for(int32 i = from; i < end; ++i) {
+                    float right = 0.0f;
+                    outL[i] = mlasid_process__ptr_struct_Sid_ptr_f32(dsp_, &right);
+                    outR[i] = right;
+                }
+                from = end;
+                continue;
+            }
             const int32 chunk = std::min<int32>(to - from, std::max<int32>(1, static_cast<int32>(std::ceil(untilFrame_))));
             for(int32 i = from; i < from + chunk; ++i) {
                 float right = 0.0f;
