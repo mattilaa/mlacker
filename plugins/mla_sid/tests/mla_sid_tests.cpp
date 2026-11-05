@@ -22,6 +22,7 @@
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -94,6 +95,7 @@ struct Instance {
     ProcessContext context{};
     std::vector<std::string> subCategories;
     int32 lastSilenceFlags = 0;
+    std::vector<std::vector<uint8>> sysexBuffers;
 
     bool open(const std::string &path)
     {
@@ -190,6 +192,18 @@ struct Instance {
         events.addEvent(e);
     }
 
+    void sysex(const std::vector<uint8> &bytes, int32 offset = 0)
+    {
+        sysexBuffers.push_back(bytes);
+        Event e{};
+        e.type = Event::kDataEvent;
+        e.sampleOffset = offset;
+        e.data.type = DataEvent::kMidiSysEx;
+        e.data.size = static_cast<uint32>(sysexBuffers.back().size());
+        e.data.bytes = sysexBuffers.back().data();
+        events.addEvent(e);
+    }
+
     // Render about `seconds` (whole blocks).
     Stereo render(double seconds) { return renderFrames(static_cast<int>(kRate * seconds + kBlock - 1) / kBlock * kBlock); }
 
@@ -200,6 +214,7 @@ struct Instance {
             data.numSamples = kBlock;
             processor->process(data);
             events.clear();
+            sysexBuffers.clear();
             changes.clearQueue();
             const auto &bus = data.outputs[0];
             lastSilenceFlags = static_cast<int32>(bus.silenceFlags);
@@ -660,6 +675,40 @@ void testUnisonAndGlide(const std::string &path)
     CHECK(std::fabs(zeroCrossingHz(back.left, at(0.4), at(0.6)) / hzOf(57) - 1.0) < 0.003);
 }
 
+void testGlideControllers(const std::string &path)
+{
+    Instance plugin;
+    CHECK(plugin.open(path));
+    plugin.param(kLink, kOff);
+    for(int v = 0; v < 3; ++v) {
+        plugin.param(voice(v, kWave), waveNorm(v == 0 ? kTri : 0));
+        plugin.param(voice(v, kKeys), v == 0 ? kOn : kOff);
+        plugin.param(voice(v, kFilterField_), kOff);
+    }
+    plugin.param(voice(0, kSustain), nibbleNorm(15));
+    // CC83 selects Unison/legato; CC5 is the portamento time. A controller
+    // change at the note's offset must shape that note sample-accurately.
+    plugin.cc(83, 42);
+    plugin.cc(5, 0);
+    plugin.noteOn(57);
+    plugin.render(0.2);
+    plugin.cc(5, 32, 64);
+    plugin.noteOn(69, 1.0f, 64);
+    const Stereo slide = plugin.render(0.4);
+    const double early = zeroCrossingHz(slide.left, at(0.02), at(0.06));
+    const double late = zeroCrossingHz(slide.left, at(0.3), at(0.4));
+    CHECK(early > hzOf(57) * 1.05 && early < hzOf(69) * 0.95);
+    CHECK(std::fabs(late / hzOf(69) - 1.0) < 0.003);
+    // A zero time disables the slide without changing the legato mode.
+    plugin.cc(5, 0);
+    plugin.noteOn(81);
+    const Stereo instant = plugin.render(0.1);
+    CHECK(std::fabs(zeroCrossingHz(instant.left, at(0.02), at(0.09)) / hzOf(81) - 1.0) < 0.005);
+    plugin.noteOff(81);
+    const Stereo held = plugin.render(0.1);
+    CHECK(std::fabs(zeroCrossingHz(held.left, at(0.02), at(0.09)) / hzOf(69) - 1.0) < 0.005);
+}
+
 void testArp(const std::string &path, const char *wavDir)
 {
     // Arp: a held chord cycles every 2 frames (40 ms at PAL).
@@ -842,6 +891,162 @@ void testBounded(const std::string &path)
     CHECK(peak(out.left) < 1.0);
 }
 
+std::vector<uint8> registerPacket(int bank, const std::vector<std::array<uint8, 7>> &frames,
+                                  int micros = 50000, bool reset = false, int pan = -1)
+{
+    std::vector<uint8> p{0x7D, 'M', 'S', 'I', 'D', 1, static_cast<uint8>(bank),
+                         static_cast<uint8>(frames.size()), static_cast<uint8>(micros & 127),
+                         static_cast<uint8>((micros >> 7) & 127), static_cast<uint8>((micros >> 14) & 127),
+                         static_cast<uint8>(int(reset) | (pan >= 0 ? 2 : 0))};
+    for(const auto &frame : frames) {
+        const int n = bank == 3 ? 4 : 7;
+        uint8 mask = 0;
+        for(int i = 0; i < n; ++i)
+            mask |= ((frame[i] >> 7) & 1) << i;
+        p.push_back(0); p.push_back(mask);
+        if(pan >= 0) p.push_back(static_cast<uint8>(pan));
+        for(int i = 0; i < n; ++i)
+            p.push_back(frame[i] & 127);
+    }
+    return p;
+}
+
+void testRegisterFrames(const std::string &path)
+{
+    Instance plugin;
+    CHECK(plugin.open(path));
+    plugin.param(kChip, 1.0); // No 6581 volume-DAC click in the silence check.
+    const int a4 = static_cast<int>(std::lround(440.0 * 16777216.0 / 985248.0));
+    const std::array<uint8, 7> silent{0, 0, 0, 0, 0, 0, 0xF0};
+    const std::array<uint8, 7> low{static_cast<uint8>(a4 & 255), static_cast<uint8>(a4 >> 8), 0, 8, 0x11, 0, 0xF0};
+    const std::array<uint8, 7> high{static_cast<uint8>((a4 * 2) & 255), static_cast<uint8>((a4 * 2) >> 8), 0, 8, 0x11, 0, 0xF0};
+    auto off = high; off[4] = 0x10;
+    plugin.sysex(registerPacket(0, {silent, low, high, off}, 50000, true));
+    plugin.sysex(registerPacket(3, {{0, 0, 0, 15, 0, 0, 0}}));
+    plugin.noteOn(0); // The native project's overlapping stop guard.
+    const Stereo out = plugin.render(0.3);
+    CHECK(peak(out.left, 0, at(0.05)) == 0.0);
+    CHECK(std::fabs(zeroCrossingHz(out.left, at(0.065), at(0.095)) / 440.0 - 1.0) < 0.01);
+    CHECK(std::fabs(zeroCrossingHz(out.left, at(0.11), at(0.14)) / 880.0 - 1.0) < 0.01);
+    CHECK(peak(out.left, at(0.23), at(0.3)) < 0.0001);
+
+    // Stop before a queued future gate-on: that write must never fire.
+    plugin.noteOff(0);
+    plugin.sysex(registerPacket(0, {silent, low}, 50000, true));
+    plugin.sysex(registerPacket(3, {{0, 0, 0, 15, 0, 0, 0}}));
+    plugin.noteOn(1);
+    plugin.render(0.02);
+    plugin.noteOff(1);
+    const Stereo stopped = plugin.render(0.15);
+    CHECK(peak(stopped.left) == 0.0);
+
+    // Restart and preserve the high bits of both FREQ and waveform bytes.
+    const std::array<uint8, 7> noise{0, 0x80, 0, 8, 0x81, 0, 0xF0};
+    plugin.sysex(registerPacket(0, {noise}, 50000, true));
+    plugin.sysex(registerPacket(3, {{0, 0, 0, 15, 0, 0, 0}}));
+    plugin.noteOn(0);
+    const Stereo noisy = plugin.render(0.1);
+    CHECK(rms(noisy.left, at(0.02), at(0.1)) > 0.01);
+    CHECK(highShare(noisy.left, at(0.02), at(0.1), 2000) > 0.2);
+
+    // Malformed packets must not reset a playing chip or modify its registers.
+    auto malformed = registerPacket(0, {silent}, 50000, true);
+    malformed.pop_back();
+    plugin.sysex(malformed);
+    malformed = registerPacket(0, {silent}, 50000, true); malformed[13] = 128;
+    plugin.sysex(malformed);
+    const Stereo intact = plugin.render(0.1);
+    CHECK(rms(intact.left) > 0.01);
+    plugin.noteOff(0);
+    CHECK(peak(plugin.render(0.1).left, at(0.05)) < 0.0001);
+}
+
+void testRegisterStartSilence(const std::string &path)
+{
+    // A 6581 has mixer DC even with no gated voices. Starting a silent
+    // standalone pattern must not turn that DC into an audible thump.
+    for(int bank = 0; bank < 3; ++bank) {
+        Instance plugin;
+        CHECK(plugin.open(path));
+        plugin.param(kChip, 0.0);
+        for(int attempt = 0; attempt < 2; ++attempt) {
+            plugin.sysex(registerPacket(bank, {{0, 0, 0, 0, 0, 0, 0}}, 50000, bank == 0, 50));
+            plugin.noteOn(bank * 2);
+            const Stereo silent = plugin.render(0.05);
+            CHECK(peak(silent.left) < 1e-6);
+            CHECK(peak(silent.right) < 1e-6);
+            plugin.noteOff(bank * 2);
+            plugin.render(0.1);
+        }
+    }
+    // Cold-start settling must not defer a queued intro note. Exercise the
+    // 6581 and the same four PAL frames per row as the project.
+    Instance intro;
+    CHECK(intro.open(path));
+    intro.param(kChip, 0.0);
+    const int a4 = static_cast<int>(std::lround(440.0 * 16777216.0 / 985248.0));
+    const std::array<uint8, 7> tone{static_cast<uint8>(a4 & 255), static_cast<uint8>(a4 >> 8), 0, 8, 0x11, 0, 0xF0};
+    intro.sysex(registerPacket(2, {{0, 0, 0, 0, 0, 0, 0}, tone, tone, tone}, 19947, false, 30));
+    intro.noteOn(4);
+    const Stereo onset = intro.render(0.08);
+    CHECK(peak(onset.left, 0, at(0.019)) < 1e-6);
+    CHECK(rms(onset.left, at(0.022), at(0.04)) > 0.01);
+
+    // The same initialization must wait for the global packet at the same
+    // timestamp: a muted matrix start must stay silent too.
+    Instance matrix;
+    CHECK(matrix.open(path));
+    matrix.param(kChip, 0.0);
+    matrix.sysex(registerPacket(0, {{0, 0, 0, 0, 0, 0, 0}}, 50000, true));
+    matrix.sysex(registerPacket(3, {{0, 0, 0, 0, 0, 0, 0}}));
+    matrix.noteOn(0);
+    CHECK(peak(matrix.render(0.05).left) < 1e-6);
+}
+
+void testStereoRegisterFrames(const std::string &path)
+{
+    const int a4 = static_cast<int>(std::lround(440.0 * 16777216.0 / 985248.0));
+    const std::array<uint8, 7> tone{static_cast<uint8>(a4 & 255), static_cast<uint8>(a4 >> 8), 0, 8, 0x11, 0, 0xF0};
+    auto render = [&](int pan) {
+        Instance plugin;
+        CHECK(plugin.open(path));
+        plugin.param(kChip, 1.0);
+        plugin.sysex(registerPacket(0, {tone}, 50000, true, pan));
+        plugin.noteOn(0);
+        return plugin.render(0.15);
+    };
+    const Stereo mono = render(-1), left = render(30), right = render(70), centre = render(50);
+    CHECK(rms(left.left, at(0.05)) > 2.2 * rms(left.right, at(0.05)));
+    CHECK(rms(right.right, at(0.05)) > 2.2 * rms(right.left, at(0.05)));
+    for(size_t i = 0; i < mono.left.size(); ++i) {
+        CHECK(std::fabs((left.left[i] + left.right[i]) * 0.5f - mono.left[i]) < 1e-6f);
+        CHECK(std::fabs(left.left[i] - right.right[i]) < 1e-6f);
+        CHECK(centre.left[i] == centre.right[i]);
+        CHECK(centre.left[i] == mono.left[i]);
+    }
+
+    // Each matrix lane's guard pair controls only its own voice.
+    Instance plugin;
+    CHECK(plugin.open(path));
+    plugin.param(kChip, 1.0);
+    plugin.sysex(registerPacket(0, {tone}, 50000, true, 30));
+    plugin.sysex(registerPacket(1, {tone}, 50000, false, 70));
+    plugin.noteOn(0); plugin.noteOn(2);
+    CHECK(rms(plugin.render(0.1).left) > 0.01);
+    plugin.noteOff(0);
+    const Stereo remaining = plugin.render(0.1);
+    CHECK(rms(remaining.right, at(0.05)) > 2 * rms(remaining.left, at(0.05)));
+    CHECK(rms(remaining.right, at(0.05)) > 0.01);
+    plugin.noteOff(2);
+    CHECK(peak(plugin.render(0.1).left, at(0.05)) < 0.0001);
+
+    // Reject an out-of-range pan before applying a reset.
+    plugin.sysex(registerPacket(0, {tone}, 50000, true, 50));
+    plugin.noteOn(0); plugin.render(0.1);
+    plugin.sysex(registerPacket(0, {{0, 0, 0, 0, 0, 0, 0}}, 50000, true, 101));
+    CHECK(rms(plugin.render(0.1).left) > 0.01);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -863,12 +1068,16 @@ int main(int argc, char **argv)
     testRegisterCcs(path);
     testPoly(path);
     testUnisonAndGlide(path);
+    testGlideControllers(path);
     testArp(path, wavDir);
     testChannels(path);
     testSyncAndRing(path, wavDir);
     testModulation(path);
     testState(path);
     testBounded(path);
+    testRegisterFrames(path);
+    testRegisterStartSilence(path);
+    testStereoRegisterFrames(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

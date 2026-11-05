@@ -40,7 +40,8 @@ sweeps once per video frame, and maps parameters and CCs onto the registers.
   more resonant and clean.
 - The chip runs at about 384 kHz (8× at 44.1/48 kHz) and is decimated
   through an 8th-order low-pass, so the raw waveforms alias little. The
-  output is AC-coupled at 16 Hz like the C64's, mono on both channels.
+  output is AC-coupled at 16 Hz like the C64's. By default it is mono on both
+  channels; register programs can pan individual dry voices.
 
 ## Playing
 
@@ -98,6 +99,23 @@ Notes start and end sample-accurately.
 
 With Link Voices on, the V1 controls are the whole patch's.
 
+### Programming legato and filter movement
+
+Set **CC83 = 42** for Unison, then overlap the next note with the previous
+one: the newest note changes pitch without restarting the envelope. A short
+overlap such as `0.02` row is sufficient. **CC5** sets the glide time:
+`2 × (CC5 / 127)²` seconds. For example, 28 is approximately 97 ms and 16 is
+approximately 32 ms. Set CC5 to 0 for an immediate pitch change; it leaves
+Unison's legato envelope behavior enabled. CC83 = 0 returns to Poly.
+Only enable **Keys** on the voices you want to sound. Unison's voice transpose
+controls can supply an octave bass from a single line of notes.
+
+For a low-pass sweep, enable the voices' **Filter** routing, set **CC80 = 18**
+(LP), then automate **CC74** (cutoff) and **CC71** (resonance). CC80 = 54 selects
+LP+BP, 73 selects HP, and 127 sums LP+BP+HP. Filter mode Off silences routed
+voices; turn off their Filter routing for a bypass. Parameter and register CC
+writes are ordered before notes at the same sample offset.
+
 ### Register CCs
 
 CC 20 + *r* writes SID register $D400 + *r*. A CC has seven bits, so the CC
@@ -131,6 +149,52 @@ on, voice 2 and 3 registers other than FREQ follow voice 1's.
 Register CCs make tracker-style SID programming possible: a CC 24 column
 switching `64` (noise) on the first row of a note and `32` (pulse) on the
 next is the classic C64 drum or "noise attack" lead.
+
+## Timed SID register programs
+
+Mla SID also accepts non-commercial MIDI SysEx register-frame packets, used by
+the [Central Park reference project](../../examples/last_ninja_2). They bypass
+the keyboard player and drive all three oscillators of one chip with complete
+eight-bit register values. The existing 93 parameters and their IDs are
+unchanged. Output, Chip, Clock and Hard Restart remain the DSP settings.
+
+Without the MIDI F0/F7 delimiters, a packet is:
+
+```
+7D 4D 53 49 44 01 bank count us0 us1 us2 flags [frame ...]
+```
+
+`bank` is 0–3, addressing registers 0–6, 7–13, 14–20 or 21–24. `count` is 1–4.
+The three little-endian seven-bit `us` bytes give the frame interval in
+microseconds (1,000–100,000). Flag 1 resets the chip and queued frames and is
+valid only on bank 0. Flag 2 adds per-frame stereo placement on voice banks
+0–2; flags may combine to 3. Each frame holds a gate-reset byte (0/1), a
+high-bit mask, an optional pan byte, and seven low-seven-bit register bytes
+(four on bank 3). Pan runs from 0 (left) through 50 (centre) to 100 (right).
+Without flag 2, the voice is centred. Pan changes are smoothed; the shared
+filtered signal remains centred and averaging left/right retains the mono mix.
+Mask bit n is register byte n's bit 7. Bank 3's gate-reset byte must be zero.
+A voice gate reset writes its control register with GATE clear before the
+frame's envelope and final control value, preserving same-frame retriggers.
+
+The first frame sounds at the SysEx event's sample offset; later frames remain
+sample-timed across audio blocks. A fixed queue holds up to 64 frames. Invalid
+packets are ignored without changing an active program. All payload bytes
+must be seven-bit MIDI data; a packet is at most 52 bytes before F0/F7.
+
+While this player is active, notes 0–5 act as silent stop guards. Pairs 0/1,
+2/3 and 4/5 belong to voices 1, 2 and 3 respectively. Once a guard above 1 is
+used, releasing all guards for a voice clears its GATE and queued voice writes
+without stopping the other matrix lanes. Releasing the last guard cancels all
+queued writes and mutes chip volume. Older programs using only guards 0/1
+retain their whole-chip behavior. A voice played alone starts at full chip
+volume; shared-register packets override that default during matrix playback.
+On a fresh start, output filters settle to the initial mixer DC after all
+same-timestamp register banks are applied, preventing a 6581 startup click.
+Later volume writes retain their normal DAC behavior.
+An ordinary keyboard note above 5 leaves this player, resets the chip and
+restores the patch. Register playback state is transient; the score stores
+the packets themselves.
 
 ## Parameters
 

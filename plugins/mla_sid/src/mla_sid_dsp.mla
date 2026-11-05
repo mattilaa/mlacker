@@ -464,6 +464,21 @@ struct Sid {
     var d2: Biquad;
     var d3: Biquad;
     var d4: Biquad;
+    /// Side signal is mixed after the shared SID filter. Mid remains the
+    /// original mono chip, so averaging left/right reproduces that output.
+    var side_d1: Biquad;
+    var side_d2: Biquad;
+    var side_d3: Biquad;
+    var side_d4: Biquad;
+    var side_sub: f32;
+    var side_hp_x: f32;
+    var side_hp_y: f32;
+    var pan1: f32;
+    var pan2: f32;
+    var pan3: f32;
+    var pan_target1: f32;
+    var pan_target2: f32;
+    var pan_target3: f32;
     var hp_x: f32;
     var hp_y: f32;
     var hp_coef: f32;
@@ -485,6 +500,10 @@ impl Sid {
             fc: 0, res: 0, filt: 0, mode: 0, vol: 0,
             ic1: 0.0f, ic2: 0.0f, fa1: 0.0f, fa2: 0.0f, fa3: 0.0f, fk: 1.41421356f,
             d1: Biquad::new(), d2: Biquad::new(), d3: Biquad::new(), d4: Biquad::new(),
+            side_d1: Biquad::new(), side_d2: Biquad::new(), side_d3: Biquad::new(), side_d4: Biquad::new(),
+            side_sub: 0.0f, side_hp_x: 0.0f, side_hp_y: 0.0f,
+            pan1: 0.0f, pan2: 0.0f, pan3: 0.0f,
+            pan_target1: 0.0f, pan_target2: 0.0f, pan_target3: 0.0f,
             hp_x: 0.0f, hp_y: 0.0f, hp_coef: 0.0f,
             output_target: 1.0f, output_gain: 1.0f, quiet: 0
         };
@@ -498,6 +517,10 @@ impl Sid {
         s.d2.lowpass(edge, 0.60134489f, inner);
         s.d3.lowpass(edge, 0.89997622f, inner);
         s.d4.lowpass(edge, 2.56291545f, inner);
+        s.side_d1.lowpass(edge, 0.50979558f, inner);
+        s.side_d2.lowpass(edge, 0.60134489f, inner);
+        s.side_d3.lowpass(edge, 0.89997622f, inner);
+        s.side_d4.lowpass(edge, 2.56291545f, inner);
         s.hp_coef = expf(-2.0f * pi() * 16.0f / rate);
         s.set_clock(pal_clock());
         s.configure_filter();
@@ -531,6 +554,10 @@ impl Sid {
         self.e1.reset(); self.e2.reset(); self.e3.reset();
         self.ic1 = 0.0f; self.ic2 = 0.0f;
         self.d1.reset(); self.d2.reset(); self.d3.reset(); self.d4.reset();
+        self.side_d1.reset(); self.side_d2.reset(); self.side_d3.reset(); self.side_d4.reset();
+        self.side_sub = 0.0f; self.side_hp_x = 0.0f; self.side_hp_y = 0.0f;
+        self.pan1 = 0.0f; self.pan2 = 0.0f; self.pan3 = 0.0f;
+        self.pan_target1 = 0.0f; self.pan_target2 = 0.0f; self.pan_target3 = 0.0f;
         self.hp_x = 0.0f; self.hp_y = 0.0f; self.cycle_frac = 0.0;
         self.output_gain = self.output_target;
         self.quiet = 0;
@@ -548,6 +575,8 @@ impl Sid {
         self.d4.settle(dc);
         self.hp_x = dc;
         self.hp_y = 0.0f;
+        self.side_d1.reset(); self.side_d2.reset(); self.side_d3.reset(); self.side_d4.reset();
+        self.side_sub = 0.0f; self.side_hp_x = 0.0f; self.side_hp_y = 0.0f;
         self.quiet = 0x7FFFFFF;
     }
 
@@ -617,10 +646,14 @@ impl Sid {
 
         var direct: f32 = 0.0f;
         var filtered: f32 = 0.0f;
-        if (self.filt & 1) != 0 { filtered = filtered + s1; } else { direct = direct + s1; }
-        if (self.filt & 2) != 0 { filtered = filtered + s2; } else { direct = direct + s2; }
+        var side: f32 = 0.0f;
+        if (self.filt & 1) != 0 { filtered = filtered + s1; }
+        else { direct = direct + s1; side = side + s1 * self.pan1; }
+        if (self.filt & 2) != 0 { filtered = filtered + s2; }
+        else { direct = direct + s2; side = side + s2 * self.pan2; }
         if (self.filt & 4) != 0 { filtered = filtered + s3; }
-        else if (self.mode & 0x80) == 0 { direct = direct + s3; }
+        else if (self.mode & 0x80) == 0 { direct = direct + s3; side = side + s3 * self.pan3; }
+        self.side_sub = side * f32(self.vol) * (1.0f / 15.0f);
 
         // The 6581's filter input saturates.
         var x: f32 = filtered;
@@ -642,6 +675,11 @@ impl Sid {
     }
 
     fn process(self: &mut Self, out_right: ptr<f32>) -> f32 {
+        // Smooth placement changes over about a millisecond. Oscillators and
+        // envelopes continue uninterrupted when a voice changes role.
+        self.pan1 = self.pan1 + (self.pan_target1 - self.pan1) * 0.05f;
+        self.pan2 = self.pan2 + (self.pan_target2 - self.pan2) * 0.05f;
+        self.pan3 = self.pan3 + (self.pan_target3 - self.pan3) * 0.05f;
         self.cycle_frac = self.cycle_frac + self.cycles_per_sample;
         let cycles: i32 = i32(self.cycle_frac);
         self.cycle_frac = self.cycle_frac - f64(cycles);
@@ -653,10 +691,12 @@ impl Sid {
         let env3: f32 = f32(self.e3.counter) * (1.0f / 255.0f) * self.level3;
 
         var y: f32 = 0.0f;
+        var side: f32 = 0.0f;
         var i: i32 = 0;
         while i < self.os {
             let mix: f32 = self.substep(env1, env2, env3);
             y = self.d4.process(self.d3.process(self.d2.process(self.d1.process(mix))));
+            side = self.side_d4.process(self.side_d3.process(self.side_d2.process(self.side_d1.process(self.side_sub))));
             i = i + 1;
         }
         // AC coupling, then level.
@@ -665,13 +705,16 @@ impl Sid {
         self.hp_y = hp;
         self.output_gain = self.output_gain + (self.output_target - self.output_gain) * 0.002f;
         let out: f32 = hp * 0.3f * self.output_gain;
-        if fabsf(out) < 0.00001f && self.e1.counter == 0 && self.e2.counter == 0 && self.e3.counter == 0 {
+        let side_hp: f32 = side - self.side_hp_x + self.hp_coef * self.side_hp_y;
+        self.side_hp_x = side; self.side_hp_y = side_hp;
+        let side_out: f32 = side_hp * 0.3f * self.output_gain;
+        if fabsf(out) < 0.00001f && fabsf(side_out) < 0.00001f && self.e1.counter == 0 && self.e2.counter == 0 && self.e3.counter == 0 {
             if self.quiet < 0x7FFFFFF { self.quiet = self.quiet + 1; }
         } else {
             self.quiet = 0;
         }
-        unsafe { *out_right = out; }
-        return out;
+        unsafe { *out_right = out + side_out; }
+        return out - side_out;
     }
 }
 
@@ -712,7 +755,7 @@ fn mlasid_active(handle: ptr<Sid>) -> i32 {
 /// @brief Set a setting that is not a register:
 /// 0 output gain (linear), 1 model (0 MOS 6581, 1 MOS 8580),
 /// 2 clock (0 PAL, 1 NTSC), 3 hard restart (0 off, 1 on),
-/// 4..6 voice 1..3 level (linear, 0..1).
+/// 4..6 voice 1..3 level (linear, 0..1), 7..9 voice pan (-1 left .. +1 right).
 fn mlasid_set(handle: ptr<Sid>, index: i32, value: f32) {
     unsafe {
         if index == 0 {
@@ -725,11 +768,14 @@ fn mlasid_set(handle: ptr<Sid>, index: i32, value: f32) {
         else if index == 4 { (*handle).level1 = sclamp(value, 0.0f, 1.0f); }
         else if index == 5 { (*handle).level2 = sclamp(value, 0.0f, 1.0f); }
         else if index == 6 { (*handle).level3 = sclamp(value, 0.0f, 1.0f); }
+        else if index == 7 { (*handle).pan_target1 = sclamp(value, -1.0f, 1.0f); }
+        else if index == 8 { (*handle).pan_target2 = sclamp(value, -1.0f, 1.0f); }
+        else if index == 9 { (*handle).pan_target3 = sclamp(value, -1.0f, 1.0f); }
     }
 }
 
-/// @brief Process one sample: mono out on both channels (left returned,
-/// right through `out_right`).
+/// @brief Process one stereo sample (left returned, right through `out_right`).
+/// Default pans are centred, giving the original mono output on both channels.
 fn mlasid_process(handle: ptr<Sid>, out_right: ptr<f32>) -> f32 {
     unsafe { return (*handle).process(out_right); }
 }

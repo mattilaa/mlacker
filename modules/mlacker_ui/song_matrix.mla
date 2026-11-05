@@ -95,7 +95,9 @@ impl SongMatrix {
         if self.lane < self.lane_scroll { self.lane_scroll = self.lane; }
         if self.lane >= self.lane_scroll + visible_lanes { self.lane_scroll = self.lane - visible_lanes + 1; }
         let rows: i32 = i32(source.song.len());
-        let visible_rows: i32 = body.height - 1;
+        // The lane header and keyboard guide each occupy one body row.
+        // Keep the selection above the guide when scrolling at the bottom.
+        let visible_rows: i32 = body.height - 2;
         if self.row < self.scroll { self.scroll = self.row; }
         if self.row >= self.scroll + visible_rows { self.scroll = self.row - visible_rows + 1; }
         // Header: lane numbers.
