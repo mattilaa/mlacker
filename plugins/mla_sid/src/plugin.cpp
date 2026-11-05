@@ -123,7 +123,7 @@ static int slotOf(ParamID id)
 }
 
 // DSP settings (see mlasid_set in the .mla file).
-enum DspIndex : int32_t { kDspOutput = 0, kDspModel, kDspClock, kDspHardRestart, kDspLevel };
+enum DspIndex : int32_t { kDspOutput = 0, kDspModel, kDspClock, kDspHardRestart, kDspLevel, kDspPan = 7 };
 
 enum PlayMode : int { kPoly = 0, kUnison, kArp, kChannels };
 enum V3Mod : int { kV3Off = 0, kV3Osc, kV3Env };
@@ -584,12 +584,14 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         int64_t at = 0;
         int bank = 0;
         bool gateReset = false;
+        float pan = 0.0f;
         std::array<uint8_t, 7> values{};
     };
     std::array<RegisterFrame, 64> rawFrames_{};
     int rawCount_ = 0;
     bool rawMode_ = false;
     bool rawStopped_ = false;
+    bool rawVoiceGuards_ = false;
     int64_t sampleClock_ = 0;
 
     // --- Parameter plumbing -----------------------------------------------
@@ -681,6 +683,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         rawCount_ = 0;
         rawMode_ = false;
         rawStopped_ = false;
+        rawVoiceGuards_ = false;
         written_.fill(-1);
         for(auto &voice : voices_)
             voice = PlayVoice{};
@@ -805,12 +808,12 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
     // Non-commercial SysEx, without F0/F7:
     // 7D 'MSID' 01, bank, count, step-us (3 little-endian 7-bit bytes), flags;
-    // each frame: gate-reset, high-bit mask, 7 voice bytes (4 for globals).
+    // each frame: gate-reset, high-bit mask, optional pan, register bytes.
     // This bypasses the keyboard player without changing saved parameter IDs.
     void registerFrames(const uint8 *p, uint32 size, int64_t at)
     {
         static constexpr uint8 magic[] = {0x7D, 'M', 'S', 'I', 'D', 1};
-        if(p == nullptr || size < 12 || size > 48 || std::memcmp(p, magic, sizeof(magic)) != 0)
+        if(p == nullptr || size < 12 || size > 52 || std::memcmp(p, magic, sizeof(magic)) != 0)
             return;
         for(uint32 i = 0; i < size; ++i)
             if(p[i] > 127)
@@ -818,28 +821,32 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         const int bank = p[6], count = p[7];
         const int micros = p[8] | (p[9] << 7) | (p[10] << 14);
         if(bank > 3 || count < 1 || count > 4 || micros < 1000 || micros > 100000 ||
-           p[11] > 1 || (p[11] && bank != 0))
+           (p[11] & ~3) || ((p[11] & 1) && bank != 0) || ((p[11] & 2) && bank == 3))
             return;
         const int n = bank == 3 ? 4 : 7;
-        if(size != static_cast<uint32>(12 + count * (n + 2)))
+        const bool stereo = (p[11] & 2) != 0;
+        const int stride = n + 2 + (stereo ? 1 : 0);
+        if(size != static_cast<uint32>(12 + count * stride))
             return;
         std::array<RegisterFrame, 4> decoded{};
         for(int f = 0; f < count; ++f) {
-            const uint8 *q = p + 12 + f * (n + 2);
-            if(q[0] > 1 || (bank == 3 && q[0]) || q[1] >= (1 << n))
+            const uint8 *q = p + 12 + f * stride;
+            if(q[0] > 1 || (bank == 3 && q[0]) || q[1] >= (1 << n) || (stereo && q[2] > 100))
                 return;
             RegisterFrame &frame = decoded[f];
             frame.at = at + static_cast<int64_t>(std::llround(f * sampleRate_ * micros / 1000000.0));
             frame.bank = bank;
             frame.gateReset = q[0] != 0;
+            frame.pan = stereo ? (static_cast<int>(q[2]) - 50) / 50.0f : 0.0f;
             for(int r = 0; r < n; ++r)
-                frame.values[r] = static_cast<uint8_t>(q[r + 2] | (((q[1] >> r) & 1) << 7));
+                frame.values[r] = static_cast<uint8_t>(q[r + 2 + (stereo ? 1 : 0)] | (((q[1] >> r) & 1) << 7));
         }
-        if(!rawMode_ || rawStopped_ || p[11]) {
+        if(!rawMode_ || rawStopped_ || (p[11] & 1)) {
             mlasid_reset__ptr_struct_Sid(dsp_);
             rawCount_ = 0;
             rawMode_ = true;
             rawStopped_ = false;
+            rawVoiceGuards_ = false;
             heldCount_ = 0;
             written_.fill(-1);
             set(kDspOutput, gainFromNorm(norm(kOutputParam)));
@@ -850,6 +857,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 set(kDspLevel + v, 1.0);
             for(int r = 0; r < kRegisters; ++r)
                 poke(r, 0);
+            // A voice pattern can also be auditioned on its own. The shared
+            // register bank overrides this default during full matrix play.
+            poke(24, 15);
         }
         if(rawCount_ + count > static_cast<int>(rawFrames_.size()))
             return;
@@ -960,9 +970,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
     void noteOn(int pitch, int channel, float velocity)
     {
-        if(rawMode_ && pitch > 1) {
+        if(rawMode_ && pitch > 5) {
             // Ordinary keyboard playing leaves the register player and
-            // restores the instrument patch. Notes 0/1 are its stop guards.
+            // restores the instrument patch. Notes 0..5 are stop guards.
             mlasid_reset__ptr_struct_Sid(dsp_);
             restart();
         }
@@ -970,8 +980,11 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         const bool wasEmpty = heldCount_ == 0;
         if(heldCount_ < kMaxHeld)
             held_[heldCount_++] = Held{static_cast<int16>(pitch), static_cast<int16>(channel), velocity};
-        if(rawMode_)
+        if(rawMode_) {
+            if(pitch >= 2)
+                rawVoiceGuards_ = true;
             return;
+        }
         switch(mode()) {
             case kPoly: {
                 // A released voice (the longest released first), else the
@@ -1022,6 +1035,23 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                     poke(v * 7 + 4, std::max(0, written_[v * 7 + 4]) & ~1);
                 poke(24, 0);
                 rawStopped_ = true;
+            } else if(rawVoiceGuards_) {
+                // Matrix lanes own a pair of alternating guards each. A
+                // cleared/muted lane releases only its SID voice, while the
+                // other lanes and the shared oscillator clock continue.
+                for(int v = 0; v < 3; ++v) {
+                    bool held = false;
+                    for(int i = 0; i < heldCount_; ++i)
+                        held = held || held_[i].pitch / 2 == v;
+                    if(held)
+                        continue;
+                    int keep = 0;
+                    for(int i = 0; i < rawCount_; ++i)
+                        if(rawFrames_[i].bank != v)
+                            rawFrames_[keep++] = rawFrames_[i];
+                    rawCount_ = keep;
+                    poke(v * 7 + 4, std::max(0, written_[v * 7 + 4]) & ~1);
+                }
             }
             return;
         }
@@ -1200,6 +1230,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                     --rawCount_;
                     const int base = frame.bank * 7;
                     const int n = frame.bank == 3 ? 4 : 7;
+                    if(frame.bank < 3)
+                        set(kDspPan + frame.bank, frame.pan);
                     if(frame.bank < 3 && frame.gateReset)
                         poke(base + 4, frame.values[4] & ~1);
                     for(int r = 0; r < n; ++r)

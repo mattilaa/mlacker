@@ -46,17 +46,28 @@ model remains an approximation of the hardware. For comparison with the
 recording, start at matrix row 1: seeking reconstructs registers, but cannot
 reconstruct the previous oscillator phases and envelope history.
 
-**89 short patterns** keep the editor and scheduler responsive. The four tracks
-store the programs for SID voices 1–3 and the shared volume/filter registers.
-They feed one instrument, rather than four separately mixed audio parts. There
-is no audio backing track, runtime 6502 emulator or external song dependency.
-The project is self-contained register data; musical note editing remains
-available in the separate MIDI adaptation.
+The matrix has **89 rows and four parallel lanes**: SID voices 1–3 and the
+shared volume/filter registers. Each lane has its own 48-row pattern, giving
+356 patterns in total. Names identify the voice, its role in that section and
+the start time, for example `V1 Bass 00:03`, `V3 Percussion 00:42` and
+`Chip mix 00:03`. All four lanes feed the same coupled chip. There is no audio
+backing track, runtime 6502 emulator or external song dependency. The project
+is self-contained register data; musical note editing remains available in
+the separate MIDI adaptation.
 
-Stop guards alternate two otherwise unused low notes with a short overlap.
-Releasing the last guard cancels queued writes and silences the chip, including
-when stopping between two register frames. Normal keyboard notes leave the
-register player and restore the instrument patch. The 93 saved parameter IDs
+Musical voices sit **40% left/right** (voices 1 and 3 left, voice 2 right).
+Complete percussion gestures are centred, including their alternating noise
+and pulse tails and falling-pitch kicks. Placement changes smoothly as a voice
+changes role. The shared filtered signal stays centred. Averaging left and
+right preserves the original mono mix; oscillator coupling and source levels
+are unchanged. Pass `--width 0` to generate the mono version.
+
+Each voice lane alternates its own pair of silent stop guards with a short
+overlap. Releasing a lane's guards clears its gate and queued writes; releasing
+all guards silences the chip. The shared lane carries the original volume
+fade. A single voice pattern can also be auditioned in the pattern editor.
+Normal keyboard notes above the six reserved guards leave the register player
+and restore the instrument patch. The 93 saved parameter IDs
 and existing keyboard/CC behavior remain compatible.
 
 ## Credits and rights
@@ -89,9 +100,10 @@ checked against an independent trace of the original player. `--plugin` changes
 the saved bundle path; `--output` changes the project destination.
 
 The plugin tests cover timed frames, complete register bytes, queued-write
-cancellation on Stop, restart and malformed packets, alongside the existing
+cancellation on Stop, restart, malformed packets, stereo placement and mono compatibility, alongside the existing
 instrument tests. The project test checks the full program, source landmarks,
-responsive playback, pattern transitions and saved credits. No changes to
+parallel matrix alignment, centred percussion, responsive playback, pattern transitions
+and saved credits. No changes to
 `subprojects/mlang` are required.
 
 ## Separate MIDI adaptation

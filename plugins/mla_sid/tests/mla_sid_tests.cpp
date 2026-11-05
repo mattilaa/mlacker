@@ -892,18 +892,19 @@ void testBounded(const std::string &path)
 }
 
 std::vector<uint8> registerPacket(int bank, const std::vector<std::array<uint8, 7>> &frames,
-                                  int micros = 50000, bool reset = false)
+                                  int micros = 50000, bool reset = false, int pan = -1)
 {
     std::vector<uint8> p{0x7D, 'M', 'S', 'I', 'D', 1, static_cast<uint8>(bank),
                          static_cast<uint8>(frames.size()), static_cast<uint8>(micros & 127),
                          static_cast<uint8>((micros >> 7) & 127), static_cast<uint8>((micros >> 14) & 127),
-                         static_cast<uint8>(reset)};
+                         static_cast<uint8>(int(reset) | (pan >= 0 ? 2 : 0))};
     for(const auto &frame : frames) {
         const int n = bank == 3 ? 4 : 7;
         uint8 mask = 0;
         for(int i = 0; i < n; ++i)
             mask |= ((frame[i] >> 7) & 1) << i;
         p.push_back(0); p.push_back(mask);
+        if(pan >= 0) p.push_back(static_cast<uint8>(pan));
         for(int i = 0; i < n; ++i)
             p.push_back(frame[i] & 127);
     }
@@ -960,6 +961,50 @@ void testRegisterFrames(const std::string &path)
     CHECK(peak(plugin.render(0.1).left, at(0.05)) < 0.0001);
 }
 
+void testStereoRegisterFrames(const std::string &path)
+{
+    const int a4 = static_cast<int>(std::lround(440.0 * 16777216.0 / 985248.0));
+    const std::array<uint8, 7> tone{static_cast<uint8>(a4 & 255), static_cast<uint8>(a4 >> 8), 0, 8, 0x11, 0, 0xF0};
+    auto render = [&](int pan) {
+        Instance plugin;
+        CHECK(plugin.open(path));
+        plugin.param(kChip, 1.0);
+        plugin.sysex(registerPacket(0, {tone}, 50000, true, pan));
+        plugin.noteOn(0);
+        return plugin.render(0.15);
+    };
+    const Stereo mono = render(-1), left = render(30), right = render(70), centre = render(50);
+    CHECK(rms(left.left, at(0.05)) > 2.2 * rms(left.right, at(0.05)));
+    CHECK(rms(right.right, at(0.05)) > 2.2 * rms(right.left, at(0.05)));
+    for(size_t i = 0; i < mono.left.size(); ++i) {
+        CHECK(std::fabs((left.left[i] + left.right[i]) * 0.5f - mono.left[i]) < 1e-6f);
+        CHECK(std::fabs(left.left[i] - right.right[i]) < 1e-6f);
+        CHECK(centre.left[i] == centre.right[i]);
+        CHECK(centre.left[i] == mono.left[i]);
+    }
+
+    // Each matrix lane's guard pair controls only its own voice.
+    Instance plugin;
+    CHECK(plugin.open(path));
+    plugin.param(kChip, 1.0);
+    plugin.sysex(registerPacket(0, {tone}, 50000, true, 30));
+    plugin.sysex(registerPacket(1, {tone}, 50000, false, 70));
+    plugin.noteOn(0); plugin.noteOn(2);
+    CHECK(rms(plugin.render(0.1).left) > 0.01);
+    plugin.noteOff(0);
+    const Stereo remaining = plugin.render(0.1);
+    CHECK(rms(remaining.right, at(0.05)) > 2 * rms(remaining.left, at(0.05)));
+    CHECK(rms(remaining.right, at(0.05)) > 0.01);
+    plugin.noteOff(2);
+    CHECK(peak(plugin.render(0.1).left, at(0.05)) < 0.0001);
+
+    // Reject an out-of-range pan before applying a reset.
+    plugin.sysex(registerPacket(0, {tone}, 50000, true, 50));
+    plugin.noteOn(0); plugin.render(0.1);
+    plugin.sysex(registerPacket(0, {{0, 0, 0, 0, 0, 0, 0}}, 50000, true, 101));
+    CHECK(rms(plugin.render(0.1).left) > 0.01);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -989,6 +1034,7 @@ int main(int argc, char **argv)
     testState(path);
     testBounded(path);
     testRegisterFrames(path);
+    testStereoRegisterFrames(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

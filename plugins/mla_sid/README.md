@@ -40,7 +40,8 @@ sweeps once per video frame, and maps parameters and CCs onto the registers.
   more resonant and clean.
 - The chip runs at about 384 kHz (8× at 44.1/48 kHz) and is decimated
   through an 8th-order low-pass, so the raw waveforms alias little. The
-  output is AC-coupled at 16 Hz like the C64's, mono on both channels.
+  output is AC-coupled at 16 Hz like the C64's. By default it is mono on both
+  channels; register programs can pan individual dry voices.
 
 ## Playing
 
@@ -166,8 +167,12 @@ Without the MIDI F0/F7 delimiters, a packet is:
 `bank` is 0–3, addressing registers 0–6, 7–13, 14–20 or 21–24. `count` is 1–4.
 The three little-endian seven-bit `us` bytes give the frame interval in
 microseconds (1,000–100,000). Flag 1 resets the chip and queued frames and is
-valid only on bank 0; otherwise flags is 0. Each frame holds a gate-reset byte
-(0/1), a high-bit mask, and seven low-seven-bit register bytes (four on bank 3).
+valid only on bank 0. Flag 2 adds per-frame stereo placement on voice banks
+0–2; flags may combine to 3. Each frame holds a gate-reset byte (0/1), a
+high-bit mask, an optional pan byte, and seven low-seven-bit register bytes
+(four on bank 3). Pan runs from 0 (left) through 50 (centre) to 100 (right).
+Without flag 2, the voice is centred. Pan changes are smoothed; the shared
+filtered signal remains centred and averaging left/right retains the mono mix.
 Mask bit n is register byte n's bit 7. Bank 3's gate-reset byte must be zero.
 A voice gate reset writes its control register with GATE clear before the
 frame's envelope and final control value, preserving same-frame retriggers.
@@ -175,14 +180,18 @@ frame's envelope and final control value, preserving same-frame retriggers.
 The first frame sounds at the SysEx event's sample offset; later frames remain
 sample-timed across audio blocks. A fixed queue holds up to 64 frames. Invalid
 packets are ignored without changing an active program. All payload bytes
-must be seven-bit MIDI data; a packet is at most 48 bytes before F0/F7.
+must be seven-bit MIDI data; a packet is at most 52 bytes before F0/F7.
 
-While this player is active, notes 0 and 1 act as silent stop guards. Their
-last note-off cancels queued writes, clears GATE and mutes chip volume. The
-native project overlaps alternating guards so stopping and pattern changes
-work without hanging notes. An ordinary keyboard note leaves this player,
-resets the chip and restores the patch. Register playback state is transient;
-the score stores the packets themselves.
+While this player is active, notes 0–5 act as silent stop guards. Pairs 0/1,
+2/3 and 4/5 belong to voices 1, 2 and 3 respectively. Once a guard above 1 is
+used, releasing all guards for a voice clears its GATE and queued voice writes
+without stopping the other matrix lanes. Releasing the last guard cancels all
+queued writes and mutes chip volume. Older programs using only guards 0/1
+retain their whole-chip behavior. A voice played alone starts at full chip
+volume; shared-register packets override that default during matrix playback.
+An ordinary keyboard note above 5 leaves this player, resets the chip and
+restores the patch. Register playback state is transient; the score stores
+the packets themselves.
 
 ## Parameters
 

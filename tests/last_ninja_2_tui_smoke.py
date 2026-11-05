@@ -21,46 +21,64 @@ def inspect_score(document):
     params = {records[32 + i * 2][1]: records[33 + i * 2][1] for i in range(93)}
     assert params[101] == params[102] == params[119] == 0.0
     at = 32 + 93 * 2
-    assert records[at:at + 3] == [["integer", 1], ["integer", 90], ["integer", 89]]
+    assert records[at:at + 3] == [["integer", 3], ["integer", 357], ["integer", 356]]
     at += 3
-    decoded = []
-    canonical = bytearray()
-    for pattern in range(89):
+    decoded = [[0] * 25 for _ in range(17088)]
+    resets = [0] * 17088
+    pans = [[50] * 3 for _ in decoded]
+    guards = ["C--1", "C#-1", "D--1", "D#-1", "E--1", "F--1"]
+    for pattern in range(356):
+        group, bank = divmod(pattern, 4)
+        assert records[at][1] == pattern + 1
+        assert records[at + 1][1].startswith(f"V{bank + 1} " if bank < 3 else "Chip mix ")
         at += 2
-        assert records[at + 8] == ["integer", 4]
+        assert records[at + 8] == ["integer", 1]
         at += 9
-        for _ in range(4):
-            assert [r[1] for r in records[at + 6:at + 12]] == [1, 1, 2, 1, 0, 0]
-            at += 12
+        assert [r[1] for r in records[at + 6:at + 12]] == [1, 1, 2, 1, 0, 0]
+        at += 12
         assert records[at] == ["integer", 48]
         at += 1
         for row in range(48):
-            assert records[at] == ["integer", 25]
+            assert records[at] == ["integer", 7]
             at += 1
-            cells = [r[1] for r in records[at:at + 25]]
-            at += 25
-            absolute = pattern * 48 + row
-            assert cells[1:5] == ["C--1" if absolute % 2 == 0 else "C#-1", "1", "1.02", "0.00"]
-            frames = [[0] * 25 for _ in range(4)]
-            resets = [0] * 4
-            for bank in range(4):
-                start = 1 + bank * 6
-                assert cells[start + 4] == "7D"
-                message = [0x7D] + [int(value, 16) for value in cells[start + 5].split()]
-                n = 4 if bank == 3 else 7
-                assert message[:8] == [0x7D, 0x4D, 0x53, 0x49, 0x44, 1, bank, 4]
-                assert len(message) == 12 + 4 * (n + 2)
-                assert message[8] | message[9] << 7 | message[10] << 14 == 19947
-                assert message[11] == int(absolute == 0 and bank == 0)
-                for f in range(4):
-                    q = message[12 + f * (n + 2):12 + (f + 1) * (n + 2)]
-                    assert q[0] in (0, 1) and q[1] < 1 << n
-                    resets[f] |= q[0] << bank
-                    for register in range(n):
-                        frames[f][bank * 7 + register] = q[2 + register] | ((q[1] >> register & 1) << 7)
-            for frame, reset in zip(frames, resets):
-                canonical += bytes(frame) + bytes([reset])
-            decoded.extend(frames)
+            cells = [r[1] for r in records[at:at + 7]]
+            at += 7
+            absolute = group * 48 + row
+            assert cells[1:5] == ([guards[2 * bank + absolute % 2], "1", "1.02", "0.00"] if bank < 3 else [""] * 4)
+            assert cells[5] == "7D"
+            message = [0x7D] + [int(value, 16) for value in cells[6].split()]
+            n = 4 if bank == 3 else 7
+            stride = n + 2 + int(bank < 3)
+            assert message[:8] == [0x7D, 0x4D, 0x53, 0x49, 0x44, 1, bank, 4]
+            assert len(message) == 12 + 4 * stride
+            assert message[8] | message[9] << 7 | message[10] << 14 == 19947
+            assert message[11] == int(absolute == 0 and bank == 0) | (2 if bank < 3 else 0)
+            for f in range(4):
+                q = message[12 + f * stride:12 + (f + 1) * stride]
+                index = absolute * 4 + f
+                assert q[0] in (0, 1) and q[1] < 1 << n
+                resets[index] |= q[0] << bank
+                offset = 2
+                if bank < 3:
+                    assert q[2] in (30, 50, 70)
+                    pans[index][bank] = q[2]
+                    offset += 1
+                for register in range(n):
+                    decoded[index][bank * 7 + register] = q[offset + register] | ((q[1] >> register & 1) << 7)
+    assert records[at:at + 90] == [["integer", 89]] + [["integer", row * 4 + 1] for row in range(89)]
+    matrix = records.index(["string", "SONG_MATRIX"]) + 1
+    assert records[matrix] == ["integer", 3]
+    matrix += 1
+    for lane in range(1, 4):
+        assert records[matrix:matrix + 90] == [["integer", 89]] + [["integer", row * 4 + lane + 1] for row in range(89)]
+        matrix += 90
+    assert pans[233][:2] == [30, 70]
+    assert pans[41][2] == 30
+    for frame, pan in zip(decoded, pans):
+        for voice in range(3):
+            if frame[voice * 7 + 4] & 0x80:
+                assert pan[voice] == 50
+    canonical = b"".join(bytes(frame) + bytes([reset]) for frame, reset in zip(decoded, resets))
     assert len(decoded) == 17088
     assert decoded[41][14:16] == [0x6B, 0x2F]  # Reference's first F5 octave band.
     assert decoded[233][0:2] == [0xED, 0x05]  # First in-game bass entry at 4.65 s.
@@ -105,7 +123,7 @@ def main():
                     tui.send(b"\x1b", 0.2)
                     tui.read(4.0)
                     frame = tui.send(b"M", 0.3)
-                    assert b"PLAY" in frame and b"Central Park 01:20" in frame, frame[-6000:]
+                    assert b"PLAY" in frame and b"01:20" in frame, frame[-6000:]
                     tui.send(b"M", 0.2)
                 started = time.monotonic()
                 frame = tui.send_until(b" ", b"STOP", timeout=4.0)
