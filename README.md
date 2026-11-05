@@ -14,6 +14,9 @@ editing keys, transport and audio handling in detail.
 
 The [Turbo OutRun projects](examples/turbo_outrun) include the C64 loading music
 and title tune for Mla SID, with song credits and a copyright notice on opening.
+The [Last Ninja 2 project](examples/last_ninja_2) adapts Chris Holm's Central
+Park MIDI arrangement of Matt Gray's music with Mla SID pulse-width modulation
+and a copyright notice on opening.
 
 ## Build and run
 
