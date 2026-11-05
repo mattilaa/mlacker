@@ -3486,6 +3486,35 @@ fn tui_song_matrix_marks_the_playing_row() {
 }
 
 #[test]
+fn tui_song_matrix_cursor_stays_above_footer_when_scrolling() {
+    var library: PatternLibrary = song_test_library();
+    while library.song.len() < 30 { library.matrix_insert_row(i32(library.song.len()) - 1, true); }
+    var matrix: SongMatrix = SongMatrix { visible: true };
+    let theme: Theme = Theme::dark_blue();
+    let surface: Surface = Surface::new(60, 16);
+    // Include the smallest paintable body, larger views and a shrinking view.
+    for height in [5, 12, 16, 8] {
+        let bounds: Rect = Rect::new(0, 0, 60, height);
+        for direction in [1, -1] {
+            for _step in 0..30 {
+                matrix.on_event(InputEvent { kind: InputKind::Menu, key: direction > 0 ? Key::Down : Key::Up }, 30, library.song_lanes() + 1);
+                matrix.paint(surface, bounds, theme, library, true, -1);
+                var selected_y: i32 = -1;
+                for y in 0..height {
+                    let cell: Cell = surface.cell(7, i32(y));
+                    if cell.background == lighten(theme.panel, 24) { selected_y = i32(y); }
+                }
+                // Header and key guide each occupy a row inside the border.
+                verify(selected_y >= 2 && selected_y < height - 2);
+                let footer: Cell = surface.cell(1, height - 2);
+                verify(footer.glyph == 104); // 'h' in "hjkl move"
+            }
+        }
+    }
+    surface.release(); library.release();
+}
+
+#[test]
 fn tui_track_output_channels_and_labels() {
     var table: SequenceTable = SequenceTable::empty();
     let area: Rect = Rect::new(0, 0, 120, 20);
