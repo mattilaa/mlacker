@@ -18,6 +18,7 @@ def check_score(records, at):
     patterns = records[at][1]
     at += 1
     bass_notes = {slot: [] for slot in (1, 3, 4, 5)}
+    bass_bends = {slot: {} for slot in (1, 5)}
     for pattern in range(patterns):
         at += 2  # Pattern ID and name.
         tracks = records[at + 8][1]
@@ -45,7 +46,15 @@ def check_score(records, at):
             at += cells
             for slot, column, lines, controls in columns:
                 if slot in bass_notes:
-                    assert controls == ["cc:83", "cc:5", "cc:74", "cc:71", "cc:80"]
+                    expected = ["cc:83", "cc:5", "cc:74", "cc:71", "cc:80"]
+                    if slot in bass_bends:
+                        expected.append("pitchbend")
+                    assert controls == expected
+                if slot in bass_bends:
+                    text = values[column + lines * 4 + 5]
+                    for step, value in enumerate(text.split()):
+                        if value != ".":
+                            bass_bends[slot][(pattern * rows + row) * 100 + step * 25] = int(value)
                 if slot == 11:
                     arp_notes += sum(bool(values[column + line * 4]) for line in range(lines))
                     if row == 0:
@@ -60,6 +69,14 @@ def check_score(records, at):
         assert arp_notes == 32, f"Arpeggio missing from pattern {pattern + 1}"
     for slot, notes in bass_notes.items():
         assert any(a[2] != b[2] and a[1] > b[0] for a, b in zip(notes, notes[1:])), slot
+        if slot in bass_bends:
+            bends = bass_bends[slot]
+            transitions = [(a, b) for a, b in zip(notes, notes[1:]) if a[2] != b[2] and a[1] > b[0]]
+            for old, new in transitions:
+                approaching = [value for tick, value in bends.items() if new[0] - 400 <= tick < new[0]]
+                assert len(set(approaching)) >= 8, "Bass must slide BEFORE the next note"
+                assert max(abs(value) for value in approaching) > 100
+                assert bends[new[0]] == 0, "Reset bend on arrival at the target key"
 
 
 def main():
@@ -89,6 +106,7 @@ def main():
             if slot in (1, 5):
                 assert preset[231] == 0.75 and preset[250] == 0.0
                 assert preset[204] >= 0.7, "Long legato phrases need a nonzero sustain"
+                assert preset[106] == 1.0, "Approaching-note bends use the 24-semitone range"
             if slot == 9:
                 assert preset[103] == 1 / 3 and preset[104] == 0.0
                 assert preset[200] == 8 / 15 and preset[106] == 1.0

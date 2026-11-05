@@ -64,15 +64,21 @@ enabled for reliable note attacks, and the kick uses a short pitch-bend drop.
 ## Bass glide and filtering CCs
 
 Each bass track exposes **CC83** (play mode), **CC5** (glide time), **CC74**
-(cutoff), **CC71** (resonance) and **CC80** (filter mode). Pattern starts restore
-Unison/legato with CC83 = 42 and low-pass filtering with CC80 = 18.
+(cutoff), **CC71** (resonance) and **CC80** (filter mode). The sustained basses
+also have a **pitchbend** column. Pattern starts restore Unison/legato with
+CC83 = 42 and low-pass filtering with CC80 = 18.
 
-Connected pitch changes use CC5 = 28 on the sustained basses (about 97 ms),
-and 16 on the fast basses (about 32 ms). Repeated notes and notes after gaps
-use CC5 = 0 to retain distinct attacks. The small note overlaps keep the gate
-open while the pitch slides, including across pattern boundaries. Edit these
-columns to program your own portamento; no plugin update is required. Their
-envelopes retain a nonzero sustain so long connected phrases keep sounding.
+The sustained bass approaches its next pitch during the **last beat before
+the note change**, about 484 ms at this tempo. The pitch-bend column encodes a
+linear frequency ramp over sixteen substeps, like a SID player changing FREQ
+registers. Its bend range is 24 semitones. On arrival the next key takes over
+with bend reset to zero; CC5 stays at zero to avoid a second, delayed slide.
+The 0.02-row note overlap keeps the envelope legato across the handoff.
+
+The fast basses use CC5 = 16 (about 32 ms) on connected pitch changes. Repeated
+notes and notes after gaps use CC5 = 0 to retain distinct attacks. Edit these
+columns and note overlaps to program portamento; no plugin update is required.
+The envelopes retain a nonzero sustain so long connected phrases keep sounding.
 
 The sustained bass cutoff falls from CC74 = 108 to 76 across a note. Fast bass
 hits use `100 92 84 76` across their row's four substeps. CC71 sets moderate

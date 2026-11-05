@@ -159,6 +159,8 @@ def parameters(part):
             else:
                 p[200 + voice * 20] = 0.0
                 p[210 + voice * 20] = 0.0
+        if part[0] in (1, 5):
+            p[106] = 1.0  # 24-semitone range for the approaching-note bends.
     if part[1] == "SID snare":
         # Clock the noise LFSR rapidly, then step its pitch downward using
         # the full +/-24-semitone bend range. Never switch to a tonal wave.
@@ -227,14 +229,33 @@ def score(midi):
                 old[1] = min(old[1], note[0])
             previous[note[2]] = note
         glide = {}
+        bends = {}
         if definition[0] in (1, 3, 4, 5):
             for i, note in enumerate(notes):
                 time = 0
+                if definition[0] in (1, 5):
+                    bends[note[0]] = 0
                 if i > 0:
                     old = notes[i - 1]
                     if old[2] != note[2] and old[1] >= note[0] - 2:
                         old[1] = max(old[1], note[0] + 2)
-                        time = 28 if definition[0] in (1, 5) else 16
+                        if definition[0] in (1, 5):
+                            # The characteristic bass slide approaches the
+                            # next note over the LAST beat of the held note.
+                            # Interpolate frequency as a C64 player's FREQ
+                            # ramp does, encoding it as 14-bit pitch bend.
+                            begin = max(old[0], note[0] - 400)
+                            begin = (begin + 24) // 25 * 25
+                            span = note[0] - begin
+                            ratio = 2 ** ((note[2] - old[2]) / 12)
+                            for tick in range(begin, note[0], 25):
+                                progress = (tick - begin) / span
+                                semitones = 12 * math.log2(1 + (ratio - 1) * progress)
+                                bends[tick] = max(-8192, min(8191, round(semitones * 8192 / 24)))
+                            # Zero CC5 makes the new key replace the bent old
+                            # key immediately, without a second onset glide.
+                        else:
+                            time = 16
                 glide[note[0]] = time
         counts = defaultdict(int)
         for note in notes:
@@ -243,10 +264,12 @@ def score(midi):
         automation = []
         if definition[0] in (1, 3, 4, 5):
             automation = [(f"cc:{cc}", 0, 127) for cc in (83, 5, 74, 71, 80)]
+            if definition[0] in (1, 5):
+                automation.append(("pitchbend", -8192, 8191))
         elif drum and drum[0] in (35, 38):
             automation = [("pitchbend", -8192, 8191)]
         parts.append(dict(definition=definition, notes=notes, lines=lines,
-                          automation=automation, width=lines * 4 + len(automation), glide=glide))
+                          automation=automation, width=lines * 4 + len(automation), glide=glide, bends=bends))
     return parts, rows, origin
 
 
@@ -290,10 +313,17 @@ def project(midi, plugin):
             if source in (1, 3, 4, 5):
                 definition = part["definition"]
                 rows[0][automation:automation + 5] = [
-                    "42", "28" if source in (1, 5) else "16",
+                    "42", "0" if source in (1, 5) else "16",
                     str(round(definition[7] * 127 / 2047)),
                     str(round(definition[8] * 127 / 15)), "18",
                 ]
+                if source in (1, 5):
+                    rows[0][automation + 5] = "0"
+                    for row in range(PATTERN_ROWS):
+                        ticks = [first + row * 100 + step * 25 for step in range(4)]
+                        values = [str(part["bends"][tick]) if tick in part["bends"] else "." for tick in ticks]
+                        if any(value != "." for value in values):
+                            rows[row][automation + 5] = " ".join(values)
                 for row in range(PATTERN_ROWS):
                     now = first + row * 100
                     active = [n for n in part["notes"] if n[0] <= now < n[1]]
