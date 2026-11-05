@@ -592,6 +592,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     bool rawMode_ = false;
     bool rawStopped_ = false;
     bool rawVoiceGuards_ = false;
+    bool rawNeedsSettle_ = false;
     int64_t sampleClock_ = 0;
 
     // --- Parameter plumbing -----------------------------------------------
@@ -684,6 +685,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         rawMode_ = false;
         rawStopped_ = false;
         rawVoiceGuards_ = false;
+        rawNeedsSettle_ = false;
         written_.fill(-1);
         for(auto &voice : voices_)
             voice = PlayVoice{};
@@ -847,6 +849,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             rawMode_ = true;
             rawStopped_ = false;
             rawVoiceGuards_ = false;
+            rawNeedsSettle_ = true;
             heldCount_ = 0;
             written_.fill(-1);
             set(kDspOutput, gainFromNorm(norm(kOutputParam)));
@@ -1239,6 +1242,14 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                             poke(base + r, frame.values[r]);
                     if(frame.bank < 3)
                         poke(base + 4, frame.values[4]);
+                }
+                if(rawNeedsSettle_) {
+                    // Settle the 6581 mixer DC only after all first-frame
+                    // banks have set their initial volume. This prevents a
+                    // cold-start thump without suppressing later volume DAC
+                    // changes or delaying the first oscillator/envelope step.
+                    mlasid_settle__ptr_struct_Sid(dsp_);
+                    rawNeedsSettle_ = false;
                 }
                 int32 end = to;
                 if(rawCount_ > 0)

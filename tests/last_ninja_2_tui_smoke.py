@@ -72,18 +72,20 @@ def inspect_score(document):
     for lane in range(1, 4):
         assert records[matrix:matrix + 90] == [["integer", 89]] + [["integer", row * 4 + lane + 1] for row in range(89)]
         matrix += 90
-    assert pans[233][:2] == [30, 70]
-    assert pans[41][2] == 30
+    assert pans[193][:2] == [30, 70]
+    assert pans[1][2] == 30
     for frame, pan in zip(decoded, pans):
         for voice in range(3):
             if frame[voice * 7 + 4] & 0x80:
                 assert pan[voice] == 50
     canonical = b"".join(bytes(frame) + bytes([reset]) for frame, reset in zip(decoded, resets))
+    assert decoded[0][24] == 15  # No artificial video lead-in.
+    assert decoded[1][18] & 1  # Intro gate within the first row.
     assert len(decoded) == 17088
-    assert decoded[41][14:16] == [0x6B, 0x2F]  # Reference's first F5 octave band.
-    assert decoded[233][0:2] == [0xED, 0x05]  # First in-game bass entry at 4.65 s.
-    assert decoded[233][7:9] == [0xF6, 0x02]
-    assert decoded[16951][24] == 1 and decoded[16952][24] == 0
+    assert decoded[1][14:16] == [0x6B, 0x2F]  # Reference's first F5 octave band.
+    assert decoded[193][0:2] == [0xED, 0x05]  # First in-game bass entry at 3.85 s.
+    assert decoded[193][7:9] == [0xF6, 0x02]
+    assert decoded[16911][24] == 1 and decoded[16912][24] == 0
     assert any(frame[11] == 0x15 or frame[18] == 0x15 for frame in decoded)  # Coupled ring modulation.
     return hashlib.sha256(canonical).hexdigest()
 
@@ -96,7 +98,7 @@ def main():
         path = project / "Project.mlack"
         document = json.loads(path.read_text())
         fingerprint = inspect_score(document)
-        assert fingerprint == "08262d095262655b9d1b1c482a6b15808fcbd3a8b9010487b65214ef57df0aff"
+        assert fingerprint == "cc924dc044c213ea41a210d967faaf6294f1f26b0913beedcca950d63890d409"
         print("Reference program SHA-256:", fingerprint, flush=True)
         for record in document["records"]:
             if record[0] == "string" and record[1].endswith("MlaSid.vst3"):

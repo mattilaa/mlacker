@@ -32,9 +32,9 @@ frequency and envelope, rather than a generic noise-only hit or a single noise
 attack followed by a fixed pulse tail. The actual lead, bass, arpeggio and
 percussion programs change roles as the original score plays.
 
-The score runs for **5:40.85**, including the video's approximately 0.8-second
-lead-in and a short silent ending. Its original volume fade reaches zero at
-approximately **5:38.14**. The first bass entry is around **0:04.65**.
+The score runs for **5:40.85**, including a short silent ending. Playback begins
+with the original player, without the video's approximately 0.8-second lead-in.
+Its original volume fade reaches zero at approximately **5:37.34**. The first bass entry is around **0:03.85**.
 
 The sequencer's **188 BPM is a frame timing grid**, not a musical tempo claim.
 Four original PAL frames occupy each row; packets schedule the individual
@@ -95,15 +95,17 @@ python3 tests/last_ninja_2_tui_smoke.py build/cmake/bin/mlacker ~/.local/plugins
 The source SID SHA-256 is
 `7686b46aada0a107dd9717b47e76209acca9e47b92a6ea10657fcbd63f24588a`.
 The decoded register/gate-reset program SHA-256 is
-`08262d095262655b9d1b1c482a6b15808fcbd3a8b9010487b65214ef57df0aff`,
-checked against an independent trace of the original player. `--plugin` changes
-the saved bundle path; `--output` changes the project destination.
+`cc924dc044c213ea41a210d967faaf6294f1f26b0913beedcca950d63890d409`,
+checked against an independent trace of the original player, without video
+lead-in padding. `--plugin` changes the saved bundle path; `--output` changes
+the project destination.
 
-The plugin tests cover timed frames, complete register bytes, queued-write
-cancellation on Stop, restart, malformed packets, stereo placement and mono compatibility, alongside the existing
+The plugin tests cover silent 6581 pattern starts/restarts, timed frames,
+complete register bytes, queued-write cancellation on Stop, restart, malformed
+packets, stereo placement and mono compatibility, alongside the existing
 instrument tests. The project test checks the full program, source landmarks,
-parallel matrix alignment, centred percussion, responsive playback, pattern transitions
-and saved credits. No changes to
+parallel matrix alignment, centred percussion, responsive playback, pattern
+transitions and saved credits. No changes to
 `subprojects/mlang` are required.
 
 ## Separate MIDI adaptation

@@ -961,6 +961,48 @@ void testRegisterFrames(const std::string &path)
     CHECK(peak(plugin.render(0.1).left, at(0.05)) < 0.0001);
 }
 
+void testRegisterStartSilence(const std::string &path)
+{
+    // A 6581 has mixer DC even with no gated voices. Starting a silent
+    // standalone pattern must not turn that DC into an audible thump.
+    for(int bank = 0; bank < 3; ++bank) {
+        Instance plugin;
+        CHECK(plugin.open(path));
+        plugin.param(kChip, 0.0);
+        for(int attempt = 0; attempt < 2; ++attempt) {
+            plugin.sysex(registerPacket(bank, {{0, 0, 0, 0, 0, 0, 0}}, 50000, bank == 0, 50));
+            plugin.noteOn(bank * 2);
+            const Stereo silent = plugin.render(0.05);
+            CHECK(peak(silent.left) < 1e-6);
+            CHECK(peak(silent.right) < 1e-6);
+            plugin.noteOff(bank * 2);
+            plugin.render(0.1);
+        }
+    }
+    // Cold-start settling must not defer a queued intro note. Exercise the
+    // 6581 and the same four PAL frames per row as the project.
+    Instance intro;
+    CHECK(intro.open(path));
+    intro.param(kChip, 0.0);
+    const int a4 = static_cast<int>(std::lround(440.0 * 16777216.0 / 985248.0));
+    const std::array<uint8, 7> tone{static_cast<uint8>(a4 & 255), static_cast<uint8>(a4 >> 8), 0, 8, 0x11, 0, 0xF0};
+    intro.sysex(registerPacket(2, {{0, 0, 0, 0, 0, 0, 0}, tone, tone, tone}, 19947, false, 30));
+    intro.noteOn(4);
+    const Stereo onset = intro.render(0.08);
+    CHECK(peak(onset.left, 0, at(0.019)) < 1e-6);
+    CHECK(rms(onset.left, at(0.022), at(0.04)) > 0.01);
+
+    // The same initialization must wait for the global packet at the same
+    // timestamp: a muted matrix start must stay silent too.
+    Instance matrix;
+    CHECK(matrix.open(path));
+    matrix.param(kChip, 0.0);
+    matrix.sysex(registerPacket(0, {{0, 0, 0, 0, 0, 0, 0}}, 50000, true));
+    matrix.sysex(registerPacket(3, {{0, 0, 0, 0, 0, 0, 0}}));
+    matrix.noteOn(0);
+    CHECK(peak(matrix.render(0.05).left) < 1e-6);
+}
+
 void testStereoRegisterFrames(const std::string &path)
 {
     const int a4 = static_cast<int>(std::lround(440.0 * 16777216.0 / 985248.0));
@@ -1034,6 +1076,7 @@ int main(int argc, char **argv)
     testState(path);
     testBounded(path);
     testRegisterFrames(path);
+    testRegisterStartSilence(path);
     testStereoRegisterFrames(path);
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

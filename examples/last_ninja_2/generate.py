@@ -15,7 +15,6 @@ BPM = 188
 FRAMES_PER_ROW = 4
 PATTERN_ROWS = 48
 FRAME_MICROS = round(15 / BPM / FRAMES_PER_ROW * 1_000_000)
-LEAD_IN_FRAMES = 40
 PLAYER_FRAMES = 16960
 MAGIC = [0x7D, 0x4D, 0x53, 0x49, 0x44, 1]
 NOTICE = (
@@ -63,7 +62,8 @@ def trace(data):
 
     cpu.a = 1  # HVSC subtune 2: Central Park (in-game), as in the video.
     call(init)
-    frames = [([0] * 25, []) for _ in range(LEAD_IN_FRAMES)]
+    # Begin with the player itself; video lead-in silence is not score data.
+    frames = []
     for _ in range(PLAYER_FRAMES):
         memory.writes = []
         call(play)

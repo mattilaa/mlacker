@@ -189,6 +189,9 @@ without stopping the other matrix lanes. Releasing the last guard cancels all
 queued writes and mutes chip volume. Older programs using only guards 0/1
 retain their whole-chip behavior. A voice played alone starts at full chip
 volume; shared-register packets override that default during matrix playback.
+On a fresh start, output filters settle to the initial mixer DC after all
+same-timestamp register banks are applied, preventing a 6581 startup click.
+Later volume writes retain their normal DAC behavior.
 An ordinary keyboard note above 5 leaves this player, resets the chip and
 restores the patch. Register playback state is transient; the score stores
 the packets themselves.
