@@ -111,15 +111,15 @@ def read_midi(path):
 # Source track, name, waveform nibble, ADSR nibbles, PWM depth/rate,
 # output dB, cutoff (None = bypass), resonance, optional source/output drum pitch.
 PARTS = [
-    (1, "Wide PWM bass", 4, (0, 15, 0, 0), 0.94, 0.245, -12, None, 0, None),
+    (1, "Wide PWM bass", 4, (0, 9, 12, 2), 0.94, 0.245, -12, 1500, 4, None),
     (2, "Kanoon pulse", 4, (0, 8, 2, 3), 0.70, 0.60, -11, None, 0, None),
-    (3, "Pulse bass L", 4, (0, 4, 9, 2), 0.95, 0.37, -18, None, 0, None),
-    (4, "Pulse bass R", 4, (0, 5, 9, 2), 0.95, 0.43, -18, None, 0, None),
-    (5, "PWM bass layer", 4, (0, 15, 0, 0), 0.94, 0.16, -17, None, 0, None),
+    (3, "Pulse bass L", 4, (0, 4, 9, 2), 0.95, 0.37, -18, 1400, 5, None),
+    (4, "Pulse bass R", 4, (0, 5, 9, 2), 0.95, 0.43, -18, 1400, 5, None),
+    (5, "PWM bass layer", 4, (0, 9, 11, 3), 0.94, 0.16, -17, 1400, 4, None),
     (6, "Converge", 4, (8, 9, 10, 7), 0.85, 0.45, -23, 1300, 3, None),
     (7, "Ana PWM pad", 4, (4, 8, 10, 6), 0.75, 0.35, -18, 1500, 2, None),
     (8, "SID kick", 1, (0, 5, 0, 0), 0.0, 0.5, -8, None, 0, (35, 43)),
-    (8, "SID snare", 4, (0, 7, 0, 0), 0.0, 0.5, -10, None, 0, (38, 95)),
+    (8, "SID snare", 8, (0, 6, 0, 1), 0.0, 0.5, -8, None, 0, (38, 83)),
     (8, "SID shaker", 8, (0, 1, 0, 0), 0.0, 0.5, -22, None, 0, (82, 92)),
     (-1, "SID intro arp", 1, (0, 9, 0, 0), 0.0, 0.5, -5, None, 0, None),
 ]
@@ -149,11 +149,21 @@ def parameters(part):
             p[b] = 0.0
     if drum:
         p[104] = 0.0
+    if part[0] in (1, 3, 4, 5):
+        # Monophonic legato, with the source octave pair voiced by two SID
+        # oscillators for the sustained basses. CC5 supplies the slide time.
+        p.update({103: 1 / 3, 104: 0.0})
+        for voice in (1, 2):
+            if part[0] in (1, 5) and voice == 1:
+                p[231] = 36 / 48  # +12 semitones.
+            else:
+                p[200 + voice * 20] = 0.0
+                p[210 + voice * 20] = 0.0
     if part[1] == "SID snare":
-        # One voice changes from high-pitched noise to a narrow pulse while
-        # overlapping notes retune it legato, retaining the same envelope.
+        # Clock the noise LFSR rapidly, then step its pitch downward using
+        # the full +/-24-semitone bend range. Never switch to a tonal wave.
         p[103] = 1 / 3
-        p[201] = 240 / 4095
+        p[106] = 1.0
     if part[1] == "SID intro arp":
         # Four octaves, one octave step per PAL player frame. Only one SID
         # oscillator sounds; the held chord is the arpeggiator's input.
@@ -179,11 +189,19 @@ def score(midi):
     for definition in PARTS:
         drum = definition[-1]
         if definition[0] == -1:
-            notes = [[beat * 400, beat * 400 + 396, pitch, 100]
-                     for beat in range(first_midi_note // ppqn)
-                     for pitch in (65, 77, 89, 101)]
+            bass = midi["tracks"][1]["notes"]
+            notes = []
+            for beat in range(end // ppqn):
+                base = 65
+                if beat * ppqn >= first_midi_note:
+                    held = [n for n in bass if n["start"] <= beat * ppqn]
+                    latest = max((n["start"] for n in held), default=bass[0]["start"])
+                    root = min(n["pitch"] for n in (held or bass) if n["start"] == latest)
+                    base = 60 + root % 12
+                notes.extend([beat * 400, beat * 400 + 396, base + octave * 12, 100]
+                             for octave in range(4))
             parts.append(dict(definition=definition, notes=notes, lines=4,
-                              automation=[], width=16))
+                              automation=[("cc:7", 0, 127), ("pitchbend", -8192, 8191)], width=18))
             continue
         source = midi["tracks"][definition[0]]
         notes = []
@@ -193,15 +211,13 @@ def score(midi):
             start = round((n["start"] - origin) * 400 / ppqn)
             finish = round((n["end"] - origin) * 400 / ppqn)
             notes.append([start, max(start + 1, finish), drum[1] if drum else n["pitch"], n["velocity"]])
-        if drum and drum[0] == 38:
-            articulated = []
-            for start, finish, pitch, velocity in notes:
-                # 1/64 at 124 BPM is 30 ms: a brief noise strike, then a
-                # pulse body at G2. Overlap preserves Unison's envelope.
-                switch = min(start + 25, finish - 2)
-                articulated.append([start, switch + 1, pitch, velocity])
-                articulated.append([switch, finish, 43, velocity])
-            notes = sorted(articulated)
+        if definition[0] in (1, 5):
+            # These tracks contain root+octave pairs at every onset. Unison
+            # supplies the upper octave, so one key can slide both voices.
+            grouped = defaultdict(list)
+            for note in notes:
+                grouped[note[0]].append(note)
+            notes = [min(chord, key=lambda n: n[2]) for chord in grouped.values()]
         # Some MIDI octave-bass retriggers overlap by a few ticks. Release the
         # old equal pitch at its retrigger, avoiding a delayed note-off.
         previous = {}
@@ -210,17 +226,27 @@ def score(midi):
                 old = previous[note[2]]
                 old[1] = min(old[1], note[0])
             previous[note[2]] = note
+        glide = {}
+        if definition[0] in (1, 3, 4, 5):
+            for i, note in enumerate(notes):
+                time = 0
+                if i > 0:
+                    old = notes[i - 1]
+                    if old[2] != note[2] and old[1] >= note[0] - 2:
+                        old[1] = max(old[1], note[0] + 2)
+                        time = 28 if definition[0] in (1, 5) else 16
+                glide[note[0]] = time
         counts = defaultdict(int)
         for note in notes:
             counts[note[0] // 100] += 1
         lines = max(1, max(counts.values(), default=1))
         automation = []
-        if drum and drum[0] == 35:
+        if definition[0] in (1, 3, 4, 5):
+            automation = [(f"cc:{cc}", 0, 127) for cc in (83, 5, 74, 71, 80)]
+        elif drum and drum[0] in (35, 38):
             automation = [("pitchbend", -8192, 8191)]
-        elif drum and drum[0] == 38:
-            automation = [("cc:24", 0, 127), ("cc:22", 0, 127), ("cc:23", 0, 127)]
         parts.append(dict(definition=definition, notes=notes, lines=lines,
-                          automation=automation, width=lines * 4 + len(automation)))
+                          automation=automation, width=lines * 4 + len(automation), glide=glide))
     return parts, rows, origin
 
 
@@ -259,6 +285,31 @@ def project(midi, plugin):
         last = first + PATTERN_ROWS * 100
         column = 1
         for part in parts:
+            automation = column + part["lines"] * 4
+            source = part["definition"][0]
+            if source in (1, 3, 4, 5):
+                definition = part["definition"]
+                rows[0][automation:automation + 5] = [
+                    "42", "28" if source in (1, 5) else "16",
+                    str(round(definition[7] * 127 / 2047)),
+                    str(round(definition[8] * 127 / 15)), "18",
+                ]
+                for row in range(PATTERN_ROWS):
+                    now = first + row * 100
+                    active = [n for n in part["notes"] if n[0] <= now < n[1]]
+                    if not active:
+                        continue
+                    head = max(active, key=lambda n: n[0])
+                    if source in (3, 4):
+                        rows[row][automation + 2] = "100 92 84 76"
+                    else:
+                        age = (now - head[0]) / 100
+                        rows[row][automation + 2] = str(round(108 - 32 * min(age / 12, 1)))
+            elif source == -1:
+                # Bring the continuing arp behind the melody, and remove the
+                # intro's +35-cent reference tuning once the MIDI enters.
+                rows[0][automation:automation + 2] = ["106" if pattern == 0 else "94",
+                                                      "0" if pattern == 0 else "-1434"]
             used = defaultdict(int)
             for start, end, pitch, velocity in part["notes"]:
                 if not first <= start < last:
@@ -269,13 +320,12 @@ def project(midi, plugin):
                                       f"{(end - start) / 100:.2f}", f"{offset / 100:.2f}"]
                 used[row] += 1
                 drum = part["definition"][-1]
-                if drum and drum[0] == 35:
-                    rows[row][column + part["lines"] * 4] = "0 -4096 -6144 ."
-                elif drum and drum[0] == 38 and pitch == drum[1]:
-                    automation = column + part["lines"] * 4
-                    rows[row][automation:automation + 3] = [
-                        "64 32 . .", "120 32 72 112", "0 8 . .",
-                    ]
+                if source in (1, 3, 4, 5):
+                    rows[row][automation + 1] = str(part["glide"][start])
+                elif drum and drum[0] == 35:
+                    rows[row][automation] = "0 -4096 -6144 ."
+                elif drum and drum[0] == 38:
+                    rows[row][automation] = "4096 0 -4096 -8192"
             column += part["width"]
         emit(PATTERN_ROWS)
         for row in rows:

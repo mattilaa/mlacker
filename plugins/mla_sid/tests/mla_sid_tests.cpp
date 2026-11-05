@@ -660,6 +660,40 @@ void testUnisonAndGlide(const std::string &path)
     CHECK(std::fabs(zeroCrossingHz(back.left, at(0.4), at(0.6)) / hzOf(57) - 1.0) < 0.003);
 }
 
+void testGlideControllers(const std::string &path)
+{
+    Instance plugin;
+    CHECK(plugin.open(path));
+    plugin.param(kLink, kOff);
+    for(int v = 0; v < 3; ++v) {
+        plugin.param(voice(v, kWave), waveNorm(v == 0 ? kTri : 0));
+        plugin.param(voice(v, kKeys), v == 0 ? kOn : kOff);
+        plugin.param(voice(v, kFilterField_), kOff);
+    }
+    plugin.param(voice(0, kSustain), nibbleNorm(15));
+    // CC83 selects Unison/legato; CC5 is the portamento time. A controller
+    // change at the note's offset must shape that note sample-accurately.
+    plugin.cc(83, 42);
+    plugin.cc(5, 0);
+    plugin.noteOn(57);
+    plugin.render(0.2);
+    plugin.cc(5, 32, 64);
+    plugin.noteOn(69, 1.0f, 64);
+    const Stereo slide = plugin.render(0.4);
+    const double early = zeroCrossingHz(slide.left, at(0.02), at(0.06));
+    const double late = zeroCrossingHz(slide.left, at(0.3), at(0.4));
+    CHECK(early > hzOf(57) * 1.05 && early < hzOf(69) * 0.95);
+    CHECK(std::fabs(late / hzOf(69) - 1.0) < 0.003);
+    // A zero time disables the slide without changing the legato mode.
+    plugin.cc(5, 0);
+    plugin.noteOn(81);
+    const Stereo instant = plugin.render(0.1);
+    CHECK(std::fabs(zeroCrossingHz(instant.left, at(0.02), at(0.09)) / hzOf(81) - 1.0) < 0.005);
+    plugin.noteOff(81);
+    const Stereo held = plugin.render(0.1);
+    CHECK(std::fabs(zeroCrossingHz(held.left, at(0.02), at(0.09)) / hzOf(69) - 1.0) < 0.005);
+}
+
 void testArp(const std::string &path, const char *wavDir)
 {
     // Arp: a held chord cycles every 2 frames (40 ms at PAL).
@@ -863,6 +897,7 @@ int main(int argc, char **argv)
     testRegisterCcs(path);
     testPoly(path);
     testUnisonAndGlide(path);
+    testGlideControllers(path);
     testArp(path, wavDir);
     testChannels(path);
     testSyncAndRing(path, wavDir);

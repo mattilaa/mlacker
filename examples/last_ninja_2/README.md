@@ -18,12 +18,15 @@ guides the added intro and the bass/snare timbres. The MIDI's melodic pitches
 and arrangement are retained, so its key, phrasing and duration still differ
 from that recording; this is not cycle-exact replay of the C64 player.
 
-The project preserves all **7,637 note starts and velocities**, the original
-melodic pitches and song structure. The MIDI's eight silent setup beats now
-contain a synthesized SID intro. Note starts and ends are
+The project follows the source MIDI's **7,637 notes**, melodic pitches and song
+structure. The sustained basses' root/octave pairs are voiced by two Unison
+oscillators from one root note, so both octaves slide together; the upper
+octave shares the root's velocity. The MIDI's eight silent setup beats contain
+a synthesized SID intro that continues as a quieter backing arpeggio throughout
+the song. Note starts and ends are
 rounded to the sequencer's 0.01-row precision (at most about 0.6 ms per endpoint).
-Equal-pitch bass retriggers with overlapping gates release the old note at the
-new note's start. The resulting song lasts **4:38.71**, with **72 two-bar
+Equal-pitch bass retriggers release the old note at the new note's start;
+adjacent pitch changes overlap by 0.02 row for legato. The song lasts **4:38.71**, with **72 two-bar
 patterns** of 32 rows. Small patterns keep scheduling and editing responsive;
 sustained notes carry across matrix rows.
 
@@ -54,25 +57,44 @@ All start from pulse width 2048. Each chip's voices have staggered sweep phases.
 The main bass sweeps approximately 124–3972 on the SID's 0–4095 pulse-width
 range; the left/right basses reach approximately 103–3993. The original saw
 patch is replaced with a pulse wave so width modulation affects its sound.
-All four bass layers bypass the filter to retain the moving pulse harmonics.
-The patches are editable in the Mla SID parameter editor. Hard Restart is
+All four bass layers use the SID low-pass filter with cutoff and resonance
+automation. The patches are editable in the Mla SID parameter editor. Hard Restart is
 enabled for reliable note attacks, and the kick uses a short pitch-bend drop.
+
+## Bass glide and filtering CCs
+
+Each bass track exposes **CC83** (play mode), **CC5** (glide time), **CC74**
+(cutoff), **CC71** (resonance) and **CC80** (filter mode). Pattern starts restore
+Unison/legato with CC83 = 42 and low-pass filtering with CC80 = 18.
+
+Connected pitch changes use CC5 = 28 on the sustained basses (about 97 ms),
+and 16 on the fast basses (about 32 ms). Repeated notes and notes after gaps
+use CC5 = 0 to retain distinct attacks. The small note overlaps keep the gate
+open while the pitch slides, including across pattern boundaries. Edit these
+columns to program your own portamento; no plugin update is required. Their
+envelopes retain a nonzero sustain so long connected phrases keep sounding.
+
+The sustained bass cutoff falls from CC74 = 108 to 76 across a note. Fast bass
+hits use `100 92 84 76` across their row's four substeps. CC71 sets moderate
+resonance (34 on the sustained basses, 42 on the fast basses). Both sounding
+voices of each sustained octave bass are routed through the filter.
 
 ## Intro and snare
 
-The intro holds F4, F5, F6 and F7, tuned 35 cents sharp to match the reference's
-octave bands. One triangle oscillator arpeggiates at one step per PAL frame,
-with a new envelope attack on each beat. The built-in player's ascending order
-approximates the recording's four-octave effect; it does not reproduce the
-original descending register sequence. Its 32 chord-input notes are additional
-to the MIDI's original notes.
+The first pattern holds F4, F5, F6 and F7, tuned 35 cents sharp to match the
+reference's octave bands. One triangle oscillator arpeggiates at one step per
+PAL frame, with a new envelope attack on each beat. It continues in every
+following pattern, following the MIDI bass roots in octaves. CC7 lowers its
+output behind the melody; pitch-bend automation removes the initial tuning
+offset after the first pattern. The player's ascending order approximates the
+four-octave effect rather than the original descending register sequence.
 
-Each snare hit starts with a brief high-pitched noise strike, then switches to
-a narrow pulse at G2 after one 1/64 step (about 30 ms). Overlapping notes in
-Unison mode retune the same oscillator without restarting its envelope. Pulse
-width rises from roughly 240 to 480 during the tail, and a short release cuts
-the hit cleanly. This adds one tonal-body note per source snare hit. Voice
-linking is disabled for percussion so unused oscillators stay silent.
+The snare stays on the SID noise waveform throughout its hit. A pitch-bend
+column contains `4096 0 -4096 -8192`; with a 24-semitone bend range, its noise
+clock setting falls roughly 1976 → 988 → 494 → 247 Hz. This stepped LFSR clock
+fall and a short decay/release give the grainy SID snare texture without a
+pitched pulse tail. Voice linking is disabled for percussion so unused
+oscillators stay silent.
 
 ## Credits and rights
 

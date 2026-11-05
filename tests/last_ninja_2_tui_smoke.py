@@ -12,6 +12,56 @@ import time
 from session_tui_smoke import Terminal, F1
 
 
+def check_score(records, at):
+    """Check playable note overlaps and continuing arp in the saved score."""
+    at += 2  # Active ID and next ID.
+    patterns = records[at][1]
+    at += 1
+    bass_notes = {slot: [] for slot in (1, 3, 4, 5)}
+    for pattern in range(patterns):
+        at += 2  # Pattern ID and name.
+        tracks = records[at + 8][1]
+        at += 9
+        columns = []
+        column = 1
+        for _ in range(tracks):
+            slot = records[at + 6][1]
+            lines = records[at + 7][1]
+            count = records[at + 10][1]
+            at += 11
+            controls = [records[at + i * 3][1] for i in range(count)]
+            at += count * 3
+            assert records[at][1] == 0
+            at += 1
+            columns.append((slot, column, lines, controls))
+            column += lines * 4 + count
+        rows = records[at][1]
+        at += 1
+        arp_notes = 0
+        for row in range(rows):
+            cells = records[at][1]
+            at += 1
+            values = [record[1] for record in records[at:at + cells]]
+            at += cells
+            for slot, column, lines, controls in columns:
+                if slot in bass_notes:
+                    assert controls == ["cc:83", "cc:5", "cc:74", "cc:71", "cc:80"]
+                if slot == 11:
+                    arp_notes += sum(bool(values[column + line * 4]) for line in range(lines))
+                    if row == 0:
+                        assert values[column + lines * 4] == ("106" if pattern == 0 else "94")
+                if slot in bass_notes:
+                    for line in range(lines):
+                        c = column + line * 4
+                        if values[c]:
+                            start = (pattern * rows + row) * 100 + round(float(values[c + 3]) * 100)
+                            end = start + round(float(values[c + 2]) * 100)
+                            bass_notes[slot].append((start, end, values[c]))
+        assert arp_notes == 32, f"Arpeggio missing from pattern {pattern + 1}"
+    for slot, notes in bass_notes.items():
+        assert any(a[2] != b[2] and a[1] > b[0] for a, b in zip(notes, notes[1:])), slot
+
+
 def main():
     source = Path(__file__).resolve().parents[1] / "examples/last_ninja_2_loading.mlaproj"
     with tempfile.TemporaryDirectory(prefix="mlacker-last-ninja-") as folder:
@@ -34,15 +84,25 @@ def main():
                 pulse_rates.add(preset[112])
             if slot in (1, 3, 4, 5):
                 assert preset[111] >= 0.94
+                assert preset[103] == 1 / 3 and preset[104] == 0.0
+                assert preset[123] == 1 / 7 and preset[209] == 1.0
+            if slot in (1, 5):
+                assert preset[231] == 0.75 and preset[250] == 0.0
+                assert preset[204] >= 0.7, "Long legato phrases need a nonzero sustain"
             if slot == 9:
                 assert preset[103] == 1 / 3 and preset[104] == 0.0
-                assert preset[205] == 0.0, "Snare needs the short SID release"
+                assert preset[200] == 8 / 15 and preset[106] == 1.0
+                assert preset[205] == 1 / 15, "Snare needs the short SID release"
             if slot == 11:
                 assert preset[103] == 2 / 3 and preset[117] == 0.0
                 assert preset[200] == 1 / 15 and preset[230] == preset[250] == 0.0
         assert len(pulse_rates) == 7
         assert ["string", "SID intro arp"] in records
-        assert ["string", "64 32 . ."] in records, "Snare must change from noise to pulse"
+        assert ["string", "4096 0 -4096 -8192"] in records, "Snare needs its noise-clock pitch fall"
+        assert ["string", "64 32 . ."] not in records, "Snare must stay on noise"
+        for name in ("cc:5", "cc:83", "cc:74", "cc:71", "cc:80"):
+            assert ["string", name] in records
+        check_score(records, at)
         for record in document["records"]:
             if record[0] == "string" and record[1].endswith("MlaSid.vst3"):
                 record[1] = str(Path(sys.argv[2]).resolve())

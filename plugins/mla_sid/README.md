@@ -98,6 +98,23 @@ Notes start and end sample-accurately.
 
 With Link Voices on, the V1 controls are the whole patch's.
 
+### Programming legato and filter movement
+
+Set **CC83 = 42** for Unison, then overlap the next note with the previous
+one: the newest note changes pitch without restarting the envelope. A short
+overlap such as `0.02` row is sufficient. **CC5** sets the glide time:
+`2 × (CC5 / 127)²` seconds. For example, 28 is approximately 97 ms and 16 is
+approximately 32 ms. Set CC5 to 0 for an immediate pitch change; it leaves
+Unison's legato envelope behavior enabled. CC83 = 0 returns to Poly.
+Only enable **Keys** on the voices you want to sound. Unison's voice transpose
+controls can supply an octave bass from a single line of notes.
+
+For a low-pass sweep, enable the voices' **Filter** routing, set **CC80 = 18**
+(LP), then automate **CC74** (cutoff) and **CC71** (resonance). CC80 = 54 selects
+LP+BP, 73 selects HP, and 127 sums LP+BP+HP. Filter mode Off silences routed
+voices; turn off their Filter routing for a bypass. Parameter and register CC
+writes are ordered before notes at the same sample offset.
+
 ### Register CCs
 
 CC 20 + *r* writes SID register $D400 + *r*. A CC has seven bits, so the CC
