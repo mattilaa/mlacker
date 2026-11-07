@@ -58,7 +58,7 @@ constexpr int32 kBlock = 256;
 constexpr ParamID kOutput = 100, kAccent = 101, kDynamics = 102, kBdTune = 104, kBdAttack = 105, kBdDecay = 106,
                   kSdTune = 108, kSdTone = 109, kSdSnappy = 110, kLtTune = 112, kLtDecay = 113, kMtTune = 115,
                   kHtTune = 118, kChLevel = 122, kChDecay = 123, kOhLevel = 124, kOhDecay = 125, kCrTune = 127, kRdTune = 129,
-                  kDrive = 130;
+                  kDrive = 130, kSdDecay = 131, kCrDecay = 132, kRdDecay = 133;
 
 // One key per instrument (the 909's MIDI note numbers).
 constexpr int kBD = 36, kRS = 37, kSD = 38, kCP = 39, kLT = 43, kMT = 47, kHT = 50, kCH = 42, kOH = 46, kCR = 49,
@@ -744,7 +744,7 @@ void testRetrigger(const std::string &path)
 void testMidiMapping(const std::string &path)
 {
     // CC 7 is Output, CC 20-30 the levels, CC 102-118 Accent and the knobs,
-    // CC 119 Drive.
+    // CC 119 Drive, CC 120-122 SD, CR and RD Decay.
     Instance plugin;
     CHECK(plugin.open(path));
     auto mapping = U::cast<IMidiMapping>(plugin.component);
@@ -761,8 +761,26 @@ void testMidiMapping(const std::string &path)
     CHECK(map(20) == 103 && map(21) == 107 && map(27) == 122 && map(30) == 128);
     CHECK(map(102) == kAccent && map(103) == kBdTune && map(105) == kBdDecay && map(108) == kSdSnappy);
     CHECK(map(115) == kChDecay && map(116) == kOhDecay && map(117) == kCrTune && map(118) == kRdTune);
-    CHECK(map(119) == kDrive);
-    CHECK(map(19) == -1 && map(31) == -1 && map(101) == -1 && map(120) == -1 && map(1) == -1);
+    CHECK(map(119) == kDrive && map(120) == kSdDecay && map(121) == kCrDecay && map(122) == kRdDecay);
+    CHECK(map(19) == -1 && map(31) == -1 && map(101) == -1 && map(123) == -1 && map(1) == -1);
+}
+
+void testExtraDecays(const std::string &path)
+{
+    // SD Decay stretches the snare's tone body (centred = the 909's).
+    const double shortBody = length40(hit(path, kSD, 100.0f / 127.0f, 1.5, {{kSdDecay, 0.0}, {kSdSnappy, 0.0}}).left);
+    const double longBody = length40(hit(path, kSD, 100.0f / 127.0f, 1.5, {{kSdDecay, 1.0}, {kSdSnappy, 0.0}}).left);
+    // CR and RD Decay shorten the cymbals; at the top (the default) they ring
+    // for their whole sample, as on the 909.
+    const double crShort = length40(hit(path, kCR, 100.0f / 127.0f, 3.0, {{kCrDecay, 0.0}}).left);
+    const double crFull = length40(hit(path, kCR, 100.0f / 127.0f, 3.0).left);
+    const double rdShort = length40(hit(path, kRD, 100.0f / 127.0f, 3.0, {{kRdDecay, 0.3}}).left);
+    const double rdFull = length40(hit(path, kRD, 100.0f / 127.0f, 3.0, {{kRdDecay, 1.0}}).left);
+    std::printf("extra decays: snare body %.2f .. %.2f s; crash %.2f / %.2f s; ride %.2f / %.2f s\n", shortBody, longBody,
+                crShort, crFull, rdShort, rdFull);
+    CHECK(longBody > shortBody * 2.5);
+    CHECK(crShort < 0.3 && crFull > 0.8);
+    CHECK(rdShort < rdFull * 0.7 && rdFull > 0.75);
 }
 
 void testDrive(const std::string &path)
@@ -884,6 +902,7 @@ int main(int argc, char **argv)
     testDynamics(path);
     testRetrigger(path);
     testMidiMapping(path);
+    testExtraDecays(path);
     testDrive(path);
     testSampleFolder(path);
     testState(path);

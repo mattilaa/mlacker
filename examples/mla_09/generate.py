@@ -27,17 +27,19 @@ CC_BD_LEVEL, CC_SD_LEVEL, CC_CP_LEVEL, CC_CH_LEVEL, CC_OH_LEVEL = 20, 21, 26, 27
 CC_ACCENT, CC_BD_TUNE, CC_BD_ATTACK, CC_BD_DECAY = 102, 103, 104, 105
 CC_SD_TUNE, CC_SD_TONE, CC_SD_SNAPPY = 106, 107, 108
 CC_LT_TUNE, CC_LT_DECAY, CC_MT_TUNE, CC_MT_DECAY, CC_HT_TUNE, CC_HT_DECAY = 109, 110, 111, 112, 113, 114
+# Beyond the 909's panel: the snare's tone decay and the cymbals' decays.
+CC_SD_DECAY, CC_CR_DECAY, CC_RD_DECAY = 120, 121, 122
 CC_CH_DECAY, CC_OH_DECAY, CC_CR_TUNE, CC_RD_TUNE = 115, 116, 117, 118
 
 # Tracks, all playing the one Mla 09: name, note lines, CC columns.
 TRACKS = [
     # Every bass drum and snare knob, in panel order.
     ("BD", 1, [CC_BD_LEVEL, CC_BD_TUNE, CC_BD_ATTACK, CC_BD_DECAY, CC_ACCENT]),
-    ("SD CP", 2, [CC_SD_LEVEL, CC_SD_TUNE, CC_SD_TONE, CC_SD_SNAPPY, CC_CP_LEVEL]),
+    ("SD CP", 2, [CC_SD_LEVEL, CC_SD_TUNE, CC_SD_TONE, CC_SD_SNAPPY, CC_SD_DECAY, CC_CP_LEVEL]),
     ("RS", 1, []),
     ("Toms", 1, [CC_LT_TUNE, CC_LT_DECAY, CC_MT_TUNE, CC_MT_DECAY, CC_HT_TUNE, CC_HT_DECAY]),
     ("Hats", 1, [CC_CH_LEVEL, CC_CH_DECAY, CC_OH_LEVEL, CC_OH_DECAY]),
-    ("Cymbals", 2, [CC_CR_TUNE, CC_RD_TUNE]),
+    ("Cymbals", 2, [CC_CR_TUNE, CC_CR_DECAY, CC_RD_TUNE, CC_RD_DECAY]),
 ]
 
 # The panel's starting position: tight kick with plenty of click, crisp snare,
@@ -47,7 +49,9 @@ KNOBS = {CC_BD_LEVEL: 115, CC_BD_TUNE: 60, CC_BD_ATTACK: 83, CC_BD_DECAY: 92, CC
          CC_SD_LEVEL: 115, CC_SD_TUNE: 64, CC_SD_TONE: 80, CC_SD_SNAPPY: 84, CC_CP_LEVEL: 115,
          # Toms centred: root, fifth and minor seventh.
          CC_LT_TUNE: 64, CC_LT_DECAY: 64, CC_MT_TUNE: 64, CC_MT_DECAY: 64, CC_HT_TUNE: 64, CC_HT_DECAY: 64,
-         CC_CH_LEVEL: 115, CC_CH_DECAY: 40, CC_OH_LEVEL: 117, CC_OH_DECAY: 56, CC_CR_TUNE: 64, CC_RD_TUNE: 64}
+         CC_CH_LEVEL: 115, CC_CH_DECAY: 40, CC_OH_LEVEL: 117, CC_OH_DECAY: 56, CC_CR_TUNE: 64, CC_RD_TUNE: 64,
+         # The snare's tone as the 909's; the cymbals ring for their sample.
+         CC_SD_DECAY: 64, CC_CR_DECAY: 127, CC_RD_DECAY: 127}
 TOM_TUNES = (CC_LT_TUNE, CC_MT_TUNE, CC_HT_TUNE)
 
 # The mix: each instrument's level against unity (0 dB), in dB, balanced by
@@ -72,9 +76,9 @@ TOM_DECAYS = (CC_LT_DECAY, CC_MT_DECAY, CC_HT_DECAY)
 
 
 def parameters():
-    """Mla 09's 31 parameters, normalized (IDs 100-130, see its README)."""
+    """Mla 09's 34 parameters, normalized (IDs 100-133, see its README)."""
     unity = 60 / 66
-    p = {key: 0.5 for key in range(100, 131)}
+    p = {key: 0.5 for key in range(100, 134)}
     for pid in (100, 103, 107, 111, 114, 117, 120, 121, 122, 124, 126, 128):
         p[pid] = unity
     p[102] = 0.0  # 909 Accent dynamics.
@@ -93,7 +97,8 @@ def parameters():
               105: KNOBS[CC_BD_ATTACK] / 127, 106: KNOBS[CC_BD_DECAY] / 127, 107: level(CC_SD_LEVEL, KNOBS[CC_SD_LEVEL]) / 127,
               108: KNOBS[CC_SD_TUNE] / 127, 109: KNOBS[CC_SD_TONE] / 127, 110: KNOBS[CC_SD_SNAPPY] / 127, 123: KNOBS[CC_CH_DECAY] / 127,
               125: KNOBS[CC_OH_DECAY] / 127, 127: KNOBS[CC_CR_TUNE] / 127, 129: KNOBS[CC_RD_TUNE] / 127,
-              130: 0.0})  # Drive off: the clean machine.
+              130: 0.0,  # Drive off: the clean machine.
+              131: KNOBS[CC_SD_DECAY] / 127, 132: KNOBS[CC_CR_DECAY] / 127, 133: KNOBS[CC_RD_DECAY] / 127})
     return p
 
 
@@ -395,9 +400,82 @@ def outro():
     return p
 
 
-PATTERNS = [ignition, drive, clap_section, tom_section, roll, exhibition, jack, waveform, outro]
-# Pattern numbers (1-based, in PATTERNS order) in song order.
-SONG = [1, 2, 2, 3, 4, 6, 7, 5, 6, 8, 7, 9]
+# --- Decay studies: every tunable sound at different decays ------------------
+
+def kick_decays():
+    """Every beat a different BD Decay, short to long; BD Tune moves each bar,
+    so each tuning is heard across the decays."""
+    p = Pattern("Kick Decays")
+    kick(p)
+    hats(p, open_hats=False)
+    clap(p)
+    for row in range(0, ROWS, 4):
+        p.knob("BD", row, CC_BD_DECAY, (20, 60, 100, 127)[row // 4 % 4])
+    p.bars("BD", CC_BD_TUNE, (30, 60, 90, 120))
+    return p
+
+
+def tom_decays():
+    """A rolling tom figure; each tom's Decay steps from short to long over
+    the bars (high tom the other way) while the toms are retuned."""
+    p = Pattern("Tom Decays")
+    kick(p)
+    hats(p, open_hats=False, density=8)
+    figure = {0: (LT, ACCENT), 3: (MT, NORMAL), 6: (HT, NORMAL), 8: (MT, ACCENT), 11: (LT, NORMAL), 14: (HT, NORMAL)}
+    for row in range(ROWS):
+        if row % 16 in figure:
+            note, velocity = figure[row % 16]
+            p.hit("Toms", row, note, velocity)
+    p.bars("Toms", CC_LT_DECAY, (10, 45, 85, 127))
+    p.bars("Toms", CC_MT_DECAY, (10, 45, 85, 127))
+    p.bars("Toms", CC_HT_DECAY, (127, 85, 45, 10))
+    for cc, tunes in ((CC_LT_TUNE, (64, 44, 84, 64)), (CC_MT_TUNE, (64, 44, 84, 64)), (CC_HT_TUNE, (64, 44, 84, 64))):
+        p.bars("Toms", cc, tunes)
+    return p
+
+
+def snare_decays():
+    """Backbeat snares and ghost notes; SD Decay and Tone change on every hit,
+    SD Tune each bar."""
+    p = Pattern("Snare Decays")
+    kick(p)
+    hats(p)
+    decays, tones, n = (16, 64, 112, 127), (30, 80, 120, 60), 0
+    for row in range(ROWS):
+        step = row % 16
+        if step in (4, 12) or step in (7, 10, 15):
+            p.hit("SD CP", row, SD, ACCENT if step in (4, 12) else NORMAL)
+            p.knob("SD CP", row, CC_SD_DECAY, decays[n % 4])
+            p.knob("SD CP", row, CC_SD_TONE, tones[n % 4])
+            n += 1
+    p.bars("SD CP", CC_SD_TUNE, (40, 64, 96, 64))
+    return p
+
+
+def cymbal_decays():
+    """A crash on each bar with its own CR Decay and Tune; eighth rides whose
+    RD Decay changes every beat as RD Tune climbs."""
+    p = Pattern("Cymbal Decays")
+    kick(p)
+    hats(p, open_hats=False, density=4)
+    clap(p)
+    for bar in range(4):
+        crash(p, bar * 16)
+    p.bars("Cymbals", CC_CR_DECAY, (20, 50, 90, 127))
+    p.bars("Cymbals", CC_CR_TUNE, (100, 64, 40, 64))
+    for row in range(0, ROWS, 2):
+        p.hit("Cymbals", row, RD, ACCENT if row % 8 == 2 else NORMAL)
+    for row in range(0, ROWS, 4):
+        p.knob("Cymbals", row, CC_RD_DECAY, (30, 60, 95, 127)[row // 4 % 4])
+    p.ramp("Cymbals", CC_RD_TUNE, 40, 100, every=8)
+    return p
+
+
+PATTERNS = [ignition, drive, clap_section, tom_section, roll, exhibition, jack, waveform, outro,
+            kick_decays, tom_decays, snare_decays, cymbal_decays]
+# Pattern numbers (1-based, in PATTERNS order) in song order: the decay
+# studies come after Waveform.
+SONG = [1, 2, 2, 3, 4, 6, 7, 5, 6, 8, 10, 11, 12, 13, 7, 9]
 
 
 def project(plugin):

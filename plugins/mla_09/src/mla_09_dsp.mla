@@ -405,13 +405,15 @@ struct Snare {
     /// This hit's analog drift: pitch and noise multipliers.
     var detune: f32;
     var snap: f32;
+    /// SD Decay: how long the tone body rings, 0.5x .. 2x the 909's.
+    var body: f32;
 };
 
 impl Snare {
     fn new() -> Snare {
         return Snare { phase1: 0.0f, phase2: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, noise_amp: 0.0f,
                        hp: Svf::new(), hp2: Svf::new(), lp: Svf::new(), lp2: Svf::new(), dt: 0.0f, rise: 1.0f,
-                       hz: 166.0f, hold: 0.11f, fade: 0.045f, snappy: 0.16f, detune: 1.0f, snap: 1.0f };
+                       hz: 166.0f, hold: 0.11f, fade: 0.045f, snappy: 0.16f, detune: 1.0f, snap: 1.0f, body: 1.0f };
     }
 
     fn configure(self: &mut Self, rate: f32) -> void {
@@ -423,7 +425,8 @@ impl Snare {
         self.lp2.configure(12000.0f, 0.70710678f, rate);
     }
 
-    fn knobs(self: &mut Self, tune: f32, tone: f32, snappy: f32) -> void {
+    fn knobs(self: &mut Self, tune: f32, tone: f32, snappy: f32, decay: f32) -> void {
+        self.body = exp2f((sclamp(decay, 0.0f, 1.0f) - 0.5f) * 2.0f);
         self.hz = knob3(tune, 114.0f, 166.0f, 222.0f);
         self.hold = knob3(tone, 0.05f, 0.12f, 0.15f);
         self.fade = knob3(tone, 0.025f, 0.05f, 0.06f);
@@ -469,7 +472,7 @@ impl Snare {
         // The lower VCO carries its 2nd harmonic (-20 dB), as on the recordings.
         let tone: f32 = s1 + 0.2f * (s1 * s1 - 0.5f) + 0.23f * sinf(two_pi() * self.phase2);
         // A fast drop to about -19 dB, then a quiet tonal tail.
-        let te: f32 = 0.88f * expf(-self.t / 0.022f) + 0.12f * expf(-self.t / 0.16f);
+        let te: f32 = 0.88f * expf(-self.t / (0.022f * self.body)) + 0.12f * expf(-self.t / (0.16f * self.body));
         self.amp = follow(self.amp, self.gain * te, self.rise);
         // The noise: a short burst, then a slow sag through the hold, then
         // the fade.
@@ -479,7 +482,9 @@ impl Snare {
         self.noise_amp = follow(self.noise_amp, self.gain * self.snappy * self.snap * e, self.rise);
         let out: f32 = self.amp * tone + self.noise_amp * n * 4.0f;
         self.t = self.t + self.dt;
-        if self.t > 2.5f || (self.t > self.hold + 14.0f * self.fade && self.amp < silent()) { self.t = -1.0f; }
+        if self.t > 2.5f || (self.t > self.hold + 14.0f * self.fade && self.t > 2.0f * self.body && self.amp < silent()) {
+            self.t = -1.0f;
+        }
         return out;
     }
 }
@@ -917,6 +922,14 @@ struct M09 {
     var oh_decay: f32;
     var cr_tune: f32;
     var rd_tune: f32;
+    /// Beyond the 909's panel: the snare's tone decay (0.5 = the 909's) and
+    /// the cymbals' VCA decays (1 = none: they ring for their sample, as on
+    /// the 909).
+    var sd_decay: f32;
+    var cr_decay: f32;
+    var rd_decay: f32;
+    var cr_decay_coef: f32;
+    var rd_decay_coef: f32;
     /// Output distortion, 0..1 (0 = clean).
     var drive: f32;
     /// Accent amount 0..1 (0 = none, 1 = +9 dB).
@@ -996,6 +1009,7 @@ impl M09 {
             bd_tune: 0.5f, bd_attack: 0.5f, bd_decay: 0.5f, sd_tune: 0.5f, sd_tone: 0.5f, snappy: 0.5f,
             lt_tune: 0.5f, lt_decay: 0.5f, mt_tune: 0.5f, mt_decay: 0.5f, ht_tune: 0.5f, ht_decay: 0.5f,
             ch_decay: 0.5f, oh_decay: 0.5f, cr_tune: 0.5f, rd_tune: 0.5f, drive: 0.0f,
+            sd_decay: 0.5f, cr_decay: 1.0f, rd_decay: 1.0f, cr_decay_coef: 1.0f, rd_decay_coef: 1.0f,
             accent: 0.5f, dynamics: 0, output_target: 1.0f, output_gain: 1.0f,
             bd: BassDrum::new(), sd: Snare::new(), lt: Tom::new(), mt: Tom::new(), ht: Tom::new(), rs: RimShot::new(),
             cp: Clap::new(),
@@ -1065,7 +1079,11 @@ impl M09 {
     fn configure_knobs(self: &mut Self) -> void {
         let r: f32 = self.rate;
         self.bd.knobs(self.bd_tune, self.bd_attack, self.bd_decay);
-        self.sd.knobs(self.sd_tune, self.sd_tone, self.snappy);
+        self.sd.knobs(self.sd_tune, self.sd_tone, self.snappy, self.sd_decay);
+        // Cymbal decays: a VCA time constant from 40 ms up; at the top the
+        // cymbal rings for its whole sample.
+        self.cr_decay_coef = self.cr_decay >= 0.999f ? 1.0f : decay_coef(knob3(self.cr_decay, 0.04f, 0.35f, 100.0f), r);
+        self.rd_decay_coef = self.rd_decay >= 0.999f ? 1.0f : decay_coef(knob3(self.rd_decay, 0.04f, 0.35f, 100.0f), r);
         // Toms: pitch across Tune; Decay sets the hold and the time constant.
         // Centred, they are a root, its fifth and its minor seventh (94, 140.8
         // and 167.5 Hz); each Tune range spans the 909's around its centre.
@@ -1218,10 +1236,14 @@ impl M09 {
         if self.cr.active() {
             let x: f32 = self.cr.tick(self.rom_cr, self.cr_len, self.cr_step, &mut tail);
             out = out + (x * self.cr_env + tail) * self.level_cr * 0.8f;
+            self.cr_env = self.cr_env * self.cr_decay_coef;
+            if self.cr_env < silent() { self.cr.head.on = false; }
         }
         if self.rd.active() {
             let x: f32 = self.rd.tick(self.rom_rd, self.rd_len, self.rd_step, &mut tail);
             out = out + (x * self.rd_env + tail) * self.level_rd * 0.6f;
+            self.rd_env = self.rd_env * self.rd_decay_coef;
+            if self.rd_env < silent() { self.rd.head.on = false; }
         }
         return out;
     }
@@ -1337,7 +1359,8 @@ fn mla09_rom_write(handle: ptr<M09>, rom: i32, index: i64, value: f32) {
 /// 11 LT level, 12 LT tune, 13 LT decay, 14 MT level, 15 MT tune, 16 MT decay,
 /// 17 HT level, 18 HT tune, 19 HT decay, 20 RS level, 21 CP level,
 /// 22 CH level, 23 CH decay, 24 OH level, 25 OH decay,
-/// 26 CR level, 27 CR tune, 28 RD level, 29 RD tune, 30 drive.
+/// 26 CR level, 27 CR tune, 28 RD level, 29 RD tune, 30 drive,
+/// 31 SD decay, 32 CR decay, 33 RD decay.
 fn mla09_set(handle: ptr<M09>, index: i32, value: f32) {
     unsafe {
         let k: f32 = sclamp(value, 0.0f, 1.0f);
@@ -1377,6 +1400,9 @@ fn mla09_set(handle: ptr<M09>, index: i32, value: f32) {
         else if index == 28 { (*handle).level_rd = level; }
         else if index == 29 { (*handle).rd_tune = k; (*handle).configure_knobs(); }
         else if index == 30 { (*handle).drive = k; }
+        else if index == 31 { (*handle).sd_decay = k; (*handle).configure_knobs(); }
+        else if index == 32 { (*handle).cr_decay = k; (*handle).configure_knobs(); }
+        else if index == 33 { (*handle).rd_decay = k; (*handle).configure_knobs(); }
     }
 }
 

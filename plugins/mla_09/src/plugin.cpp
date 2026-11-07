@@ -102,9 +102,13 @@ enum ParamId : ParamID {
     kRdLevelParam,
     kRdTuneParam,
     kDriveParam,
+    // Beyond the 909's panel: the snare's tone decay and the cymbals' decays.
+    kSdDecayParam,
+    kCrDecayParam,
+    kRdDecayParam,
 };
 
-constexpr ParamID kFirstParam = kOutputParam, kLastParam = kDriveParam;
+constexpr ParamID kFirstParam = kOutputParam, kLastParam = kRdDecayParam;
 constexpr int kNumParams = kLastParam - kFirstParam + 1;
 
 static int indexOf(ParamID id)
@@ -135,15 +139,16 @@ static int32_t instrumentFor(int16 key)
 }
 
 // MIDI CC map: CC 7 Output, CC 20-30 the levels, CC 102-118 Accent and the
-// knobs, CC 119 Drive, so a pattern's CC columns (or a controller) turn the
-// panel live.
+// knobs, CC 119 Drive, CC 120-122 SD, CR and RD Decay, so a pattern's CC
+// columns (or a controller) turn the panel live.
 static const ParamID kLevelParams[] = {kBdLevelParam, kSdLevelParam, kLtLevelParam, kMtLevelParam,
                                        kHtLevelParam, kRsLevelParam, kCpLevelParam, kChLevelParam,
                                        kOhLevelParam, kCrLevelParam, kRdLevelParam};
 static const ParamID kKnobParams[] = {kAccentParam,  kBdTuneParam, kBdAttackParam, kBdDecayParam, kSdTuneParam,
                                       kSdToneParam,  kSdSnappyParam, kLtTuneParam, kLtDecayParam, kMtTuneParam,
                                       kMtDecayParam, kHtTuneParam, kHtDecayParam, kChDecayParam, kOhDecayParam,
-                                      kCrTuneParam,  kRdTuneParam, kDriveParam};
+                                      kCrTuneParam,  kRdTuneParam, kDriveParam,   kSdDecayParam, kCrDecayParam,
+                                      kRdDecayParam};
 
 static bool isLevel(ParamID id)
 {
@@ -225,6 +230,9 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         addLevel(kRdLevelParam, STR16("RD Level"));
         addKnob(kRdTuneParam, STR16("RD Tune"));
         addParam(kDriveParam, STR16("Drive"), nullptr, 0.0);
+        addKnob(kSdDecayParam, STR16("SD Decay"));
+        addParam(kCrDecayParam, STR16("CR Decay"), nullptr, 1.0);
+        addParam(kRdDecayParam, STR16("RD Decay"), nullptr, 1.0);
         return kResultOk;
     }
 
@@ -248,7 +256,8 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             id = kLevelParams[cc - 20];
             return kResultOk;
         }
-        // Accent, the knobs and Drive on the undefined CCs 102-119, in panel order.
+        // Accent, the knobs, Drive and the extra decays on the undefined CCs
+        // 102-122, in panel order.
         if(cc >= 102 && cc < 102 + static_cast<int>(sizeof(kKnobParams) / sizeof(kKnobParams[0]))) {
             id = kKnobParams[cc - 102];
             return kResultOk;

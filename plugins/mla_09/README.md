@@ -10,8 +10,9 @@ Composer (subcategory `Instrument|Drum`). Like the 909, it is a hybrid:
   ROM. They are built in, or your own 909 recordings
   ([Hi-hat and cymbal samples](#hi-hat-cymbal-and-clap-samples)).
 
-The controls are the 909's panel knobs, plus **Drive**, which distorts the
-output.
+The controls are the 909's panel knobs, plus a few beyond it: **Drive**,
+which distorts the output, and decays for the snare's tone body and for the
+crash and ride, so every tunable sound also has a decay.
 
 The synthesis and the ROMs are MLang: `src/mla_09_dsp.mla`. The C++ layer
 (`src/plugin.cpp`) declares the buses, maps keys to instruments, schedules hits
@@ -92,6 +93,8 @@ below is a measurement.
     As on the 909, Tone does not change the noise's colour.
   - **Analog.** Both VCOs run freely between hits. Each hit drifts a little
     in pitch (about ±0.5%), level (±0.25 dB) and snap (±6%).
+  - **SD Decay** (not on the 909) stretches the tone body from 0.5x to 2x.
+    At the centre it rings as the 909's does.
 - **Toms.** A VCO that starts 30% above its pitch and glides down with a
   40 ms time constant. A VCA holds and then decays.
   - **Wave.** As on the 909, the wave hits with a strong 2nd harmonic (about
@@ -141,8 +144,10 @@ same ROM, and only their VCAs differ. Playback works like the 909's:
 - **Cymbals.** **CR Tune** and **RD Tune** run their ROM clock: the crash from
   0.76x to 1.6x, the ride from 0.78x to 1.52x. A lower tune is darker and also
   longer, because the ROM plays out more slowly: the crash lasts 1.3 s down to
-  0.6 s, the ride 1.2 s down to 0.6 s. The cymbals have no VCA decay, as on
-  the 909: they ring for the length of their sample.
+  0.6 s, the ride 1.2 s down to 0.6 s. By default the cymbals ring for the
+  length of their sample, as on the 909. **CR Decay** and **RD Decay** (not on
+  the 909) add a VCA that shortens them, with a time constant from about
+  40 ms upwards.
 
 ### Built-in ROMs
 
@@ -225,6 +230,9 @@ Samples are not part of a saved project. Each machine reads its own folder.
 | 128 | RD Level   | -60 .. +6 dB | |
 | 129 | RD Tune    | 0..1 | ROM clock 0.78x .. 1.52x. |
 | 130 | Drive      | 0..1 | Output distortion (default 0, clean). Not on the 909. |
+| 131 | SD Decay   | 0..1 | Snare tone body 0.5x .. 2x (centred = the 909's). Not on the 909. |
+| 132 | CR Decay   | 0..1 | Crash VCA decay, from about 40 ms; 1 (default) = rings for its sample, as on the 909. Not on the 909. |
+| 133 | RD Decay   | 0..1 | Ride VCA decay, as CR Decay. Not on the 909. |
 
 ## MIDI controllers
 
@@ -242,6 +250,7 @@ columns (or a hardware controller) can turn the panel while a pattern plays:
 | 115-116 | CH Decay, OH Decay |
 | 117-118 | CR Tune, RD Tune |
 | 119     | Drive |
+| 120-122 | SD Decay, CR Decay, RD Decay |
 
 A CC value 0-127 sets the parameter's whole range (the levels' -60 to +6 dB, the knobs' 0..1).
 
@@ -306,6 +315,7 @@ classes and checks rendered audio:
 - a recording in the samples folder replacing the crash ROM
 - the kick's and snare's free-running VCOs and analog drift (hits differ,
   but by under 1 dB)
+- SD, CR and RD Decay
 - Drive
 - accent and velocity dynamics
 - click-free rolls

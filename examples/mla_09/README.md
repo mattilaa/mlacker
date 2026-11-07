@@ -37,7 +37,7 @@ It uses every Mla 09 sound. It is not a copy of any of his records.
 
 ## Song
 
-Nine four-bar patterns, played in this order (89 s). Every pattern works the
+Thirteen four-bar patterns, played in this order (118 s). Every pattern works the
 panel live through CC columns. The kick, snare, claps, hats and toms change
 their settings as it plays:
 
@@ -52,8 +52,16 @@ their settings as it plays:
 | 7 | Roll     | Breakdown: the snare roll into the drop. | Snare tune, level, tone and snap climb; closed hat dips and opens; long low toms at the end. |
 | 8 | Drop     | Again. | |
 | 9 | Waveform | Eighth rides; rim and tom polyrhythms. | Ride retuned across the pattern; kick tune rises; closed-hat level alternates every bar; short toms climbing in pitch. |
-| 10 | Jack    | Again. | |
-| 11 | Outro   | Kick and hats; a last, retuned crash. | Kick decay closes; claps and hats fade; open hat tightens. |
+| 10 | Kick Decays | Kick, hats and claps. | Every beat a different BD Decay, short to long; BD Tune moves each bar. |
+| 11 | Tom Decays | A rolling tom figure over kick and hats. | Each tom's Decay steps short to long over the bars (the high tom long to short) while the toms are retuned. |
+| 12 | Snare Decays | Backbeat snares and ghost notes. | SD Decay and Tone change on every hit; SD Tune each bar. |
+| 13 | Cymbal Decays | A crash on every bar, eighth rides. | Each crash has its own CR Decay and Tune; RD Decay changes every beat as RD Tune climbs. |
+| 14 | Jack    | Again. | |
+| 15 | Outro   | Kick and hats; a last, retuned crash. | Kick decay closes; claps and hats fade; open hat tightens. |
+
+The four decay studies (10 to 13) play every tunable sound at different
+decays. The snare's tone decay (SD Decay) and the cymbals' decays (CR and RD
+Decay) are Mla 09 additions beyond the 909's panel.
 
 ## Tracks
 
@@ -62,14 +70,15 @@ Six Instrument tracks all play the one Mla 09:
 - **BD.** Every bass drum knob: CC 20 BD Level, CC 103 BD Tune, CC 104 BD
   Attack, CC 105 BD Decay, plus CC 102 Accent.
 - **SD CP.** Two note lines, for flams and 32nds. Every snare knob: CC 21 SD
-  Level, CC 106 SD Tune, CC 107 SD Tone, CC 108 SD Snappy; and the claps'
-  CC 26 CP Level.
+  Level, CC 106 SD Tune, CC 107 SD Tone, CC 108 SD Snappy, CC 120 SD Decay;
+  and the claps' CC 26 CP Level.
 - **RS.** Rim shot.
 - **Toms.** Low, mid and high tom. CC 109 to 114: LT Tune and Decay, MT Tune
   and Decay, HT Tune and Decay.
 - **Hats.** One note line for both hats. CC 27 CH Level, CC 115 CH Decay,
   CC 28 OH Level, CC 116 OH Decay.
-- **Cymbals.** Two note lines, for the ride and the crash. CC 117 CR Tune, CC 118 RD Tune.
+- **Cymbals.** Two note lines, for the ride and the crash. CC 117 CR Tune,
+  CC 121 CR Decay, CC 118 RD Tune, CC 122 RD Decay.
 
 Every pattern sets all the knobs on its first row, so the song can start or
 loop anywhere.
