@@ -119,7 +119,8 @@ same ROM, and only their VCAs differ. Playback works like the 909's:
   250 Hz.
 - **Hi-hats.** **CH Decay** and **OH Decay** set the VCAs. As measured on the
   909, the closed hat lasts 0.11 to 0.2 s (40 dB down) and the open hat 0.28
-  to 0.52 s. The closed hat chokes the open hat within a few milliseconds.
+  to 0.52 s. The hats are one voice, as on the 909, where both play from one ROM: either
+  hat cuts the other within a few milliseconds, so they never sound together.
 - **Cymbals.** **CR Tune** and **RD Tune** run their ROM clock: the crash from
   0.76x to 1.6x, the ride from 0.78x to 1.52x. A lower tune is darker and also
   longer, because the ROM plays out more slowly: the crash lasts 1.3 s down to
@@ -276,7 +277,7 @@ classes and checks rendered audio:
   - the same waveform on every hit and in every instance, unlike the analog
     noise
   - the hats' brightness and their lengths at both ends of Decay
-  - the closed hat choking the open hat
+  - the hats choking each other
   - the cymbals' Tune changing both pitch and length, and the ride being
     brighter than the crash
 - a recording in the samples folder replacing the crash ROM

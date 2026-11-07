@@ -847,7 +847,10 @@ struct M09 {
     var ch_decay_env: Decay;
     var oh_env: f32;
     var oh_decay_env: Decay;
+    /// The hats are one voice, as on the 909 (one ROM, one playback): either
+    /// hat cuts the other within a few milliseconds.
     var oh_choked: bool;
+    var ch_choked: bool;
     var choke_coef: f32;
     var cr_env: f32;
     var rd_env: f32;
@@ -876,7 +879,7 @@ impl M09 {
             hat_len: hat_words(), cr_len: cymbal_words(), rd_len: cymbal_words(),
             ch: RomVoice::new(), oh: RomVoice::new(), cr: RomVoice::new(), rd: RomVoice::new(),
             hat_step: 1.0f, cr_step: 1.0f, rd_step: 1.0f,
-            ch_env: 0.0f, ch_decay_env: Decay::new(), oh_env: 0.0f, oh_decay_env: Decay::new(), oh_choked: false,
+            ch_env: 0.0f, ch_decay_env: Decay::new(), oh_env: 0.0f, oh_decay_env: Decay::new(), oh_choked: false, ch_choked: false,
             choke_coef: 0.0f, cr_env: 0.0f, rd_env: 0.0f, metal_hp: Svf::new(),
             seed: 9090909
         };
@@ -955,7 +958,7 @@ impl M09 {
         self.cp_bp.reset(); self.cp_hp.reset(); self.cp_tail_bp.reset(); self.cp_time = -1.0f;
         self.cp_burst = 0.0f; self.cp_tail = 0.0f;
         self.ch.reset(); self.oh.reset(); self.cr.reset(); self.rd.reset();
-        self.ch_env = 0.0f; self.oh_env = 0.0f; self.oh_choked = false; self.cr_env = 0.0f; self.rd_env = 0.0f;
+        self.ch_env = 0.0f; self.oh_env = 0.0f; self.oh_choked = false; self.ch_choked = false; self.cr_env = 0.0f; self.rd_env = 0.0f;
         self.metal_hp.reset();
         self.output_gain = self.output_target;
     }
@@ -997,6 +1000,7 @@ impl M09 {
             self.ch_decay_env.start(1.0f, ch, 0.003f, r);
             // The closed hat cuts the open one.
             self.oh_choked = true;
+            self.ch_choked = false;
         } else if which == open_hat() {
             // OH Decay: after a 5 ms hold, so the open hat lasts 0.28 .. 0.52 s.
             self.oh.strike(self.oh_env);
@@ -1005,6 +1009,8 @@ impl M09 {
                                              : knob5(self.oh_decay, 0.073f, 0.107f, 0.142f, 0.158f, 0.165f);
             self.oh_decay_env.start(1.0f, oh, 0.005f, r);
             self.oh_choked = false;
+            // ... and the open hat cuts the closed one.
+            self.ch_choked = true;
         } else if which == crash() {
             self.cr.strike(self.cr_env);
             self.cr_env = gain;
@@ -1073,7 +1079,8 @@ impl M09 {
         if self.ch.active() {
             let x: f32 = self.ch.tick(self.rom_hat, self.hat_len, self.hat_step, &mut tail);
             out = out + (x * self.ch_env + tail) * self.level_ch;
-            self.ch_env = self.ch_env * self.ch_decay_env.next();
+            let d: f32 = self.ch_decay_env.next();
+            self.ch_env = self.ch_env * (self.ch_choked ? self.choke_coef : d);
             if self.ch_env < silent() { self.ch.head.on = false; }
         }
         if self.oh.active() {

@@ -57,7 +57,7 @@ constexpr int32 kBlock = 256;
 // Parameter IDs (see plugin.cpp).
 constexpr ParamID kOutput = 100, kAccent = 101, kDynamics = 102, kBdTune = 104, kBdAttack = 105, kBdDecay = 106,
                   kSdTune = 108, kSdTone = 109, kSdSnappy = 110, kLtTune = 112, kLtDecay = 113, kMtTune = 115,
-                  kHtTune = 118, kChLevel = 122, kChDecay = 123, kOhDecay = 125, kCrTune = 127, kRdTune = 129,
+                  kHtTune = 118, kChLevel = 122, kChDecay = 123, kOhLevel = 124, kOhDecay = 125, kCrTune = 127, kRdTune = 129,
                   kDrive = 130;
 
 // One key per instrument (the 909's MIDI note numbers).
@@ -582,6 +582,20 @@ void testHats(const std::string &path)
     const double before = rms(choked.left, 0, 128), after = rms(choked.left, 1920, 4800);
     std::printf("choke: open hat %.4f -> %.6f\n", before, after);
     CHECK(before > 0.02 && after < before * 0.001);
+    // ... and the open hat chokes the closed one: the hats never sound together.
+    {
+        Instance mono;
+        CHECK(mono.open(path));
+        mono.param(kChDecay, 1.0);
+        mono.noteOn(kCH, 1.0f);
+        mono.render(kBlock * 4);
+        mono.param(kOhLevel, 0.0); // the choke alone, without the open hat's own sound
+        mono.noteOn(kOH, 1.0f);
+        const Stereo cut = mono.render(kBlock * 8);
+        const double was = rms(cut.left, 0, 64), now = rms(cut.left, 960, 1920);
+        std::printf("choke: closed hat %.4f -> %.6f\n", was, now);
+        CHECK(was > 0.01 && now < was * 0.001);
+    }
     // Decay knobs.
     const double chShort = length40(hit(path, kCH, 100.0f / 127.0f, 1.0, {{kChDecay, 0.0}}).left);
     const double chLong = length40(hit(path, kCH, 100.0f / 127.0f, 1.0, {{kChDecay, 1.0}}).left);

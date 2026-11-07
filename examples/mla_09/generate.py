@@ -23,14 +23,16 @@ CR, RD = "C#3", "D#3"
 ACCENT, NORMAL = 127, 100
 
 # Mla 09 CCs (see plugins/mla_09/README.md).
-CC_ACCENT, CC_BD_TUNE, CC_BD_DECAY = 102, 103, 105
-CC_SD_TONE, CC_SD_SNAPPY = 107, 108
+CC_BD_LEVEL, CC_SD_LEVEL = 20, 21
+CC_ACCENT, CC_BD_TUNE, CC_BD_ATTACK, CC_BD_DECAY = 102, 103, 104, 105
+CC_SD_TUNE, CC_SD_TONE, CC_SD_SNAPPY = 106, 107, 108
 CC_CH_DECAY, CC_OH_DECAY, CC_CR_TUNE, CC_RD_TUNE = 115, 116, 117, 118
 
 # Tracks, all playing the one Mla 09: name, note lines, CC columns.
 TRACKS = [
-    ("BD", 1, [CC_BD_DECAY, CC_BD_TUNE, CC_ACCENT]),
-    ("SD CP", 2, [CC_SD_TONE, CC_SD_SNAPPY]),
+    # Every bass drum and snare knob, in panel order.
+    ("BD", 1, [CC_BD_LEVEL, CC_BD_TUNE, CC_BD_ATTACK, CC_BD_DECAY, CC_ACCENT]),
+    ("SD CP", 2, [CC_SD_LEVEL, CC_SD_TUNE, CC_SD_TONE, CC_SD_SNAPPY]),
     ("RS", 1, []),
     ("Toms", 1, []),
     ("Hats", 1, [CC_CH_DECAY, CC_OH_DECAY]),
@@ -39,7 +41,9 @@ TRACKS = [
 
 # The panel's starting position: tight kick with plenty of click, crisp snare,
 # short closed hat. CC columns move these while the song plays.
-KNOBS = {CC_BD_DECAY: 52, CC_BD_TUNE: 60, CC_ACCENT: 72, CC_SD_TONE: 80, CC_SD_SNAPPY: 84,
+# Levels: 115 is about unity (0 dB of -60 .. +6 dB).
+KNOBS = {CC_BD_LEVEL: 115, CC_BD_TUNE: 60, CC_BD_ATTACK: 83, CC_BD_DECAY: 52, CC_ACCENT: 72,
+         CC_SD_LEVEL: 115, CC_SD_TUNE: 64, CC_SD_TONE: 80, CC_SD_SNAPPY: 84,
          CC_CH_DECAY: 40, CC_OH_DECAY: 56, CC_CR_TUNE: 64, CC_RD_TUNE: 64}
 
 
@@ -51,14 +55,14 @@ def parameters():
         p[level] = unity
     p[102] = 0.0  # 909 Accent dynamics.
     p[100] = (60 - 3) / 66  # Output -3 dB: accented kicks and crashes keep headroom.
-    p[105] = 0.65  # BD Attack.
     p[126] = (60 - 2) / 66  # CR Level.
     p[128] = (60 - 4) / 66  # RD Level.
     p[124] = (60 - 1) / 66  # OH Level.
     # Toms tuned up a little, as Detroit tom grooves often are.
     p[112], p[115], p[118] = 0.6, 0.6, 0.62
-    p.update({101: KNOBS[CC_ACCENT] / 127, 104: KNOBS[CC_BD_TUNE] / 127, 106: KNOBS[CC_BD_DECAY] / 127,
-              109: KNOBS[CC_SD_TONE] / 127, 110: KNOBS[CC_SD_SNAPPY] / 127, 123: KNOBS[CC_CH_DECAY] / 127,
+    p.update({101: KNOBS[CC_ACCENT] / 127, 103: KNOBS[CC_BD_LEVEL] / 127, 104: KNOBS[CC_BD_TUNE] / 127,
+              105: KNOBS[CC_BD_ATTACK] / 127, 106: KNOBS[CC_BD_DECAY] / 127, 107: KNOBS[CC_SD_LEVEL] / 127,
+              108: KNOBS[CC_SD_TUNE] / 127, 109: KNOBS[CC_SD_TONE] / 127, 110: KNOBS[CC_SD_SNAPPY] / 127, 123: KNOBS[CC_CH_DECAY] / 127,
               125: KNOBS[CC_OH_DECAY] / 127, 127: KNOBS[CC_CR_TUNE] / 127, 129: KNOBS[CC_RD_TUNE] / 127,
               130: 0.0})  # Drive off: the clean machine.
     return p
@@ -202,6 +206,8 @@ def tom_section():
     clap(p)
     tom_cycle(p)
     crash(p)
+    # Pull the kick back a little so the toms come through.
+    p.knob("BD", 0, CC_BD_LEVEL, 106)
     return p
 
 
@@ -226,6 +232,9 @@ def roll():
             p.hit("SD CP", row, SD, NORMAL, line=1, offset=0.5)
     p.ramp("SD CP", CC_SD_SNAPPY, 40, 127, every=4)
     p.ramp("SD CP", CC_SD_TONE, 50, 120, every=8)
+    # The roll climbs in pitch and swells into the drop.
+    p.ramp("SD CP", CC_SD_TUNE, 30, 110, every=4)
+    p.ramp("SD CP", CC_SD_LEVEL, 96, 121, every=4)
     # The kick comes back only on the last beat, under the toms.
     p.hit("BD", 60, BD, ACCENT)
     p.hit("Toms", 60, LT, ACCENT)
@@ -245,6 +254,8 @@ def exhibition():
     ride_offbeats(p)
     p.ramp("Hats", CC_CH_DECAY, 20, 110, every=4)
     p.ramp("BD", CC_BD_TUNE, 40, 100, every=8)
+    # More click as the drop builds.
+    p.ramp("BD", CC_BD_ATTACK, 60, 127, every=8)
     return p
 
 
@@ -262,6 +273,8 @@ def jack():
     tom_fill(p)
     p.knob("Hats", 0, CC_OH_DECAY, 40)
     p.knob("Hats", 32, CC_OH_DECAY, 80)
+    # The snare drops lower for the second half.
+    p.knob("SD CP", 32, CC_SD_TUNE, 30)
     return p
 
 

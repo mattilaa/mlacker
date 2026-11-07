@@ -31,7 +31,8 @@ It uses every Mla 09 sound. It is not a copy of any of his records.
 - **Hands on the panel.** CC columns turn Mla 09's knobs while the patterns
   play: the closed hat's decay opens over the drop, the kick's tune sweeps up,
   the ride is retuned through the Waveform section, and the kick's decay closes
-  in the outro.
+  in the outro. The kick's Attack opens through the drop, and the snare's
+  Tune climbs with the roll and drops in Jack.
 
 ## Song
 
@@ -42,10 +43,10 @@ Nine four-bar patterns, played in this order (89 s):
 | 1 | Ignition | Kick and eighth hats; the kick's decay opens; crash. |
 | 2 | Drive    | Sixteenth hats with open offbeats; rim shot threes. (Played twice.) |
 | 3 | Clap     | Claps on 2 and 4; ride from bar 3; tom fill. |
-| 4 | Tom Grid | The six-step tom figure under kick, hats and claps. |
-| 5 | Drop     | Everything in. CH Decay opens, BD Tune sweeps up. |
-| 6 | Jack     | Pushed kicks, flammed snares, toms, OH Decay longer. |
-| 7 | Roll     | Breakdown: the snare roll into the drop. |
+| 4 | Tom Grid | The six-step tom figure under kick, hats and claps; the kick pulled back. |
+| 5 | Drop     | Everything in. CH Decay opens, BD Tune sweeps up, BD Attack opens. |
+| 6 | Jack     | Pushed kicks, flammed snares, toms, OH Decay longer, SD Tune drops. |
+| 7 | Roll     | Breakdown: the snare roll into the drop, rising in pitch and level. |
 | 8 | Drop     | Again. |
 | 9 | Waveform | Eighth rides retuned across the pattern; rim and tom polyrhythms. |
 | 10 | Jack    | Again. |
@@ -55,8 +56,10 @@ Nine four-bar patterns, played in this order (89 s):
 
 Six Instrument tracks all play the one Mla 09:
 
-- **BD.** CC 105 BD Decay, CC 103 BD Tune, CC 102 Accent.
-- **SD CP.** Two note lines, for flams and 32nds. CC 107 SD Tone, CC 108 Snappy.
+- **BD.** Every bass drum knob: CC 20 BD Level, CC 103 BD Tune, CC 104 BD
+  Attack, CC 105 BD Decay, plus CC 102 Accent.
+- **SD CP.** Two note lines, for flams and 32nds. Every snare knob: CC 21 SD
+  Level, CC 106 SD Tune, CC 107 SD Tone, CC 108 SD Snappy.
 - **RS.** Rim shot.
 - **Toms.** Low, mid and high tom.
 - **Hats.** CC 115 CH Decay, CC 116 OH Decay.

@@ -27,6 +27,40 @@ def score_strings(records):
     return [value for kind, value in records if kind == "string" and value not in EXTENSIONS]
 
 
+def check_hats(records):
+    """Every hi-hat note is on the Hats track's single note line, one per row."""
+    v = [record[1] for record in records]
+    at = 29
+    for _ in range(v[28]):  # plugins: slot, path, parameter count, pairs
+        at += 3 + v[at + 2] * 2
+    at += 2
+    patterns = v[at]
+    at += 1
+    for _ in range(patterns):
+        name = v[at + 1]
+        at += 2
+        tracks = v[at + 8]
+        at += 9
+        columns, column = [], 1
+        for _ in range(tracks):
+            track, lines, controls = v[at], v[at + 7], v[at + 10]
+            at += 11 + controls * 3 + 1
+            columns.append((track, column, lines))
+            column += lines * 4 + controls
+        rows = v[at]
+        at += 1
+        hats = 0
+        for _ in range(rows):
+            cells = v[at + 1:at + 1 + v[at]]
+            at += 1 + v[at]
+            here = [(track, line) for track, start, lines in columns for line in range(lines)
+                    if cells[start + line * 4] in ("F#2", "A#2")]
+            assert all(h == ("Hats", 0) for h in here), f"{name}: a hat outside the Hats track's line"
+            assert len(here) <= 1, f"{name}: two hats on one row"
+            hats += len(here)
+        assert hats > 0, f"{name}: no hats"
+
+
 def main():
     source = Path(__file__).resolve().parents[1] / "examples/mla09_detroit.mlaproj"
     with tempfile.TemporaryDirectory(prefix="mlacker-mla09-") as folder:
@@ -37,8 +71,10 @@ def main():
         records = document["records"]
         strings = [value for kind, value in records if kind == "string"]
         assert SOUNDS <= set(strings), "The example must use every Mla 09 sound"
-        for cc in ("cc:103", "cc:105", "cc:108", "cc:115", "cc:118"):
+        # Every bass drum and snare knob has a CC column, plus hats and cymbals.
+        for cc in ("cc:20", "cc:103", "cc:104", "cc:105", "cc:21", "cc:106", "cc:107", "cc:108", "cc:115", "cc:118"):
             assert cc in strings, f"{cc} knob automation missing"
+        check_hats(records)
         for record in records:
             if record[0] == "string" and record[1].endswith("Mla09.vst3"):
                 record[1] = str(Path(sys.argv[2]).resolve())
