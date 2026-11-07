@@ -92,10 +92,14 @@ below is a measurement.
     As on the 909, Tone does not change the noise's colour.
   - **Analog.** Both VCOs run freely between hits. Each hit drifts a little
     in pitch (about ±0.5%), level (±0.25 dB) and snap (±6%).
-- **Toms.** A soft, triangle-like VCO (2nd and 3rd harmonics about -16 dB)
-  that starts 30% above its pitch and glides down with a 40 ms time constant.
-  A VCA holds and then decays, and about 20 ms of high noise sits on the
-  attack.
+- **Toms.** A VCO that starts 30% above its pitch and glides down with a
+  40 ms time constant. A VCA holds and then decays.
+  - **Wave.** As on the 909, the wave hits with a strong 2nd harmonic (about
+    -8 dB) that mellows to about -22 dB as the tom rings. A soft saturation
+    keeps the 3rd harmonic around -16 dB and the 4th to 6th around -27 to
+    -37 dB.
+  - **Noise.** A burst of high noise on the attack, and a faint layer that
+    follows the VCA as the tom rings (about -50 dB above 1 kHz).
   - **Tune.** Sets where each tom settles. Centred, the toms play a chord:
     the low tom at 94 Hz, the mid a fifth above (140.8 Hz) and the high a
     minor seventh above (167.5 Hz). On the 909 the mid and high sit at 113
@@ -289,8 +293,8 @@ classes and checks rendered audio:
   Decay range and the Attack click
 - the snare's Tune (114 to 222 Hz), Snappy, and Tone setting the noise's
   length but not its colour
-- each tom's settling pitch, the toms' fifth and minor seventh, their glide and
-  Decay
+- each tom's settling pitch, the toms' fifth and minor seventh, their glide,
+  their 2nd harmonic mellowing as they ring, and Decay
 - the clap's four bursts and its darker tail
 - the ROM voices:
   - the same waveform on every hit and in every instance, unlike the analog

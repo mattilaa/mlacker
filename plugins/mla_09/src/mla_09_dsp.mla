@@ -484,10 +484,11 @@ impl Snare {
     }
 }
 
-/// One of the 909's toms, fitted to recordings across Tune and Decay: a soft
-/// triangle-like VCO (2nd and 3rd harmonics about -16 dB) that glides down
-/// from 30% above its pitch (time constant 40 ms), a VCA that holds and then
-/// decays, and 20-odd ms of high noise on the attack. Tune (where each
+/// One of the 909's toms, fitted to recordings across Tune and Decay: a VCO
+/// that glides down from 30% above its pitch (time constant 40 ms), its wave
+/// hitting with a strong 2nd harmonic that mellows as it rings, a VCA that
+/// holds and then decays, and high noise on the attack and faintly under the
+/// ring. Tune (where each
 /// settles): low tom 60 .. 120 Hz, mid 94.7 .. 195.7 Hz, high 114.2 .. 218.2 Hz;
 /// centred, a root, fifth and minor seventh.
 struct Tom {
@@ -534,11 +535,18 @@ impl Tom {
         self.phase = self.phase + self.hz * (1.0f + 0.3f * expf(-self.t / 0.04f)) * self.dt;
         if self.phase >= 1.0f { self.phase = self.phase - 1.0f; }
         let s: f32 = sinf(two_pi() * self.phase);
-        let w: f32 = tanhf(1.2f * s) / tanhf(1.2f) + 0.16f * (s * s - 0.5f);
+        // The 909 tom's wave: a strong 2nd harmonic at the hit (about -6 dB)
+        // that mellows as it rings (to about -20 dB), through a soft
+        // saturation that keeps its upper harmonics (-17 .. -40 dB).
+        let even: f32 = 0.2f + 1.3f * expf(-self.t / 0.03f);
+        let x: f32 = s + even * (s * s - 0.5f);
+        let w: f32 = tanhf(1.9f * x) / tanhf(1.9f);
         var e: f32 = 1.0f;
         if self.t > self.hold { e = expf(-(self.t - self.hold) / self.tau); }
         self.amp = follow(self.amp, self.gain * e, self.rise);
-        let out: f32 = self.amp * w + n * self.gain * 0.2f * expf(-self.t / 0.015f);
+        // High noise: a burst on the attack, and a faint layer that follows
+        // the VCA as the tom rings (about -50 dB), as on the 909.
+        let out: f32 = self.amp * (w + 0.005f * n) + n * self.gain * 0.15f * expf(-self.t / 0.015f);
         self.t = self.t + self.dt;
         if self.t > self.hold + 14.0f * self.tau && self.amp < silent() { self.t = -1.0f; }
         return out;

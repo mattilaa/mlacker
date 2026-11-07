@@ -539,6 +539,16 @@ void testToms(const std::string &path)
     CHECK(std::fabs(12.0 * std::log2(ht / lc) - 10.0) < 0.3);  // a minor seventh
     CHECK(early > ht * 1.08 && early < ht * 1.3);
     CHECK(longTom > shortTom * 1.3);
+    // As on the 909, the tom hits with a strong 2nd harmonic that mellows as
+    // it rings: about -8 dB of the pitch in the first 30 ms, -22 dB later.
+    const Stereo low = hit(path, kLT, 100.0f / 127.0f, 0.5);
+    const auto second = [&](size_t from, size_t to) {
+        const double f0 = zeroCrossingHz(low.left, from, to);
+        return 10.0 * std::log10(toneShare(low.left, from, to, 2.0 * f0) / toneShare(low.left, from, to, f0));
+    };
+    const double early2 = second(0, 1440), late2 = second(9600, 19200);
+    std::printf("tom 2nd harmonic: %.1f dB early, %.1f dB late\n", early2, late2);
+    CHECK(early2 > -13.0 && late2 < -17.0 && late2 > -28.0);
 }
 
 void testClap(const std::string &path)
