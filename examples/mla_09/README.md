@@ -23,7 +23,8 @@ It uses every Mla 09 sound. It is not a copy of any of his records.
 - **Hats.** Sixteenth closed hats with uneven accents, and open hats on the
   offbeats. Each open hat is cut by the next closed hat, as on the 909.
 - **Polyrhythm.** Rim shots every three sixteenths and a six-step tom figure
-  (high, mid, high, low) roll across the bar lines against the 4/4.
+  (high, mid, high, low) roll across the bar lines against the 4/4. The toms
+  are tuned to a root, its fifth and its minor seventh.
 - **Punctuation.** Crashes mark phrase starts. Flammed snares sit behind the
   claps, a pushed kick lands before beat 3, and tom fills run down the kit.
 - **The roll.** A breakdown drops the kick while the snare speeds up from
@@ -36,21 +37,23 @@ It uses every Mla 09 sound. It is not a copy of any of his records.
 
 ## Song
 
-Nine four-bar patterns, played in this order (89 s):
+Nine four-bar patterns, played in this order (89 s). Every pattern works the
+panel live through CC columns. The kick, snare, claps, hats and toms change
+their settings as it plays:
 
-| # | Pattern  | What happens |
-|---|----------|--------------|
-| 1 | Ignition | Kick and eighth hats; the kick's decay opens; crash. |
-| 2 | Drive    | Sixteenth hats with open offbeats; rim shot threes. (Played twice.) |
-| 3 | Clap     | Claps on 2 and 4; ride from bar 3; tom fill. |
-| 4 | Tom Grid | The six-step tom figure under kick, hats and claps; the kick pulled back. |
-| 5 | Drop     | Everything in. CH Decay opens, BD Tune sweeps up, BD Attack opens. |
-| 6 | Jack     | Pushed kicks, flammed snares, toms, OH Decay longer, SD Tune drops. |
-| 7 | Roll     | Breakdown: the snare roll into the drop, rising in pitch and level. |
-| 8 | Drop     | Again. |
-| 9 | Waveform | Eighth rides retuned across the pattern; rim and tom polyrhythms. |
-| 10 | Jack    | Again. |
-| 11 | Outro   | Kick and hats; the kick's decay closes; a last, retuned crash. |
+| # | Pattern  | What happens | Knobs moving |
+|---|----------|--------------|--------------|
+| 1 | Ignition | Kick and eighth hats; crash. | Kick decay opens; closed hat fades in and opens. |
+| 2 | Drive    | Sixteenth hats with open offbeats; rim shot threes. (Played twice.) | Kick tune and open-hat decay change every bar. |
+| 3 | Clap     | Claps on 2 and 4; ride from bar 3; tom fill. | Claps build; kick attack and closed-hat decay change every bar; the fill rings long. |
+| 4 | Tom Grid | The six-step tom figure under kick, hats and claps. | Kick and hats pulled back; kick decay changes every bar; the toms dive in pitch and change decay every bar; claps lift in the last bar. |
+| 5 | Drop     | Everything in. | Closed hat opens; kick tune sweeps up and its attack opens; snare tone changes every bar and gets snappier; claps and open hats swell. |
+| 6 | Jack     | Pushed kicks, flammed snares, toms, tom fill. | Kick decay pumps; snare snap changes every bar and its tune drops; claps alternate loud and soft; toms go up for the second half; open hat opens. |
+| 7 | Roll     | Breakdown: the snare roll into the drop. | Snare tune, level, tone and snap climb; closed hat dips and opens; long low toms at the end. |
+| 8 | Drop     | Again. | |
+| 9 | Waveform | Eighth rides; rim and tom polyrhythms. | Ride retuned across the pattern; kick tune rises; closed-hat level alternates every bar; short toms climbing in pitch. |
+| 10 | Jack    | Again. | |
+| 11 | Outro   | Kick and hats; a last, retuned crash. | Kick decay closes; claps and hats fade; open hat tightens. |
 
 ## Tracks
 
@@ -59,14 +62,31 @@ Six Instrument tracks all play the one Mla 09:
 - **BD.** Every bass drum knob: CC 20 BD Level, CC 103 BD Tune, CC 104 BD
   Attack, CC 105 BD Decay, plus CC 102 Accent.
 - **SD CP.** Two note lines, for flams and 32nds. Every snare knob: CC 21 SD
-  Level, CC 106 SD Tune, CC 107 SD Tone, CC 108 SD Snappy.
+  Level, CC 106 SD Tune, CC 107 SD Tone, CC 108 SD Snappy; and the claps'
+  CC 26 CP Level.
 - **RS.** Rim shot.
-- **Toms.** Low, mid and high tom.
-- **Hats.** CC 115 CH Decay, CC 116 OH Decay.
+- **Toms.** Low, mid and high tom. CC 109 to 114: LT Tune and Decay, MT Tune
+  and Decay, HT Tune and Decay.
+- **Hats.** One note line for both hats. CC 27 CH Level, CC 115 CH Decay,
+  CC 28 OH Level, CC 116 OH Decay.
 - **Cymbals.** Two note lines, for the ride and the crash. CC 117 CR Tune, CC 118 RD Tune.
 
 Every pattern sets all the knobs on its first row, so the song can start or
-loop anywhere. Velocity 127 is the 909's accent; everything else plays at the
+loop anywhere.
+
+## Mix
+
+The levels were set by rendering the whole song through Mla 09 with the
+samples installed and measuring each part. Against the kick's peak, the
+snare sits at about -3 dB, the clap -5, the toms -6, the hats -9, the
+cymbals -10 and the rim shot -11. The kick rings long, with BD Decay
+about three quarters up.
+
+The master bus boosts the mix: 120% volume, and EQ bands at 100 Hz (+4 dB),
+500 Hz (+1 dB), 2.5 kHz (+2 dB) and 8 kHz (+3 dB). Mla 09's Output (-12.8 dB)
+leaves room for them, so the master peaks just under 0 dBFS. `generate.py`
+has the levels (`MIX`, `OUTPUT_DB`) and the master bus (`MASTER_VOLUME`,
+`MASTER_BANDS`). Velocity 127 is the 909's accent; everything else plays at the
 normal level.
 
 ## Regenerate

@@ -429,17 +429,20 @@ std::vector<std::pair<double, double>> cycles(const std::vector<float> &x)
 void testBassDrum(const std::string &path)
 {
     // As measured on a TR-909: the pitch glides from about 270 Hz down to
-    // about 54 Hz; at centred Tune the cycles from 2 ms run at about 208,
-    // 153 and 108 Hz; Tune lengthens the glide.
+    // about 54 Hz (at centred Tune, f = 54 + 216 exp(-t / 13 ms)); Tune
+    // lengthens the glide. The VCO runs freely, so the cycles fall anywhere:
+    // check each one in the first 40 ms against the glide at its midpoint.
     const Stereo centre = hit(path, kBD, 100.0f / 127.0f, 1.0);
-    const auto c = cycles(centre.left);
-    CHECK(c.size() > 6);
-    if(c.size() > 6) {
-        std::printf("bd cycles at tune 0.5: %.1f ms %.0f Hz, %.1f ms %.0f Hz, %.1f ms %.0f Hz\n", c[0].first * 1000,
-                    c[0].second, c[1].first * 1000, c[1].second, c[2].first * 1000, c[2].second);
-        CHECK(std::fabs(c[0].second - 208.0) < 15.0 && std::fabs(c[1].second - 153.0) < 12.0 &&
-              std::fabs(c[2].second - 108.0) < 10.0);
+    int checked = 0;
+    for(const auto &cycle : cycles(centre.left)) {
+        const double mid = cycle.first + 0.5 / cycle.second;
+        if(cycle.first < 0.0015 || mid > 0.04)
+            continue;
+        const double expected = 54.1 + 216.0 * std::exp(-mid / 0.013);
+        CHECK(std::fabs(cycle.second - expected) < expected * 0.1);
+        ++checked;
     }
+    CHECK(checked >= 3);
     const Stereo flat = hit(path, kBD, 100.0f / 127.0f, 1.0, {{kBdTune, 0.0}});
     const Stereo swept = hit(path, kBD, 100.0f / 127.0f, 1.0, {{kBdTune, 1.0}});
     const double flatEarly = zeroCrossingHz(flat.left, 240, 1920), sweptEarly = zeroCrossingHz(swept.left, 240, 1920);
@@ -509,9 +512,10 @@ void testSnare(const std::string &path)
 
 void testToms(const std::string &path)
 {
-    // Where each tom settles across Tune (as measured on the 909): low tom
-    // 60 .. 120 Hz, mid 113 Hz and high 132 Hz at the centre. Each starts
-    // higher and glides down; Decay lengthens it.
+    // Where each tom settles across Tune: low tom 60 .. 120 Hz (as measured
+    // on the 909); centred, the toms are a root, fifth and minor seventh
+    // (94, 140.8, 167.5 Hz). Each starts higher and glides down; Decay
+    // lengthens it.
     const double lt = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5, {{kLtTune, 0.0}}).left, 9600, 19200);
     const double ltUp = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5, {{kLtTune, 1.0}}).left, 9600, 19200);
     const double mt = zeroCrossingHz(hit(path, kMT, 100.0f / 127.0f, 0.5, {{kMtTune, 0.5}}).left, 9600, 19200);
@@ -528,7 +532,11 @@ void testToms(const std::string &path)
     std::printf("toms: lt %.1f .. %.1f Hz, mt %.1f Hz, ht %.1f Hz (%.0f Hz at 10-30 ms); lt decay %.2f .. %.2f s\n", lt,
                 ltUp, mt, ht, early, shortTom, longTom);
     CHECK(std::fabs(lt - 60.0) < 3.0 && std::fabs(ltUp - 120.0) < 5.0);
-    CHECK(std::fabs(mt - 113.0) < 5.0 && std::fabs(ht - 132.0) < 5.0);
+    const double lc = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5).left, 9600, 19200);
+    std::printf("toms centred: %.1f, %.1f, %.1f Hz = %.2f and %.2f semitones above the low tom\n", lc, mt, ht,
+                12.0 * std::log2(mt / lc), 12.0 * std::log2(ht / lc));
+    CHECK(std::fabs(12.0 * std::log2(mt / lc) - 7.0) < 0.3);   // a fifth
+    CHECK(std::fabs(12.0 * std::log2(ht / lc) - 10.0) < 0.3);  // a minor seventh
     CHECK(early > ht * 1.08 && early < ht * 1.3);
     CHECK(longTom > shortTom * 1.3);
 }
@@ -538,12 +546,15 @@ void testClap(const std::string &path)
     // As measured on the 909: four bursts at 0, 10.5, 22.5 and 32.5 ms, each
     // falling fast; the fourth opens the tail, which is darker than the bursts.
     const Stereo cp = hit(path, kCP, 100.0f / 127.0f, 0.6);
-    const auto at = [&](double ms) { return peak(cp.left, static_cast<size_t>(ms * 48.0), static_cast<size_t>((ms + 2.0) * 48.0)); };
+    // Each burst's level: the RMS of its first 2 ms (a peak of decaying noise
+    // swings by a few dB from hit to hit).
+    const auto at = [&](double ms) { return rms(cp.left, static_cast<size_t>(ms * 48.0), static_cast<size_t>((ms + 2.0) * 48.0)); };
     double top = 0.0;
     for(double ms : {0.0, 10.5, 22.5, 32.5})
         top = std::max(top, at(ms));
+    std::printf("clap bursts (rms of 2 ms): %.3f %.3f %.3f %.3f\n", at(0.0), at(10.5), at(22.5), at(32.5));
     for(double ms : {0.0, 10.5, 22.5, 32.5}) {
-        CHECK(at(ms) > top * 0.4);
+        CHECK(at(ms) > top * 0.45);
         if(ms < 30.0)
             CHECK(at(ms + 8.0) < at(ms) * 0.2);  // each burst falls away before the next
     }
@@ -555,6 +566,25 @@ void testClap(const std::string &path)
     // The 909 recordings: about 24 dB down from 40 ms to 150 ms.
     CHECK(at150 < early * 0.15 && at150 > early * 0.03);
     CHECK(peak(cp.left) < 0.8);
+}
+
+void testAnalogDrift(const std::string &path)
+{
+    // Like analog hardware, the kick's and snare's VCOs run freely and each
+    // hit drifts a little: two hits in one instance differ, but only a little
+    // (their levels within about 1 dB).
+    for(int key : {kBD, kSD}) {
+        Instance plugin;
+        CHECK(plugin.open(path));
+        plugin.noteOn(key);
+        const Stereo first = plugin.render(kBlock * 40);
+        plugin.noteOn(key);
+        const Stereo second = plugin.render(kBlock * 40);
+        const double a = rms(first.left, 0, 4800), b = rms(second.left, 0, 4800);
+        std::printf("drift on key %d: rms %.4f / %.4f\n", key, a, b);
+        CHECK(!std::equal(first.left.begin(), first.left.begin() + 4800, second.left.begin()));
+        CHECK(std::fabs(20.0 * std::log10(b / a)) < 1.0);
+    }
 }
 
 void testSamples(const std::string &path)
@@ -837,6 +867,7 @@ int main(int argc, char **argv)
     testSnare(path);
     testToms(path);
     testClap(path);
+    testAnalogDrift(path);
     testSamples(path);
     testHats(path);
     testCymbals(path);

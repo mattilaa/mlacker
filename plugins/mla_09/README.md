@@ -75,6 +75,10 @@ below is a measurement.
     drum is 40 dB down after about 0.3 s to 0.5 s.
   - **Click.** **Attack** adds up to about a third more click: band-passed
     noise on top of the step the hit itself makes.
+  - **Analog.** The VCO runs freely between hits, as on analog hardware, so
+    each hit starts wherever the oscillator is. Each hit also drifts a
+    little: pitch by a slow random walk (about ±0.4%), and level (±0.25 dB)
+    and decay (±4%) from hit to hit.
 - **Snare drum.**
   - **Tone.** Two VCOs at a 1 : 1.5 ratio, the upper one 12.7 dB down.
     **Tune** sets the lower one from 114 Hz to 222 Hz (166 Hz at the centre).
@@ -86,12 +90,17 @@ below is a measurement.
     -10.5 dB at the top. **Tone** sets how long the noise holds before it
     fades: 50 ms at the minimum, 120 ms at the centre and 150 ms at the top.
     As on the 909, Tone does not change the noise's colour.
+  - **Analog.** Both VCOs run freely between hits. Each hit drifts a little
+    in pitch (about ±0.5%), level (±0.25 dB) and snap (±6%).
 - **Toms.** A soft, triangle-like VCO (2nd and 3rd harmonics about -16 dB)
   that starts 30% above its pitch and glides down with a 40 ms time constant.
   A VCA holds and then decays, and about 20 ms of high noise sits on the
   attack.
-  - **Tune.** Sets where each tom settles: low tom 60 to 120 Hz, mid 76 to
-    157 Hz, high 90 to 172 Hz.
+  - **Tune.** Sets where each tom settles. Centred, the toms play a chord:
+    the low tom at 94 Hz, the mid a fifth above (140.8 Hz) and the high a
+    minor seventh above (167.5 Hz). On the 909 the mid and high sit at 113
+    and 132 Hz. Each Tune range keeps the 909's span around its centre: low
+    tom 60 to 120 Hz, mid 94.7 to 195.7 Hz, high 114.2 to 218.2 Hz.
   - **Decay.** Sets the hold (30 to 110 ms) and the decay that follows (time
     constant 55 to 140 ms).
 - **Rim shot.** Partials at 485 Hz and 217 Hz, driven hard into an asymmetric
@@ -280,7 +289,8 @@ classes and checks rendered audio:
   Decay range and the Attack click
 - the snare's Tune (114 to 222 Hz), Snappy, and Tone setting the noise's
   length but not its colour
-- each tom's settling pitch, glide and Decay
+- each tom's settling pitch, the toms' fifth and minor seventh, their glide and
+  Decay
 - the clap's four bursts and its darker tail
 - the ROM voices:
   - the same waveform on every hit and in every instance, unlike the analog
@@ -290,6 +300,8 @@ classes and checks rendered audio:
   - the cymbals' Tune changing both pitch and length, and the ride being
     brighter than the crash
 - a recording in the samples folder replacing the crash ROM
+- the kick's and snare's free-running VCOs and analog drift (hits differ,
+  but by under 1 dB)
 - Drive
 - accent and velocity dynamics
 - click-free rolls

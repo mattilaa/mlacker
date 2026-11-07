@@ -71,8 +71,11 @@ def main():
         records = document["records"]
         strings = [value for kind, value in records if kind == "string"]
         assert SOUNDS <= set(strings), "The example must use every Mla 09 sound"
-        # Every bass drum and snare knob has a CC column, plus hats and cymbals.
-        for cc in ("cc:20", "cc:103", "cc:104", "cc:105", "cc:21", "cc:106", "cc:107", "cc:108", "cc:115", "cc:118"):
+        # CC columns for every bass drum, snare and tom knob, the clap and hat
+        # levels, the hats' decays and the cymbals' tunes.
+        for cc in ("cc:20", "cc:103", "cc:104", "cc:105", "cc:21", "cc:106", "cc:107", "cc:108", "cc:26",
+                   "cc:109", "cc:110", "cc:111", "cc:112", "cc:113", "cc:114", "cc:27", "cc:28", "cc:115",
+                   "cc:116", "cc:117", "cc:118"):
             assert cc in strings, f"{cc} knob automation missing"
         check_hats(records)
         for record in records:
