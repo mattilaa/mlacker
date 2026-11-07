@@ -372,19 +372,11 @@ impl BassDrum {
     }
 }
 
-/// The 909 snare, fitted to recordings across Tune, Tone and Snappy:
-///
-/// - Two VCOs at a 1 : 1.5 ratio, the upper 12.7 dB down. Tune sets the
-///   lower one from 114 Hz to 222 Hz (166 Hz at the centre). Both start 2.4
-///   times higher and drop within a few milliseconds (time constant 4 ms),
-///   then decay with a 25 ms time constant.
-/// - Noise band-passed to its 6 .. 10 kHz centre. Snappy sets its level
-///   (about -27 dB against the tone at a third of the way, -16 dB at the
-///   centre, -10.5 dB at the top). Tone sets how long the noise holds before
-///   it fades: 40 ms at the minimum, 110 ms at the centre, 135 ms at the top,
-///   then a 25 .. 65 ms fade. Tone does not change the noise's colour.
-/// - Like analog hardware, the VCOs run freely between hits, and each hit
-///   drifts a little in pitch, level and snap.
+/// A two-oscillator snare body with parallel low- and high-pass snappy
+/// paths, following Roland's TR-909 service notes (Analog Voice Generators).
+/// The bright noise has its own short envelope; the low-pass noise carries
+/// the wire rattle. Tone controls the noise contour, Snappy its amount.
+/// The constants are a voicing approximation, not a component simulation.
 struct Snare {
     var phase1: f32;
     var phase2: f32;
@@ -419,18 +411,18 @@ impl Snare {
     fn configure(self: &mut Self, rate: f32) -> void {
         self.dt = 1.0f / rate;
         self.rise = 1.0f - decay_coef(0.0004f, rate);
-        self.hp.configure(3800.0f, 0.70710678f, rate);
-        self.hp2.configure(2000.0f, 0.70710678f, rate);
-        self.lp.configure(10000.0f, 0.70710678f, rate);
-        self.lp2.configure(12000.0f, 0.70710678f, rate);
+        self.hp.configure(3500.0f, 0.70710678f, rate);
+        self.hp2.configure(700.0f, 0.70710678f, rate);
+        self.lp.configure(3200.0f, 0.70710678f, rate);
+        self.lp2.configure(11000.0f, 0.70710678f, rate);
     }
 
     fn knobs(self: &mut Self, tune: f32, tone: f32, snappy: f32, decay: f32) -> void {
         self.body = exp2f((sclamp(decay, 0.0f, 1.0f) - 0.5f) * 2.0f);
         self.hz = knob3(tune, 114.0f, 166.0f, 222.0f);
         self.hold = knob3(tone, 0.05f, 0.12f, 0.15f);
-        self.fade = knob3(tone, 0.025f, 0.05f, 0.06f);
-        self.snappy = knob5(snappy, 0.004f, 0.027f, 0.1f, 0.16f, 0.19f);
+        self.fade = knob3(tone, 0.025f, 0.055f, 0.065f);
+        self.snappy = sclamp(snappy, 0.0f, 1.0f) * knob3(snappy, 0.2f, 0.36f, 0.45f);
     }
 
     fn reset(self: &mut Self) -> void {
@@ -438,11 +430,11 @@ impl Snare {
         self.hp.reset(); self.hp2.reset(); self.lp.reset(); self.lp2.reset();
     }
 
-    /// Strike at `gain`. Both VCOs run freely between hits, so each hit
-    /// starts wherever they are; `pitch`, `level` and `noise` (-1 .. 1) are
-    /// this hit's analog drift: about +-0.5% pitch, +-0.25 dB and +-6% snap.
+    /// A fresh trigger phases the VCOs together. On an overlapping hit keep
+    /// the phase and smooth the VCA rise to avoid a waveform discontinuity.
+    /// `pitch`, `level` and `noise` add small component-like variations.
     fn strike(self: &mut Self, gain: f32, pitch: f32, level: f32, noise: f32) -> void {
-        if self.t < 0.0f { self.amp = 0.0f; self.noise_amp = 0.0f; }
+        if self.t < 0.0f { self.phase1 = 0.0f; self.phase2 = 0.0f; self.amp = 0.0f; self.noise_amp = 0.0f; }
         self.t = 0.0f;
         self.gain = gain * (1.0f + 0.03f * level);
         self.detune = 1.0f + 0.005f * pitch;
@@ -454,7 +446,9 @@ impl Snare {
     fn tick(self: &mut Self, white: f32) -> f32 {
         // The noise filters run all the time, so a hit never starts on a
         // resting filter.
-        let n: f32 = self.lp2.process(self.lp.process(self.hp2.process(self.hp.process(white, 1), 1), 0), 0);
+        let dark: f32 = self.lp.process(self.hp2.process(white, 1), 0);
+        let bright: f32 = self.lp2.process(self.hp.process(white, 1), 0);
+        let n: f32 = dark + bright * (0.25f + 0.75f * expf(-smax(self.t, 0.0f) / 0.018f));
         if self.t < 0.0f {
             // Idle, the VCOs keep running at their resting pitches.
             self.phase1 = self.phase1 + self.hz * self.dt;
@@ -470,9 +464,9 @@ impl Snare {
         if self.phase2 >= 1.0f { self.phase2 = self.phase2 - 1.0f; }
         let s1: f32 = sinf(two_pi() * self.phase1);
         // The lower VCO carries its 2nd harmonic (-20 dB), as on the recordings.
-        let tone: f32 = s1 + 0.2f * (s1 * s1 - 0.5f) + 0.23f * sinf(two_pi() * self.phase2);
-        // A fast drop to about -19 dB, then a quiet tonal tail.
-        let te: f32 = 0.88f * expf(-self.t / (0.022f * self.body)) + 0.12f * expf(-self.t / (0.16f * self.body));
+        let tone: f32 = s1 + 0.2f * (s1 * s1 - 0.5f) + 0.45f * sinf(two_pi() * self.phase2) * expf(-self.t / (0.035f * self.body));
+        // The short body falls into a quiet tonal tail.
+        let te: f32 = 0.94f * expf(-self.t / (0.025f * self.body)) + 0.06f * expf(-self.t / (0.09f * self.body));
         self.amp = follow(self.amp, self.gain * te, self.rise);
         // The noise: a short burst, then a slow sag through the hold, then
         // the fade.
@@ -489,19 +483,21 @@ impl Snare {
     }
 }
 
-/// One of the 909's toms, fitted to recordings across Tune and Decay: a VCO
-/// that glides down from 30% above its pitch (time constant 40 ms), its wave
-/// hitting with a strong 2nd harmonic that mellows as it rings, a VCA that
-/// holds and then decays, and high noise on the attack and faintly under the
-/// ring. Tune (where each
-/// settles): low tom 60 .. 120 Hz, mid 94.7 .. 195.7 Hz, high 114.2 .. 218.2 Hz;
-/// centred, a root, fifth and minor seventh.
+/// A pitched tom with a rounded VCO, a falling pitch envelope and a
+/// separate filtered-noise attack. The VCA sags during its initial shoulder
+/// and then releases; Decay controls the shoulder and release time.
+/// Keep the oscillator mostly sinusoidal: heavy static saturation turns
+/// the sustained body into a buzzy synth note.
 struct Tom {
     var phase: f32;
     var t: f32;
     var gain: f32;
     var amp: f32;
+    var asymmetry: f32;
+    var attack_amp: f32;
     var hp: Svf;
+    var lp: Svf;
+    var coupling: Svf;
     var dt: f32;
     var rise: f32;
     var hz: f32;
@@ -511,50 +507,54 @@ struct Tom {
 
 impl Tom {
     fn new() -> Tom {
-        return Tom { phase: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, hp: Svf::new(), dt: 0.0f, rise: 1.0f,
+        return Tom { phase: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, asymmetry: 0.0f, attack_amp: 0.0f, hp: Svf::new(), lp: Svf::new(), coupling: Svf::new(), dt: 0.0f, rise: 1.0f,
                      hz: 100.0f, hold: 0.08f, tau: 0.1f };
     }
 
     fn configure(self: &mut Self, rate: f32) -> void {
         self.dt = 1.0f / rate;
         self.rise = 1.0f - decay_coef(0.0004f, rate);
-        self.hp.configure(1500.0f, 0.70710678f, rate);
+        self.hp.configure(600.0f, 0.70710678f, rate);
+        self.lp.configure(4500.0f, 0.70710678f, rate);
+        self.coupling.configure(15.0f, 0.70710678f, rate);
     }
 
     /// Pitch, and the decay's hold and time constant.
     fn knobs(self: &mut Self, hz: f32, hold: f32, tau: f32) -> void { self.hz = hz; self.hold = hold; self.tau = tau; }
 
-    fn reset(self: &mut Self) -> void { self.phase = 0.0f; self.t = -1.0f; self.amp = 0.0f; self.hp.reset(); }
+    fn reset(self: &mut Self) -> void { self.phase = 0.0f; self.t = -1.0f; self.amp = 0.0f; self.asymmetry = 0.0f; self.attack_amp = 0.0f; self.hp.reset(); self.lp.reset(); self.coupling.reset(); }
 
     fn strike(self: &mut Self, gain: f32) -> void {
-        if self.t < 0.0f { self.phase = 0.0f; self.amp = 0.0f; }
+        if self.t < 0.0f { self.phase = 0.0f; self.amp = 0.0f; self.asymmetry = 0.0f; self.attack_amp = 0.0f; }
         self.t = 0.0f;
-        self.gain = gain;
+        // A soft retrigger must not abruptly cut the ringing VCA.
+        self.gain = smax(gain, self.amp);
     }
 
     fn active(self: Tom) -> bool { return self.t >= 0.0f; }
 
     fn tick(self: &mut Self, white: f32) -> f32 {
-        let n: f32 = self.hp.process(white, 1);
-        if self.t < 0.0f { return 0.0f; }
+        let n: f32 = self.lp.process(self.hp.process(white, 1), 0);
+        if self.t < 0.0f { return self.coupling.process(0.0f, 1); }
         self.phase = self.phase + self.hz * (1.0f + 0.3f * expf(-self.t / 0.04f)) * self.dt;
         if self.phase >= 1.0f { self.phase = self.phase - 1.0f; }
         let s: f32 = sinf(two_pi() * self.phase);
-        // The 909 tom's wave: a strong 2nd harmonic at the hit (about -6 dB)
-        // that mellows as it rings (to about -20 dB), through a soft
-        // saturation that keeps its upper harmonics (-17 .. -40 dB).
+        // Transient asymmetry fades into a gently rounded sine. Remove DC
+        // after the VCA: asymmetric shaping otherwise leaves a bass offset.
         let even: f32 = 0.2f + 1.3f * expf(-self.t / 0.03f);
-        let x: f32 = s + even * (s * s - 0.5f);
-        let w: f32 = tanhf(1.9f * x) / tanhf(1.9f);
-        var e: f32 = 1.0f;
-        if self.t > self.hold { e = expf(-(self.t - self.hold) / self.tau); }
+        self.asymmetry = follow(self.asymmetry, even, self.rise);
+        let x: f32 = s + self.asymmetry * (s * s - 0.5f);
+        let w: f32 = tanhf(0.65f * x) / tanhf(0.65f);
+        var e: f32 = expf(-self.t / 0.65f);
+        if self.t > self.hold { e = expf(-self.hold / 0.65f) * expf(-(self.t - self.hold) / self.tau); }
         self.amp = follow(self.amp, self.gain * e, self.rise);
         // High noise: a burst on the attack, and a faint layer that follows
         // the VCA as the tom rings (about -50 dB), as on the 909.
-        let out: f32 = self.amp * (w + 0.005f * n) + n * self.gain * 0.15f * expf(-self.t / 0.015f);
+        self.attack_amp = follow(self.attack_amp, self.gain * 0.28f * expf(-self.t / 0.009f), self.rise);
+        let out: f32 = self.amp * (w + 0.005f * n) + n * self.attack_amp;
         self.t = self.t + self.dt;
         if self.t > self.hold + 14.0f * self.tau && self.amp < silent() { self.t = -1.0f; }
-        return out;
+        return self.coupling.process(out, 1);
     }
 }
 
@@ -1276,7 +1276,7 @@ impl M09 {
         mix = mix + self.bd.tick(w) * self.level_bd * 0.8f;
         let n: f32 = self.white();
         // The snare's and toms' noise filters run all the time.
-        mix = mix + self.sd.tick(n) * self.level_sd * 0.5f;
+        mix = mix + self.sd.tick(n) * self.level_sd * 0.45f;
         mix = mix + self.lt.tick(n) * self.level_lt * 0.55f;
         mix = mix + self.mt.tick(n) * self.level_mt * 0.55f;
         mix = mix + self.ht.tick(n) * self.level_ht * 0.55f;

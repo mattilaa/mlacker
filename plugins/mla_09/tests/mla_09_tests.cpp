@@ -479,7 +479,7 @@ void testBassDrum(const std::string &path)
 void testSnare(const std::string &path)
 {
     // As on the 909: Tune moves the lower VCO from about 114 Hz to 222 Hz;
-    // Snappy adds the noise; Tone sets how long the noise lasts, not its colour.
+    // Snappy adds the noise; Tone sets how long the noise lasts.
     const Stereo lowTune = hit(path, kSD, 100.0f / 127.0f, 0.3, {{kSdTune, 0.0}, {kSdSnappy, 0.0}});
     const Stereo highTune = hit(path, kSD, 100.0f / 127.0f, 0.3, {{kSdTune, 1.0}, {kSdSnappy, 0.0}});
     const auto strongest = [](const std::vector<float> &x) {
@@ -508,6 +508,13 @@ void testSnare(const std::string &path)
     CHECK(a < 0.05 && b > 0.15);
     CHECK(e > d * 4.0);
     CHECK(std::fabs(early - earlyLong) < 0.1 * earlyLong);
+    // The wire tail needs midrange energy, rather than only a thin hiss.
+    // Its bright attack decays separately from the darker wire rattle.
+    const double attackAir = highShare(snappy.left, 0, 960, 6000.0);
+    const double tailAir = highShare(snappy.left, 4800, 7200, 6000.0);
+    std::printf("snare air: attack %.3f, tail %.3f\n", attackAir, tailAir);
+    CHECK(tailAir < 0.30 && tailAir > 0.01);
+    CHECK(highShare(dry.left, 4800, 7200, 2000.0) < 0.03);
 }
 
 void testToms(const std::string &path)
@@ -549,6 +556,16 @@ void testToms(const std::string &path)
     const double early2 = second(0, 1440), late2 = second(9600, 19200);
     std::printf("tom 2nd harmonic: %.1f dB early, %.1f dB late\n", early2, late2);
     CHECK(early2 > -13.0 && late2 < -17.0 && late2 > -28.0);
+    // Each sustained tom should retain a round body without the strong
+    // third harmonic produced by the previous heavy waveshaper.
+    for(int key : {kLT, kMT, kHT}) {
+        const Stereo body = hit(path, key, 100.0f / 127.0f, 0.5);
+        const double f0 = zeroCrossingHz(body.left, 9600, 19200);
+        const double third = 10.0 * std::log10(toneShare(body.left, 9600, 19200, 3.0 * f0) /
+                                              toneShare(body.left, 9600, 19200, f0));
+        std::printf("tom key %d: tail third harmonic %.1f dB\n", key, third);
+        CHECK(third < -26.0);
+    }
 }
 
 void testClap(const std::string &path)
@@ -580,9 +597,8 @@ void testClap(const std::string &path)
 
 void testAnalogDrift(const std::string &path)
 {
-    // Like analog hardware, the kick's and snare's VCOs run freely and each
-    // hit drifts a little: two hits in one instance differ, but only a little
-    // (their levels within about 1 dB).
+    // Each analog hit drifts a little in tuning and gain. Two hits in one
+    // instance differ, with their levels within about 1 dB.
     for(int key : {kBD, kSD}) {
         Instance plugin;
         CHECK(plugin.open(path));
@@ -716,7 +732,7 @@ void testRetrigger(const std::string &path)
 {
     // A fast roll stays bounded and does not click: analog voices continue
     // their waveform, ROM voices fade the old playback out under the new.
-    for(int key : {kBD, kLT, kHT, kOH, kCR}) {
+    for(int key : {kBD, kSD, kLT, kMT, kHT, kOH, kCR}) {
         const double single = largestStep(hit(path, key, 1.0f).left);
         Instance plugin;
         CHECK(plugin.open(path));
