@@ -8,11 +8,10 @@
 /// Like the 909, the machine is a hybrid:
 ///
 /// - **Analog voices.** Bass drum, snare, three toms, rim shot and hand clap
-///   are synthesized. The bass drum, snare, toms and rim shot follow
-///   measurements of TR-909 recordings made across their knobs (Tune, Attack,
-///   Decay, Tone, Snappy at panel positions 1, 3, 6, 9 and 11): pitch glides,
-///   VCA holds and decays, harmonics, noise colour and lengths. Each voice's
-///   comment has its numbers.
+///   are synthesized, following measurements of TR-909 recordings made
+///   across their knobs (Tune, Attack, Decay, Tone, Snappy at panel positions
+///   1, 3, 6, 9 and 11): pitch glides, VCA holds and decays, harmonics, noise
+///   colour and lengths. Each voice's comment has its numbers.
 /// - **Sampled voices.** The hi-hats (both from one ROM, as on the 909),
 ///   crash and ride play samples from ROM. Roland's ROM data is not ours to
 ///   ship, so `M09::new` builds the ROMs itself in the 909's format: metallic
@@ -569,6 +568,88 @@ impl RimShot {
     }
 }
 
+/// The 909 hand clap, fitted to recordings: white noise struck by four
+/// sawtooth bursts at 0, 10.5, 22.5 and 32.5 ms, band-passed bright around
+/// 1.1 kHz with some air above 4 kHz. The fourth burst opens the "reverb"
+/// tail: the same noise, starting bright and darkening to a band around
+/// 1.05 kHz, that holds noisily, falls with a 17 ms time constant and rings
+/// on quietly (120 ms), 30 dB down at 150 ms.
+struct Clap {
+    var t: f32;
+    var gain: f32;
+    var burst: f32;
+    var tail: f32;
+    var next: i32;
+    var burst_bp: Svf;
+    var air: Svf;
+    var tail_bp: Svf;
+    var tail_lp: Svf;
+    var dt: f32;
+    var burst_coef: f32;
+};
+
+impl Clap {
+    fn new() -> Clap {
+        return Clap { t: -1.0f, gain: 0.0f, burst: 0.0f, tail: 0.0f, next: 0, burst_bp: Svf::new(), air: Svf::new(),
+                      tail_bp: Svf::new(), tail_lp: Svf::new(), dt: 0.0f, burst_coef: 0.0f };
+    }
+
+    fn configure(self: &mut Self, rate: f32) -> void {
+        self.dt = 1.0f / rate;
+        self.burst_coef = decay_coef(0.0028f, rate);
+        self.burst_bp.configure(1100.0f, 0.9f, rate);
+        self.air.configure(4000.0f, 0.70710678f, rate);
+        self.tail_bp.configure(1050.0f, 1.1f, rate);
+        self.tail_lp.configure(2000.0f, 0.70710678f, rate);
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.t = -1.0f; self.burst = 0.0f; self.tail = 0.0f; self.next = 0;
+        self.burst_bp.reset(); self.air.reset(); self.tail_bp.reset(); self.tail_lp.reset();
+    }
+
+    fn strike(self: &mut Self, gain: f32) -> void { self.t = 0.0f; self.gain = gain; self.next = 0; }
+
+    fn active(self: Clap) -> bool { return self.t >= 0.0f; }
+
+    /// Burst `n`'s time in seconds.
+    fn burst_time(n: i32) -> f32 {
+        if n == 0 { return 0.0f; }
+        if n == 1 { return 0.0105f; }
+        if n == 2 { return 0.0225f; }
+        return 0.0325f;
+    }
+
+    fn tick(self: &mut Self, white: f32) -> f32 {
+        // The filters run all the time, so a hit never strikes a resting one.
+        let air: f32 = self.air.process(white, 1);
+        let bright: f32 = self.burst_bp.process(white, 2) + 0.15f * air;
+        let dark: f32 = self.tail_lp.process(self.tail_bp.process(white, 2), 0);
+        if self.t < 0.0f { return 0.0f; }
+        // The sawtooth bursts: each restarts at full level.
+        if self.next < 4 && self.t >= Clap::burst_time(self.next) {
+            self.burst = self.gain;
+            self.next = self.next + 1;
+        }
+        var e: f32 = 0.0f;
+        var sheen: f32 = 0.0f;
+        let u: f32 = self.t - 0.0325f;
+        if u >= 0.0f {
+            // The tail holds a little, then falls fast into the quiet ring.
+            // It starts bright and darkens: a bright part fades in 12 ms.
+            let hold: f32 = 0.006f;
+            let v: f32 = u > hold ? u - hold : 0.0f;
+            e = self.gain * (0.85f * expf(-v / 0.017f) + 0.13f * expf(-v / 0.12f));
+            sheen = self.gain * 0.5f * expf(-u / 0.012f);
+        }
+        let out: f32 = bright * (self.burst + sheen) + (dark * 1.6f + 0.03f * air) * e;
+        self.burst = self.burst * self.burst_coef;
+        self.t = self.t + self.dt;
+        if self.t > 1.2f { self.t = -1.0f; }
+        return out;
+    }
+}
+
 /// A playback head on a ROM: its read position (in ROM words) and gain.
 struct Head { var pos: f32; var gain: f32; var on: bool; };
 
@@ -753,6 +834,10 @@ fn rom_ride() -> i32 { return 2; }
 /// An optional open-hat ROM: with it loaded the open hat plays it, otherwise
 /// both hats play the hi-hat ROM.
 fn rom_open_hat() -> i32 { return 3; }
+/// An optional clap ROM: a recording of the 909's analog clap. With it loaded
+/// the clap plays it, otherwise the synthesized clap sounds.
+fn rom_clap() -> i32 { return 4; }
+fn clap_words() -> i64 { return 32768; }
 
 /// The whole machine.
 struct M09 {
@@ -805,18 +890,7 @@ struct M09 {
     var ht: Tom;
     var rs: RimShot;
 
-    // --- Hand clap -----------------------------------------------------------
-    var cp_bp: Svf;
-    var cp_hp: Svf;
-    var cp_tail_bp: Svf;
-    /// Samples since the hit (negative: idle).
-    var cp_time: f32;
-    var cp_level: f32;
-    /// The current burst's sawtooth level, and the tail.
-    var cp_burst: f32;
-    var cp_burst_coef: f32;
-    var cp_tail: f32;
-    var cp_tail_coef: f32;
+    var cp: Clap;
 
     // --- Sampled voices --------------------------------------------------------
     /// The ROMs: one hi-hat ROM that both hats play (as on the 909), the
@@ -827,6 +901,10 @@ struct M09 {
     var rom_rd: list<f32>;
     var rom_oh: list<f32>;
     var oh_len: i64;
+    var rom_cp: list<f32>;
+    var cp_len: i64;
+    var cp_rom: RomVoice;
+    var cp_env: f32;
     /// Loaded hat recordings carry their own decay (recorded at full Decay),
     /// so their VCA times are solved to shorten them to the 909's lengths at
     /// lower Decay and leave them as recorded at full Decay.
@@ -872,10 +950,10 @@ impl M09 {
             ch_decay: 0.5f, oh_decay: 0.5f, cr_tune: 0.5f, rd_tune: 0.5f, drive: 0.0f,
             accent: 0.5f, dynamics: 0, output_target: 1.0f, output_gain: 1.0f,
             bd: BassDrum::new(), sd: Snare::new(), lt: Tom::new(), mt: Tom::new(), ht: Tom::new(), rs: RimShot::new(),
-            cp_bp: Svf::new(), cp_hp: Svf::new(), cp_tail_bp: Svf::new(), cp_time: -1.0f, cp_level: 0.0f,
-            cp_burst: 0.0f, cp_burst_coef: 0.0f, cp_tail: 0.0f, cp_tail_coef: 0.0f,
+            cp: Clap::new(),
             rom_hat: [0.0f; hat_words()], rom_cr: [0.0f; cymbal_words()], rom_rd: [0.0f; cymbal_words()],
             rom_oh: [0.0f; hat_words()], oh_len: 0, hats_recorded: false,
+            rom_cp: [0.0f; clap_words()], cp_len: 0, cp_rom: RomVoice::new(), cp_env: 0.0f,
             hat_len: hat_words(), cr_len: cymbal_words(), rd_len: cymbal_words(),
             ch: RomVoice::new(), oh: RomVoice::new(), cr: RomVoice::new(), rd: RomVoice::new(),
             hat_step: 1.0f, cr_step: 1.0f, rd_step: 1.0f,
@@ -907,6 +985,7 @@ impl M09 {
         self.cr_len = cymbal_words();
         self.rd_len = cymbal_words();
         self.oh_len = 0;
+        self.cp_len = 0;
         self.hats_recorded = false;
     }
 
@@ -920,14 +999,11 @@ impl M09 {
         self.ht.configure(r);
         self.rs.configure(r);
 
-        self.cp_bp.configure(1150.0f, 1.6f, r);
-        self.cp_hp.configure(700.0f, 0.70710678f, r);
-        self.cp_tail_bp.configure(1050.0f, 1.2f, r);
-        self.cp_burst_coef = decay_coef(0.0032f, r);
-        self.cp_tail_coef = decay_coef(0.075f, r);
+        self.cp.configure(r);
 
         self.ch.configure(r);
         self.oh.configure(r);
+        self.cp_rom.configure(r);
         self.cr.configure(r);
         self.rd.configure(r);
         self.hat_step = rom_rate() / r;
@@ -955,9 +1031,8 @@ impl M09 {
 
     fn reset(self: &mut Self) -> void {
         self.bd.reset(); self.sd.reset(); self.lt.reset(); self.mt.reset(); self.ht.reset(); self.rs.reset();
-        self.cp_bp.reset(); self.cp_hp.reset(); self.cp_tail_bp.reset(); self.cp_time = -1.0f;
-        self.cp_burst = 0.0f; self.cp_tail = 0.0f;
-        self.ch.reset(); self.oh.reset(); self.cr.reset(); self.rd.reset();
+        self.cp.reset();
+        self.ch.reset(); self.oh.reset(); self.cr.reset(); self.rd.reset(); self.cp_rom.reset(); self.cp_env = 0.0f;
         self.ch_env = 0.0f; self.oh_env = 0.0f; self.oh_choked = false; self.ch_choked = false; self.cr_env = 0.0f; self.rd_env = 0.0f;
         self.metal_hp.reset();
         self.output_gain = self.output_target;
@@ -988,9 +1063,10 @@ impl M09 {
         else if which == high_tom() { self.ht.strike(gain); }
         else if which == rim_shot() { self.rs.strike(gain); }
         else if which == hand_clap() {
-            self.cp_time = 0.0f;
-            self.cp_level = gain;
-        } else if which == closed_hat() {
+            if self.cp_len > 0 { self.cp_rom.strike(self.cp_env); self.cp_env = gain; }
+            else { self.cp.strike(gain); }
+        }
+        else if which == closed_hat() {
             // CH Decay: the VCA's time constant after a 3 ms hold, so the
             // closed hat lasts 0.11 .. 0.2 s, as on the 909.
             self.ch.strike(self.ch_env);
@@ -1033,6 +1109,7 @@ impl M09 {
             self.oh_len = n; self.hats_recorded = true;
             while i < hat_words() { set_f32(self.rom_oh, i, 0.0f); i = i + 1; }
         }
+        else if rom == rom_clap() { self.cp_len = n; while i < clap_words() { set_f32(self.rom_cp, i, 0.0f); i = i + 1; } }
         else if rom == rom_crash() { self.cr_len = n; while i < cymbal_words() { set_f32(self.rom_cr, i, 0.0f); i = i + 1; } }
         else if rom == rom_ride() { self.rd_len = n; while i < cymbal_words() { set_f32(self.rom_rd, i, 0.0f); i = i + 1; } }
     }
@@ -1043,29 +1120,9 @@ impl M09 {
         let v: f32 = sclamp(value, -1.0f, 1.0f);
         if rom == rom_hat() && index < self.hat_len { set_f32(self.rom_hat, index, v); }
         else if rom == rom_open_hat() && index < self.oh_len { set_f32(self.rom_oh, index, v); }
+        else if rom == rom_clap() && index < self.cp_len { set_f32(self.rom_cp, index, v); }
         else if rom == rom_crash() && index < self.cr_len { set_f32(self.rom_cr, index, v); }
         else if rom == rom_ride() && index < self.rd_len { set_f32(self.rom_rd, index, v); }
-    }
-
-    fn cp_active(self: M09) -> bool { return self.cp_time >= 0.0f; }
-
-    /// Hand clap: noise band-passed around 1.15 kHz, struck by three sawtooth
-    /// bursts 10 ms apart, then the tail (around 1 kHz) from 30 ms on.
-    fn clap(self: &mut Self) -> f32 {
-        let ms: f32 = 1000.0f / self.rate;
-        let now: f32 = self.cp_time * ms;
-        let next: f32 = (self.cp_time + 1.0f) * ms;
-        if (now <= 0.0f && next > 0.0f) || (now <= 10.0f && next > 10.0f) || (now <= 20.0f && next > 20.0f) {
-            self.cp_burst = self.cp_level;
-        }
-        if now <= 30.0f && next > 30.0f { self.cp_tail = self.cp_level * 0.85f; self.cp_burst = self.cp_level * 0.8f; }
-        let h: f32 = self.cp_hp.process(self.white(), 1);
-        let out: f32 = self.cp_bp.process(h, 2) * self.cp_burst + self.cp_tail_bp.process(h, 2) * self.cp_tail;
-        self.cp_burst = self.cp_burst * self.cp_burst_coef;
-        if now > 30.0f { self.cp_tail = self.cp_tail * self.cp_tail_coef; }
-        self.cp_time = self.cp_time + 1.0f;
-        if now > 40.0f && self.cp_tail < silent() { self.cp_time = -1.0f; }
-        return out;
     }
 
     fn rom_active(self: M09) -> bool {
@@ -1106,7 +1163,7 @@ impl M09 {
     fn toms_active(self: M09) -> bool { return self.lt.active() || self.mt.active() || self.ht.active(); }
 
     fn active(self: M09) -> bool {
-        return self.bd.active() || self.sd.active() || self.toms_active() || self.rs.active() || self.cp_active()
+        return self.bd.active() || self.sd.active() || self.toms_active() || self.rs.active() || self.cp.active() || self.cp_rom.active()
             || self.rom_active();
     }
 
@@ -1134,7 +1191,14 @@ impl M09 {
         mix = mix + self.mt.tick(n) * self.level_mt * 0.55f;
         mix = mix + self.ht.tick(n) * self.level_ht * 0.55f;
         mix = mix + self.rs.tick() * self.level_rs * 0.6f;
-        if self.cp_active() { mix = mix + self.clap() * self.level_cp * 1.6f; }
+        mix = mix + self.cp.tick(n) * self.level_cp * 1.0f;
+        // A loaded clap recording plays straight into the mix (no coupling
+        // high-pass: the clap's tail has body below 500 Hz).
+        if self.cp_rom.active() {
+            var tail: f32 = 0.0f;
+            let x: f32 = self.cp_rom.tick(self.rom_cp, self.cp_len, self.hat_step, &mut tail);
+            mix = mix + (x * self.cp_env + tail) * self.level_cp * 0.62f;
+        }
         // The ROM voices share the mixer's coupling high-pass, which runs all
         // the time so a hit never strikes a resting filter.
         let metal: f32 = self.rom_active() ? self.samples() : 0.0f;
@@ -1177,10 +1241,11 @@ fn mla09_active(handle: ptr<M09>) -> i32 {
 }
 
 /// @brief Capacity of a ROM in words (0 hi-hat, 1 crash, 2 ride, 3 open
-/// hat), at the 32 kHz ROM clock.
+/// hat, 4 clap), at the 32 kHz ROM clock.
 fn mla09_rom_capacity(rom: i32) -> i64 {
     if rom == rom_hat() || rom == rom_open_hat() { return hat_words(); }
     if rom == rom_crash() || rom == rom_ride() { return cymbal_words(); }
+    if rom == rom_clap() { return clap_words(); }
     return 0;
 }
 

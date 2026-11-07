@@ -533,6 +533,30 @@ void testToms(const std::string &path)
     CHECK(longTom > shortTom * 1.3);
 }
 
+void testClap(const std::string &path)
+{
+    // As measured on the 909: four bursts at 0, 10.5, 22.5 and 32.5 ms, each
+    // falling fast; the fourth opens the tail, which is darker than the bursts.
+    const Stereo cp = hit(path, kCP, 100.0f / 127.0f, 0.6);
+    const auto at = [&](double ms) { return peak(cp.left, static_cast<size_t>(ms * 48.0), static_cast<size_t>((ms + 2.0) * 48.0)); };
+    double top = 0.0;
+    for(double ms : {0.0, 10.5, 22.5, 32.5})
+        top = std::max(top, at(ms));
+    for(double ms : {0.0, 10.5, 22.5, 32.5}) {
+        CHECK(at(ms) > top * 0.4);
+        if(ms < 30.0)
+            CHECK(at(ms + 8.0) < at(ms) * 0.2);  // each burst falls away before the next
+    }
+    const double burstBright = highShare(cp.left, 0, 1440, 2000.0), tailBright = highShare(cp.left, 2880, 9600, 2000.0);
+    const double early = rms(cp.left, 1920, 2400), at150 = rms(cp.left, 7200, 7680);
+    std::printf("clap: burst/tail energy above 2 kHz %.2f / %.2f; tail 150 ms %.1f dB re 40 ms\n", burstBright, tailBright,
+                20 * std::log10(at150 / early));
+    CHECK(burstBright > tailBright * 1.3);
+    // The 909 recordings: about 24 dB down from 40 ms to 150 ms.
+    CHECK(at150 < early * 0.15 && at150 > early * 0.03);
+    CHECK(peak(cp.left) < 0.8);
+}
+
 void testSamples(const std::string &path)
 {
     // The ROM voices replay the same samples on every hit (unlike the analog
@@ -731,11 +755,24 @@ void testSampleFolder(const std::string &path)
         tone[i] = static_cast<float>(0.5 * std::sin(2.0 * M_PI * 1000.0 * i / kRate) * std::exp(-static_cast<double>(i) / kRate / 0.2));
     const std::string file = std::string(dir) + "/crash.wav";
     writeWav(file, tone);
+    // ... and a 2 kHz tone as clap.wav plays as the clap.
+    std::vector<float> clapTone(tone.size());
+    for(size_t i = 0; i < clapTone.size(); ++i)
+        clapTone[i] = static_cast<float>(0.5 * std::sin(2.0 * M_PI * 2000.0 * i / kRate) * std::exp(-static_cast<double>(i) / kRate / 0.1));
+    const std::string clapFile = std::string(dir) + "/clap.wav";
+    writeWav(clapFile, clapTone);
+    const Stereo clapSynth = hit(path, kCP, 100.0f / 127.0f, 0.3);
     const Stereo builtIn = hit(path, kCR, 100.0f / 127.0f, 0.3);
     setenv("MLA09_SAMPLES", dir, 1);
     const Stereo loaded = hit(path, kCR, 100.0f / 127.0f, 0.3);
     const Stereo ride = hit(path, kRD, 100.0f / 127.0f, 0.3);
+    const Stereo clapLoaded = hit(path, kCP, 100.0f / 127.0f, 0.3);
     setenv("MLA09_SAMPLES", isolatedSamples.c_str(), 1);
+    std::remove(clapFile.c_str());
+    const double clapBefore = toneShare(clapSynth.left, 480, 4800, 2000.0);
+    const double clapAfter = toneShare(clapLoaded.left, 480, 4800, 2000.0);
+    std::printf("sample folder: 2 kHz share of the clap %.3f synthesized / %.3f loaded\n", clapBefore, clapAfter);
+    CHECK(clapAfter > 0.5 && clapBefore < 0.1);
     const Stereo rideBuiltIn = hit(path, kRD, 100.0f / 127.0f, 0.3);
     std::remove(file.c_str());
     rmdir(dir);
@@ -799,6 +836,7 @@ int main(int argc, char **argv)
     testBassDrum(path);
     testSnare(path);
     testToms(path);
+    testClap(path);
     testSamples(path);
     testHats(path);
     testCymbals(path);

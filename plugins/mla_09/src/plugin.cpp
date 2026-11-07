@@ -403,7 +403,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
 
     // Hi-hat and cymbal recordings from the samples folder replace the
     // built-in ROMs: $MLA09_SAMPLES, else ~/.local/share/mlacker/mla09.
-    // closedhat (or hihat), openhat, crash and ride, as .wav, .aif or .aiff.
+    // closedhat (or hihat), openhat, crash, ride and clap, as .wav, .aif or .aiff.
     static std::string sampleFolder()
     {
         if(const char *dir = std::getenv("MLA09_SAMPLES"))
@@ -483,7 +483,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         const struct {
             int32_t rom;
             std::initializer_list<const char *> names;
-        } roms[] = {{0, {"closedhat", "hihat"}}, {1, {"crash"}}, {2, {"ride"}}, {3, {"openhat"}}};
+        } roms[] = {{0, {"closedhat", "hihat"}}, {1, {"crash"}}, {2, {"ride"}}, {3, {"openhat"}}, {4, {"clap"}}};
         for(const auto &entry : roms) {
             const std::string path = findSample(folder, entry.names);
             if(path.empty())

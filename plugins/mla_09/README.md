@@ -4,11 +4,11 @@ A VST3 drum machine instrument in the style of the Roland TR-909 Rhythm
 Composer (subcategory `Instrument|Drum`). Like the 909, it is a hybrid:
 
 - **Analog voices:** bass drum, snare drum, low, mid and high tom, rim shot and
-  hand clap are synthesized. The bass drum, snare, toms and rim shot are
-  fitted to recordings of a TR-909 made across its knobs.
+  hand clap are synthesized, fitted to recordings of a TR-909 made across its
+  knobs.
 - **Sampled voices:** closed and open hi-hat, crash and ride play samples from
   ROM. They are built in, or your own 909 recordings
-  ([Hi-hat and cymbal samples](#hi-hat-and-cymbal-samples)).
+  ([Hi-hat and cymbal samples](#hi-hat-cymbal-and-clap-samples)).
 
 The controls are the 909's panel knobs, plus **Drive**, which distorts the
 output.
@@ -52,8 +52,8 @@ the extra level at full velocity.
 
 ## Analog voices
 
-The bass drum, snare, toms and rim shot were fitted to unprocessed recordings
-of a TR-909, made with each knob at panel positions 1, 3, 6, 9 and 11. These
+The bass drum, snare, toms, rim shot and hand clap were fitted to unprocessed
+recordings of a TR-909, made with each knob at panel positions 1, 3, 6, 9 and 11. These
 positions are knob values 0, 0.2, 0.5, 0.8 and 1 here. The fit covers pitch
 glides, VCA holds and decays, harmonics, noise colour and lengths. Each value
 below is a measurement.
@@ -99,9 +99,13 @@ below is a measurement.
   negative pulse (about 29% of each cycle), with wide positive pulses at about
   half its height. It holds for 10.5 ms, then the drive falls away and it
   decays.
-- **Hand clap.** Noise band-passed around 1.15 kHz, struck by three sawtooth
-  bursts 10 ms apart. A fourth burst at 30 ms opens a tail around 1 kHz, about
-  0.35 s long.
+- **Hand clap.** Fitted to recordings like the drums above. White noise is
+  struck by four sawtooth bursts at 0, 10.5, 22.5 and 32.5 ms, each falling
+  with a 2.3 ms time constant. The bursts are band-passed bright around
+  1.1 kHz, with some air above 4 kHz. The fourth burst opens the "reverb"
+  tail. The tail starts bright and darkens to a band around 1.05 kHz. It holds
+  noisily, falls fast (time constant 17 ms), then rings on quietly (120 ms),
+  about 30 dB down at 150 ms and 40 dB down after 0.3 s.
 
 A harder hit on a sounding analog voice rises to its new level over 0.4 ms
 instead of jumping mid-cycle, and the VCOs keep their phase. Fast rolls
@@ -144,9 +148,10 @@ when an instance is created, in the 909's format:
 Every instance builds the same ROMs, so each hit plays exactly the same
 waveform.
 
-### Hi-hat and cymbal samples
+### Hi-hat, cymbal and clap samples
 
-For the original 909 sound, give the plug-in your own 909 recordings. When an
+For the original 909 sound, give the plug-in your own 909 recordings. The
+clap can play a recording of the 909's own analog clap. When an
 instance starts, it looks in `$MLA09_SAMPLES`, or else
 `~/.local/share/mlacker/mla09/`, for these files (`.wav`, `.aif` or `.aiff`):
 
@@ -156,10 +161,13 @@ instance starts, it looks in `$MLA09_SAMPLES`, or else
 | `openhat`   | the open hat |
 | `crash`     | the crash |
 | `ride`      | the ride |
+| `clap`      | the hand clap, in place of the synthesized one |
 
 Each file is mixed to mono and trimmed to the hit. It is resampled to the
 32 kHz ROM clock and normalized, up to the ROM's capacity (1 s for each hat,
-2 s for each cymbal). Missing files keep their built-in ROM.
+2 s for each cymbal, 1 s for the clap). Missing files keep their built-in ROM,
+or for the clap its synthesized voice. A clap recording plays at the clap's
+level, restarting on every hit.
 
 - **Hat recordings** already carry the 909's decay. Record them at full
   Decay. A loaded hat's VCA leaves it as recorded at full Decay, and at lower
@@ -273,6 +281,7 @@ classes and checks rendered audio:
 - the snare's Tune (114 to 222 Hz), Snappy, and Tone setting the noise's
   length but not its colour
 - each tom's settling pitch, glide and Decay
+- the clap's four bursts and its darker tail
 - the ROM voices:
   - the same waveform on every hit and in every instance, unlike the analog
     noise
