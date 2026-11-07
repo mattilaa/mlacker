@@ -383,6 +383,7 @@ struct Snare {
     var t: f32;
     var gain: f32;
     var amp: f32;
+    var upper_amp: f32;
     var noise_amp: f32;
     var hp: Svf;
     var hp2: Svf;
@@ -403,7 +404,7 @@ struct Snare {
 
 impl Snare {
     fn new() -> Snare {
-        return Snare { phase1: 0.0f, phase2: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, noise_amp: 0.0f,
+        return Snare { phase1: 0.0f, phase2: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, upper_amp: 0.0f, noise_amp: 0.0f,
                        hp: Svf::new(), hp2: Svf::new(), lp: Svf::new(), lp2: Svf::new(), dt: 0.0f, rise: 1.0f,
                        hz: 166.0f, hold: 0.11f, fade: 0.045f, snappy: 0.16f, detune: 1.0f, snap: 1.0f, body: 1.0f };
     }
@@ -426,7 +427,7 @@ impl Snare {
     }
 
     fn reset(self: &mut Self) -> void {
-        self.phase1 = 0.0f; self.phase2 = 0.0f; self.t = -1.0f; self.amp = 0.0f; self.noise_amp = 0.0f;
+        self.phase1 = 0.0f; self.phase2 = 0.0f; self.t = -1.0f; self.amp = 0.0f; self.upper_amp = 0.0f; self.noise_amp = 0.0f;
         self.hp.reset(); self.hp2.reset(); self.lp.reset(); self.lp2.reset();
     }
 
@@ -434,7 +435,7 @@ impl Snare {
     /// the phase and smooth the VCA rise to avoid a waveform discontinuity.
     /// `pitch`, `level` and `noise` add small component-like variations.
     fn strike(self: &mut Self, gain: f32, pitch: f32, level: f32, noise: f32) -> void {
-        if self.t < 0.0f { self.phase1 = 0.0f; self.phase2 = 0.0f; self.amp = 0.0f; self.noise_amp = 0.0f; }
+        if self.t < 0.0f { self.phase1 = 0.0f; self.phase2 = 0.0f; self.amp = 0.0f; self.upper_amp = 0.0f; self.noise_amp = 0.0f; }
         self.t = 0.0f;
         self.gain = gain * (1.0f + 0.03f * level);
         self.detune = 1.0f + 0.005f * pitch;
@@ -457,14 +458,18 @@ impl Snare {
             if self.phase2 >= 1.0f { self.phase2 = self.phase2 - 1.0f; }
             return 0.0f;
         }
-        let bend: f32 = (1.0f + 1.4f * expf(-self.t / 0.0045f) + 0.2f * expf(-self.t / 0.015f)) * self.detune;
+        let bend: f32 = (1.0f + 0.65f * expf(-self.t / 0.0035f) + 0.12f * expf(-self.t / 0.012f)) * self.detune;
         self.phase1 = self.phase1 + self.hz * bend * self.dt;
         if self.phase1 >= 1.0f { self.phase1 = self.phase1 - 1.0f; }
         self.phase2 = self.phase2 + 1.5f * self.hz * bend * self.dt;
         if self.phase2 >= 1.0f { self.phase2 = self.phase2 - 1.0f; }
         let s1: f32 = sinf(two_pi() * self.phase1);
-        // The lower VCO carries its 2nd harmonic (-20 dB), as on the recordings.
-        let tone: f32 = s1 + 0.2f * (s1 * s1 - 0.5f) + 0.45f * sinf(two_pi() * self.phase2) * expf(-self.t / (0.035f * self.body));
+        // Two shell resonances need independent VCAs. Multiplying the upper
+        // resonance by the lower VCA as well shortened its 35 ms envelope
+        // to about 15 ms, leaving a single pitched thud under the noise.
+        let tone: f32 = s1 + 0.2f * (s1 * s1 - 0.5f);
+        let upper: f32 = sinf(two_pi() * self.phase2);
+        self.upper_amp = follow(self.upper_amp, self.gain * 0.38f * expf(-self.t / (0.035f * self.body)), self.rise);
         // The short body falls into a quiet tonal tail.
         let te: f32 = 0.94f * expf(-self.t / (0.025f * self.body)) + 0.06f * expf(-self.t / (0.09f * self.body));
         self.amp = follow(self.amp, self.gain * te, self.rise);
@@ -474,7 +479,7 @@ impl Snare {
         if self.t > self.hold { e = expf(-self.hold / 0.3f) * expf(-(self.t - self.hold) / self.fade); }
         e = e + 1.0f * expf(-self.t / 0.002f);
         self.noise_amp = follow(self.noise_amp, self.gain * self.snappy * self.snap * e, self.rise);
-        let out: f32 = self.amp * tone + self.noise_amp * n * 4.0f;
+        let out: f32 = self.amp * tone + self.upper_amp * upper + self.noise_amp * n * 4.0f;
         self.t = self.t + self.dt;
         if self.t > 2.5f || (self.t > self.hold + 14.0f * self.fade && self.t > 2.0f * self.body && self.amp < silent()) {
             self.t = -1.0f;

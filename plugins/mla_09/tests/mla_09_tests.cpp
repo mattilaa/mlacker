@@ -517,6 +517,21 @@ void testSnare(const std::string &path)
     CHECK(highShare(dry.left, 4800, 7200, 2000.0) < 0.03);
 }
 
+void testSnareBody(const std::string &path)
+{
+    // Turn off snappy so noise cannot disguise a missing shell resonance.
+    // The upper body should still be audible after the first 30 ms.
+    const Stereo dry = hit(path, kSD, 100.0f / 127.0f, 0.5, {{kSdSnappy, 0.0}});
+    double lower = 0.0, upper = 0.0;
+    for(double hz = 155.0; hz <= 180.0; hz += 1.0)
+        lower = std::max(lower, toneShare(dry.left, 1440, 3840, hz));
+    for(double hz = 235.0; hz <= 265.0; hz += 1.0)
+        upper = std::max(upper, toneShare(dry.left, 1440, 3840, hz));
+    const double balance = 10.0 * std::log10(upper / lower);
+    std::printf("snare shell: upper/lower %.1f dB at 30-80 ms\n", balance);
+    CHECK(balance > -9.0 && balance < -1.0);
+}
+
 void testToms(const std::string &path)
 {
     // Where each tom settles across Tune: low tom 60 .. 120 Hz (as measured
@@ -945,6 +960,7 @@ int main(int argc, char **argv)
     testStartOffset(path);
     testBassDrum(path);
     testSnare(path);
+    testSnareBody(path);
     testToms(path);
     testTomNoiseAttack(path);
     testClap(path);
