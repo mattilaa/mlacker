@@ -549,8 +549,18 @@ void testToms(const std::string &path)
     // As on the 909, the tom hits with a strong 2nd harmonic that mellows as
     // it rings: about -8 dB of the pitch in the first 30 ms, -22 dB later.
     const Stereo low = hit(path, kLT, 100.0f / 127.0f, 0.5);
+    // Locate body cycles below the noise band. Counting raw crossings now
+    // mistakes the stick noise for a higher oscillator pitch.
+    std::vector<float> bodyPitch(low.left.size());
+    const double pole = std::exp(-2.0 * M_PI * 700.0 / kRate);
+    double lp1 = 0.0, lp2 = 0.0;
+    for(size_t i = 0; i < low.left.size(); ++i) {
+        lp1 += (1.0 - pole) * (low.left[i] - lp1);
+        lp2 += (1.0 - pole) * (lp1 - lp2);
+        bodyPitch[i] = static_cast<float>(lp2);
+    }
     const auto second = [&](size_t from, size_t to) {
-        const double f0 = zeroCrossingHz(low.left, from, to);
+        const double f0 = zeroCrossingHz(bodyPitch, from, to);
         return 10.0 * std::log10(toneShare(low.left, from, to, 2.0 * f0) / toneShare(low.left, from, to, f0));
     };
     const double early2 = second(0, 1440), late2 = second(9600, 19200);
@@ -565,6 +575,31 @@ void testToms(const std::string &path)
                                               toneShare(body.left, 9600, 19200, f0));
         std::printf("tom key %d: tail third harmonic %.1f dB\n", key, third);
         CHECK(third < -26.0);
+    }
+}
+
+void testTomNoiseAttack(const std::string &path)
+{
+    for(int key : {kLT, kMT, kHT}) {
+        Instance plugin;
+        CHECK(plugin.open(path));
+        plugin.noteOn(key);
+        const Stereo first = plugin.render(kBlock * 600);
+        plugin.noteOn(key);
+        const Stereo second = plugin.render(kBlock * 40);
+        // Fresh tom hits reset the pitched oscillator identically, while
+        // the shared noise runs continuously. Subtract hits to isolate the
+        // noise rather than count oscillator harmonics as stick attack.
+        std::vector<float> noise(second.left.size());
+        for(size_t i = 0; i < noise.size(); ++i)
+            noise[i] = (second.left[i] - first.left[i]) / std::sqrt(2.0f);
+        const double onset = rms(noise, 0, 480);
+        const double behind = rms(noise, 720, 2160);
+        const double tail = rms(noise, 5760, 8640);
+        std::printf("tom noise key %d: onset %.4f, behind body %.4f, tail %.5f\n", key, onset, behind, tail);
+        CHECK(onset > 0.03 && onset < 0.2);
+        CHECK(behind > 0.012 && behind < onset * 0.7);
+        CHECK(tail < behind * 0.12);
     }
 }
 
@@ -749,9 +784,10 @@ void testRetrigger(const std::string &path)
         std::printf("roll on key %d: peak %.3f, largest step %.3f (single hit %.3f)\n", key, peak(roll.left), jump,
                     single);
         CHECK(finite(roll));
-        // The bass drum's click sounds on every hit, as on the 909, and sums
-        // with the ring that is already sounding.
-        CHECK(peak(roll.left) < (key == kBD ? 2.2 : 1.6));
+        // Kick and tom noise attacks sum with a body already ringing.
+        // Allow transient headroom while still bounding rapid rolls.
+        const bool noisyAttack = key == kBD || key == kLT || key == kMT || key == kHT;
+        CHECK(peak(roll.left) < (noisyAttack ? 2.2 : 1.6));
         if(key != kBD)
             CHECK(jump < single * 1.6);
     }
@@ -910,6 +946,7 @@ int main(int argc, char **argv)
     testBassDrum(path);
     testSnare(path);
     testToms(path);
+    testTomNoiseAttack(path);
     testClap(path);
     testAnalogDrift(path);
     testSamples(path);

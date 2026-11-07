@@ -514,8 +514,8 @@ impl Tom {
     fn configure(self: &mut Self, rate: f32) -> void {
         self.dt = 1.0f / rate;
         self.rise = 1.0f - decay_coef(0.0004f, rate);
-        self.hp.configure(600.0f, 0.70710678f, rate);
-        self.lp.configure(4500.0f, 0.70710678f, rate);
+        self.hp.configure(900.0f, 0.70710678f, rate);
+        self.lp.configure(8500.0f, 0.70710678f, rate);
         self.coupling.configure(15.0f, 0.70710678f, rate);
     }
 
@@ -548,9 +548,12 @@ impl Tom {
         var e: f32 = expf(-self.t / 0.65f);
         if self.t > self.hold { e = expf(-self.hold / 0.65f) * expf(-(self.t - self.hold) / self.tau); }
         self.amp = follow(self.amp, self.gain * e, self.rise);
-        // High noise: a burst on the attack, and a faint layer that follows
-        // the VCA as the tom rings (about -50 dB), as on the 909.
-        self.attack_amp = follow(self.attack_amp, self.gain * 0.28f * expf(-self.t / 0.009f), self.rise);
+        // The stick's noisy onset needs a short, bright burst AND a quieter
+        // skirt behind the pitched body. A single 9 ms decay disappeared
+        // under the oscillator. Keep this contour independent of Tom Decay
+        // so a long tom does not turn into sustained hiss.
+        let noise_env: f32 = 0.55f * expf(-self.t / 0.01f) + 0.2f * expf(-self.t / 0.04f);
+        self.attack_amp = follow(self.attack_amp, self.gain * noise_env, self.rise);
         let out: f32 = self.amp * (w + 0.005f * n) + n * self.attack_amp;
         self.t = self.t + self.dt;
         if self.t > self.hold + 14.0f * self.tau && self.amp < silent() { self.t = -1.0f; }
