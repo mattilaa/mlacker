@@ -27,6 +27,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
+#include <sys/stat.h>
+#include <vector>
 
 // --- MLang DSP bridge (compiled from src/mla_09_dsp.mla) ---------------------
 struct M09;
@@ -37,6 +41,21 @@ extern "C" void mla09_trigger__ptr_struct_M09_i32_f32(M09 *dsp, int32_t which, f
 extern "C" int32_t mla09_active__ptr_struct_M09(M09 *dsp);
 extern "C" void mla09_set__ptr_struct_M09_i32_f32(M09 *dsp, int32_t index, float value);
 extern "C" float mla09_process__ptr_struct_M09_ptr_f32(M09 *dsp, float *outRight);
+extern "C" int64_t mla09_rom_capacity__i32(int32_t rom);
+extern "C" void mla09_rom_begin__ptr_struct_M09_i32_i64(M09 *dsp, int32_t rom, int64_t words);
+extern "C" void mla09_rom_write__ptr_struct_M09_i32_i64_f32(M09 *dsp, int32_t rom, int64_t index, float value);
+
+// --- MLang runtime PCM decoder (libmlang_std.a, std::audio::PcmAudio) --------
+struct MlangList {
+    int64_t size;
+    void *data;
+};
+extern "C" int64_t __mlang_std_audio_pcm_load(const char *path);
+extern "C" int64_t __mlang_std_audio_pcm_file_sample_rate(int64_t handle);
+extern "C" int64_t __mlang_std_audio_pcm_file_channels(int64_t handle);
+extern "C" int64_t __mlang_std_audio_pcm_file_frame_count(int64_t handle);
+extern "C" MlangList __mlang_std_audio_pcm_file_samples(int64_t handle);
+extern "C" int32_t __mlang_std_audio_pcm_file_close(int64_t handle);
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -82,9 +101,10 @@ enum ParamId : ParamID {
     kCrTuneParam,
     kRdLevelParam,
     kRdTuneParam,
+    kDriveParam,
 };
 
-constexpr ParamID kFirstParam = kOutputParam, kLastParam = kRdTuneParam;
+constexpr ParamID kFirstParam = kOutputParam, kLastParam = kDriveParam;
 constexpr int kNumParams = kLastParam - kFirstParam + 1;
 
 static int indexOf(ParamID id)
@@ -113,6 +133,17 @@ static int32_t instrumentFor(int16 key)
         default: return -1;
     }
 }
+
+// MIDI CC map: CC 7 Output, CC 20-30 the levels, CC 102-118 Accent and the
+// knobs, CC 119 Drive, so a pattern's CC columns (or a controller) turn the
+// panel live.
+static const ParamID kLevelParams[] = {kBdLevelParam, kSdLevelParam, kLtLevelParam, kMtLevelParam,
+                                       kHtLevelParam, kRsLevelParam, kCpLevelParam, kChLevelParam,
+                                       kOhLevelParam, kCrLevelParam, kRdLevelParam};
+static const ParamID kKnobParams[] = {kAccentParam,  kBdTuneParam, kBdAttackParam, kBdDecayParam, kSdTuneParam,
+                                      kSdToneParam,  kSdSnappyParam, kLtTuneParam, kLtDecayParam, kMtTuneParam,
+                                      kMtDecayParam, kHtTuneParam, kHtDecayParam, kChDecayParam, kOhDecayParam,
+                                      kCrTuneParam,  kRdTuneParam, kDriveParam};
 
 static bool isLevel(ParamID id)
 {
@@ -193,6 +224,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         addKnob(kCrTuneParam, STR16("CR Tune"));
         addLevel(kRdLevelParam, STR16("RD Level"));
         addKnob(kRdTuneParam, STR16("RD Tune"));
+        addParam(kDriveParam, STR16("Drive"), nullptr, 0.0);
         return kResultOk;
     }
 
@@ -209,6 +241,16 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
             return kResultFalse;
         if(cc == kCtrlVolume) {
             id = kOutputParam;
+            return kResultOk;
+        }
+        // Levels on the undefined CCs 20-30, in panel order.
+        if(cc >= 20 && cc < 20 + static_cast<int>(sizeof(kLevelParams) / sizeof(kLevelParams[0]))) {
+            id = kLevelParams[cc - 20];
+            return kResultOk;
+        }
+        // Accent, the knobs and Drive on the undefined CCs 102-119, in panel order.
+        if(cc >= 102 && cc < 102 + static_cast<int>(sizeof(kKnobParams) / sizeof(kKnobParams[0]))) {
+            id = kKnobParams[cc - 102];
             return kResultOk;
         }
         return kResultFalse;
@@ -236,6 +278,7 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
         // sample ROMs) may be rebuilt.
         destroyDsp();
         dsp_ = mla09_create__f32(static_cast<float>(setup.sampleRate > 0 ? setup.sampleRate : 44100.0));
+        loadSamples();
         pushAll();
         return kResultOk;
     }
@@ -357,6 +400,102 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     }
 
     double norm(ParamID id) const { return norm_[indexOf(id)].load(std::memory_order_relaxed); }
+
+    // Hi-hat and cymbal recordings from the samples folder replace the
+    // built-in ROMs: $MLA09_SAMPLES, else ~/.local/share/mlacker/mla09.
+    // closedhat (or hihat), openhat, crash and ride, as .wav, .aif or .aiff.
+    static std::string sampleFolder()
+    {
+        if(const char *dir = std::getenv("MLA09_SAMPLES"))
+            return dir;
+        const char *home = std::getenv("HOME");
+        return home ? std::string(home) + "/.local/share/mlacker/mla09" : std::string();
+    }
+
+    static std::string findSample(const std::string &folder, std::initializer_list<const char *> names)
+    {
+        struct stat info{};
+        for(const char *name : names)
+            for(const char *ext : {".wav", ".aif", ".aiff", ".WAV", ".AIF", ".AIFF"}) {
+                const std::string path = folder + "/" + name + ext;
+                if(stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode))
+                    return path;
+            }
+        return {};
+    }
+
+    // Decode a recording, mix it to mono, skip the silence before the hit,
+    // resample it to the 32 kHz ROM clock and normalize it to full scale.
+    static std::vector<float> romFromFile(const std::string &path, int64_t capacity)
+    {
+        std::vector<float> rom;
+        const int64_t handle = __mlang_std_audio_pcm_load(path.c_str());
+        if(handle == 0)
+            return rom;
+        const int64_t rate = __mlang_std_audio_pcm_file_sample_rate(handle);
+        const int64_t channels = __mlang_std_audio_pcm_file_channels(handle);
+        const int64_t frames = __mlang_std_audio_pcm_file_frame_count(handle);
+        MlangList samples = __mlang_std_audio_pcm_file_samples(handle);
+        if(samples.data && rate >= 1000 && channels >= 1 && channels <= 2 && frames > 1 &&
+           samples.size == frames * channels) {
+            const float *pcm = static_cast<const float *>(samples.data);
+            std::vector<float> mono(static_cast<size_t>(frames));
+            float peak = 0.0f;
+            for(int64_t i = 0; i < frames; ++i) {
+                float v = 0.0f;
+                for(int64_t c = 0; c < channels; ++c)
+                    v += pcm[i * channels + c];
+                mono[static_cast<size_t>(i)] = v / static_cast<float>(channels);
+                peak = std::max(peak, std::fabs(mono[static_cast<size_t>(i)]));
+            }
+            int64_t start = 0;
+            while(start < frames - 1 && std::fabs(mono[static_cast<size_t>(start)]) < 0.01f * peak)
+                ++start;
+            const double step = static_cast<double>(rate) / 32000.0;
+            const int64_t words = std::min<int64_t>(capacity, static_cast<int64_t>((frames - start) / step));
+            if(peak > 0.0f && words > 1) {
+                rom.resize(static_cast<size_t>(words));
+                for(int64_t w = 0; w < words; ++w) {
+                    const double at = static_cast<double>(start) + w * step;
+                    const int64_t i = static_cast<int64_t>(at);
+                    const double f = at - static_cast<double>(i);
+                    const float a = mono[static_cast<size_t>(std::min(i, frames - 1))];
+                    const float b = mono[static_cast<size_t>(std::min(i + 1, frames - 1))];
+                    rom[static_cast<size_t>(w)] = static_cast<float>((a + (b - a) * f) * 0.97 / peak);
+                }
+                // A recording cut short by the capacity fades out over 20 ms.
+                const int64_t fade = std::min<int64_t>(words, 640);
+                if(words == capacity)
+                    for(int64_t w = words - fade; w < words; ++w)
+                        rom[static_cast<size_t>(w)] *= static_cast<float>(words - w) / static_cast<float>(fade);
+            }
+        }
+        std::free(samples.data);
+        __mlang_std_audio_pcm_file_close(handle);
+        return rom;
+    }
+
+    void loadSamples()
+    {
+        const std::string folder = sampleFolder();
+        if(folder.empty() || dsp_ == nullptr)
+            return;
+        const struct {
+            int32_t rom;
+            std::initializer_list<const char *> names;
+        } roms[] = {{0, {"closedhat", "hihat"}}, {1, {"crash"}}, {2, {"ride"}}, {3, {"openhat"}}};
+        for(const auto &entry : roms) {
+            const std::string path = findSample(folder, entry.names);
+            if(path.empty())
+                continue;
+            const std::vector<float> rom = romFromFile(path, mla09_rom_capacity__i32(entry.rom));
+            if(rom.empty())
+                continue;
+            mla09_rom_begin__ptr_struct_M09_i32_i64(dsp_, entry.rom, static_cast<int64_t>(rom.size()));
+            for(size_t i = 0; i < rom.size(); ++i)
+                mla09_rom_write__ptr_struct_M09_i32_i64_f32(dsp_, entry.rom, static_cast<int64_t>(i), rom[i]);
+        }
+    }
 
     void destroyDsp()
     {

@@ -73,6 +73,13 @@ smtg_add_vst3plugin(Mla09
 
 target_include_directories(Mla09 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(Mla09 PRIVATE sdk "${MLANG_STD_LIBRARY}")
+# The runtime's audio file decoder (hi-hat and cymbal samples) lives with
+# std::audio, which needs the Apple audio frameworks.
+if(APPLE)
+    target_link_libraries(Mla09 PRIVATE
+        "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox"
+        "-framework AudioUnit" "-framework AVFoundation" "-framework CoreMIDI")
+endif()
 
 # The MLang runtime uses lock-free atomics; on Linux link libatomic and the
 # usual runtime companions the static archive may reference.

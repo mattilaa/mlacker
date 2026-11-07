@@ -4,15 +4,18 @@ A VST3 drum machine instrument in the style of the Roland TR-909 Rhythm
 Composer (subcategory `Instrument|Drum`). Like the 909, it is a hybrid:
 
 - **Analog voices:** bass drum, snare drum, low, mid and high tom, rim shot and
-  hand clap are synthesized.
-- **Sampled voices:** closed and open hi-hat, crash and ride play 6-bit
-  samples from ROM.
+  hand clap are synthesized. The bass drum, snare, toms and rim shot are
+  fitted to recordings of a TR-909 made across its knobs.
+- **Sampled voices:** closed and open hi-hat, crash and ride play samples from
+  ROM. They are built in, or your own 909 recordings
+  ([Hi-hat and cymbal samples](#hi-hat-and-cymbal-samples)).
 
-The controls are the 909's panel knobs.
+The controls are the 909's panel knobs, plus **Drive**, which distorts the
+output.
 
 The synthesis and the ROMs are MLang: `src/mla_09_dsp.mla`. The C++ layer
 (`src/plugin.cpp`) declares the buses, maps keys to instruments, schedules hits
-sample-accurately, maps parameters and saves state.
+sample-accurately, maps parameters, loads samples and saves state.
 
 ## Keys
 
@@ -49,25 +52,53 @@ the extra level at full velocity.
 
 ## Analog voices
 
-- **Bass drum.** A VCO shaped into a rounded sine with flattened tops. A pitch
-  envelope sweeps it down to about 50 Hz. **Tune** sets how far and how long
-  the sweep runs: from about 2x the resting pitch, short, up to 5x, longer.
-  Tune also raises the resting pitch a little (47 to 56 Hz). **Decay** sets the
-  VCA's time constant after a short hold, so the drum is 40 dB down after
-  0.2 s at the minimum and 1.3 s at the maximum. **Attack** mixes in the click:
-  a 0.6 ms pulse through a 4 kHz low-pass, plus a 2 ms burst of band-passed
-  noise.
-- **Snare drum.** Two VCOs, about 180 and 330 Hz, that drop in pitch over the
-  first few milliseconds, plus white noise high-passed at 1.1 kHz. **Tune**
-  moves both VCOs over about half an octave. **Tone** opens the noise's
-  low-pass from 4 to 14 kHz and lengthens the noise. **Snappy** sets the
-  noise level.
-- **Toms.** A VCO that starts about 60% above its pitch and bends down, plus a
-  little low-passed noise on the attack. **Tune** moves each tom over about a
-  fifth: low tom 72 to 112 Hz, mid 105 to 162 Hz, high 150 to 230 Hz.
-  **Decay** sets the VCA's time constant from about 0.05 s to 0.4 s.
-- **Rim shot.** Three short rings at 495 Hz, 1.72 kHz and 3.35 kHz,
-  high-passed and driven.
+The bass drum, snare, toms and rim shot were fitted to unprocessed recordings
+of a TR-909, made with each knob at panel positions 1, 3, 6, 9 and 11. These
+positions are knob values 0, 0.2, 0.5, 0.8 and 1 here. The fit covers pitch
+glides, VCA holds and decays, harmonics, noise colour and lengths. Each value
+below is a measurement.
+
+- **Bass drum.**
+  - **Pitch.** The VCO glides exponentially from about 270 Hz down to its
+    resting pitch, 53 Hz at long Decay and 55 Hz at short Decay. **Tune**
+    sets the glide's time constant: 6.9 ms at the minimum, 13 ms at the centre
+    and 30.5 ms at the maximum. At the centre, the cycles from 2 ms run at
+    about 208, 153 and 108 Hz.
+  - **Wave.** A nearly pure sine (2nd harmonic -29 dB, 3rd -26.5 dB) that
+    starts downwards.
+  - **Hold.** The VCA holds the level for 50 ms, through the whole glide. A
+    decaying offset meanwhile pushes one side of the wave into the output
+    stage's clip, which flattens those half-cycles. That flattening is the
+    909's punch.
+  - **Decay.** **Decay** sets the time constant after the hold: 17 ms, 33 ms,
+    62 ms and 105 ms from the minimum to the maximum, over a quiet tail. The
+    drum is 40 dB down after about 0.3 s to 0.5 s.
+  - **Click.** **Attack** adds up to about a third more click: band-passed
+    noise on top of the step the hit itself makes.
+- **Snare drum.**
+  - **Tone.** Two VCOs at a 1 : 1.5 ratio, the upper one 12.7 dB down.
+    **Tune** sets the lower one from 114 Hz to 222 Hz (166 Hz at the centre).
+    Both start 2.4 times higher and drop within a few milliseconds. They decay
+    with a 22 ms time constant to about -19 dB, then ring on quietly. The
+    lower VCO carries its 2nd harmonic at -20 dB.
+  - **Noise.** Band-passed noise centred at 6 to 10 kHz. **Snappy** sets its
+    level: about -27 dB against the tone at 0.2, -16 dB at the centre and
+    -10.5 dB at the top. **Tone** sets how long the noise holds before it
+    fades: 50 ms at the minimum, 120 ms at the centre and 150 ms at the top.
+    As on the 909, Tone does not change the noise's colour.
+- **Toms.** A soft, triangle-like VCO (2nd and 3rd harmonics about -16 dB)
+  that starts 30% above its pitch and glides down with a 40 ms time constant.
+  A VCA holds and then decays, and about 20 ms of high noise sits on the
+  attack.
+  - **Tune.** Sets where each tom settles: low tom 60 to 120 Hz, mid 76 to
+    157 Hz, high 90 to 172 Hz.
+  - **Decay.** Sets the hold (30 to 110 ms) and the decay that follows (time
+    constant 55 to 140 ms).
+- **Rim shot.** Partials at 485 Hz and 217 Hz, driven hard into an asymmetric
+  clip. The result is a nearly rectangular wave that starts on a narrow
+  negative pulse (about 29% of each cycle), with wide positive pulses at about
+  half its height. It holds for 10.5 ms, then the drive falls away and it
+  decays.
 - **Hand clap.** Noise band-passed around 1.15 kHz, struck by three sawtooth
   bursts 10 ms apart. A fourth burst at 30 ms opens a tail around 1 kHz, about
   0.35 s long.
@@ -78,38 +109,64 @@ therefore do not click, except for the bass drum's deliberate attack click.
 
 ## Sampled voices
 
-The 909 plays its hi-hats and cymbals from 6-bit ROM samples. Roland's ROM data
-isn't ours to distribute, so the plug-in builds its own four ROMs when an
-instance is created, in the same format:
-
-- **Recordings.** The ROMs hold metallic recordings: inharmonic partials whose
-  decay gets faster with frequency, over high-passed noise and a short stick
-  transient. Some of the crash's partials swell in after the hit. The ride's
-  partials are lower, longer and less noisy, so the ride pings where the crash
-  washes.
-- **Format.** Each ROM is stored at a 32 kHz ROM clock, normalized to full
-  scale and quantized to 64 levels (6 bits). The quantization stays in: as a
-  sample fades, its tail gets grainy, as on the 909. Each cymbal recording
-  fades out over its last quarter, so playback never stops on a step.
-- **Lengths.** Closed hat 8 K words (0.26 s), open hat 32 K words (1 s),
-  crash and ride 64 K words each (2 s at the nominal clock).
-
-Every instance builds the same ROMs, so each hit of a sampled voice plays
-exactly the same waveform. Playback works like the 909's:
+The 909 plays its hi-hats and cymbals from ROM samples. Both hats play the
+same ROM, and only their VCAs differ. Playback works like the 909's:
 
 - **On a hit.** Every hit restarts the ROM from its first word. A retrigger
   fades the previous playback out over 2 ms under the new one.
 - **Output path.** ROM words are interpolated (the DAC and its reconstruction
   filter), then go through each voice's VCA and a shared coupling high-pass at
   250 Hz.
-- **Hi-hats.** **CH Decay** sets the closed hat's VCA time constant from 6 to
-  40 ms, after a 2 ms hold. **OH Decay** sets the open hat's from 40 to
-  450 ms, after a 5 ms hold. The closed hat chokes the open hat within a few
-  milliseconds.
-- **Cymbals.** **CR Tune** and **RD Tune** run their ROM clock from 0.71x to
-  1.41x. A lower tune is darker and also longer, because the ROM plays out
-  more slowly. The cymbals have no VCA decay, as on the 909: they ring for
-  the length of their sample.
+- **Hi-hats.** **CH Decay** and **OH Decay** set the VCAs. As measured on the
+  909, the closed hat lasts 0.11 to 0.2 s (40 dB down) and the open hat 0.28
+  to 0.52 s. The closed hat chokes the open hat within a few milliseconds.
+- **Cymbals.** **CR Tune** and **RD Tune** run their ROM clock: the crash from
+  0.76x to 1.6x, the ride from 0.78x to 1.52x. A lower tune is darker and also
+  longer, because the ROM plays out more slowly: the crash lasts 1.3 s down to
+  0.6 s, the ride 1.2 s down to 0.6 s. The cymbals have no VCA decay, as on
+  the 909: they ring for the length of their sample.
+
+### Built-in ROMs
+
+Roland's ROM data isn't ours to distribute, so the plug-in builds its own ROMs
+when an instance is created, in the 909's format:
+
+- **Recordings.** Each ROM holds a metallic recording: inharmonic partials
+  whose decay gets faster with frequency, over filtered noise and a short stick
+  transient.
+- **Format.** The recordings are stored at a 32 kHz ROM clock and quantized to
+  64 levels. The tails stay grainy, as on the 909.
+- **Fit.** Their spectra and lengths are fitted to 909 recordings. The hats
+  centre around 8 kHz, the crash around 4 to 6 kHz and the ride around 9 kHz.
+- **Sizes.** Hi-hat 32 K words (1 s); crash and ride 64 K words each (2 s).
+
+Every instance builds the same ROMs, so each hit plays exactly the same
+waveform.
+
+### Hi-hat and cymbal samples
+
+For the original 909 sound, give the plug-in your own 909 recordings. When an
+instance starts, it looks in `$MLA09_SAMPLES`, or else
+`~/.local/share/mlacker/mla09/`, for these files (`.wav`, `.aif` or `.aiff`):
+
+| File        | Plays as |
+|-------------|----------|
+| `closedhat` (or `hihat`) | both hats, or just the closed hat when `openhat` is there |
+| `openhat`   | the open hat |
+| `crash`     | the crash |
+| `ride`      | the ride |
+
+Each file is mixed to mono and trimmed to the hit. It is resampled to the
+32 kHz ROM clock and normalized, up to the ROM's capacity (1 s for each hat,
+2 s for each cymbal). Missing files keep their built-in ROM.
+
+- **Hat recordings** already carry the 909's decay. Record them at full
+  Decay. A loaded hat's VCA leaves it as recorded at full Decay, and at lower
+  settings shortens it to the 909's measured lengths.
+- **Cymbal recordings** are best made at centred Tune, which is where the
+  plug-in's Tune plays them unchanged.
+
+Samples are not part of a saved project. Each machine reads its own folder.
 
 ## Parameters
 
@@ -119,12 +176,12 @@ exactly the same waveform. Playback works like the 909's:
 | 101 | Accent     | 0..1 | Accented level: 0 to +9 dB (default 0.5 = +4.5 dB). |
 | 102 | Dynamics   | 909 Accent / Velocity | |
 | 103 | BD Level   | -60 .. +6 dB | |
-| 104 | BD Tune    | 0..1 | Pitch sweep depth and length. |
+| 104 | BD Tune    | 0..1 | Pitch glide length. |
 | 105 | BD Attack  | 0..1 | Click level. |
 | 106 | BD Decay   | 0..1 | |
 | 107 | SD Level   | -60 .. +6 dB | |
 | 108 | SD Tune    | 0..1 | |
-| 109 | SD Tone    | 0..1 | Noise brightness and length. |
+| 109 | SD Tone    | 0..1 | Noise length. |
 | 110 | SD Snappy  | 0..1 | Noise level. |
 | 111 | LT Level   | -60 .. +6 dB | |
 | 112 | LT Tune    | 0..1 | |
@@ -142,9 +199,36 @@ exactly the same waveform. Playback works like the 909's:
 | 124 | OH Level   | -60 .. +6 dB | |
 | 125 | OH Decay   | 0..1 | |
 | 126 | CR Level   | -60 .. +6 dB | |
-| 127 | CR Tune    | 0..1 | ROM clock 0.71x .. 1.41x. |
+| 127 | CR Tune    | 0..1 | ROM clock 0.76x .. 1.6x. |
 | 128 | RD Level   | -60 .. +6 dB | |
-| 129 | RD Tune    | 0..1 | ROM clock 0.71x .. 1.41x. |
+| 129 | RD Tune    | 0..1 | ROM clock 0.78x .. 1.52x. |
+| 130 | Drive      | 0..1 | Output distortion (default 0, clean). Not on the 909. |
+
+## MIDI controllers
+
+Every level and knob also answers to a MIDI CC, so an Instrument track's CC
+columns (or a hardware controller) can turn the panel while a pattern plays:
+
+| CC      | Parameters |
+|---------|------------|
+| 7       | Output |
+| 20-30   | BD, SD, LT, MT, HT, RS, CP, CH, OH, CR, RD Level |
+| 102     | Accent |
+| 103-105 | BD Tune, Attack, Decay |
+| 106-108 | SD Tune, Tone, Snappy |
+| 109-114 | LT Tune, LT Decay, MT Tune, MT Decay, HT Tune, HT Decay |
+| 115-116 | CH Decay, OH Decay |
+| 117-118 | CR Tune, RD Tune |
+| 119     | Drive |
+
+A CC value 0-127 sets the parameter's whole range (the levels' -60 to +6 dB, the knobs' 0..1).
+
+## Drive
+
+**Drive** distorts the whole kit's output, like overdriving the 909's mixer.
+It is a tanh saturator whose input gain rises with the knob, up to +28 dB.
+Its output is levelled so a loud hit keeps about its peak level, while quieter
+parts and tails come up. At 0 the output is untouched.
 
 The knobs are 0..1 and centred by default. Parameter IDs are stable, and new
 parameters are appended. A parameter's DSP index (`mla09_set`) is its ID minus
@@ -183,17 +267,23 @@ classes and checks rendered audio:
 - silence, the key map and ignored note-offs
 - sample-accurate hits
 - each voice's level and length
-- the bass drum's Tune sweep, resting pitch, Decay range and Attack click
-- the snare's Tune, Tone and Snappy
-- tom tuning, pitch bend and Decay
+- the bass drum against the 909: its glide's cycles, resting pitch, hold,
+  Decay range and the Attack click
+- the snare's Tune (114 to 222 Hz), Snappy, and Tone setting the noise's
+  length but not its colour
+- each tom's settling pitch, glide and Decay
 - the ROM voices:
   - the same waveform on every hit and in every instance, unlike the analog
     noise
-  - the hats' brightness and Decay knobs
+  - the hats' brightness and their lengths at both ends of Decay
   - the closed hat choking the open hat
-  - the cymbals' Tune changing both pitch and length
+  - the cymbals' Tune changing both pitch and length, and the ride being
+    brighter than the crash
+- a recording in the samples folder replacing the crash ROM
+- Drive
 - accent and velocity dynamics
 - click-free rolls
+- the MIDI CC map
 - state round trips
 
 Given an output directory as a second argument, the test runner also writes

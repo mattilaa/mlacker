@@ -8,29 +8,23 @@
 /// Like the 909, the machine is a hybrid:
 ///
 /// - **Analog voices.** Bass drum, snare, three toms, rim shot and hand clap
-///   are synthesized, following the 909's circuits:
-///   - *Bass drum.* A VCO shaped to a rounded sine, swept down from several
-///     times its pitch to about 50 Hz by a pitch envelope (Tune sets how far
-///     and how long it sweeps), through a VCA with Decay. Attack mixes in the
-///     click: a short pulse and a burst of filtered noise.
-///   - *Snare.* Two VCOs (about 180 and 330 Hz) with a short pitch drop, plus
-///     white noise through a high-pass and a low-pass. Tune moves both VCOs,
-///     Tone brightens the noise and lengthens it, Snappy sets its level.
-///   - *Toms.* A VCO with a pronounced downward pitch bend, a little filtered
-///     noise on the attack, and Tune and Decay.
-///   - *Rim shot.* Three short rings, high-passed and driven.
-///   - *Hand clap.* Band-passed noise struck by three sawtooth bursts and
-///     then a longer tail.
-/// - **Sampled voices.** The closed and open hi-hat, crash and ride play
-///   6-bit samples from ROM. Roland's ROM data is not ours to ship, so
-///   `M09::new` builds the four ROMs itself in the 909's format: metallic
+///   are synthesized. The bass drum, snare, toms and rim shot follow
+///   measurements of TR-909 recordings made across their knobs (Tune, Attack,
+///   Decay, Tone, Snappy at panel positions 1, 3, 6, 9 and 11): pitch glides,
+///   VCA holds and decays, harmonics, noise colour and lengths. Each voice's
+///   comment has its numbers.
+/// - **Sampled voices.** The hi-hats (both from one ROM, as on the 909),
+///   crash and ride play samples from ROM. Roland's ROM data is not ours to
+///   ship, so `M09::new` builds the ROMs itself in the 909's format: metallic
 ///   recordings (inharmonic partials with frequency-dependent decays over
-///   filtered noise and a stick transient) at a 32 kHz ROM clock, normalized
-///   and quantized to 64 levels. Playback reads them like the 909: from the
-///   start on every hit, through the 6-bit DAC (the quantization stays in),
-///   then a VCA. The hats' VCA has Decay; the closed hat chokes the open hat.
-///   The cymbals' Tune changes the ROM clock, so a lower tune is also longer.
-/// - **Accent** scales a hit's level.
+///   filtered noise and a stick transient) at a 32 kHz ROM clock, quantized to
+///   64 levels, and fitted to the spectra and lengths of 909 recordings.
+///   Recordings can replace them (`mla09_rom_begin`, `mla09_rom_write`; the
+///   C++ side loads them from a folder). Playback reads a ROM from the start
+///   on every hit, then a VCA. The hats' VCA has Decay; the closed hat chokes
+///   the open hat. The cymbals' Tune changes the ROM clock, so a lower tune
+///   is also longer.
+/// - **Accent** scales a hit's level; **Drive** saturates the output.
 ///
 /// Parameter indexes for `mla09_set` are listed there. Knobs are 0..1, as on
 /// the panel; the C++ side maps levels to linear gains.
@@ -74,9 +68,8 @@ fn pi() -> f32 { return 3.14159265358979323846f; }
 /// The ROM clock the samples are stored at, in Hz.
 fn rom_rate() -> f32 { return 32000.0f; }
 
-/// ROM lengths in words: the hats are short, the cymbals long.
-fn ch_words() -> i64 { return 8192; }
-fn oh_words() -> i64 { return 32768; }
+/// ROM capacities in words: the hi-hat ROM (both hats) and each cymbal.
+fn hat_words() -> i64 { return 32768; }
 fn cymbal_words() -> i64 { return 65536; }
 
 fn sclamp(value: f32, low: f32, high: f32) -> f32 {
@@ -238,65 +231,341 @@ impl Vca {
     }
 }
 
-/// One of the 909's toms: a VCO bent down from above its pitch, a VCA with
-/// Decay, and a little low-passed noise on the attack.
-struct Tom {
-    var vco: Vco;
+
+/// Geometric interpolation through five values at knob 0, 0.2, 0.5, 0.8, 1
+/// (the 909 panel's positions 1, 3, 6, 9 and 11 of 1..11, where the
+/// reference recordings were made).
+fn knob5(k: f32, v0: f32, v1: f32, v2: f32, v3: f32, v4: f32) -> f32 {
+    let x: f32 = sclamp(k, 0.0f, 1.0f);
+    if x < 0.2f { return v0 * expf(x / 0.2f * logf(v1 / v0)); }
+    if x < 0.5f { return v1 * expf((x - 0.2f) / 0.3f * logf(v2 / v1)); }
+    if x < 0.8f { return v2 * expf((x - 0.5f) / 0.3f * logf(v3 / v2)); }
+    return v3 * expf((x - 0.8f) / 0.2f * logf(v4 / v3));
+}
+
+/// Follow an amplitude target: rise to it over about 0.4 ms (`rise`), so a
+/// harder hit on a sounding drum never jumps mid-cycle, fall with it at once.
+fn follow(current: f32, target: f32, rise: f32) -> f32 {
+    if target > current { return current + (target - current) * rise; }
+    return target;
+}
+
+fn two_pi() -> f32 { return 6.28318530717958647692f; }
+
+/// The 909 bass drum, fitted to recordings of a TR-909 across its Tune,
+/// Attack and Decay knobs:
+///
+/// - The VCO glides down exponentially from about 250 Hz to 53.5 Hz. Tune sets
+///   the glide's time constant: 5.2 ms at the minimum, 11 ms at the centre,
+///   28 ms at the maximum.
+/// - The wave is a nearly pure sine (2nd harmonic -29 dB, 3rd -26.5 dB),
+///   starting downwards.
+/// - The VCA holds the level for 50 ms, through the whole glide, then decays:
+///   a time constant of 17 ms (Decay minimum) to 105 ms (maximum), over a
+///   quiet tail 25 dB down. During the hold a decaying offset pushes one side
+///   of the wave into the output stage's clip, which flattens those half
+///   cycles, as on the recordings.
+/// - Attack mixes in more of the click: a burst of band-passed noise on top
+///   of the step the hit itself makes.
+struct BassDrum {
+    var phase: f32;
+    /// Seconds since the hit; negative while idle.
+    var t: f32;
+    var gain: f32;
+    var amp: f32;
+    var click: f32;
+    var click_hp: Svf;
+    var click_lp: Svf;
+    var dt: f32;
+    var rise: f32;
+    var click_coef: f32;
+    var glide_tau: f32;
+    var rest_hz: f32;
+    var decay_tau: f32;
+    var attack: f32;
+};
+
+impl BassDrum {
+    fn new() -> BassDrum {
+        return BassDrum { phase: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, click: 0.0f, click_hp: Svf::new(),
+                          click_lp: Svf::new(), dt: 0.0f, rise: 1.0f, click_coef: 0.0f, glide_tau: 0.013f, rest_hz: 54.1f,
+                          decay_tau: 0.062f, attack: 0.5f };
+    }
+
+    fn configure(self: &mut Self, rate: f32) -> void {
+        self.dt = 1.0f / rate;
+        self.rise = 1.0f - decay_coef(0.0004f, rate);
+        self.click_coef = decay_coef(0.0024f, rate);
+        self.click_hp.configure(1000.0f, 0.70710678f, rate);
+        self.click_lp.configure(7000.0f, 0.70710678f, rate);
+    }
+
+    fn knobs(self: &mut Self, tune: f32, attack: f32, decay: f32) -> void {
+        self.glide_tau = knob5(tune, 0.0069f, 0.0081f, 0.013f, 0.0238f, 0.0305f);
+        self.rest_hz = 53.0f + 2.2f * (1.0f - sclamp(decay, 0.0f, 1.0f));
+        self.decay_tau = knob5(decay, 0.017f, 0.033f, 0.062f, 0.085f, 0.105f);
+        self.attack = sclamp(attack, 0.0f, 1.0f);
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.phase = 0.0f; self.t = -1.0f; self.amp = 0.0f; self.click = 0.0f;
+        self.click_hp.reset(); self.click_lp.reset();
+    }
+
+    fn strike(self: &mut Self, gain: f32) -> void {
+        if self.t < 0.0f { self.phase = 0.0f; self.amp = 0.0f; }
+        self.t = 0.0f;
+        self.gain = gain;
+        self.click = gain;
+    }
+
+    fn active(self: BassDrum) -> bool { return self.t >= 0.0f; }
+
+    /// The VCA's shape since the hit: the hold, then the decay over its tail.
+    fn shape(self: BassDrum) -> f32 {
+        let hold: f32 = 0.05f;
+        if self.t < hold { return 1.0f; }
+        let u: f32 = self.t - hold;
+        return 0.88f * expf(-u / self.decay_tau) + 0.12f * expf(-u / 0.11f);
+    }
+
+    fn tick(self: &mut Self, white: f32) -> f32 {
+        if self.t < 0.0f { return 0.0f; }
+        let hz: f32 = self.rest_hz + 216.0f * expf(-self.t / self.glide_tau);
+        self.phase = self.phase + hz * self.dt;
+        if self.phase >= 1.0f { self.phase = self.phase - 1.0f; }
+        let s: f32 = -sinf(two_pi() * self.phase);
+        // A gently rounded sine: the 3rd harmonic at -26.5 dB, the 2nd at -29.
+        let w: f32 = (s - 0.16f * s * s * s) / 0.84f + 0.07f * (s * s - 0.5f);
+        self.amp = follow(self.amp, self.gain * self.shape(), self.rise);
+        let offset: f32 = -0.3f * self.gain * expf(-self.t / 0.04f);
+        var y: f32 = self.amp * w + offset;
+        // The output stage's clip, with a hard knee at the hit's level.
+        let u: f32 = fabsf(y) / smax(self.gain, 0.001f);
+        let u2: f32 = u * u;
+        let u4: f32 = u2 * u2;
+        y = y / powf(1.0f + u4 * u4, 0.125f);
+        // The click: band-passed noise, more of it with Attack.
+        let n: f32 = self.click_lp.process(self.click_hp.process(white, 1), 0);
+        y = y + n * self.click * (0.075f + 0.09f * self.attack);
+        self.click = self.click * self.click_coef;
+        self.t = self.t + self.dt;
+        if self.t > 0.05f + 14.0f * self.decay_tau && self.amp < silent() { self.t = -1.0f; }
+        if self.t > 2.0f { self.t = -1.0f; }
+        return y;
+    }
+}
+
+/// The 909 snare, fitted to recordings across Tune, Tone and Snappy:
+///
+/// - Two VCOs at a 1 : 1.5 ratio, the upper 12.7 dB down. Tune sets the
+///   lower one from 114 Hz to 222 Hz (166 Hz at the centre). Both start 2.4
+///   times higher and drop within a few milliseconds (time constant 4 ms),
+///   then decay with a 25 ms time constant.
+/// - Noise band-passed to its 6 .. 10 kHz centre. Snappy sets its level
+///   (about -27 dB against the tone at a third of the way, -16 dB at the
+///   centre, -10.5 dB at the top). Tone sets how long the noise holds before
+///   it fades: 40 ms at the minimum, 110 ms at the centre, 135 ms at the top,
+///   then a 25 .. 65 ms fade. Tone does not change the noise's colour.
+struct Snare {
+    var phase1: f32;
+    var phase2: f32;
+    var t: f32;
+    var gain: f32;
+    var amp: f32;
+    var noise_amp: f32;
+    var hp: Svf;
+    var hp2: Svf;
+    var lp: Svf;
+    var lp2: Svf;
+    var dt: f32;
+    var rise: f32;
     var hz: f32;
-    var env: Vca;
-    var damp: f32;
-    var bend: f32;
-    var bend_coef: f32;
-    var noise: f32;
-    var noise_coef: f32;
-    var noise_lp: Svf;
-    var noise_hp: Svf;
+    var hold: f32;
+    var fade: f32;
+    var snappy: f32;
+};
+
+impl Snare {
+    fn new() -> Snare {
+        return Snare { phase1: 0.0f, phase2: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, noise_amp: 0.0f,
+                       hp: Svf::new(), hp2: Svf::new(), lp: Svf::new(), lp2: Svf::new(), dt: 0.0f, rise: 1.0f,
+                       hz: 166.0f, hold: 0.11f, fade: 0.045f, snappy: 0.16f };
+    }
+
+    fn configure(self: &mut Self, rate: f32) -> void {
+        self.dt = 1.0f / rate;
+        self.rise = 1.0f - decay_coef(0.0004f, rate);
+        self.hp.configure(3800.0f, 0.70710678f, rate);
+        self.hp2.configure(2000.0f, 0.70710678f, rate);
+        self.lp.configure(10000.0f, 0.70710678f, rate);
+        self.lp2.configure(12000.0f, 0.70710678f, rate);
+    }
+
+    fn knobs(self: &mut Self, tune: f32, tone: f32, snappy: f32) -> void {
+        self.hz = knob3(tune, 114.0f, 166.0f, 222.0f);
+        self.hold = knob3(tone, 0.05f, 0.12f, 0.15f);
+        self.fade = knob3(tone, 0.025f, 0.05f, 0.06f);
+        self.snappy = knob5(snappy, 0.004f, 0.027f, 0.1f, 0.16f, 0.19f);
+    }
+
+    fn reset(self: &mut Self) -> void {
+        self.phase1 = 0.0f; self.phase2 = 0.0f; self.t = -1.0f; self.amp = 0.0f; self.noise_amp = 0.0f;
+        self.hp.reset(); self.hp2.reset(); self.lp.reset(); self.lp2.reset();
+    }
+
+    fn strike(self: &mut Self, gain: f32) -> void {
+        if self.t < 0.0f { self.phase1 = 0.0f; self.phase2 = 0.0f; self.amp = 0.0f; self.noise_amp = 0.0f; }
+        self.t = 0.0f;
+        self.gain = gain;
+    }
+
+    fn active(self: Snare) -> bool { return self.t >= 0.0f; }
+
+    fn tick(self: &mut Self, white: f32) -> f32 {
+        // The noise filters run all the time, so a hit never starts on a
+        // resting filter.
+        let n: f32 = self.lp2.process(self.lp.process(self.hp2.process(self.hp.process(white, 1), 1), 0), 0);
+        if self.t < 0.0f { return 0.0f; }
+        let bend: f32 = 1.0f + 1.4f * expf(-self.t / 0.0045f) + 0.2f * expf(-self.t / 0.015f);
+        self.phase1 = self.phase1 + self.hz * bend * self.dt;
+        if self.phase1 >= 1.0f { self.phase1 = self.phase1 - 1.0f; }
+        self.phase2 = self.phase2 + 1.5f * self.hz * bend * self.dt;
+        if self.phase2 >= 1.0f { self.phase2 = self.phase2 - 1.0f; }
+        let s1: f32 = sinf(two_pi() * self.phase1);
+        // The lower VCO carries its 2nd harmonic (-20 dB), as on the recordings.
+        let tone: f32 = s1 + 0.2f * (s1 * s1 - 0.5f) + 0.23f * sinf(two_pi() * self.phase2);
+        // A fast drop to about -19 dB, then a quiet tonal tail.
+        let te: f32 = 0.88f * expf(-self.t / 0.022f) + 0.12f * expf(-self.t / 0.16f);
+        self.amp = follow(self.amp, self.gain * te, self.rise);
+        // The noise: a short burst, then a slow sag through the hold, then
+        // the fade.
+        var e: f32 = expf(-self.t / 0.3f);
+        if self.t > self.hold { e = expf(-self.hold / 0.3f) * expf(-(self.t - self.hold) / self.fade); }
+        e = e + 1.0f * expf(-self.t / 0.002f);
+        self.noise_amp = follow(self.noise_amp, self.gain * self.snappy * e, self.rise);
+        let out: f32 = self.amp * tone + self.noise_amp * n * 4.0f;
+        self.t = self.t + self.dt;
+        if self.t > 2.5f || (self.t > self.hold + 14.0f * self.fade && self.amp < silent()) { self.t = -1.0f; }
+        return out;
+    }
+}
+
+/// One of the 909's toms, fitted to recordings across Tune and Decay: a soft
+/// triangle-like VCO (2nd and 3rd harmonics about -16 dB) that glides down
+/// from 30% above its pitch (time constant 40 ms), a VCA that holds and then
+/// decays, and 20-odd ms of high noise on the attack. Tune: low tom 60 .. 120 Hz,
+/// mid 76 .. 157 Hz, high 90 .. 172 Hz (where each settles).
+struct Tom {
+    var phase: f32;
+    var t: f32;
+    var gain: f32;
+    var amp: f32;
+    var hp: Svf;
+    var dt: f32;
+    var rise: f32;
+    var hz: f32;
+    var hold: f32;
+    var tau: f32;
 };
 
 impl Tom {
     fn new() -> Tom {
-        return Tom { vco: Vco::new(), hz: 100.0f, env: Vca::new(), damp: 0.0f, bend: 0.0f, bend_coef: 0.0f,
-                     noise: 0.0f, noise_coef: 0.0f, noise_lp: Svf::new(), noise_hp: Svf::new() };
+        return Tom { phase: 0.0f, t: -1.0f, gain: 0.0f, amp: 0.0f, hp: Svf::new(), dt: 0.0f, rise: 1.0f,
+                     hz: 100.0f, hold: 0.08f, tau: 0.1f };
     }
 
     fn configure(self: &mut Self, rate: f32) -> void {
-        self.env.configure(rate);
-        self.bend_coef = decay_coef(0.025f, rate);
-        self.noise_coef = decay_coef(0.012f, rate);
+        self.dt = 1.0f / rate;
+        self.rise = 1.0f - decay_coef(0.0004f, rate);
+        self.hp.configure(1500.0f, 0.70710678f, rate);
     }
 
-    /// Pitch and decay time constant.
-    fn retune(self: &mut Self, hz: f32, tau: f32, rate: f32) -> void {
-        self.hz = hz;
-        self.damp = decay_coef(tau, rate);
-        self.noise_hp.configure(hz * 1.5f, 0.70710678f, rate);
-        self.noise_lp.configure(hz * 8.0f + 600.0f, 0.70710678f, rate);
+    /// Pitch, and the decay's hold and time constant.
+    fn knobs(self: &mut Self, hz: f32, hold: f32, tau: f32) -> void { self.hz = hz; self.hold = hold; self.tau = tau; }
+
+    fn reset(self: &mut Self) -> void { self.phase = 0.0f; self.t = -1.0f; self.amp = 0.0f; self.hp.reset(); }
+
+    fn strike(self: &mut Self, gain: f32) -> void {
+        if self.t < 0.0f { self.phase = 0.0f; self.amp = 0.0f; }
+        self.t = 0.0f;
+        self.gain = gain;
     }
 
-    fn reset(self: &mut Self) -> void {
-        self.vco.reset(); self.env.reset(); self.bend = 0.0f; self.noise = 0.0f;
-        self.noise_lp.reset(); self.noise_hp.reset();
-    }
+    fn active(self: Tom) -> bool { return self.t >= 0.0f; }
 
-    fn strike(self: &mut Self, level: f32) -> void {
-        if !self.env.sounding() { self.vco.reset(); }
-        self.env.strike(level);
-        self.bend = 1.0f;
-        self.noise = restrike(self.noise, 0.35f * level);
-    }
-
-    fn active(self: Tom) -> bool { return self.env.sounding() || self.noise > silent(); }
-
-    fn tick(self: &mut Self, white: f32, rate: f32) -> f32 {
-        // The 909 tom starts about 60% above its pitch and bends down.
-        let hz: f32 = self.hz * (1.0f + 0.6f * self.bend);
-        self.bend = self.bend * self.bend_coef;
-        var out: f32 = self.vco.tick(hz, 1.2f, rate) * self.env.tick(self.damp);
-        if self.noise > silent() {
-            out = out + self.noise_lp.process(self.noise_hp.process(white, 1), 0) * self.noise;
-            self.noise = self.noise * self.noise_coef;
-        }
+    fn tick(self: &mut Self, white: f32) -> f32 {
+        let n: f32 = self.hp.process(white, 1);
+        if self.t < 0.0f { return 0.0f; }
+        self.phase = self.phase + self.hz * (1.0f + 0.3f * expf(-self.t / 0.04f)) * self.dt;
+        if self.phase >= 1.0f { self.phase = self.phase - 1.0f; }
+        let s: f32 = sinf(two_pi() * self.phase);
+        let w: f32 = tanhf(1.2f * s) / tanhf(1.2f) + 0.16f * (s * s - 0.5f);
+        var e: f32 = 1.0f;
+        if self.t > self.hold { e = expf(-(self.t - self.hold) / self.tau); }
+        self.amp = follow(self.amp, self.gain * e, self.rise);
+        let out: f32 = self.amp * w + n * self.gain * 0.2f * expf(-self.t / 0.015f);
+        self.t = self.t + self.dt;
+        if self.t > self.hold + 14.0f * self.tau && self.amp < silent() { self.t = -1.0f; }
         return out;
+    }
+}
+
+/// The 909 rim shot, fitted to recordings: 485 Hz and 217 Hz driven hard
+/// into an asymmetric clip, a nearly rectangular wave that starts on a
+/// narrow negative pulse (about 29% of each cycle) with wide positive ones
+/// at about half its height. It holds for 10.5 ms, then the drive falls and
+/// it decays (time constants 12 ms, then 30 ms).
+struct RimShot {
+    var t: f32;
+    var gain: f32;
+    var phase1: f32;
+    var phase2: f32;
+    var hp: Svf;
+    var dt: f32;
+};
+
+impl RimShot {
+    fn new() -> RimShot { return RimShot { t: -1.0f, gain: 1.0f, phase1: 0.0f, phase2: 0.0f, hp: Svf::new(), dt: 0.0f }; }
+
+    fn configure(self: &mut Self, rate: f32) -> void {
+        self.dt = 1.0f / rate;
+        self.hp.configure(8.0f, 0.70710678f, rate);
+    }
+
+    fn reset(self: &mut Self) -> void { self.t = -1.0f; self.hp.reset(); }
+
+    fn strike(self: &mut Self, gain: f32) -> void {
+        // The first negative pulse peaks 0.3 ms after the hit.
+        if self.t < 0.0f { self.phase1 = 0.105f; self.phase2 = 0.5f; }
+        self.t = 0.0f;
+        self.gain = gain;
+    }
+
+    fn active(self: RimShot) -> bool { return self.t >= 0.0f; }
+
+    fn tick(self: &mut Self) -> f32 {
+        if self.t < 0.0f { return self.hp.process(0.0f, 1); }
+        let v: f32 = -sinf(two_pi() * self.phase1) - 0.85f * sinf(two_pi() * self.phase2);
+        self.phase1 = self.phase1 + 485.0f * self.dt;
+        if self.phase1 >= 1.0f { self.phase1 = self.phase1 - 1.0f; }
+        self.phase2 = self.phase2 + 217.0f * self.dt;
+        if self.phase2 >= 1.0f { self.phase2 = self.phase2 - 1.0f; }
+        let gate: f32 = 0.0105f;
+        // Driven: the clipped, nearly rectangular wave.
+        let u: f32 = tanhf(10.0f * (v + 0.55f)) / tanhf(10.0f);
+        let clipped: f32 = u > 0.0f ? 0.55f * u : u;
+        var y: f32 = clipped;
+        if self.t >= gate {
+            // After the gate the drive is gone: the rings decay on their own.
+            let w: f32 = self.t - gate;
+            let x: f32 = expf(-w / 0.0008f);
+            let ring: f32 = v * 0.4f * (0.75f * expf(-w / 0.008f) + 0.25f * expf(-w / 0.03f));
+            y = clipped * x + ring * (1.0f - x);
+        }
+        self.t = self.t + self.dt;
+        if self.t > 0.3f { self.t = -1.0f; }
+        return self.hp.process(y * self.gain, 1);
     }
 }
 
@@ -476,6 +745,15 @@ fn build_rom(rom: &list<f32>, words: i64, spec: MetalSpec, seed: i64) -> void {
     }
 }
 
+
+/// ROM indexes for `mla09_rom_*`.
+fn rom_hat() -> i32 { return 0; }
+fn rom_crash() -> i32 { return 1; }
+fn rom_ride() -> i32 { return 2; }
+/// An optional open-hat ROM: with it loaded the open hat plays it, otherwise
+/// both hats play the hi-hat ROM.
+fn rom_open_hat() -> i32 { return 3; }
+
 /// The whole machine.
 struct M09 {
     var rate: f32;
@@ -510,6 +788,8 @@ struct M09 {
     var oh_decay: f32;
     var cr_tune: f32;
     var rd_tune: f32;
+    /// Output distortion, 0..1 (0 = clean).
+    var drive: f32;
     /// Accent amount 0..1 (0 = none, 1 = +9 dB).
     var accent: f32;
     /// 0: two levels (velocity above 100 accents); 1: velocity scales the level.
@@ -517,56 +797,13 @@ struct M09 {
     var output_target: f32;
     var output_gain: f32;
 
-    // --- Bass drum ---------------------------------------------------------
-    var bd_vco: Vco;
-    var bd_env: Vca;
-    var bd_decay_env: Decay;
-    /// Pitch envelope: a slow sweep and a fast kick at the very start.
-    var bd_sweep: f32;
-    var bd_sweep_coef: f32;
-    var bd_sweep_depth: f32;
-    var bd_kick: f32;
-    var bd_kick_coef: f32;
-    var bd_hz: f32;
-    /// The click: a pulse (samples left), then a noise burst.
-    var bd_pulse_left: f32;
-    var bd_pulse_samples: f32;
-    var bd_pulse_lp: f32;
-    var bd_pulse_lp_coef: f32;
-    var bd_click: f32;
-    var bd_click_coef: f32;
-    var bd_click_level: f32;
-    var bd_click_hp: Svf;
-    var bd_click_lp: Svf;
-
-    // --- Snare -------------------------------------------------------------
-    var sd_vco1: Vco;
-    var sd_vco2: Vco;
-    var sd_env1: Vca;
-    var sd_env2: Vca;
-    var sd_damp1: f32;
-    var sd_damp2: f32;
-    var sd_bend: f32;
-    var sd_bend_coef: f32;
-    var sd_noise: f32;
-    var sd_noise_decay: Decay;
-    var sd_hp: Svf;
-    var sd_lp: Svf;
-
-    // --- Toms --------------------------------------------------------------
+    // --- Analog voices -------------------------------------------------------
+    var bd: BassDrum;
+    var sd: Snare;
     var lt: Tom;
     var mt: Tom;
     var ht: Tom;
-
-    // --- Rim shot ------------------------------------------------------------
-    var rs1: Resonator;
-    var rs2: Resonator;
-    var rs3: Resonator;
-    var rs_damp1: f32;
-    var rs_damp2: f32;
-    var rs_damp3: f32;
-    var rs_hp: Svf;
-    var rs_gain: f32;
+    var rs: RimShot;
 
     // --- Hand clap -----------------------------------------------------------
     var cp_bp: Svf;
@@ -582,10 +819,21 @@ struct M09 {
     var cp_tail_coef: f32;
 
     // --- Sampled voices --------------------------------------------------------
-    var rom_ch: list<f32>;
-    var rom_oh: list<f32>;
+    /// The ROMs: one hi-hat ROM that both hats play (as on the 909), the
+    /// crash and the ride. Built in, or loaded with `mla09_rom_*`; the lengths
+    /// in use are at most the lists' capacity.
+    var rom_hat: list<f32>;
     var rom_cr: list<f32>;
     var rom_rd: list<f32>;
+    var rom_oh: list<f32>;
+    var oh_len: i64;
+    /// Loaded hat recordings carry their own decay (recorded at full Decay),
+    /// so their VCA times are solved to shorten them to the 909's lengths at
+    /// lower Decay and leave them as recorded at full Decay.
+    var hats_recorded: bool;
+    var hat_len: i64;
+    var cr_len: i64;
+    var rd_len: i64;
     var ch: RomVoice;
     var oh: RomVoice;
     var cr: RomVoice;
@@ -618,21 +866,14 @@ impl M09 {
             level_cp: 1.0f, level_ch: 1.0f, level_oh: 1.0f, level_cr: 1.0f, level_rd: 1.0f,
             bd_tune: 0.5f, bd_attack: 0.5f, bd_decay: 0.5f, sd_tune: 0.5f, sd_tone: 0.5f, snappy: 0.5f,
             lt_tune: 0.5f, lt_decay: 0.5f, mt_tune: 0.5f, mt_decay: 0.5f, ht_tune: 0.5f, ht_decay: 0.5f,
-            ch_decay: 0.5f, oh_decay: 0.5f, cr_tune: 0.5f, rd_tune: 0.5f,
+            ch_decay: 0.5f, oh_decay: 0.5f, cr_tune: 0.5f, rd_tune: 0.5f, drive: 0.0f,
             accent: 0.5f, dynamics: 0, output_target: 1.0f, output_gain: 1.0f,
-            bd_vco: Vco::new(), bd_env: Vca::new(), bd_decay_env: Decay::new(),
-            bd_sweep: 0.0f, bd_sweep_coef: 0.0f, bd_sweep_depth: 0.0f, bd_kick: 0.0f, bd_kick_coef: 0.0f, bd_hz: 50.0f,
-            bd_pulse_left: 0.0f, bd_pulse_samples: 1.0f, bd_pulse_lp: 0.0f, bd_pulse_lp_coef: 0.0f,
-            bd_click: 0.0f, bd_click_coef: 0.0f, bd_click_level: 0.0f, bd_click_hp: Svf::new(), bd_click_lp: Svf::new(),
-            sd_vco1: Vco::new(), sd_vco2: Vco::new(), sd_env1: Vca::new(), sd_env2: Vca::new(), sd_damp1: 0.0f, sd_damp2: 0.0f,
-            sd_bend: 0.0f, sd_bend_coef: 0.0f, sd_noise: 0.0f, sd_noise_decay: Decay::new(), sd_hp: Svf::new(), sd_lp: Svf::new(),
-            lt: Tom::new(), mt: Tom::new(), ht: Tom::new(),
-            rs1: Resonator::new(), rs2: Resonator::new(), rs3: Resonator::new(),
-            rs_damp1: 0.0f, rs_damp2: 0.0f, rs_damp3: 0.0f, rs_hp: Svf::new(), rs_gain: 1.0f,
+            bd: BassDrum::new(), sd: Snare::new(), lt: Tom::new(), mt: Tom::new(), ht: Tom::new(), rs: RimShot::new(),
             cp_bp: Svf::new(), cp_hp: Svf::new(), cp_tail_bp: Svf::new(), cp_time: -1.0f, cp_level: 0.0f,
             cp_burst: 0.0f, cp_burst_coef: 0.0f, cp_tail: 0.0f, cp_tail_coef: 0.0f,
-            rom_ch: [0.0f; ch_words()], rom_oh: [0.0f; oh_words()],
-            rom_cr: [0.0f; cymbal_words()], rom_rd: [0.0f; cymbal_words()],
+            rom_hat: [0.0f; hat_words()], rom_cr: [0.0f; cymbal_words()], rom_rd: [0.0f; cymbal_words()],
+            rom_oh: [0.0f; hat_words()], oh_len: 0, hats_recorded: false,
+            hat_len: hat_words(), cr_len: cymbal_words(), rd_len: cymbal_words(),
             ch: RomVoice::new(), oh: RomVoice::new(), cr: RomVoice::new(), rd: RomVoice::new(),
             hat_step: 1.0f, cr_step: 1.0f, rd_step: 1.0f,
             ch_env: 0.0f, ch_decay_env: Decay::new(), oh_env: 0.0f, oh_decay_env: Decay::new(), oh_choked: false,
@@ -644,56 +885,37 @@ impl M09 {
         return m;
     }
 
-    /// The four ROMs, built once per instance.
+    /// The built-in ROMs, fitted to the spectra and lengths of TR-909
+    /// recordings (both hats from one ROM, as on the 909).
     fn build_roms(self: &mut Self) -> void {
-        // Closed hat: a tight, noisy sizzle high up.
-        build_rom(self.rom_ch, ch_words(), MetalSpec {
-            partials: 36, low_hz: 5200.0f, high_hz: 14500.0f, tau: 0.05f, tilt: 0.5f, partial_level: 0.9f,
-            swell: 0.0f, noise_level: 0.7f, noise_tau: 0.035f, noise_hz: 6500.0f, stick_level: 0.5f, stick_tau: 0.0015f
-        }, 909001);
-        // Open hat: the same metal ringing on.
-        build_rom(self.rom_oh, oh_words(), MetalSpec {
-            partials: 56, low_hz: 4600.0f, high_hz: 14500.0f, tau: 0.45f, tilt: 0.6f, partial_level: 1.0f,
-            swell: 0.1f, noise_level: 0.6f, noise_tau: 0.3f, noise_hz: 5500.0f, stick_level: 0.4f, stick_tau: 0.0015f
+        build_rom(self.rom_hat, hat_words(), MetalSpec {
+            partials: 64, low_hz: 4500.0f, high_hz: 14500.0f, tau: 0.45f, tilt: 0.35f, partial_level: 1.0f,
+            swell: 0.0f, noise_level: 0.6f, noise_tau: 0.35f, noise_hz: 900.0f, stick_level: 0.45f, stick_tau: 0.0012f
         }, 909002);
-        // Crash: a broad wash that swells after the hit and fades for seconds.
         build_rom(self.rom_cr, cymbal_words(), MetalSpec {
-            partials: 72, low_hz: 2400.0f, high_hz: 15000.0f, tau: 0.75f, tilt: 0.75f, partial_level: 1.0f,
-            swell: 0.45f, noise_level: 0.9f, noise_tau: 0.55f, noise_hz: 3200.0f, stick_level: 0.5f, stick_tau: 0.002f
+            partials: 72, low_hz: 1300.0f, high_hz: 9500.0f, tau: 0.3f, tilt: 0.55f, partial_level: 1.0f,
+            swell: 0.3f, noise_level: 0.8f, noise_tau: 0.22f, noise_hz: 2200.0f, stick_level: 0.4f, stick_tau: 0.002f
         }, 909003);
-        // Ride: a clear ping from lower, longer partials over a quiet hiss.
         build_rom(self.rom_rd, cymbal_words(), MetalSpec {
-            partials: 72, low_hz: 1900.0f, high_hz: 13000.0f, tau: 0.95f, tilt: 0.45f, partial_level: 1.0f,
-            swell: 0.0f, noise_level: 0.3f, noise_tau: 0.5f, noise_hz: 5000.0f, stick_level: 0.6f, stick_tau: 0.001f
+            partials: 72, low_hz: 5000.0f, high_hz: 15500.0f, tau: 0.22f, tilt: 0.1f, partial_level: 1.0f,
+            swell: 0.0f, noise_level: 0.4f, noise_tau: 0.16f, noise_hz: 3500.0f, stick_level: 0.5f, stick_tau: 0.001f
         }, 909004);
+        self.hat_len = hat_words();
+        self.cr_len = cymbal_words();
+        self.rd_len = cymbal_words();
+        self.oh_len = 0;
+        self.hats_recorded = false;
     }
 
     /// Coefficients that depend only on the sample rate.
     fn configure(self: &mut Self) -> void {
         let r: f32 = self.rate;
-        self.bd_env.configure(r);
-        self.bd_kick_coef = decay_coef(0.0025f, r);
-        self.bd_pulse_samples = smax(1.0f, 0.0006f * r);
-        self.bd_pulse_lp_coef = lp_coef(4000.0f, r);
-        self.bd_click_coef = decay_coef(0.0018f, r);
-        self.bd_click_hp.configure(800.0f, 0.70710678f, r);
-        self.bd_click_lp.configure(7000.0f, 0.70710678f, r);
-
-        self.sd_env1.configure(r);
-        self.sd_env2.configure(r);
-        self.sd_damp1 = decay_coef(0.045f, r);
-        self.sd_damp2 = decay_coef(0.028f, r);
-        self.sd_bend_coef = decay_coef(0.008f, r);
-        self.sd_hp.configure(1100.0f, 0.70710678f, r);
-
+        self.bd.configure(r);
+        self.sd.configure(r);
         self.lt.configure(r);
         self.mt.configure(r);
         self.ht.configure(r);
-
-        self.rs_damp1 = decay_coef(0.006f, r);
-        self.rs_damp2 = decay_coef(0.004f, r);
-        self.rs_damp3 = decay_coef(0.0025f, r);
-        self.rs_hp.configure(420.0f, 0.7f, r);
+        self.rs.configure(r);
 
         self.cp_bp.configure(1150.0f, 1.6f, r);
         self.cp_hp.configure(700.0f, 0.70710678f, r);
@@ -714,32 +936,22 @@ impl M09 {
     /// Coefficients that follow the knobs.
     fn configure_knobs(self: &mut Self) -> void {
         let r: f32 = self.rate;
-        // BD Tune: the pitch sweep's depth (2x .. 5x the pitch at the hit)
-        // and length, and a little of the resting pitch.
-        let t: f32 = sclamp(self.bd_tune, 0.0f, 1.0f);
-        self.bd_hz = 47.0f + 9.0f * t;
-        self.bd_sweep_depth = 1.0f + 3.0f * t;
-        self.bd_sweep_coef = decay_coef(0.018f + 0.03f * t, r);
-        self.bd_click_level = sclamp(self.bd_attack, 0.0f, 1.0f);
-        // SD Tone: the noise low-pass, 4 .. 14 kHz.
-        self.sd_lp.configure(knob3(self.sd_tone, 4000.0f, 7500.0f, 14000.0f), 0.70710678f, r);
-        // Toms: Tune over about a fifth, Decay about 0.05 .. 0.4 s time constant.
-        self.lt.retune(knob3(self.lt_tune, 72.0f, 90.0f, 112.0f), knob3(self.lt_decay, 0.06f, 0.14f, 0.38f), r);
-        self.mt.retune(knob3(self.mt_tune, 105.0f, 130.0f, 162.0f), knob3(self.mt_decay, 0.05f, 0.12f, 0.32f), r);
-        self.ht.retune(knob3(self.ht_tune, 150.0f, 185.0f, 230.0f), knob3(self.ht_decay, 0.045f, 0.1f, 0.27f), r);
-        // Cymbal Tune runs the ROM clock from 0.7x to 1.4x.
-        self.cr_step = rom_rate() * exp2f((self.cr_tune - 0.5f)) / r;
-        self.rd_step = rom_rate() * exp2f((self.rd_tune - 0.5f)) / r;
+        self.bd.knobs(self.bd_tune, self.bd_attack, self.bd_decay);
+        self.sd.knobs(self.sd_tune, self.sd_tone, self.snappy);
+        // Toms: pitch across Tune; Decay sets the hold and the time constant.
+        self.lt.knobs(knob3(self.lt_tune, 60.0f, 94.0f, 120.0f), knob3(self.lt_decay, 0.04f, 0.09f, 0.11f),
+                      knob3(self.lt_decay, 0.1f, 0.119f, 0.141f));
+        self.mt.knobs(knob3(self.mt_tune, 76.0f, 113.0f, 157.0f), knob3(self.mt_decay, 0.03f, 0.075f, 0.09f),
+                      knob3(self.mt_decay, 0.058f, 0.088f, 0.105f));
+        self.ht.knobs(knob3(self.ht_tune, 90.0f, 132.0f, 172.0f), knob3(self.ht_decay, 0.03f, 0.07f, 0.085f),
+                      knob3(self.ht_decay, 0.055f, 0.085f, 0.1f));
+        // Cymbal Tune runs the ROM clock: crash 0.76x .. 1.6x, ride 0.78x .. 1.52x.
+        self.cr_step = rom_rate() * knob3(self.cr_tune, 0.76f, 1.0f, 1.6f) / r;
+        self.rd_step = rom_rate() * knob3(self.rd_tune, 0.78f, 1.0f, 1.52f) / r;
     }
 
     fn reset(self: &mut Self) -> void {
-        self.bd_vco.reset(); self.bd_env.reset(); self.bd_sweep = 0.0f; self.bd_kick = 0.0f;
-        self.bd_pulse_left = 0.0f; self.bd_pulse_lp = 0.0f; self.bd_click = 0.0f;
-        self.bd_click_hp.reset(); self.bd_click_lp.reset();
-        self.sd_vco1.reset(); self.sd_vco2.reset(); self.sd_env1.reset(); self.sd_env2.reset(); self.sd_bend = 0.0f;
-        self.sd_noise = 0.0f; self.sd_hp.reset(); self.sd_lp.reset();
-        self.lt.reset(); self.mt.reset(); self.ht.reset();
-        self.rs1.reset(); self.rs2.reset(); self.rs3.reset(); self.rs_hp.reset();
+        self.bd.reset(); self.sd.reset(); self.lt.reset(); self.mt.reset(); self.ht.reset(); self.rs.reset();
         self.cp_bp.reset(); self.cp_hp.reset(); self.cp_tail_bp.reset(); self.cp_time = -1.0f;
         self.cp_burst = 0.0f; self.cp_tail = 0.0f;
         self.ch.reset(); self.oh.reset(); self.cr.reset(); self.rd.reset();
@@ -766,49 +978,32 @@ impl M09 {
         let gain: f32 = self.hit_gain(velocity);
         if gain <= 0.0f { return; }
         let r: f32 = self.rate;
-        if which == bass_drum() {
-            if !self.bd_env.sounding() { self.bd_vco.reset(); }
-            self.bd_env.strike(gain);
-            // Decay: a short hold, then the VCA's time constant, 40 dB down
-            // after about 0.2 s .. 1.3 s.
-            let d: f32 = knob3(self.bd_decay, 0.04f, 0.11f, 0.28f);
-            self.bd_decay_env.start(d * 2.5f, d, 0.012f, r);
-            self.bd_sweep = 1.0f;
-            self.bd_kick = 1.0f;
-            self.bd_pulse_left = self.bd_pulse_samples;
-            self.bd_click = gain;
-        } else if which == snare_drum() {
-            if !self.sd_env1.sounding() && !self.sd_env2.sounding() { self.sd_vco1.reset(); self.sd_vco2.reset(); }
-            self.sd_env1.strike(gain);
-            self.sd_env2.strike(0.55f * gain);
-            self.sd_bend = 1.0f;
-            // Tone also lengthens the noise: 60 .. 150 ms time constant.
-            let tau: f32 = knob3(self.sd_tone, 0.06f, 0.095f, 0.15f);
-            self.sd_noise_decay.start(tau * 0.5f, tau, 0.01f, r);
-            self.sd_noise = restrike(self.sd_noise, gain * 2.4f * sclamp(self.snappy, 0.0f, 1.0f));
-        } else if which == low_tom() { self.lt.strike(gain); }
+        if which == bass_drum() { self.bd.strike(gain); }
+        else if which == snare_drum() { self.sd.strike(gain); }
+        else if which == low_tom() { self.lt.strike(gain); }
         else if which == mid_tom() { self.mt.strike(gain); }
         else if which == high_tom() { self.ht.strike(gain); }
-        else if which == rim_shot() {
-            self.rs1.strike(gain);
-            self.rs2.strike(0.7f * gain);
-            self.rs3.strike(0.35f * gain);
-            self.rs_gain = gain;
-        } else if which == hand_clap() {
+        else if which == rim_shot() { self.rs.strike(gain); }
+        else if which == hand_clap() {
             self.cp_time = 0.0f;
             self.cp_level = gain;
         } else if which == closed_hat() {
-            // CH Decay: 6 .. 40 ms time constant after a 2 ms hold.
+            // CH Decay: the VCA's time constant after a 3 ms hold, so the
+            // closed hat lasts 0.11 .. 0.2 s, as on the 909.
             self.ch.strike(self.ch_env);
             self.ch_env = gain;
-            self.ch_decay_env.start(1.0f, knob3(self.ch_decay, 0.006f, 0.015f, 0.04f), 0.002f, r);
+            let ch: f32 = self.hats_recorded ? knob5(self.ch_decay, 0.065f, 0.1f, 0.3f, 1.0f, 10.0f)
+                                             : knob5(self.ch_decay, 0.0255f, 0.034f, 0.044f, 0.047f, 0.049f);
+            self.ch_decay_env.start(1.0f, ch, 0.003f, r);
             // The closed hat cuts the open one.
             self.oh_choked = true;
         } else if which == open_hat() {
-            // OH Decay: 40 .. 450 ms time constant after a 5 ms hold.
+            // OH Decay: after a 5 ms hold, so the open hat lasts 0.28 .. 0.52 s.
             self.oh.strike(self.oh_env);
             self.oh_env = gain;
-            self.oh_decay_env.start(1.0f, knob3(self.oh_decay, 0.04f, 0.14f, 0.45f), 0.005f, r);
+            let oh: f32 = self.hats_recorded ? knob5(self.oh_decay, 0.123f, 0.265f, 0.66f, 3.0f, 10.0f)
+                                             : knob5(self.oh_decay, 0.073f, 0.107f, 0.142f, 0.158f, 0.165f);
+            self.oh_decay_env.start(1.0f, oh, 0.005f, r);
             self.oh_choked = false;
         } else if which == crash() {
             self.cr.strike(self.cr_env);
@@ -819,59 +1014,31 @@ impl M09 {
         }
     }
 
-    fn bd_active(self: M09) -> bool {
-        return self.bd_env.sounding() || self.bd_click > silent() || self.bd_pulse_left > 0.0f
-            || fabsf(self.bd_pulse_lp) > silent();
-    }
-
-    /// Bass drum: the swept VCO through the VCA, plus the click.
-    fn bass(self: &mut Self) -> f32 {
-        let r: f32 = self.rate;
-        let hz: f32 = self.bd_hz * (1.0f + self.bd_sweep_depth * self.bd_sweep + 3.0f * self.bd_kick);
-        self.bd_sweep = self.bd_sweep * self.bd_sweep_coef;
-        self.bd_kick = self.bd_kick * self.bd_kick_coef;
-        // The 909's kick is a rounded sine with flattened tops.
-        var out: f32 = self.bd_vco.tick(hz, 1.6f, r) * self.bd_env.tick(self.bd_decay_env.next());
-        // Click: a 0.6 ms pulse through a 4 kHz low-pass and a noise burst.
-        var pulse: f32 = 0.0f;
-        if self.bd_pulse_left > 0.0f { pulse = self.bd_click; self.bd_pulse_left = self.bd_pulse_left - 1.0f; }
-        self.bd_pulse_lp = self.bd_pulse_lp + (pulse - self.bd_pulse_lp) * self.bd_pulse_lp_coef;
-        let n: f32 = self.bd_click_lp.process(self.bd_click_hp.process(self.white(), 1), 0);
-        out = out + self.bd_click_level * (1.2f * self.bd_pulse_lp + 1.5f * n * self.bd_click);
-        self.bd_click = self.bd_click * self.bd_click_coef;
-        return out;
-    }
-
-    fn sd_active(self: M09) -> bool { return self.sd_env1.sounding() || self.sd_env2.sounding() || self.sd_noise > silent(); }
-
-    /// Snare: two bent VCOs and filtered noise.
-    fn snare(self: &mut Self) -> f32 {
-        let r: f32 = self.rate;
-        let tune: f32 = exp2f((self.sd_tune - 0.5f) * 0.6f);
-        let bend: f32 = 1.0f + 0.5f * self.sd_bend;
-        self.sd_bend = self.sd_bend * self.sd_bend_coef;
-        var out: f32 = self.sd_vco1.tick(180.0f * tune * bend, 1.0f, r) * self.sd_env1.tick(self.sd_damp1)
-                     + self.sd_vco2.tick(330.0f * tune * bend, 1.0f, r) * self.sd_env2.tick(self.sd_damp2);
-        // The noise filters run every sample, so the noise never starts on a
-        // resting filter.
-        let n: f32 = self.sd_lp.process(self.sd_hp.process(self.white(), 1), 0);
-        if self.sd_noise > silent() {
-            out = out + n * self.sd_noise;
-            self.sd_noise = self.sd_noise * self.sd_noise_decay.next();
+    /// Start replacing a ROM (see `mla09_rom_begin`).
+    fn rom_begin(self: &mut Self, rom: i32, words: i64) -> void {
+        if words <= 0 { self.build_roms(); return; }
+        let n: i64 = words < mla09_rom_capacity(rom) ? words : mla09_rom_capacity(rom);
+        var i: i64 = 0;
+        if rom == rom_hat() {
+            self.hat_len = n; self.hats_recorded = true;
+            while i < hat_words() { set_f32(self.rom_hat, i, 0.0f); i = i + 1; }
         }
-        return out;
+        else if rom == rom_open_hat() {
+            self.oh_len = n; self.hats_recorded = true;
+            while i < hat_words() { set_f32(self.rom_oh, i, 0.0f); i = i + 1; }
+        }
+        else if rom == rom_crash() { self.cr_len = n; while i < cymbal_words() { set_f32(self.rom_cr, i, 0.0f); i = i + 1; } }
+        else if rom == rom_ride() { self.rd_len = n; while i < cymbal_words() { set_f32(self.rom_rd, i, 0.0f); i = i + 1; } }
     }
 
-    fn rs_active(self: M09) -> bool {
-        return self.rs1.amplitude() > silent() || self.rs2.amplitude() > silent() || self.rs3.amplitude() > silent();
-    }
-
-    /// Rim shot: three rings, high-passed and driven.
-    fn rim(self: &mut Self) -> f32 {
-        let r: f32 = self.rate;
-        let x: f32 = self.rs1.tick(495.0f, self.rs_damp1, r) + self.rs2.tick(1720.0f, self.rs_damp2, r)
-                   + self.rs3.tick(3350.0f, self.rs_damp3, r);
-        return tanhf(4.0f * self.rs_hp.process(x, 1) / self.rs_gain) * self.rs_gain * 0.6f;
+    /// One ROM word (see `mla09_rom_write`).
+    fn rom_write(self: &mut Self, rom: i32, index: i64, value: f32) -> void {
+        if index < 0 { return; }
+        let v: f32 = sclamp(value, -1.0f, 1.0f);
+        if rom == rom_hat() && index < self.hat_len { set_f32(self.rom_hat, index, v); }
+        else if rom == rom_open_hat() && index < self.oh_len { set_f32(self.rom_oh, index, v); }
+        else if rom == rom_crash() && index < self.cr_len { set_f32(self.rom_cr, index, v); }
+        else if rom == rom_ride() && index < self.rd_len { set_f32(self.rom_rd, index, v); }
     }
 
     fn cp_active(self: M09) -> bool { return self.cp_time >= 0.0f; }
@@ -904,24 +1071,26 @@ impl M09 {
         var tail: f32 = 0.0f;
         var out: f32 = 0.0f;
         if self.ch.active() {
-            let x: f32 = self.ch.tick(self.rom_ch, ch_words(), self.hat_step, &mut tail);
+            let x: f32 = self.ch.tick(self.rom_hat, self.hat_len, self.hat_step, &mut tail);
             out = out + (x * self.ch_env + tail) * self.level_ch;
             self.ch_env = self.ch_env * self.ch_decay_env.next();
             if self.ch_env < silent() { self.ch.head.on = false; }
         }
         if self.oh.active() {
-            let x: f32 = self.oh.tick(self.rom_oh, oh_words(), self.hat_step, &mut tail);
+            var x: f32 = 0.0f;
+            if self.oh_len > 0 { x = self.oh.tick(self.rom_oh, self.oh_len, self.hat_step, &mut tail); }
+            else { x = self.oh.tick(self.rom_hat, self.hat_len, self.hat_step, &mut tail); }
             out = out + (x * self.oh_env + tail) * self.level_oh;
             let d: f32 = self.oh_decay_env.next();
             self.oh_env = self.oh_env * (self.oh_choked ? self.choke_coef : d);
             if self.oh_env < silent() { self.oh.head.on = false; }
         }
         if self.cr.active() {
-            let x: f32 = self.cr.tick(self.rom_cr, cymbal_words(), self.cr_step, &mut tail);
+            let x: f32 = self.cr.tick(self.rom_cr, self.cr_len, self.cr_step, &mut tail);
             out = out + (x * self.cr_env + tail) * self.level_cr * 0.8f;
         }
         if self.rd.active() {
-            let x: f32 = self.rd.tick(self.rom_rd, cymbal_words(), self.rd_step, &mut tail);
+            let x: f32 = self.rd.tick(self.rom_rd, self.rd_len, self.rd_step, &mut tail);
             out = out + (x * self.rd_env + tail) * self.level_rd * 0.6f;
         }
         return out;
@@ -930,30 +1099,40 @@ impl M09 {
     fn toms_active(self: M09) -> bool { return self.lt.active() || self.mt.active() || self.ht.active(); }
 
     fn active(self: M09) -> bool {
-        return self.bd_active() || self.sd_active() || self.toms_active() || self.rs_active() || self.cp_active()
+        return self.bd.active() || self.sd.active() || self.toms_active() || self.rs.active() || self.cp_active()
             || self.rom_active();
+    }
+
+    /// The output stage's distortion: a tanh saturator whose drive rises
+    /// with the knob (up to +28 dB into it), levelled so a loud hit keeps
+    /// about its peak while quieter parts and tails come up. 0 is clean.
+    fn distort(self: M09, x: f32) -> f32 {
+        let k: f32 = self.drive;
+        if k <= 0.0f { return x; }
+        let g: f32 = 1.0f + 24.0f * k * k;
+        let wet: f32 = tanhf(g * x) * 0.5f / tanhf(0.5f * g);
+        let mix: f32 = smin(1.0f, k * 8.0f);
+        return x + (wet - x) * mix;
     }
 
     fn process(self: &mut Self, out_right: ptr<f32>) -> f32 {
         let r: f32 = self.rate;
         self.output_gain = self.output_gain + (self.output_target - self.output_gain) * 0.002f;
         var mix: f32 = 0.0f;
-        if self.bd_active() { mix = mix + self.bass() * self.level_bd * 0.55f; }
-        if self.sd_active() { mix = mix + self.snare() * self.level_sd * 0.45f; }
-        if self.toms_active() {
-            let n: f32 = self.white();
-            if self.lt.active() { mix = mix + self.lt.tick(n, r) * self.level_lt * 0.6f; }
-            if self.mt.active() { mix = mix + self.mt.tick(n, r) * self.level_mt * 0.6f; }
-            if self.ht.active() { mix = mix + self.ht.tick(n, r) * self.level_ht * 0.6f; }
-        }
-        if self.rs_active() { mix = mix + self.rim() * self.level_rs; }
-        else { self.rs1.reset(); self.rs2.reset(); self.rs3.reset(); }
+        if self.bd.active() { mix = mix + self.bd.tick(self.white()) * self.level_bd * 0.8f; }
+        let n: f32 = self.white();
+        // The snare's and toms' noise filters run all the time.
+        mix = mix + self.sd.tick(n) * self.level_sd * 0.5f;
+        mix = mix + self.lt.tick(n) * self.level_lt * 0.55f;
+        mix = mix + self.mt.tick(n) * self.level_mt * 0.55f;
+        mix = mix + self.ht.tick(n) * self.level_ht * 0.55f;
+        mix = mix + self.rs.tick() * self.level_rs * 0.6f;
         if self.cp_active() { mix = mix + self.clap() * self.level_cp * 1.6f; }
         // The ROM voices share the mixer's coupling high-pass, which runs all
         // the time so a hit never strikes a resting filter.
         let metal: f32 = self.rom_active() ? self.samples() : 0.0f;
         mix = mix + self.metal_hp.process(metal, 1) * 0.5f;
-        let out: f32 = mix * self.output_gain;
+        let out: f32 = self.distort(mix) * self.output_gain;
         unsafe { *out_right = out; }
         return out;
     }
@@ -990,6 +1169,26 @@ fn mla09_active(handle: ptr<M09>) -> i32 {
     unsafe { return (*handle).active() ? 1 : 0; }
 }
 
+/// @brief Capacity of a ROM in words (0 hi-hat, 1 crash, 2 ride, 3 open
+/// hat), at the 32 kHz ROM clock.
+fn mla09_rom_capacity(rom: i32) -> i64 {
+    if rom == rom_hat() || rom == rom_open_hat() { return hat_words(); }
+    if rom == rom_crash() || rom == rom_ride() { return cymbal_words(); }
+    return 0;
+}
+
+/// @brief Replace a ROM's contents: set its length (clamped to the
+/// capacity; 0 or less rebuilds every built-in ROM) and clear it. Silence
+/// the machine first (`mla09_reset`); call off the audio thread.
+fn mla09_rom_begin(handle: ptr<M09>, rom: i32, words: i64) {
+    unsafe { (*handle).rom_begin(rom, words); }
+}
+
+/// @brief Write one ROM word (-1 .. 1, at the ROM clock) after `mla09_rom_begin`.
+fn mla09_rom_write(handle: ptr<M09>, rom: i32, index: i64, value: f32) {
+    unsafe { (*handle).rom_write(rom, index, value); }
+}
+
 /// @brief Set one parameter (the VST3 parameter ID minus 100):
 /// 0 output gain (linear), 1 accent 0..1, 2 dynamics (0 accent, 1 velocity),
 /// then levels (linear) and knobs (0..1) in panel order:
@@ -998,7 +1197,7 @@ fn mla09_active(handle: ptr<M09>) -> i32 {
 /// 11 LT level, 12 LT tune, 13 LT decay, 14 MT level, 15 MT tune, 16 MT decay,
 /// 17 HT level, 18 HT tune, 19 HT decay, 20 RS level, 21 CP level,
 /// 22 CH level, 23 CH decay, 24 OH level, 25 OH decay,
-/// 26 CR level, 27 CR tune, 28 RD level, 29 RD tune.
+/// 26 CR level, 27 CR tune, 28 RD level, 29 RD tune, 30 drive.
 fn mla09_set(handle: ptr<M09>, index: i32, value: f32) {
     unsafe {
         let k: f32 = sclamp(value, 0.0f, 1.0f);
@@ -1013,11 +1212,11 @@ fn mla09_set(handle: ptr<M09>, index: i32, value: f32) {
         else if index == 3 { (*handle).level_bd = level; }
         else if index == 4 { (*handle).bd_tune = k; (*handle).configure_knobs(); }
         else if index == 5 { (*handle).bd_attack = k; (*handle).configure_knobs(); }
-        else if index == 6 { (*handle).bd_decay = k; }
+        else if index == 6 { (*handle).bd_decay = k; (*handle).configure_knobs(); }
         else if index == 7 { (*handle).level_sd = level; }
-        else if index == 8 { (*handle).sd_tune = k; }
+        else if index == 8 { (*handle).sd_tune = k; (*handle).configure_knobs(); }
         else if index == 9 { (*handle).sd_tone = k; (*handle).configure_knobs(); }
-        else if index == 10 { (*handle).snappy = k; }
+        else if index == 10 { (*handle).snappy = k; (*handle).configure_knobs(); }
         else if index == 11 { (*handle).level_lt = level; }
         else if index == 12 { (*handle).lt_tune = k; (*handle).configure_knobs(); }
         else if index == 13 { (*handle).lt_decay = k; (*handle).configure_knobs(); }
@@ -1037,6 +1236,7 @@ fn mla09_set(handle: ptr<M09>, index: i32, value: f32) {
         else if index == 27 { (*handle).cr_tune = k; (*handle).configure_knobs(); }
         else if index == 28 { (*handle).level_rd = level; }
         else if index == 29 { (*handle).rd_tune = k; (*handle).configure_knobs(); }
+        else if index == 30 { (*handle).drive = k; }
     }
 }
 

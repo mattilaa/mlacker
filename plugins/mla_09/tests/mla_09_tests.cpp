@@ -1,12 +1,14 @@
 // Offline functional tests for the Mla 09 bundle.
 //
 // Loads the built .vst3 through the SDK hosting classes, strikes the
-// instruments and checks rendered audio: bus layout, silence, the key map,
-// sample-accurate hits, each voice's length, the bass drum's Tune sweep,
-// Attack and Decay, the snare's Tune, Tone and Snappy, tom tuning and decay,
-// the ROM voices (the same sample on every hit, the closed hat choking the
-// open one, the hats' Decay, the cymbals' Tune running the ROM clock),
-// accent and velocity dynamics, click-free retriggers and state round trips.
+// instruments and checks rendered audio against measurements of TR-909
+// recordings: bus layout, silence, the key map, sample-accurate hits, each
+// voice's length, the bass drum's glide, hold, Attack and Decay, the snare's
+// Tune, Tone and Snappy, tom pitch, glide and Decay, the ROM voices (the same
+// sample on every hit, the closed hat choking the open one, the hats' Decay,
+// the cymbals' Tune running the ROM clock), samples loaded from a folder,
+// Drive, accent and velocity dynamics, click-free retriggers, the MIDI CC map
+// and state round trips.
 //
 // Usage: mla_09_tests <path/to/Mla09.vst3> [wav output directory]
 // With a directory, every instrument is also written there as a WAV file.
@@ -19,12 +21,16 @@
 #include "public.sdk/source/vst/hosting/plugprovider.h"
 #include "public.sdk/source/vst/hosting/processdata.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
+#include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/vst/ivstmidicontrollers.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <unistd.h>
 #include <string>
 #include <vector>
 
@@ -34,6 +40,9 @@ using namespace Steinberg::Vst;
 namespace {
 
 int failures = 0;
+// The samples folder the tests run with: an empty one, so the built-in ROMs
+// play whatever is installed on the machine (see main).
+std::string isolatedSamples;
 #define CHECK(condition)                                                                       \
     do {                                                                                       \
         if(!(condition)) {                                                                     \
@@ -48,7 +57,8 @@ constexpr int32 kBlock = 256;
 // Parameter IDs (see plugin.cpp).
 constexpr ParamID kOutput = 100, kAccent = 101, kDynamics = 102, kBdTune = 104, kBdAttack = 105, kBdDecay = 106,
                   kSdTune = 108, kSdTone = 109, kSdSnappy = 110, kLtTune = 112, kLtDecay = 113, kMtTune = 115,
-                  kHtTune = 118, kChLevel = 122, kChDecay = 123, kOhDecay = 125, kCrTune = 127, kRdTune = 129;
+                  kHtTune = 118, kChLevel = 122, kChDecay = 123, kOhDecay = 125, kCrTune = 127, kRdTune = 129,
+                  kDrive = 130;
 
 // One key per instrument (the 909's MIDI note numbers).
 constexpr int kBD = 36, kRS = 37, kSD = 38, kCP = 39, kLT = 43, kMT = 47, kHT = 50, kCH = 42, kOH = 46, kCR = 49,
@@ -349,9 +359,9 @@ void testVoices(const std::string &path, const char *wavDir)
         int key;
         double minLength, maxLength;
     } voices[] = {
-        {"bd", kBD, 0.35, 0.80}, {"sd", kSD, 0.15, 0.40}, {"lt", kLT, 0.50, 1.10}, {"mt", kMT, 0.45, 1.0},
-        {"ht", kHT, 0.40, 0.90}, {"rs", kRS, 0.01, 0.06}, {"cp", kCP, 0.25, 0.60}, {"ch", kCH, 0.05, 0.16},
-        {"oh", kOH, 0.40, 0.90}, {"cr", kCR, 1.2, 2.1},   {"rd", kRD, 1.2, 2.1},
+        {"bd", kBD, 0.30, 0.50}, {"sd", kSD, 0.25, 0.55}, {"lt", kLT, 0.50, 0.80}, {"mt", kMT, 0.35, 0.60},
+        {"ht", kHT, 0.35, 0.60}, {"rs", kRS, 0.04, 0.20}, {"cp", kCP, 0.25, 0.60}, {"ch", kCH, 0.14, 0.23},
+        {"oh", kOH, 0.40, 0.60}, {"cr", kCR, 0.80, 1.20}, {"rd", kRD, 0.75, 1.15},
     };
     for(const auto &v : voices) {
         const Stereo out = hit(path, v.key, 100.0f / 127.0f, 3.0);
@@ -381,66 +391,146 @@ void testStartOffset(const std::string &path)
     }
 }
 
+// RMS above 1 kHz in x[from, to).
+double highRms(const std::vector<float> &x, size_t from, size_t to)
+{
+    const double a = std::exp(-2.0 * M_PI * 1000.0 / kRate);
+    double low = 0.0, sum = 0.0;
+    for(size_t i = 0; i < std::min(to, x.size()); ++i) {
+        low = (1.0 - a) * x[i] + a * low;
+        if(i >= from)
+            sum += (x[i] - low) * (x[i] - low);
+    }
+    return std::sqrt(sum / static_cast<double>(to - from));
+}
+
+// Frequency of each upward zero-crossing cycle after a 1.5 kHz low-pass:
+// (start time in seconds, Hz).
+std::vector<std::pair<double, double>> cycles(const std::vector<float> &x)
+{
+    const double a = std::exp(-2.0 * M_PI * 1500.0 / kRate);
+    std::vector<double> y(x.size());
+    double s1 = 0.0, s2 = 0.0;
+    for(size_t i = 0; i < x.size(); ++i) {
+        s1 = (1.0 - a) * x[i] + a * s1;
+        s2 = (1.0 - a) * s1 + a * s2;
+        y[i] = s2;
+    }
+    std::vector<double> ups;
+    for(size_t i = 1; i < y.size(); ++i)
+        if(y[i - 1] < 0.0 && y[i] >= 0.0)
+            ups.push_back(static_cast<double>(i - 1) + y[i - 1] / (y[i - 1] - y[i]));
+    std::vector<std::pair<double, double>> out;
+    for(size_t i = 1; i < ups.size(); ++i)
+        out.emplace_back(ups[i - 1] / kRate, kRate / (ups[i] - ups[i - 1]));
+    return out;
+}
+
 void testBassDrum(const std::string &path)
 {
-    // The pitch sweeps down to about 50 Hz; Tune deepens and lengthens the
-    // sweep.
+    // As measured on a TR-909: the pitch glides from about 270 Hz down to
+    // about 54 Hz; at centred Tune the cycles from 2 ms run at about 208,
+    // 153 and 108 Hz; Tune lengthens the glide.
+    const Stereo centre = hit(path, kBD, 100.0f / 127.0f, 1.0);
+    const auto c = cycles(centre.left);
+    CHECK(c.size() > 6);
+    if(c.size() > 6) {
+        std::printf("bd cycles at tune 0.5: %.1f ms %.0f Hz, %.1f ms %.0f Hz, %.1f ms %.0f Hz\n", c[0].first * 1000,
+                    c[0].second, c[1].first * 1000, c[1].second, c[2].first * 1000, c[2].second);
+        CHECK(std::fabs(c[0].second - 208.0) < 15.0 && std::fabs(c[1].second - 153.0) < 12.0 &&
+              std::fabs(c[2].second - 108.0) < 10.0);
+    }
     const Stereo flat = hit(path, kBD, 100.0f / 127.0f, 1.0, {{kBdTune, 0.0}});
     const Stereo swept = hit(path, kBD, 100.0f / 127.0f, 1.0, {{kBdTune, 1.0}});
     const double flatEarly = zeroCrossingHz(flat.left, 240, 1920), sweptEarly = zeroCrossingHz(swept.left, 240, 1920);
-    const double rest = zeroCrossingHz(hit(path, kBD).left, 9600, 19200);
-    // Decay: 40 dB down after about 0.2 s at the minimum and over 1 s at the maximum.
+    const double rest = zeroCrossingHz(centre.left, 9600, 19200);
+    // The VCA holds through the glide: still within 2 dB of the peak at 40 ms,
+    // then decays (about 8 dB down at 120 ms at centred Decay).
+    const double top = peak(centre.left, 0, 1920);
+    const double at40 = peak(centre.left, 1680, 2160), at120 = peak(centre.left, 5520, 6000);
+    // Decay: 40 dB down after about 0.3 s at the minimum, 0.5 s at the maximum.
     const double shortest = length40(hit(path, kBD, 100.0f / 127.0f, 2.0, {{kBdDecay, 0.0}}).left);
     const double longest = length40(hit(path, kBD, 100.0f / 127.0f, 2.0, {{kBdDecay, 1.0}}).left);
-    // Attack adds the click: more energy above 2 kHz in the first 3 ms.
-    const double soft = highShare(hit(path, kBD, 100.0f / 127.0f, 0.1, {{kBdAttack, 0.0}}).left, 0, 144, 2000.0);
-    const double hard = highShare(hit(path, kBD, 100.0f / 127.0f, 0.1, {{kBdAttack, 1.0}}).left, 0, 144, 2000.0);
-    std::printf("bd: first 40 ms %.0f Hz (tune 0) / %.0f Hz (tune 1), %.1f Hz at 0.2 s; 40 dB down %.3f .. %.3f s; "
-                "attack above 2 kHz %.4f (0) / %.4f (1)\n",
-                flatEarly, sweptEarly, rest, shortest, longest, soft, hard);
-    CHECK(sweptEarly > flatEarly * 1.3);
-    CHECK(rest > 44.0 && rest < 60.0);
-    CHECK(shortest > 0.1 && shortest < 0.35);
-    CHECK(longest > 1.0 && longest < 1.9);
-    CHECK(hard > soft * 2.5);
+    // Attack adds more of the click: the difference between Attack 1 and 0
+    // (the noise is the same in both) is a short, bright burst in the first
+    // few milliseconds, gone by 10 ms.
+    const Stereo softHit = hit(path, kBD, 100.0f / 127.0f, 0.1, {{kBdAttack, 0.0}});
+    const Stereo hardHit = hit(path, kBD, 100.0f / 127.0f, 0.1, {{kBdAttack, 1.0}});
+    std::vector<float> click(softHit.left.size());
+    for(size_t i = 0; i < click.size(); ++i)
+        click[i] = hardHit.left[i] - softHit.left[i];
+    const double soft = rms(click, 0, 96), hard = rms(click, 480, 960);
+    std::printf("bd: first 40 ms %.0f Hz (tune 0) / %.0f Hz (tune 1), %.1f Hz at 0.2 s; at 40 ms %.1f dB, 120 ms %.1f dB; "
+                "40 dB down %.3f .. %.3f s; added click rms %.4f (0-2 ms) / %.5f (10-20 ms)\n",
+                flatEarly, sweptEarly, rest, 20 * std::log10(at40 / top), 20 * std::log10(at120 / top), shortest, longest,
+                soft, hard);
+    CHECK(sweptEarly > flatEarly * 1.8);
+    CHECK(rest > 52.5 && rest < 55.5);
+    CHECK(at40 > top * 0.79);
+    CHECK(at120 < top * 0.5 && at120 > top * 0.28);
+    CHECK(shortest > 0.2 && shortest < 0.4);
+    CHECK(longest > 0.42 && longest < 0.7);
+    CHECK(soft > 0.01 && hard < soft * 0.05 && highShare(click, 0, 96, 1000.0) > 0.5);
 }
 
 void testSnare(const std::string &path)
 {
-    // Tune moves the VCOs; Tone brightens the noise; Snappy adds it.
-    const double low = zeroCrossingHz(hit(path, kSD, 100.0f / 127.0f, 0.3, {{kSdTune, 0.0}, {kSdSnappy, 0.0}}).left, 960, 4800);
-    const double high = zeroCrossingHz(hit(path, kSD, 100.0f / 127.0f, 0.3, {{kSdTune, 1.0}, {kSdSnappy, 0.0}}).left, 960, 4800);
+    // As on the 909: Tune moves the lower VCO from about 114 Hz to 222 Hz;
+    // Snappy adds the noise; Tone sets how long the noise lasts, not its colour.
+    const Stereo lowTune = hit(path, kSD, 100.0f / 127.0f, 0.3, {{kSdTune, 0.0}, {kSdSnappy, 0.0}});
+    const Stereo highTune = hit(path, kSD, 100.0f / 127.0f, 0.3, {{kSdTune, 1.0}, {kSdSnappy, 0.0}});
+    const auto strongest = [](const std::vector<float> &x) {
+        double best = 0.0, at = 0.0;
+        for(double hz = 80.0; hz < 500.0; hz += 1.0) {
+            const double share = toneShare(x, 480, 4800, hz);
+            if(share > best) {
+                best = share;
+                at = hz;
+            }
+        }
+        return at;
+    };
+    const double low = strongest(lowTune.left), high = strongest(highTune.left);
     const Stereo dry = hit(path, kSD, 100.0f / 127.0f, 0.5, {{kSdSnappy, 0.0}});
     const Stereo snappy = hit(path, kSD, 100.0f / 127.0f, 0.5, {{kSdSnappy, 1.0}});
     const double a = highShare(dry.left, 0, 4800, 2000.0), b = highShare(snappy.left, 0, 4800, 2000.0);
-    const Stereo dark = hit(path, kSD, 100.0f / 127.0f, 0.5, {{kSdTone, 0.0}, {kSdSnappy, 1.0}});
-    const Stereo bright = hit(path, kSD, 100.0f / 127.0f, 0.5, {{kSdTone, 1.0}, {kSdSnappy, 1.0}});
-    const double d = highShare(dark.left, 0, 4800, 6000.0), e = highShare(bright.left, 0, 4800, 6000.0);
+    const Stereo shortNoise = hit(path, kSD, 100.0f / 127.0f, 0.5, {{kSdTone, 0.0}, {kSdSnappy, 1.0}});
+    const Stereo longNoise = hit(path, kSD, 100.0f / 127.0f, 0.5, {{kSdTone, 1.0}, {kSdSnappy, 1.0}});
+    const double d = highRms(shortNoise.left, 4800, 9600), e = highRms(longNoise.left, 4800, 9600);
+    const double early = highShare(shortNoise.left, 0, 1920, 6000.0), earlyLong = highShare(longNoise.left, 0, 1920, 6000.0);
     std::printf("snare: %.0f .. %.0f Hz (tune); above 2 kHz %.3f (snappy 0) / %.2f (snappy 1); "
-                "above 6 kHz %.3f (tone 0) / %.3f (tone 1)\n", low, high, a, b, d, e);
-    CHECK(high > low * 1.3);
-    CHECK(a < 0.05 && b > 0.3);
-    CHECK(e > d * 1.5);
+                "noise at 0.1-0.2 s %.4f (tone 0) / %.4f (tone 1); colour %.3f / %.3f\n", low, high, a, b, d, e, early,
+                earlyLong);
+    CHECK(std::fabs(low - 114.0) < 8.0 && std::fabs(high - 222.0) < 12.0);
+    CHECK(a < 0.05 && b > 0.15);
+    CHECK(e > d * 4.0);
+    CHECK(std::fabs(early - earlyLong) < 0.1 * earlyLong);
 }
 
 void testToms(const std::string &path)
 {
-    // Each tom settles to its pitch; Tune moves it over about a fifth and
-    // Decay lengthens it.
-    const double lt = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5, {{kLtTune, 0.0}}).left, 7200, 19200);
-    const double ltUp = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5, {{kLtTune, 1.0}}).left, 7200, 19200);
-    const double mt = zeroCrossingHz(hit(path, kMT, 100.0f / 127.0f, 0.5, {{kMtTune, 0.5}}).left, 7200, 19200);
-    const double ht = zeroCrossingHz(hit(path, kHT, 100.0f / 127.0f, 0.5, {{kHtTune, 0.5}}).left, 7200, 19200);
-    // The bend: the first 10 ms are well above the settled pitch.
-    const double ltStart = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5, {{kLtTune, 0.0}}).left, 0, 960);
+    // Where each tom settles across Tune (as measured on the 909): low tom
+    // 60 .. 120 Hz, mid 113 Hz and high 132 Hz at the centre. Each starts
+    // higher and glides down; Decay lengthens it.
+    const double lt = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5, {{kLtTune, 0.0}}).left, 9600, 19200);
+    const double ltUp = zeroCrossingHz(hit(path, kLT, 100.0f / 127.0f, 0.5, {{kLtTune, 1.0}}).left, 9600, 19200);
+    const double mt = zeroCrossingHz(hit(path, kMT, 100.0f / 127.0f, 0.5, {{kMtTune, 0.5}}).left, 9600, 19200);
+    const double ht = zeroCrossingHz(hit(path, kHT, 100.0f / 127.0f, 0.5, {{kHtTune, 0.5}}).left, 9600, 19200);
+    const auto c = cycles(hit(path, kHT, 100.0f / 127.0f, 0.5).left);
+    double early = 0.0;
+    for(const auto &cycle : c)
+        if(cycle.first > 0.01 && cycle.first < 0.03) {
+            early = cycle.second;
+            break;
+        }
     const double shortTom = length40(hit(path, kLT, 100.0f / 127.0f, 3.0, {{kLtDecay, 0.0}}).left);
     const double longTom = length40(hit(path, kLT, 100.0f / 127.0f, 3.0, {{kLtDecay, 1.0}}).left);
-    std::printf("toms: lt %.1f .. %.1f Hz (starting %.0f Hz), mt %.1f Hz, ht %.1f Hz; lt decay %.2f .. %.2f s\n", lt,
-                ltUp, ltStart, mt, ht, shortTom, longTom);
-    CHECK(std::fabs(lt - 72.0) < 4.0 && std::fabs(ltUp - 112.0) < 5.0);
-    CHECK(std::fabs(mt - 130.0) < 5.0 && std::fabs(ht - 185.0) < 7.0);
-    CHECK(ltStart > lt * 1.2);
-    CHECK(longTom > shortTom * 4.0);
+    std::printf("toms: lt %.1f .. %.1f Hz, mt %.1f Hz, ht %.1f Hz (%.0f Hz at 10-30 ms); lt decay %.2f .. %.2f s\n", lt,
+                ltUp, mt, ht, early, shortTom, longTom);
+    CHECK(std::fabs(lt - 60.0) < 3.0 && std::fabs(ltUp - 120.0) < 5.0);
+    CHECK(std::fabs(mt - 113.0) < 5.0 && std::fabs(ht - 132.0) < 5.0);
+    CHECK(early > ht * 1.08 && early < ht * 1.3);
+    CHECK(longTom > shortTom * 1.3);
 }
 
 void testSamples(const std::string &path)
@@ -480,7 +570,7 @@ void testHats(const std::string &path)
     const Stereo ch = hit(path, kCH), oh = hit(path, kOH, 100.0f / 127.0f, 2.0);
     const double chHigh = highShare(ch.left, 0, 2400, 2000.0), ohHigh = highShare(oh.left, 0, 4800, 2000.0);
     std::printf("hats: energy above 2 kHz CH %.2f, OH %.2f\n", chHigh, ohHigh);
-    CHECK(chHigh > 0.7 && ohHigh > 0.7);
+    CHECK(chHigh > 0.6 && ohHigh > 0.6);
     // The closed hat chokes the open one.
     Instance plugin;
     CHECK(plugin.open(path));
@@ -498,8 +588,9 @@ void testHats(const std::string &path)
     const double ohShort = length40(hit(path, kOH, 100.0f / 127.0f, 2.0, {{kOhDecay, 0.0}}).left);
     const double ohLong = length40(hit(path, kOH, 100.0f / 127.0f, 2.0, {{kOhDecay, 1.0}}).left);
     std::printf("hat decays: ch %.3f .. %.3f s, oh %.3f .. %.3f s\n", chShort, chLong, ohShort, ohLong);
-    CHECK(chLong > chShort * 2.5);
-    CHECK(ohLong > ohShort * 3.0);
+    // As measured on the 909: CH 0.11 .. 0.2 s, OH 0.28 .. 0.52 s (40 dB down).
+    CHECK(chShort > 0.09 && chShort < 0.13 && chLong > 0.17 && chLong < 0.23);
+    CHECK(ohShort > 0.24 && ohShort < 0.32 && ohLong > 0.45 && ohLong < 0.6);
 }
 
 void testCymbals(const std::string &path)
@@ -515,11 +606,11 @@ void testCymbals(const std::string &path)
         CHECK(highHz > lowHz * 1.4);
         CHECK(lowLength > highLength * 1.4);
     }
-    // The crash is brighter than the ride.
+    // On the 909 the ride is brighter than the crash.
     const double crHigh = highShare(hit(path, kCR, 100.0f / 127.0f, 0.5).left, 0, 9600, 6000.0);
     const double rdHigh = highShare(hit(path, kRD, 100.0f / 127.0f, 0.5).left, 0, 9600, 6000.0);
     std::printf("cymbals: above 6 kHz crash %.2f, ride %.2f\n", crHigh, rdHigh);
-    CHECK(crHigh > rdHigh);
+    CHECK(rdHigh > crHigh);
 }
 
 void testDynamics(const std::string &path)
@@ -572,6 +663,74 @@ void testRetrigger(const std::string &path)
     }
 }
 
+void testMidiMapping(const std::string &path)
+{
+    // CC 7 is Output, CC 20-30 the levels, CC 102-118 Accent and the knobs,
+    // CC 119 Drive.
+    Instance plugin;
+    CHECK(plugin.open(path));
+    auto mapping = U::cast<IMidiMapping>(plugin.component);
+    CHECK(mapping);
+    if(!mapping)
+        return;
+    const auto map = [&](int cc) {
+        ParamID id = 0;
+        return mapping->getMidiControllerAssignment(0, 0, static_cast<CtrlNumber>(cc), id) == kResultOk
+                   ? static_cast<int>(id)
+                   : -1;
+    };
+    CHECK(map(7) == 100);
+    CHECK(map(20) == 103 && map(21) == 107 && map(27) == 122 && map(30) == 128);
+    CHECK(map(102) == kAccent && map(103) == kBdTune && map(105) == kBdDecay && map(108) == kSdSnappy);
+    CHECK(map(115) == kChDecay && map(116) == kOhDecay && map(117) == kCrTune && map(118) == kRdTune);
+    CHECK(map(119) == kDrive);
+    CHECK(map(19) == -1 && map(31) == -1 && map(101) == -1 && map(120) == -1 && map(1) == -1);
+}
+
+void testDrive(const std::string &path)
+{
+    // Drive saturates the output: the tail comes up against the peak (lower
+    // crest factor) and the peak stays bounded. 0 is clean.
+    const Stereo clean = hit(path, kBD, 100.0f / 127.0f, 0.6);
+    const Stereo driven = hit(path, kBD, 100.0f / 127.0f, 0.6, {{kDrive, 1.0}});
+    const double cleanCrest = peak(clean.left) / rms(clean.left, 0, 14400);
+    const double drivenCrest = peak(driven.left) / rms(driven.left, 0, 14400);
+    std::printf("drive: crest %.2f clean / %.2f driven; peak %.3f / %.3f\n", cleanCrest, drivenCrest, peak(clean.left),
+                peak(driven.left));
+    CHECK(finite(driven));
+    CHECK(drivenCrest < cleanCrest * 0.8);
+    CHECK(peak(driven.left) < 1.0);
+    CHECK(std::equal(clean.left.begin(), clean.left.end(), hit(path, kBD, 100.0f / 127.0f, 0.6, {{kDrive, 0.0}}).left.begin()));
+}
+
+void testSampleFolder(const std::string &path)
+{
+    // Recordings in $MLA09_SAMPLES replace the built-in ROMs: a 1 kHz tone as
+    // crash.wav plays as the crash; the ride keeps its built-in ROM.
+    char dir[] = "/tmp/mla09-samples-XXXXXX";
+    if(!mkdtemp(dir)) {
+        CHECK(false);
+        return;
+    }
+    std::vector<float> tone(static_cast<size_t>(kRate * 0.5));
+    for(size_t i = 0; i < tone.size(); ++i)
+        tone[i] = static_cast<float>(0.5 * std::sin(2.0 * M_PI * 1000.0 * i / kRate) * std::exp(-static_cast<double>(i) / kRate / 0.2));
+    const std::string file = std::string(dir) + "/crash.wav";
+    writeWav(file, tone);
+    const Stereo builtIn = hit(path, kCR, 100.0f / 127.0f, 0.3);
+    setenv("MLA09_SAMPLES", dir, 1);
+    const Stereo loaded = hit(path, kCR, 100.0f / 127.0f, 0.3);
+    const Stereo ride = hit(path, kRD, 100.0f / 127.0f, 0.3);
+    setenv("MLA09_SAMPLES", isolatedSamples.c_str(), 1);
+    const Stereo rideBuiltIn = hit(path, kRD, 100.0f / 127.0f, 0.3);
+    std::remove(file.c_str());
+    rmdir(dir);
+    const double before = toneShare(builtIn.left, 480, 4800, 1000.0), after = toneShare(loaded.left, 480, 4800, 1000.0);
+    std::printf("sample folder: 1 kHz share of the crash %.3f built in / %.3f loaded\n", before, after);
+    CHECK(after > 0.5 && before < 0.05);
+    CHECK(std::equal(ride.left.begin(), ride.left.end(), rideBuiltIn.left.begin()));
+}
+
 void testState(const std::string &path)
 {
     Instance a, b;
@@ -612,6 +771,13 @@ int main(int argc, char **argv)
         return 2;
     }
     const std::string path = argv[1];
+    // Run against the built-in ROMs, not samples installed on this machine,
+    // unless MLA09_TEST_KEEP_SAMPLES is set (to render with them).
+    char empty[] = "/tmp/mla09-no-samples-XXXXXX";
+    if(!std::getenv("MLA09_TEST_KEEP_SAMPLES") && mkdtemp(empty)) {
+        isolatedSamples = empty;
+        setenv("MLA09_SAMPLES", empty, 1);
+    }
     testLayout(path);
     testSilenceAndKeys(path);
     testVoices(path, argc > 2 ? argv[2] : nullptr);
@@ -624,7 +790,12 @@ int main(int argc, char **argv)
     testCymbals(path);
     testDynamics(path);
     testRetrigger(path);
+    testMidiMapping(path);
+    testDrive(path);
+    testSampleFolder(path);
     testState(path);
+    if(!isolatedSamples.empty())
+        rmdir(isolatedSamples.c_str());
     if(failures) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
