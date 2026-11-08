@@ -31,7 +31,8 @@ It uses every Mla 09 sound. It is not a copy of any of his records.
   eighths to sixteenths to 32nds, with Snappy and Tone opening as it climbs.
 - **Hands on the panel.** CC columns turn Mla 09's knobs while the patterns
   play: the closed hat's decay opens over the drop, the kick's tune sweeps up,
-  the ride is retuned through the Waveform section, and the kick's decay closes
+  the ride is retuned through the Waveform section, light output Drive changes
+  with the sections, and the kick's decay closes
   in the outro. The kick's Attack opens through the drop, and the snare's
   Tune climbs with the roll and drops in Jack.
 
@@ -44,7 +45,7 @@ their settings as it plays:
 | # | Pattern  | What happens | Knobs moving |
 |---|----------|--------------|--------------|
 | 1 | Ignition | Kick and eighth hats; crash. | Kick decay opens; closed hat fades in and opens. |
-| 2 | Drive    | Sixteenth hats with open offbeats; rim shot threes. (Played twice.) | Kick tune and open-hat decay change every bar. |
+| 2 | Drive    | Sixteenth hats with open offbeats; rim shot threes. (Played twice.) | Kick tune, extended decay, light Drive and open-hat decay change every bar. |
 | 3 | Clap     | Claps on 2 and 4; ride from bar 3; tom fill. | Claps build; kick attack and closed-hat decay change every bar; the fill rings long. |
 | 4 | Tom Grid | The six-step tom figure under kick, hats and claps. | Kick and hats pulled back; kick decay changes every bar; the toms dive in pitch and change decay every bar; claps lift in the last bar. |
 | 5 | Drop     | Everything in. | Closed hat opens; kick tune sweeps up and its attack opens; snare tone changes every bar and gets snappier; claps and open hats swell. |
@@ -52,7 +53,7 @@ their settings as it plays:
 | 7 | Roll     | Breakdown: the snare roll into the drop. | Snare tune, level, tone and snap climb; closed hat dips and opens; long low toms at the end. |
 | 8 | Drop     | Again. | |
 | 9 | Waveform | Eighth rides; rim and tom polyrhythms. | Ride retuned across the pattern; kick tune rises; closed-hat level alternates every bar; short toms climbing in pitch. |
-| 10 | Kick Decays | Kick, hats and claps. | Every beat a different BD Decay, short to long; BD Tune moves each bar. |
+| 10 | Kick Decays | Kick, hats and claps. | Two bars of short kicks, then half-time long kicks and a final ring-out; BD Tune and light Drive move each bar. |
 | 11 | Tom Decays | A rolling tom figure over kick and hats. | Each tom's Decay steps short to long over the bars (the high tom long to short) while the toms are retuned. |
 | 12 | Snare Decays | Backbeat snares and ghost notes. | SD Decay and Tone change on every hit; SD Tune each bar. |
 | 13 | Cymbal Decays | A crash on every bar, eighth rides. | Each crash has its own CR Decay and Tune; RD Decay changes every beat as RD Tune climbs. |
@@ -68,7 +69,7 @@ Decay) are Mla 09 additions beyond the 909's panel.
 Six Instrument tracks all play the one Mla 09:
 
 - **BD.** Every bass drum knob: CC 20 BD Level, CC 103 BD Tune, CC 104 BD
-  Attack, CC 105 BD Decay, plus CC 102 Accent.
+  Attack, CC 105 BD Decay, CC 102 Accent, plus global CC 119 Drive.
 - **SD CP.** Two note lines, for flams and 32nds. Every snare knob: CC 21 SD
   Level, CC 106 SD Tune, CC 107 SD Tone, CC 108 SD Snappy, CC 120 SD Decay;
   and the claps' CC 26 CP Level.
@@ -88,12 +89,20 @@ loop anywhere.
 The levels were set by rendering the whole song through Mla 09 with the
 samples installed and measuring each part. Against the kick's peak, the
 snare sits at about -3 dB, the clap -5, the toms -6, the hats -9, the
-cymbals -10 and the rim shot -11. The kick rings long, with BD Decay
-about three quarters up.
+cymbals -10 and the rim shot -11. The snare has more wire noise, the kick
+has more attack noise, and light output Drive adds grit. Drive is reset at every pattern start and varies
+from 6 to 20 out of 127 across the song.
+
+Drive, Drop, Jack and Waveform use the extended upper fifth of BD Decay.
+The Kick Decays study leaves half-time gaps and a final ring-out so the
+longest setting (about 1.05 s to fall 40 dB) can be heard. Lower settings
+keep their earlier decay times.
 
 The master bus boosts the mix: 120% volume, and EQ bands at 100 Hz (+4 dB),
 500 Hz (+1 dB), 2.5 kHz (+2 dB) and 8 kHz (+3 dB). Mla 09's Output (-12.8 dB)
-leaves room for them, so the master peaks just under 0 dBFS. `generate.py`
+leaves headroom for those boosts, overlapping long kicks and noisy attacks.
+An offline render with the locally installed hat, cymbal and clap samples
+peaks at about -4.4 dBFS; other samples can change that balance. `generate.py`
 has the levels (`MIX`, `OUTPUT_DB`) and the master bus (`MASTER_VOLUME`,
 `MASTER_BANDS`). Velocity 127 is the 909's accent; everything else plays at the
 normal level.

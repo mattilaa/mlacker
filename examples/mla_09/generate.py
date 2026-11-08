@@ -25,6 +25,7 @@ ACCENT, NORMAL = 127, 100
 # Mla 09 CCs (see plugins/mla_09/README.md).
 CC_BD_LEVEL, CC_SD_LEVEL, CC_CP_LEVEL, CC_CH_LEVEL, CC_OH_LEVEL = 20, 21, 26, 27, 28
 CC_ACCENT, CC_BD_TUNE, CC_BD_ATTACK, CC_BD_DECAY = 102, 103, 104, 105
+CC_DRIVE = 119
 CC_SD_TUNE, CC_SD_TONE, CC_SD_SNAPPY = 106, 107, 108
 CC_LT_TUNE, CC_LT_DECAY, CC_MT_TUNE, CC_MT_DECAY, CC_HT_TUNE, CC_HT_DECAY = 109, 110, 111, 112, 113, 114
 # Beyond the 909's panel: the snare's tone decay and the cymbals' decays.
@@ -34,7 +35,7 @@ CC_CH_DECAY, CC_OH_DECAY, CC_CR_TUNE, CC_RD_TUNE = 115, 116, 117, 118
 # Tracks, all playing the one Mla 09: name, note lines, CC columns.
 TRACKS = [
     # Every bass drum and snare knob, in panel order.
-    ("BD", 1, [CC_BD_LEVEL, CC_BD_TUNE, CC_BD_ATTACK, CC_BD_DECAY, CC_ACCENT]),
+    ("BD", 1, [CC_BD_LEVEL, CC_BD_TUNE, CC_BD_ATTACK, CC_BD_DECAY, CC_ACCENT, CC_DRIVE]),
     ("SD CP", 2, [CC_SD_LEVEL, CC_SD_TUNE, CC_SD_TONE, CC_SD_SNAPPY, CC_SD_DECAY, CC_CP_LEVEL]),
     ("RS", 1, []),
     ("Toms", 1, [CC_LT_TUNE, CC_LT_DECAY, CC_MT_TUNE, CC_MT_DECAY, CC_HT_TUNE, CC_HT_DECAY]),
@@ -45,8 +46,8 @@ TRACKS = [
 # The panel's starting position: tight kick with plenty of click, crisp snare,
 # short closed hat. CC columns move these while the song plays.
 # Levels: 115 is about unity (0 dB of -60 .. +6 dB).
-KNOBS = {CC_BD_LEVEL: 115, CC_BD_TUNE: 60, CC_BD_ATTACK: 83, CC_BD_DECAY: 92, CC_ACCENT: 72,
-         CC_SD_LEVEL: 115, CC_SD_TUNE: 64, CC_SD_TONE: 80, CC_SD_SNAPPY: 84, CC_CP_LEVEL: 115,
+KNOBS = {CC_BD_LEVEL: 115, CC_BD_TUNE: 60, CC_BD_ATTACK: 100, CC_BD_DECAY: 88, CC_ACCENT: 72, CC_DRIVE: 12,
+         CC_SD_LEVEL: 115, CC_SD_TUNE: 64, CC_SD_TONE: 88, CC_SD_SNAPPY: 102, CC_CP_LEVEL: 115,
          # Toms centred: root, fifth and minor seventh.
          CC_LT_TUNE: 64, CC_LT_DECAY: 64, CC_MT_TUNE: 64, CC_MT_DECAY: 64, CC_HT_TUNE: 64, CC_HT_DECAY: 64,
          CC_CH_LEVEL: 115, CC_CH_DECAY: 40, CC_OH_LEVEL: 117, CC_OH_DECAY: 56, CC_CR_TUNE: 64, CC_RD_TUNE: 64,
@@ -97,7 +98,7 @@ def parameters():
               105: KNOBS[CC_BD_ATTACK] / 127, 106: KNOBS[CC_BD_DECAY] / 127, 107: level(CC_SD_LEVEL, KNOBS[CC_SD_LEVEL]) / 127,
               108: KNOBS[CC_SD_TUNE] / 127, 109: KNOBS[CC_SD_TONE] / 127, 110: KNOBS[CC_SD_SNAPPY] / 127, 123: KNOBS[CC_CH_DECAY] / 127,
               125: KNOBS[CC_OH_DECAY] / 127, 127: KNOBS[CC_CR_TUNE] / 127, 129: KNOBS[CC_RD_TUNE] / 127,
-              130: 0.0,  # Drive off: the clean machine.
+              130: KNOBS[CC_DRIVE] / 127,  # Light output-stage grit.
               131: KNOBS[CC_SD_DECAY] / 127, 132: KNOBS[CC_CR_DECAY] / 127, 133: KNOBS[CC_RD_DECAY] / 127})
     return p
 
@@ -214,7 +215,8 @@ def ignition():
     p = Pattern("Ignition")
     kick(p)
     hats(p, open_hats=False, density=8)
-    p.ramp("BD", CC_BD_DECAY, 64, 92, every=8)
+    p.ramp("BD", CC_BD_DECAY, 64, 88, every=8)
+    p.ramp("BD", CC_DRIVE, 6, 12, every=8)
     # The hats fade in and open up.
     p.ramp("Hats", CC_CH_LEVEL, 85, 115, every=4)
     p.ramp("Hats", CC_CH_DECAY, 25, 45, every=8)
@@ -229,6 +231,8 @@ def drive():
     rim_threes(p)
     # The kick's pitch and the open hat's length change every bar.
     p.bars("BD", CC_BD_TUNE, (60, 72, 56, 80))
+    p.bars("BD", CC_BD_DECAY, (92, 112, 100, 124))
+    p.bars("BD", CC_DRIVE, (10, 14, 12, 16))
     p.bars("Hats", CC_OH_DECAY, (40, 70, 50, 90))
     return p
 
@@ -300,6 +304,7 @@ def roll():
     p.ramp("Hats", CC_CH_LEVEL, 115, 95, every=8)
     p.ramp("Hats", CC_CH_DECAY, 30, 80, every=8)
     # The kick comes back only on the last beat, under long low toms.
+    p.knob("BD", 60, CC_BD_DECAY, 127)
     p.hit("BD", 60, BD, ACCENT)
     p.knob("Toms", 56, CC_LT_DECAY, 100)
     p.hit("Toms", 60, LT, ACCENT)
@@ -320,11 +325,13 @@ def exhibition():
     p.ramp("Hats", CC_CH_DECAY, 20, 110, every=4)
     p.ramp("BD", CC_BD_TUNE, 40, 100, every=8)
     # More click as the drop builds.
-    p.ramp("BD", CC_BD_ATTACK, 60, 127, every=8)
+    p.ramp("BD", CC_BD_ATTACK, 90, 127, every=8)
+    p.bars("BD", CC_BD_DECAY, (100, 116, 108, 127))
+    p.ramp("BD", CC_DRIVE, 12, 20, every=8)
     # The flammed snares change colour every bar and get snappier; claps and
     # open hats swell.
     p.bars("SD CP", CC_SD_TONE, (80, 60, 100, 70))
-    p.ramp("SD CP", CC_SD_SNAPPY, 70, 110, every=8)
+    p.ramp("SD CP", CC_SD_SNAPPY, 92, 120, every=8)
     p.ramp("SD CP", CC_CP_LEVEL, 105, 121, every=8)
     p.ramp("Hats", CC_OH_LEVEL, 100, 121, every=8)
     return p
@@ -348,7 +355,8 @@ def jack():
     # bar; the kick's decay pumps; claps alternate loud and soft.
     p.knob("SD CP", 32, CC_SD_TUNE, 30)
     p.bars("SD CP", CC_SD_SNAPPY, (84, 110, 70, 120))
-    p.bars("BD", CC_BD_DECAY, (76, 104, 80, 112))
+    p.bars("BD", CC_BD_DECAY, (76, 116, 80, 127))
+    p.bars("BD", CC_DRIVE, (12, 16, 10, 18))
     p.bars("SD CP", CC_CP_LEVEL, (121, 104, 121, 104))
     # The toms go up for the second half and the fill rings long.
     for cc in TOM_TUNES:
@@ -371,7 +379,8 @@ def waveform():
         p.hit("Cymbals", row, RD, ACCENT if row % 8 == 2 else NORMAL)
     p.ramp("Cymbals", CC_RD_TUNE, 30, 110, every=4)
     p.knob("Hats", 0, CC_OH_DECAY, 100)
-    p.knob("BD", 0, CC_BD_DECAY, 104)
+    p.knob("BD", 0, CC_BD_DECAY, 120)
+    p.knob("BD", 0, CC_DRIVE, 14)
     p.ramp("BD", CC_BD_TUNE, 60, 90, every=8)
     p.bars("Hats", CC_CH_LEVEL, (115, 100, 115, 100))
     # Short toms climbing in pitch.
@@ -390,7 +399,8 @@ def outro():
     for row in range(0, 32):
         if row % 16 in (4, 12):
             p.hit("SD CP", row, CP, NORMAL)
-    p.ramp("BD", CC_BD_DECAY, 112, 56, every=4)
+    p.ramp("BD", CC_BD_DECAY, 124, 56, every=4)
+    p.ramp("BD", CC_DRIVE, 14, 6, every=8)
     p.ramp("Cymbals", CC_CR_TUNE, 64, 20, 48, ROWS - 1, every=4)
     # The claps fade, the hats fade and the open hat tightens.
     p.ramp("SD CP", CC_CP_LEVEL, 115, 70, 0, 31, every=4)
@@ -403,14 +413,17 @@ def outro():
 # --- Decay studies: every tunable sound at different decays ------------------
 
 def kick_decays():
-    """Every beat a different BD Decay, short to long; BD Tune moves each bar,
-    so each tuning is heard across the decays."""
+    """Short kicks, half-time long kicks, then a final ring-out."""
     p = Pattern("Kick Decays")
-    kick(p)
     hats(p, open_hats=False)
     clap(p)
-    for row in range(0, ROWS, 4):
-        p.knob("BD", row, CC_BD_DECAY, (20, 60, 100, 127)[row // 4 % 4])
+    # Two short-decay bars, then two half-time bars that expose long tails.
+    # Leave the last three beats empty so the longest hit can ring out.
+    for row in (0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48):
+        p.hit("BD", row, BD, ACCENT if row % 16 == 0 else NORMAL)
+        value = (20, 60, 84, 100)[row // 4 % 4] if row < 32 else {32: 112, 40: 120, 48: 127}[row]
+        p.knob("BD", row, CC_BD_DECAY, value)
+    p.bars("BD", CC_DRIVE, (8, 10, 12, 16))
     p.bars("BD", CC_BD_TUNE, (30, 60, 90, 120))
     return p
 

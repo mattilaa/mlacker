@@ -57,7 +57,8 @@ The bass drum, snare, toms, rim shot and hand clap were fitted to unprocessed
 recordings of a TR-909, made with each knob at panel positions 1, 3, 6, 9 and 11. These
 positions are knob values 0, 0.2, 0.5, 0.8 and 1 here. The fit covers pitch
 glides, VCA holds and decays, harmonics, noise colour and lengths. Each value
-below is a measurement.
+below describes the current voicing; recent refinements include approximations
+for the noise contours and an extended kick decay range.
 
 - **Bass drum.**
   - **Pitch.** The VCO glides exponentially from about 270 Hz down to its
@@ -72,8 +73,9 @@ below is a measurement.
     stage's clip, which flattens those half-cycles. That flattening is the
     909's punch.
   - **Decay.** **Decay** sets the time constant after the hold: 17 ms, 33 ms,
-    62 ms and 105 ms from the minimum to the maximum, over a quiet tail. The
-    drum is 40 dB down after about 0.3 s to 0.5 s.
+    62 ms and 85 ms through the first 80% of the knob, over a quiet tail.
+    The last fifth extends to 220 ms for long club kicks beyond the original
+    panel range: about 1.05 s to fall 40 dB, versus 0.3 to 0.45 s below 80%.
   - **Click.** **Attack** adds up to about a third more click: band-passed
     noise on top of the step the hit itself makes.
   - **Analog.** The VCO runs freely between hits, as on analog hardware, so
@@ -81,28 +83,29 @@ below is a measurement.
     little: pitch by a slow random walk (about ±0.4%), and level (±0.25 dB)
     and decay (±4%) from hit to hit.
 - **Snare drum.**
-  - **Tone.** Two VCOs at a 1 : 1.5 ratio, the upper one 12.7 dB down.
+  - **Tone.** Two VCOs at a 1 : 1.5 ratio with independent envelopes.
     **Tune** sets the lower one from 114 Hz to 222 Hz (166 Hz at the centre).
-    Both start 2.4 times higher and drop within a few milliseconds. They decay
-    with a 22 ms time constant to about -19 dB, then ring on quietly. The
-    lower VCO carries its 2nd harmonic at -20 dB.
-  - **Noise.** Band-passed noise centred at 6 to 10 kHz. **Snappy** sets its
-    level: about -27 dB against the tone at 0.2, -16 dB at the centre and
-    -10.5 dB at the top. **Tone** sets how long the noise holds before it
-    fades: 50 ms at the minimum, 120 ms at the centre and 150 ms at the top.
-    As on the 909, Tone does not change the noise's colour.
-  - **Analog.** Both VCOs run freely between hits. Each hit drifts a little
-    in pitch (about ±0.5%), level (±0.25 dB) and snap (±6%).
+    A short pitch sweep starts about 1.77 times above the resting pitch.
+    The lower body falls with a 25 ms time constant over a quiet 90 ms tail;
+    the upper resonance has its own 35 ms decay, starting about 8.4 dB down.
+  - **Noise.** Parallel low- and high-pass paths: a midrange wire rattle and
+    a separately fading bright attack. **Snappy** sets the amount, including
+    no noise at zero. **Tone** sets how long the noise holds before fading:
+    50 ms at the minimum, 120 ms at the centre and 150 ms at the top.
+  - **Analog.** Fresh hits phase the oscillators together; overlapping hits
+    retain phase and smooth the envelope rise. Each hit varies slightly in
+    pitch (about ±0.5%), level (±0.25 dB) and snap (±6%).
   - **SD Decay** (not on the 909) stretches the tone body from 0.5x to 2x.
     At the centre it rings as the 909's does.
 - **Toms.** A VCO that starts 30% above its pitch and glides down with a
-  40 ms time constant. A VCA holds and then decays.
+  40 ms time constant. The VCA sags gently through its initial shoulder,
+  then releases.
   - **Wave.** As on the 909, the wave hits with a strong 2nd harmonic (about
     -8 dB) that mellows to about -22 dB as the tom rings. A soft saturation
-    keeps the 3rd harmonic around -16 dB and the 4th to 6th around -27 to
-    -37 dB.
-  - **Noise.** A burst of high noise on the attack, and a faint layer that
-    follows the VCA as the tom rings (about -50 dB above 1 kHz).
+    keeps the sustained 3rd harmonic near -29 dB for a rounder body.
+  - **Noise.** Filtered from 900 Hz to 8.5 kHz, with a strong 10 ms onset
+    and a quieter 40 ms skirt behind the body, plus a faint layer under
+    the ring. The noise contour stays short when Tom Decay is extended.
   - **Tune.** Sets where each tom settles. Centred, the toms play a chord:
     the low tom at 94 Hz, the mid a fifth above (140.8 Hz) and the high a
     minor seventh above (167.5 Hz). On the 909 the mid and high sit at 113

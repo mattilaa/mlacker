@@ -451,9 +451,11 @@ void testBassDrum(const std::string &path)
     // then decays (about 8 dB down at 120 ms at centred Decay).
     const double top = peak(centre.left, 0, 1920);
     const double at40 = peak(centre.left, 1680, 2160), at120 = peak(centre.left, 5520, 6000);
-    // Decay: 40 dB down after about 0.3 s at the minimum, 0.5 s at the maximum.
+    // Decay: retain the normal range, then extend the top for club tails.
     const double shortest = length40(hit(path, kBD, 100.0f / 127.0f, 2.0, {{kBdDecay, 0.0}}).left);
-    const double longest = length40(hit(path, kBD, 100.0f / 127.0f, 2.0, {{kBdDecay, 1.0}}).left);
+    const double normalLong = length40(hit(path, kBD, 100.0f / 127.0f, 2.0, {{kBdDecay, 0.8}}).left);
+    const Stereo extended = hit(path, kBD, 100.0f / 127.0f, 4.0, {{kBdDecay, 1.0}});
+    const double longest = length40(extended.left);
     // Attack adds more of the click: the difference between Attack 1 and 0
     // (the noise is the same in both) is a short, bright burst in the first
     // few milliseconds, gone by 10 ms.
@@ -472,7 +474,10 @@ void testBassDrum(const std::string &path)
     CHECK(at40 > top * 0.79);
     CHECK(at120 < top * 0.5 && at120 > top * 0.28);
     CHECK(shortest > 0.2 && shortest < 0.4);
-    CHECK(longest > 0.42 && longest < 0.7);
+    CHECK(normalLong > 0.4 && normalLong < 0.6);
+    CHECK(longest > 0.9 && longest < 1.2 && longest > normalLong * 1.8);
+    CHECK(rms(extended.left, 24000, 28800) > rms(centre.left, 24000, 28800) * 30.0);
+    CHECK(peak(extended.left, 3 * 48000) < 0.00001);
     CHECK(soft > 0.01 && hard < soft * 0.05 && highShare(click, 0, 96, 1000.0) > 0.5);
 }
 

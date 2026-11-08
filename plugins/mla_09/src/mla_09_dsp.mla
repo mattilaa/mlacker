@@ -260,7 +260,7 @@ fn two_pi() -> f32 { return 6.28318530717958647692f; }
 /// - The wave is a nearly pure sine (2nd harmonic -29 dB, 3rd -26.5 dB),
 ///   starting downwards.
 /// - The VCA holds the level for 50 ms, through the whole glide, then decays:
-///   a time constant of 17 ms (Decay minimum) to 105 ms (maximum), over a
+///   a time constant of 17 ms (Decay minimum) to 220 ms (extended maximum), over a
 ///   quiet tail 25 dB down. During the hold a decaying offset pushes one side
 ///   of the wave into the output stage's clip, which flattens those half
 ///   cycles, as on the recordings.
@@ -307,7 +307,8 @@ impl BassDrum {
     fn knobs(self: &mut Self, tune: f32, attack: f32, decay: f32) -> void {
         self.glide_tau = knob5(tune, 0.0069f, 0.0081f, 0.013f, 0.0238f, 0.0305f);
         self.rest_hz = 53.0f + 2.2f * (1.0f - sclamp(decay, 0.0f, 1.0f));
-        self.decay_tau = knob5(decay, 0.017f, 0.033f, 0.062f, 0.085f, 0.105f);
+        // Preserve the lower four fifths; reserve the top for long club tails.
+        self.decay_tau = knob5(decay, 0.017f, 0.033f, 0.062f, 0.085f, 0.22f);
         self.attack = sclamp(attack, 0.0f, 1.0f);
     }
 
@@ -367,7 +368,7 @@ impl BassDrum {
         self.click = self.click * self.click_coef;
         self.t = self.t + self.dt;
         if self.t > 0.05f + 14.0f * self.decay_tau && self.amp < silent() { self.t = -1.0f; }
-        if self.t > 2.0f { self.t = -1.0f; }
+        if self.t > 4.0f { self.t = -1.0f; }
         return y;
     }
 }
