@@ -149,9 +149,14 @@ mlang pkg --config plugins/mla_paula/mlang.toml run test
   game's own samples and sequence. The replay routine the boot loader
   starts was traced frame by frame into Paula register writes. The project
   holds its sample memory (`Audio/Beast chip memory.wav`, slot 1), each of
-  its 16 instruments as its own WAV, and 62 four-channel patterns (7:56: a
-  65 s opening, then the 6:50 section the game loops) whose SYSEX cells
-  carry six 50 Hz frames per row at 125 BPM. Raw Paula output: samples held
+  its 16 instruments as its own WAV, and a song matrix of 62 rows (7:56: a
+  65 s opening, then the 6:50 section the game loops) in four parallel
+  lanes, Paula's channels 1-4, each played by its own Mla Paula instance
+  (instrument *n* is channel *n*, on its own mixer strip; all four hold the
+  same chip memory). Each lane has its own one-track pattern per matrix row
+  (`Paula 1 L 0m00s` .. `Paula 4 L 7m48s`, 248 in all), whose SYSEX cells
+  carry six 50 Hz frames per row at 125 BPM. Muting a lane silences its
+  channel; playback can start on any matrix row. Raw Paula output: samples held
   without interpolation, A1200 model (no audible filter), LED filter off,
   75 % separation. A credits and rights notice shows on opening; the music
   is not covered by mlacker's license.
