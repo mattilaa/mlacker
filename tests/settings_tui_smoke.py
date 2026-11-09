@@ -82,9 +82,9 @@ def main():
         send(b"\t\rjjj\r")  # Device default -> 96 kHz
         frame = send(b"\t\rjj\r")  # 128 -> 512 frames
         assert b"512 frames" in frame
-        frame = send(b"\t\r")  # Master headroom, -12 dB by default
-        assert b"-12 dB (default)" in frame and b"0 dB (none)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
-        send(b"k\r")  # -12 -> -9 dB
+        frame = send(b"\t\r")  # Master headroom, -3 dB by default
+        assert b"-3 dB (default)" in frame and b"0 dB (none)" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
+        send(b"j\r")  # -3 -> -6 dB
         send(b"\t\rk\r")  # MIDI: System default -> Disabled
         frame = send(b"\t\r")  # MIDI knobs: Absolute by default
         assert b"Relative (endless encoders" in frame, re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", frame).decode()
@@ -102,7 +102,20 @@ def main():
             assert "midi_knobs = relative" in saved.read()
         frame = send(F1 + b"jjjj\r")
         assert b"MIDI input adapter" in frame and b"Disabled" in frame and b"512 frames" in frame and b"96 kHz" in frame
-        assert b"-9 dB" in frame and b"1 core (no worker threads)" in frame and b"Relative (endless encoders" in frame
+        assert b"-6 dB" in frame and b"1 core (no worker threads)" in frame and b"Relative (endless encoders" in frame
+        # On a shorter terminal, every Tab stop must keep its control and
+        # the pinned OK/Cancel row visible. Reverse traversal must do the same.
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        read_for()
+        for key in [b"\t"] * 9 + [b"\x1b[Z"] * 9:
+            frame = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", send(key))
+            assert b"OK" in frame and b"Cancel" in frame, frame[-4000:]
+        # Shift+Tab from the first field reaches OK; Right selects Cancel.
+        frame = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", send(b"\x1b[Z"))
+        assert b"CPU cores for audio" in frame, frame[-4000:]
+        send(b"l\r")
+        frame = send(F1 + b"jjjj\r")
+        assert b"Audio output (AUHAL)" in frame
         # Resize with an expanded dropdown, exercising clipping and overlay.
         send(b"\r")
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 30, 0, 0))

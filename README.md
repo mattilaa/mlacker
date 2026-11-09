@@ -1326,7 +1326,7 @@ default so inaudible rumble never reaches the output), **EQ1–EQ4** (peaking
 bands at 100 Hz, 500 Hz, 2.5 kHz and 8 kHz, ±12 dB, each with its own Q) and
 **Master** with the volume slider (0–150%, 100% unity) beside the master L/R
 meters. After the master bus comes the master headroom (**File → Settings**,
--12 dB by default): a single track at 100% reads that far down on the master,
+-3 dB by default): a single track at 100% reads that far down on the master,
 which leaves room as tracks add up. If the master meter still clips, turn the
 master volume down here. With the pane focused:
 
@@ -1663,7 +1663,7 @@ preallocated, with sample offsets preserved by the native audio event queue.
 
 1. Select the audio output and input, sample rate, buffer size, master headroom,
    MIDI input and CPU cores in **File → Settings** (in that order).
-   **Master headroom** is a fixed gain after the master bus, 0 to -24 dB, -12 dB
+   **Master headroom** is a fixed gain after the master bus, 0 to -24 dB, -3 dB
    by default: a track at full level reads that far down on the master meter.
    The Mastering view's master volume trims on top of it.
    Buffer choices are 32–4096 frames (samples per channel), default 128.

@@ -283,7 +283,7 @@ worker before releasing shared storage. Hardware-independent decoder, threaded
 handoff, overflow, and indicator tests live in `tests/midi_tests.mla`.
 
 File → Settings lists the AUHAL audio output and input together, then the
-sample rate, buffer size, master headroom (-12 dB by default), MIDI input
+sample rate, buffer size, master headroom (-3 dB by default), MIDI input
 adapter and CPU cores. The devices offer System default and Disabled. Enter opens a dropdown, j/k or arrows
 browse, Enter commits its choice, and Escape cancels the popup. A second Escape
 cancels Settings. Tab or Shift+Tab moves between fields and the centered

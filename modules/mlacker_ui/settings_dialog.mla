@@ -37,7 +37,7 @@ pub struct SettingsDialog : Dialog {
     /// Live audio input (AUHAL): -2 disabled, -1 system default, else an
     /// input device index. Instruments can take it as their input.
     var input: DropDown;
-    /// The fixed gain after the master bus, in dB (0 = none, -12 default).
+    /// The fixed gain after the master bus, in dB (0 = none, -3 default).
     var headroom: DropDown;
     /// Render threads (0 = every core), read from and applied to the audio
     /// runtime directly: the cap takes effect without reopening the device.
@@ -185,46 +185,64 @@ impl SettingsDialog {
         let action: i32 = self.tick_buttons();
         if action == 1 || action == 2 { self.active = false; self.result = action; }
     }
-    /// Field `index`'s row: its label is the line above it.
-    fn field_row(body: Rect, index: i32) -> Rect {
-        let y: i32 = 1 + index * 3;
-        return Rect::new(body.x + 1, body.y + y, body.width - 2, body.height > y ? 1 : 0);
+    /// Scroll complete label/control pairs above the pinned buttons.
+    fn first_field(self: SettingsDialog, body: Rect) -> i32 {
+        let visible: i32 = (body.height + 1) / 3;
+        let count: i32 = visible < 1 ? 1 : (visible > settings_buttons() ? settings_buttons() : visible);
+        let selected: i32 = self.focus.selected == settings_buttons() ? field_cores() : self.focus.selected;
+        let first: i32 = selected >= count ? selected - count + 1 : 0;
+        let last: i32 = settings_buttons() - count;
+        return first < last ? first : last;
     }
-    fn label(surface: Surface, body: Rect, index: i32, text: str8, theme: Theme) -> void {
-        let y: i32 = index * 3;
-        if body.height > y { surface.text(Rect::new(body.x, body.y + y, body.width, 1), text, theme.foreground, theme.panel); }
+    /// Field `index`'s row: its label is the line above it.
+    fn field_row(body: Rect, index: i32, first: i32) -> Rect {
+        let y: i32 = 1 + (index - first) * 3;
+        return Rect::new(body.x + 1, body.y + y, body.width - 2, y >= 0 && body.height > y ? 1 : 0);
+    }
+    fn label(surface: Surface, body: Rect, index: i32, first: i32, text: str8, theme: Theme) -> void {
+        let y: i32 = (index - first) * 3;
+        if y >= 0 && body.height > y + 1 { surface.text(Rect::new(body.x, body.y + y, body.width, 1), text, theme.foreground, theme.panel); }
     }
     pub fn paint(self: SettingsDialog, surface: Surface, viewport: Rect, theme: Theme) -> void {
         if !self.active { return; }
-        let body: Rect = self.paint_frame(surface, viewport, theme);
         let f: i32 = self.focus.selected;
-        SettingsDialog::label(surface, body, field_output(), "Audio output (AUHAL)", theme);
-        SettingsDialog::label(surface, body, field_input(), "Audio input (AUHAL)", theme);
-        SettingsDialog::label(surface, body, field_rate(), "Sample rate", theme);
-        SettingsDialog::label(surface, body, field_buffer(), "Buffer size (a request; the device may differ)", theme);
-        SettingsDialog::label(surface, body, field_headroom(), "Master headroom (a full-level track reads this far down)", theme);
-        SettingsDialog::label(surface, body, field_midi(), "MIDI input adapter", theme);
-        SettingsDialog::label(surface, body, field_knobs(), "MIDI knobs (default for projects; MIDI learn and MPD218)", theme);
-        SettingsDialog::label(surface, body, field_cores(), self.core_label, theme);
-        self.output.paint(surface, SettingsDialog::field_row(body, field_output()), theme, f == field_output());
-        self.input.paint(surface, SettingsDialog::field_row(body, field_input()), theme, f == field_input());
-        self.rate.paint(surface, SettingsDialog::field_row(body, field_rate()), theme, f == field_rate());
-        self.buffer.paint(surface, SettingsDialog::field_row(body, field_buffer()), theme, f == field_buffer());
-        self.headroom.paint(surface, SettingsDialog::field_row(body, field_headroom()), theme, f == field_headroom());
-        self.midi.paint(surface, SettingsDialog::field_row(body, field_midi()), theme, f == field_midi());
-        self.knobs.paint(surface, SettingsDialog::field_row(body, field_knobs()), theme, f == field_knobs());
-        self.cores.paint(surface, SettingsDialog::field_row(body, field_cores()), theme, f == field_cores());
-        let error_y: i32 = settings_buttons() * 3;
-        if body.height > error_y { surface.text(Rect::new(body.x, body.y + error_y, body.width, 1), self.error, theme.accent, theme.panel); }
+        // Dialog reserves focus ID 3 for buttons; Settings uses ID 8 because
+        // field 3 is the buffer. Translate only the frame's painting focus.
+        let frame: Dialog = Dialog { title: self.title, width: self.width, height: self.height,
+            focus: PaneFocus::new(f == settings_buttons() ? 3 : 0), button_alignment: self.button_alignment,
+            buttons: std::copy(self.buttons), button_selected: self.button_selected, pressed_button: self.pressed_button };
+        let content: Rect = frame.paint_frame(surface, viewport, theme);
+        let body: Rect = Rect::new(content.x, content.y, content.width,
+            content.height - (self.error != "" && content.height > 2 ? 1 : 0));
+        let first: i32 = self.first_field(body);
+        SettingsDialog::label(surface, body, field_output(), first, "Audio output (AUHAL)", theme);
+        SettingsDialog::label(surface, body, field_input(), first, "Audio input (AUHAL)", theme);
+        SettingsDialog::label(surface, body, field_rate(), first, "Sample rate", theme);
+        SettingsDialog::label(surface, body, field_buffer(), first, "Buffer size (a request; the device may differ)", theme);
+        SettingsDialog::label(surface, body, field_headroom(), first, "Master headroom (a full-level track reads this far down)", theme);
+        SettingsDialog::label(surface, body, field_midi(), first, "MIDI input adapter", theme);
+        SettingsDialog::label(surface, body, field_knobs(), first, "MIDI knobs (default for projects; MIDI learn and MPD218)", theme);
+        SettingsDialog::label(surface, body, field_cores(), first, self.core_label, theme);
+        self.output.paint(surface, SettingsDialog::field_row(body, field_output(), first), theme, f == field_output());
+        self.input.paint(surface, SettingsDialog::field_row(body, field_input(), first), theme, f == field_input());
+        self.rate.paint(surface, SettingsDialog::field_row(body, field_rate(), first), theme, f == field_rate());
+        self.buffer.paint(surface, SettingsDialog::field_row(body, field_buffer(), first), theme, f == field_buffer());
+        self.headroom.paint(surface, SettingsDialog::field_row(body, field_headroom(), first), theme, f == field_headroom());
+        self.midi.paint(surface, SettingsDialog::field_row(body, field_midi(), first), theme, f == field_midi());
+        self.knobs.paint(surface, SettingsDialog::field_row(body, field_knobs(), first), theme, f == field_knobs());
+        self.cores.paint(surface, SettingsDialog::field_row(body, field_cores(), first), theme, f == field_cores());
+        if self.error != "" && content.height > 2 {
+            surface.text(Rect::new(content.x, content.y + content.height - 1, content.width, 1), self.error, theme.accent, theme.panel);
+        }
         // Overlays are last, so they cover labels, fields and buttons.
-        self.output.paint_popup(surface, SettingsDialog::field_row(body, field_output()), viewport, theme);
-        self.input.paint_popup(surface, SettingsDialog::field_row(body, field_input()), viewport, theme);
-        self.rate.paint_popup(surface, SettingsDialog::field_row(body, field_rate()), viewport, theme);
-        self.buffer.paint_popup(surface, SettingsDialog::field_row(body, field_buffer()), viewport, theme);
-        self.headroom.paint_popup(surface, SettingsDialog::field_row(body, field_headroom()), viewport, theme);
-        self.midi.paint_popup(surface, SettingsDialog::field_row(body, field_midi()), viewport, theme);
-        self.knobs.paint_popup(surface, SettingsDialog::field_row(body, field_knobs()), viewport, theme);
-        self.cores.paint_popup(surface, SettingsDialog::field_row(body, field_cores()), viewport, theme);
+        self.output.paint_popup(surface, SettingsDialog::field_row(body, field_output(), first), viewport, theme);
+        self.input.paint_popup(surface, SettingsDialog::field_row(body, field_input(), first), viewport, theme);
+        self.rate.paint_popup(surface, SettingsDialog::field_row(body, field_rate(), first), viewport, theme);
+        self.buffer.paint_popup(surface, SettingsDialog::field_row(body, field_buffer(), first), viewport, theme);
+        self.headroom.paint_popup(surface, SettingsDialog::field_row(body, field_headroom(), first), viewport, theme);
+        self.midi.paint_popup(surface, SettingsDialog::field_row(body, field_midi(), first), viewport, theme);
+        self.knobs.paint_popup(surface, SettingsDialog::field_row(body, field_knobs(), first), viewport, theme);
+        self.cores.paint_popup(surface, SettingsDialog::field_row(body, field_cores(), first), viewport, theme);
     }
     pub fn release(self: &mut Self) -> void {
         self.midi.release(); self.output.release(); self.buffer.release(); self.rate.release(); self.cores.release(); self.input.release();

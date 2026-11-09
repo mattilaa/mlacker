@@ -111,11 +111,78 @@ fn settings_midi_knob_mode() {
     var settings: SettingsDialog = SettingsDialog::new();
     settings.open_audio(-2, -2, 128, 0);
     verify(!settings.relative_knobs());
+    verify(settings.headroom.selected_id() == -3);
     settings.set_relative_knobs(true); verify(settings.relative_knobs());
     // Field 6 is the knob mode: Enter opens it, Up and Enter pick Absolute.
     settings.focus.selected = 6;
     settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Enter }); verify(settings.knobs.expanded);
     settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Up });
     settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Enter }); verify(!settings.knobs.expanded && !settings.relative_knobs());
+    settings.release();
+}
+
+fn settings_paint_fixture() -> SettingsDialog {
+    var settings: SettingsDialog = SettingsDialog::new();
+    settings.active = true; settings.reset_buttons();
+    settings.output.set_items([DropDownItem { id: -2, label: "Output choice" }], -2);
+    settings.input.set_items([DropDownItem { id: -2, label: "Input choice" }], -2);
+    settings.rate.set_items([DropDownItem { id: 0, label: "Rate choice" }], 0);
+    settings.buffer.set_items([DropDownItem { id: 128, label: "Buffer choice" }], 128);
+    settings.headroom.set_items([DropDownItem { id: -3, label: "-3 dB (default)" }], -3);
+    settings.midi.set_items([DropDownItem { id: -2, label: "MIDI choice" }], -2);
+    settings.knobs.set_items([DropDownItem { id: 0, label: "Knob choice" }], 0);
+    settings.cores.set_items([DropDownItem { id: 0, label: "Core choice" }], 0);
+    free(settings.core_label); settings.core_label = clone("CPU cores");
+    return settings;
+}
+
+fn verify_settings_focus_visible(settings: &SettingsDialog, height: i32) -> void {
+    let area: Rect = Rect::new(0, 0, 80, height);
+    let surface: Surface = Surface::new(80, height);
+    let theme: Theme = Theme::dark_blue();
+    settings.paint(surface, area, theme);
+    let body: Rect = settings.content_rect(area);
+    var highlighted_rows: i32 = 0;
+    for y in body.y..body.y + body.height {
+        let cell: Cell = surface.cell(body.x + 1, i32(y));
+        if cell.background == theme.selection { highlighted_rows = highlighted_rows + 1; }
+    }
+    verify(highlighted_rows == (settings.focus.selected == 8 ? 0 : 1));
+    let rectangles: list<Rect> = settings.button_rects(area);
+    for i in 0..rectangles.len() {
+        let button: Rect = rectangles[i];
+        let corner: Cell = surface.cell(button.x, button.y);
+        let focused: bool = settings.focus.selected == 8 && settings.button_selected == i;
+        verify(corner.foreground == (focused ? theme.accent : theme.border));
+    }
+    let rendered: str8 = surface.encode(false);
+    verify(std::strbuf::contains(rendered, "OK") == 1);
+    verify(std::strbuf::contains(rendered, "Cancel") == 1);
+    free(rendered); surface.release();
+}
+
+#[test]
+fn settings_tab_focus_and_buttons_stay_visible_when_resized() {
+    var settings: SettingsDialog = settings_paint_fixture();
+    let heights: list<i32> = [36, 28, 24, 16, 12];
+    for height in heights {
+        settings.focus.selected = 0;
+        for _i in 0..9 {
+            verify_settings_focus_visible(settings, height);
+            settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Toggle, code: 9 });
+        }
+        verify(settings.focus.selected == 0);
+        for _i in 0..9 {
+            settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Toggle, code: 9, modifiers: 2 });
+            verify_settings_focus_visible(settings, height);
+        }
+        verify(settings.focus.selected == 0);
+    }
+    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Toggle, code: 9, modifiers: 2 });
+    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Right });
+    verify_settings_focus_visible(settings, 24);
+    settings.on_event(InputEvent { kind: InputKind::Menu, key: Key::Enter });
+    for _i in 0..10 { settings.tick(); }
+    verify(!settings.active && settings.result == 2);
     settings.release();
 }

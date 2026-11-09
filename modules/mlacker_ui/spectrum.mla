@@ -68,8 +68,8 @@ impl MasterBus {
     }
 }
 
-/// Master headroom choices (File > Settings), in dB; -12 dB by default.
-pub fn default_headroom_db() -> i32 { return -12; }
+/// Master headroom choices (File > Settings), in dB; -3 dB by default.
+pub fn default_headroom_db() -> i32 { return -3; }
 pub fn headroom_choices() -> list<i32> { return [0, -3, -6, -9, -12, -15, -18, -24]; }
 
 /// Set the fixed gain after the master bus: `db` of headroom, so a track at
