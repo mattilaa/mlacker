@@ -8,7 +8,8 @@ instruments, the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
 own carrier synth), [Mla Speech](plugins/mla_speech) (an Atari ST style
 speech synthesizer that says a pattern's comment texts),
 [Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines),
-[Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write) and
+[Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write),
+[Mla Paula](plugins/mla_paula) (the Amiga's four-channel 8-bit sample chip, with the A500 filters) and
 [Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
@@ -18,6 +19,9 @@ The [Last Ninja 2 project](examples/last_ninja_2) recreates Matt Gray's Central
 Park in-game performance with the original SID register sequence, voice balance
 and percussion via Mla SID. It includes a copyright notice on opening and a
 separate MIDI adaptation for comparison.
+The [Shadow of the Beast intro](plugins/mla_paula#examples) plays David
+Whittaker's disk 1 loading music with the game's own samples and sequence as
+Paula register frames on Mla Paula, with a credits and rights notice on opening.
 
 ## Build and run
 
