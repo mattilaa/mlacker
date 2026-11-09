@@ -80,6 +80,20 @@ def main():
         # Moving the cursor names the pattern the mixer and editor now show.
         expect(tui.send(b"k", 0.9), b"Pattern 1: Untitled")
         expect(tui.send(b"j", 0.9), b"Pattern 2: Untitled copy")
+        # First/last and half-page jumps keep following the destination row.
+        expect(tui.send(b"gg", 0.5), b"Pattern 1: Untitled")
+        expect(tui.send(b"G", 0.5), b"Pattern 2: Untitled copy")
+        expect(tui.send(b"\x15", 0.5), b"Pattern 1: Untitled")
+        expect(tui.send(b"\x04", 0.5), b"Pattern 2: Untitled copy")
+        expect(tui.send(b"\x1b[117;5u", 0.5), b"Pattern 1: Untitled")
+        expect(tui.send(b"\x1b[100;5u", 0.5), b"Pattern 2: Untitled copy")
+        # Opening a menu must interrupt gg, even though the matrix keeps focus.
+        tui.send(b"g" + F1, 0.4)
+        tui.send(b"\x1b", 0.4)
+        frame = tui.send(b"g", 0.5)
+        assert b"Pattern 1: Untitled" not in frame, frame[-3000:]
+        expect(tui.send(b"g", 0.5), b"Pattern 1: Untitled")
+        expect(tui.send(b"\x1b[103;2u", 0.5), b"Pattern 2: Untitled copy")
         # Pattern > Follow matrix patterns turns the whole behaviour off.
         expect(tui.send(F1 + b"llll" + b"j" * 4 + b"\r", 0.9), b"Follow matrix patterns: off")
         frame = tui.send(b"k", 0.9)

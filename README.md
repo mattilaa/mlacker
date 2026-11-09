@@ -366,6 +366,8 @@ pattern list.
 | Key | Action |
 |-----|--------|
 | `h/j/k/l` or arrows | Move the cursor |
+| `gg` / `G` | Go to the first / last matrix row, keeping the current lane |
+| `Ctrl+U` / `Ctrl+D` | Move up / down half the visible matrix rows |
 | `Enter` | Choose the cell's pattern from a list of `<no>:<name>`, or "(empty)" |
 | `Backspace` | Empty the cell |
 | `y` / `p` | Copy the cell's pattern / paste it into another cell |

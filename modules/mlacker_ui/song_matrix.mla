@@ -1,5 +1,8 @@
 mod mlacker_ui::patterns;
 mod tui::widgets;
+mod mlacker_ui::keymap;
+use mlacker_ui::keymap::chord_matches;
+use mlacker_ui::keymap::key;
 use mlacker_ui::patterns::PatternLibrary;
 use mlacker_ui::patterns::PatternEntry;
 use mlacker_ui::patterns::SongCover;
@@ -29,6 +32,10 @@ pub struct SongMatrix {
     var clipboard: i32;
     /// First `d` of the `dd` chord.
     var delete_pending: bool;
+    /// First g of gg; interrupted by other keys or leaving the matrix.
+    var top_pending: bool;
+    /// Visible data rows, excluding the border, header and keyboard guide.
+    var page_rows: i32{1};
     /// Row and lane where the pattern armed for recording starts, -1 when none.
     var armed_row: i32{-1}; var armed_lane: i32{-1};
     /// A take is running into the armed pattern.
@@ -50,8 +57,36 @@ impl SongMatrix {
         if self.lane >= lanes { self.lane = lanes - 1; }
         if self.lane < 0 { self.lane = 0; }
     }
+    fn clamp_scroll(self: &mut Self, rows: i32) -> void {
+        let maximum: i32 = rows > self.page_rows ? rows - self.page_rows : 0;
+        if self.scroll < 0 { self.scroll = 0; }
+        if self.scroll > maximum { self.scroll = maximum; }
+    }
+    pub fn cancel_pending(self: &mut Self) -> void { self.top_pending = false; self.delete_pending = false; }
     pub fn on_event(self: &mut Self, event: InputEvent, rows: i32, lanes: i32) -> i32 {
+        if event.released || (event.kind == InputKind::None && event.code == 0) { return 0; }
         self.clamp(rows, lanes);
+        let g: bool = event.code == 103 && event.modifiers == 1;
+        if !g { self.top_pending = false; }
+        if g {
+            self.delete_pending = false;
+            if self.top_pending { self.row = 0; self.scroll = 0; self.top_pending = false; }
+            else { self.top_pending = true; }
+            return 0;
+        }
+        if (event.code == 71 && (event.modifiers == 1 || event.modifiers == 2)) || (event.code == 103 && event.modifiers == 2) {
+            self.delete_pending = false; self.row = rows - 1; self.clamp(rows, lanes);
+            self.scroll = rows; self.clamp_scroll(rows); return 0;
+        }
+        let up: bool = chord_matches(key(117, true, false), event);
+        let down: bool = chord_matches(key(100, true, false), event);
+        if up || down {
+            self.delete_pending = false;
+            let step: i32 = self.page_rows > 1 ? self.page_rows / 2 : 1;
+            self.row = self.row + (down ? step : -step);
+            self.scroll = self.scroll + (down ? step : -step);
+            self.clamp(rows, lanes); self.clamp_scroll(rows); return 0;
+        }
         // "dd" removes a row; any other key cancels the pending first "d".
         let pending: bool = self.delete_pending;
         self.delete_pending = false;
@@ -98,6 +133,8 @@ impl SongMatrix {
         // The lane header and keyboard guide each occupy one body row.
         // Keep the selection above the guide when scrolling at the bottom.
         let visible_rows: i32 = body.height - 2;
+        self.page_rows = visible_rows;
+        self.clamp_scroll(rows);
         if self.row < self.scroll { self.scroll = self.row; }
         if self.row >= self.scroll + visible_rows { self.scroll = self.row - visible_rows + 1; }
         // Header: lane numbers.
@@ -175,7 +212,7 @@ impl SongMatrix {
         }
         if body.height > 1 {
             surface.text(Rect::new(body.x, body.y + body.height - 1, body.width, 1),
-                "hjkl move  Enter pattern  y/p copy  r loop  R arm  s split  o/O row  dd delete  v mark  Space/Ctrl+P play",
+                "hjkl move  gg/G first/last  C-u/d half-page  Enter pattern  y/p copy  r loop  R arm  s split  o/O row  dd delete  v mark  Space/Ctrl+P play",
                 theme.muted, theme.panel);
         }
     }

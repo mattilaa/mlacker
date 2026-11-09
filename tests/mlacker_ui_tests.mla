@@ -5231,3 +5231,30 @@ fn tui_legacy_project_presets_still_load() {
     verify(data.plugins.len() > 0 && data.plugins[0].ids.len() > 0);
     data.release();
 }
+
+#[test]
+fn tui_song_matrix_first_last_and_half_page_navigation() {
+    var matrix: SongMatrix = SongMatrix { visible: true, row: 12, lane: 2, page_rows: 11, mark_row: 8 };
+    matrix.on_event(decode_input("g"), 40, 4); verify(matrix.row == 12 && matrix.top_pending);
+    matrix.on_event(InputEvent {}, 40, 4); verify(matrix.top_pending);
+    matrix.on_event(decode_input("g"), 40, 4); verify(matrix.row == 0 && matrix.scroll == 0 && matrix.lane == 2 && !matrix.top_pending);
+    matrix.on_event(decode_input("G"), 40, 4); verify(matrix.row == 39 && matrix.scroll == 29 && matrix.lane == 2);
+    verify(matrix.marked_first() == 8 && matrix.marked_last() == 39);
+    matrix.on_event(decode_input("\x15"), 40, 4); verify(matrix.row == 34 && matrix.scroll == 24);
+    matrix.on_event(decode_input("\x1b[117;5u"), 40, 4); verify(matrix.row == 29 && matrix.scroll == 19);
+    matrix.on_event(decode_input("\x04"), 40, 4); verify(matrix.row == 34 && matrix.scroll == 24);
+    matrix.on_event(decode_input("\x1b[100;5u"), 40, 4); verify(matrix.row == 39);
+    matrix.on_event(decode_input("\x04"), 40, 4); verify(matrix.row == 39 && matrix.scroll == 29 && matrix.lane == 2);
+    matrix.on_event(decode_input("\x1b[103;2u"), 40, 4); verify(matrix.row == 39);
+    matrix.row = 2; matrix.on_event(decode_input("\x15"), 40, 4); verify(matrix.row == 0);
+    // The second g must be consecutive; navigation, modifiers and focus changes interrupt it.
+    matrix.row = 12;
+    matrix.on_event(decode_input("g"), 40, 4); matrix.on_event(decode_input("j"), 40, 4);
+    matrix.on_event(decode_input("g"), 40, 4); verify(matrix.row == 13 && matrix.top_pending);
+    matrix.cancel_pending(); verify(!matrix.top_pending);
+    matrix.on_event(decode_input("g"), 40, 4); verify(matrix.row == 13);
+    matrix.on_event(decode_input("\x1b[103;5u"), 40, 4); verify(!matrix.top_pending && matrix.row == 13);
+    matrix.page_rows = 1;
+    matrix.on_event(decode_input("\x04"), 40, 4); verify(matrix.row == 14);
+    matrix.on_event(decode_input("G"), 0, 0); verify(matrix.row == 0 && matrix.lane == 0);
+}

@@ -1927,7 +1927,7 @@ pub fn run() -> i32 {
                 prepared_table.release(); prepared_mixer.release();
                 prepared_table = SequenceTable {}; prepared_mixer = SequenceTable {}; prepared_row = -1;
             }
-            // dd is consecutive input in the active sequence, never across a
+            // gg/dd are consecutive input in the active view, never across a
             // menu, dialog, pane switch, or unrelated key.
             if event.kind != InputKind::None || event.code != 0 {
                 if menus.active >= 0 || settings.active || project_settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || library.table.editing || library.renaming || focus.selected != 0 ||
@@ -1936,6 +1936,12 @@ pub fn run() -> i32 {
                    event.code != 100 || event.modifiers != 1 { library.table.delete_pending = false; }
                 if menus.active >= 0 || settings.active || project_settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || focus.selected != 1 ||
                    event.code != 103 || event.modifiers != 1 { library.table.top_pending = false; }
+                if !matrix.visible || menus.active >= 0 || settings.active || project_settings.active || dialog.active || question.active || bpm_dialog.active || curve_dialog.active || focus.selected != 1 {
+                    matrix.cancel_pending();
+                } else {
+                    if event.code != 103 || event.modifiers != 1 { matrix.top_pending = false; }
+                    if event.code != 100 || event.modifiers != 1 { matrix.delete_pending = false; }
+                }
             }
             escape_ticks = 0;
             var command: Action = Action::None;
@@ -2618,6 +2624,7 @@ pub fn run() -> i32 {
                 } else { if library.table.mixer_event(event, panes[1].bounds.inset(1)) { dirty = true; } }
             } else if focus.selected == 1 && matrix.visible {
                 let previous_row: i32 = matrix.row; let previous_lane: i32 = matrix.lane;
+                matrix.page_rows = panes[1].bounds.height > 4 ? panes[1].bounds.height - 4 : 1;
                 let action: i32 = matrix.on_event(event, i32(library.song.len()), library.song_lanes() + 1);
                 let area: Rect = terminal_bounds();
                 if action == 0 && follow_matrix && !transport.playing && !song_playing {
