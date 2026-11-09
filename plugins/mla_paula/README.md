@@ -149,26 +149,39 @@ mlang pkg --config plugins/mla_paula/mlang.toml run test
   game's own samples and sequence. The replay routine the boot loader
   starts was traced frame by frame into Paula register writes. The project
   holds its sample memory (`Audio/Beast chip memory.wav`, slot 1), each of
-  its 16 instruments as its own WAV, and a song matrix of 62 rows (7:56: a
-  65 s opening, then the 6:50 section the game loops) in four parallel
-  lanes, Paula's channels 1-4, each played by its own Mla Paula instance
-  (instrument *n* is channel *n*, on its own mixer strip; all four hold the
-  same chip memory). Each lane has its own one-track pattern per matrix row
-  (`Paula 1 L 0m00s` .. `Paula 4 L 7m48s`, 248 in all), whose SYSEX cells
-  carry six 50 Hz frames per row at 125 BPM. Muting a lane silences its
-  channel; playback can start on any matrix row. Raw Paula output: samples held
-  without interpolation, A1200 model (no audible filter), LED filter off,
-  75 % separation. A credits and rights notice shows on opening; the music
-  is not covered by mlacker's license.
+  its 16 instruments as its own WAV, and four parallel song-matrix lanes,
+  one per Paula channel and Mla Paula instance. The matrix grid is one bar
+  (16 sixteenth-note rows). Four-bar patterns cover four matrix rows; the
+  last pattern is three bars. Pattern names show their bar ranges.
+  There are 280 channel patterns and 279 bars, about 7:55 at 141 BPM.
+  The original note starts fall at PAL frames `floor(step * 16 / 3)`;
+  each of these musical steps is now a numbered pattern row. Packets keep
+  the intervening register frames for vibrato, envelopes and sample loops.
+  Raw Paula output: samples held without interpolation, A1200 model (no
+  audible filter), LED filter off, 75 % separation. A credits and rights
+  notice shows on opening; the music is not covered by mlacker's license.
 - [`examples/shadow_of_the_beast_level_1.mlaproj`](../../examples/shadow_of_the_beast_level_1.mlaproj):
   the music when a game starts, on the first level (disk 2's music bank
-  `00007340`, song 2), built the same way: four lanes, each played by its
-  own Mla Paula instance, 19 matrix rows (2:26: 35.40 s, then the 103.04 s
-  section the game loops, from matrix row 5, row 39), 6 instruments, raw
-  Paula output. The tune runs at speed 7 (seven frames a beat step); rows
-  stay six frames, so every register write keeps its exact frame.
+  `00007340`, song 2), with the same four-lane layout and 6 instruments.
+  Its seven-PAL-frame musical steps are numbered rows at 107 BPM,
+  replacing the old six-frame rows that drifted across beats. There are
+  68 channel patterns spanning 66 bars, about 2:28; the final pattern is
+  two bars, with a short silent tail to finish the last bar.
 - [`examples/amiga_beast_intro.mlaproj`](../../examples/amiga_beast_intro.mlaproj):
   an original tune in that style on four instances in note mode, one per
   channel, with synthesized 8-bit samples.
+
+These captures play through register-mode SysEx rather than MIDI note cells.
+All 5,362 captured note starts now fall on numbered sixteenth-note rows; no
+1/64-note offsets are needed. The underlying register changes and samples are
+preserved. Since mlacker stores whole-number BPM, the intro's 140.625 BPM and
+level 1's approximately 107.143 BPM are rounded to 141 and 107 (tempo changes
+below 0.3%, without changing sample pitch). Cold-start snapshots let playback
+begin at any pattern, and muting a channel still silences its lane.
+
+`scripts/align_beast_projects.py` performs the conversion from the original
+125 BPM captures and leaves already-aligned projects unchanged. Its `--check`
+option checks a conversion without writing. The converter retains plugin
+paths, sampler-pad assignments, rights notices and project settings.
 
 Open either and press **Shift+M**, then **Space**, to play the song.
