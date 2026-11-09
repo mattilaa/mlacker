@@ -30,6 +30,7 @@ use mlacker_ui::sequence::automation_valid;
 use mlacker_ui::sequence::automation_controller;
 use mlacker_ui::sequence::automation_title;
 use mlacker_ui::patterns::PatternEntry;
+use mlacker_ui::patterns::SongCover;
 use tui::table::*;
 mod mlacker_ui::sequence;
 use mlacker_ui::sequence::SequenceTable;
@@ -5257,4 +5258,23 @@ fn tui_song_matrix_first_last_and_half_page_navigation() {
     matrix.page_rows = 1;
     matrix.on_event(decode_input("\x04"), 40, 4); verify(matrix.row == 14);
     matrix.on_event(decode_input("G"), 0, 0); verify(matrix.row == 0 && matrix.lane == 0);
+}
+
+#[test]
+fn tui_beast_intro_matrix_row_19_starts_after_short_phrase() {
+    let loaded: result<SessionData, str8> = SessionCodec::load_project("examples/shadow_of_the_beast_intro.mlaproj");
+    verify(loaded.is_ok());
+    var data: SessionData = loaded.unwrap();
+    verify(data.view.beats == 4 && data.view.unit == 4 && data.library.matrix_steps == 16);
+    for lane in 0..4 {
+        let previous: SongCover = data.library.song_cover(17, i32(lane));
+        let next: SongCover = data.library.song_cover(18, i32(lane));
+        let later: SongCover = data.library.song_cover(22, i32(lane));
+        verify(previous.id == 17 + i32(lane) && previous.offset == 1);
+        verify(data.library.song_span(previous.id) == 2);
+        verify(next.id == 21 + i32(lane) && next.offset == 0);
+        verify(data.library.song_span(next.id) == 4);
+        verify(later.id == 25 + i32(lane) && later.offset == 0);
+    }
+    data.release();
 }

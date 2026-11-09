@@ -39,8 +39,14 @@ class BeastAlignmentTests(unittest.TestCase):
                                 self.assertEqual(frame_index, 0, "a note starts between musical rows")
                                 notes += 1
                 self.assertEqual(notes, 3513 if name == "intro" else 1849)
-                for bar, pattern_id in enumerate(project.song):
-                    self.assertEqual(pattern_id, bar // 4 * 4 + 1 if bar % 4 == 0 else 0)
+                expected_lanes = [[0] * len(project.song) for _ in range(4)]
+                for lane in range(4):
+                    bar = 0
+                    for pattern in project.patterns[lane::4]:
+                        expected_lanes[lane][bar] = pattern["id"]
+                        bar += len(pattern["rows"]) // 16
+                    self.assertEqual(bar, len(project.song))
+                self.assertEqual(project.song, expected_lanes[0])
                 grid = next(i for i, value in enumerate(project.extensions) if value[1] == "MATRIX_GRID")
                 self.assertEqual(project.extensions[grid + 1][1], 16)
                 matrix = next(i for i, value in enumerate(project.extensions) if value[1] == "SONG_MATRIX")
@@ -51,9 +57,21 @@ class BeastAlignmentTests(unittest.TestCase):
                     self.assertEqual(project.extensions[position][1], len(project.song))
                     position += 1
                     for bar in range(len(project.song)):
-                        expected = bar // 4 * 4 + lane + 1 if bar % 4 == 0 else 0
+                        expected = expected_lanes[lane][bar]
                         self.assertEqual(project.extensions[position][1], expected)
                         position += 1
+
+    def test_intro_short_phrase_ends_before_matrix_row_19(self):
+        project = beast.Project(ROOT / "examples/shadow_of_the_beast_intro.mlaproj/Project.mlack")
+        self.assertEqual(project.view[1:3], [4, 4])
+        for lane in range(4):
+            previous = project.patterns[16 + lane]
+            following = project.patterns[20 + lane]
+            self.assertIn("bars 017-018", previous["name"])
+            self.assertEqual(len(previous["rows"]), 32)
+            self.assertIn("bars 019-022", following["name"])
+            self.assertEqual(len(following["rows"]), 64)
+        self.assertEqual(project.song[16:23], [17, 0, 21, 0, 0, 0, 25])
 
     def test_snapshots_preserve_playing_block_and_reload_loop(self):
         registers = beast.Registers()

@@ -151,9 +151,12 @@ mlang pkg --config plugins/mla_paula/mlang.toml run test
   holds its sample memory (`Audio/Beast chip memory.wav`, slot 1), each of
   its 16 instruments as its own WAV, and four parallel song-matrix lanes,
   one per Paula channel and Mla Paula instance. The matrix grid is one bar
-  (16 sixteenth-note rows). Four-bar patterns cover four matrix rows; the
-  last pattern is three bars. Pattern names show their bar ranges.
-  There are 280 channel patterns and 279 bars, about 7:55 at 141 BPM.
+  (16 sixteenth-note rows). Patterns normally cover four matrix rows. The opening
+  section ends with a two-bar pattern at bars 17-18, so matrix row 19
+  starts a new pattern (bars 19-22). Later phrases follow from that
+  boundary, and the last pattern is one bar. Every bar remains 4/4.
+  Pattern names show their bar ranges.
+  There are 284 channel patterns and 279 bars, about 7:55 at 141 BPM.
   The original note starts fall at PAL frames `floor(step * 16 / 3)`;
   each of these musical steps is now a numbered pattern row. Packets keep
   the intervening register frames for vibrato, envelopes and sample loops.
@@ -180,7 +183,8 @@ below 0.3%, without changing sample pitch). Cold-start snapshots let playback
 begin at any pattern, and muting a channel still silences its lane.
 
 `scripts/align_beast_projects.py` performs the conversion from the original
-125 BPM captures and leaves already-aligned projects unchanged. Its `--check`
+125 BPM captures and can regroup an aligned intro at its shortened phrase.
+It leaves projects with the correct beat and phrase layout unchanged. Its `--check`
 option checks a conversion without writing. The converter retains plugin
 paths, sampler-pad assignments, rights notices and project settings.
 

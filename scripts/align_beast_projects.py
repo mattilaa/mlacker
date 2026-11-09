@@ -2,7 +2,8 @@
 """Put the captured Beast register streams on their musical sixteenth-note grid.
 
 The intro's note starts are floor(step * 16 / 3) PAL frames; level 1 uses
-step * 7. Repack those steps into four-bar patterns and a one-bar matrix grid.
+step * 7. Repack those steps into phrases of up to four 4/4 bars and a
+one-bar matrix grid. The intro has a shortened phrase before matrix row 19.
 No samples, instruments, register events, or musical note starts are discarded.
 The integer BPM field uses the nearest tempos, 141 and 107 respectively.
 """
@@ -147,13 +148,79 @@ def record(value):
     return ["integer" if isinstance(value, int) else "string", value]
 
 
-def build_patterns(project, step, bpm):
+def phrase_ranges(bars, name):
+    """Zero-based row ranges; the intro's opening section ends after bar 18."""
+    ends = sorted({min(18, bars), bars}) if name == "intro" else [bars]
+    ranges, start = [], 0
+    for end_bar in ends:
+        while start < end_bar * 16:
+            end = min(start + 64, end_bar * 16)
+            ranges.append((start, end))
+            start = end
+    return ranges
+
+
+def matrix_cells(patterns, bars, lane):
+    """Place each phrase immediately after its predecessor's actual length."""
+    cells = [0] * bars
+    bar = 0
+    for pattern in patterns[lane::4]:
+        assert len(pattern["rows"]) % 16 == 0
+        cells[bar] = pattern["id"]
+        bar += len(pattern["rows"]) // 16
+    assert bar == bars
+    return cells
+
+
+def assemble_patterns(project, lanes, ranges):
+    templates = {pattern["tracks"][0][0][6] - 1: pattern for pattern in project.patterns[:4]}
+    patterns = []
+    for part, (start, end) in enumerate(ranges):
+        for channel in range(4):
+            pattern = copy.deepcopy(templates[channel])
+            pattern["id"] = part * 4 + channel + 1
+            pattern["name"] = f"Paula {channel + 1} {'L' if channel in (0, 3) else 'R'} bars {start // 16 + 1:03}-{end // 16:03}"
+            pattern["view"][1:5] = [0, 1, 0, 0]
+            pattern["rows"] = copy.deepcopy(lanes[channel][start:end])
+            for index, row in enumerate(pattern["rows"]):
+                row[0] = f"{index + 1:03}"
+            patterns.append(pattern)
+    return patterns
+
+
+def rephrase(project, name):
+    """Regroup an aligned project, preserving every frame and packet interval."""
+    lanes = [[] for _ in range(4)]
+    for pattern in project.patterns:
+        channel = pattern["tracks"][0][0][6] - 1
+        lanes[channel].extend(copy.deepcopy(pattern["rows"]))
+    assert len({len(lane) for lane in lanes}) == 1
+    bars = len(lanes[0]) // 16
+    ranges = phrase_ranges(bars, name)
+    starts = {start for start, _ in ranges}
+    for channel, rows in enumerate(lanes):
+        registers = Registers()
+        for index, row in enumerate(rows):
+            found, micros, old_snapshot, frames = decode_packet("7D " + row[7])
+            assert found == channel
+            if index == 0 and old_snapshot is not None:
+                registers.apply(old_snapshot)
+            snapshot = registers.snapshot() if index in starts else None
+            if snapshot is not None and {1, 2, 3, 4, 5}.issubset({op for op, _ in operations(frames[0])}):
+                snapshot = None
+            row[7] = encode_packet(channel, frames, micros, snapshot)
+            for frame in frames:
+                registers.apply(frame)
+    return assemble_patterns(project, lanes, ranges), bars
+
+
+def build_patterns(project, step, bpm, name):
     lanes, initial = streams(project)
     source_frames = len(lanes[0])
     steps = (source_frames * step.denominator + step.numerator - 1) // step.numerator
     total_rows = (steps + 15) // 16 * 16
-    count = (total_rows + 63) // 64
-    templates = {pattern["tracks"][0][0][6] - 1: pattern for pattern in project.patterns[:4]}
+    ranges = phrase_ranges(total_rows // 16, name)
+    starts = {start for start, _ in ranges}
     rows_by_lane = []
     for channel, source in enumerate(lanes):
         registers = Registers()
@@ -164,7 +231,7 @@ def build_patterns(project, step, bpm):
             end = int((row + 1) * step)
             raw = [source[index] if index < source_frames else (b'\x06\x04\0' if index == source_frames else b'')
                    for index in range(start, end)]
-            snapshot = registers.snapshot() if row % 64 == 0 else None
+            snapshot = registers.snapshot() if row in starts else None
             compact = [registers.apply(frame, compact=True) for frame in raw]
             if snapshot is not None and {1, 2, 3, 4, 5}.issubset({op for op, _ in operations(raw[0])}):
                 # This row fully initializes the voice itself, including a cold start.
@@ -174,17 +241,7 @@ def build_patterns(project, step, bpm):
             payload = encode_packet(channel, compact, micros, snapshot)
             rows.append([f"{row % 64 + 1:03}", "", "", "", "", "", "7D", payload])
         rows_by_lane.append(rows)
-    patterns = []
-    for part in range(count):
-        start, end = part * 64, min((part + 1) * 64, total_rows)
-        for channel in range(4):
-            pattern = copy.deepcopy(templates[channel])
-            pattern["id"] = part * 4 + channel + 1
-            pattern["name"] = f"Paula {channel + 1} {'L' if channel in (0, 3) else 'R'} bars {start // 16 + 1:03}-{end // 16:03}"
-            pattern["view"][1:5] = [0, 1, 0, 0]
-            pattern["rows"] = rows_by_lane[channel][start:end]
-            patterns.append(pattern)
-    return patterns, total_rows // 16, source_frames
+    return assemble_patterns(project, rows_by_lane, ranges), total_rows // 16, source_frames
 
 
 def extensions(project, patterns, bars):
@@ -212,12 +269,12 @@ def extensions(project, patterns, bars):
             assert values[0] == 3
             values = [3]
             for lane in range(1, 4):
-                values += [bars] + [(bar // 4) * 4 + lane + 1 if bar % 4 == 0 else 0 for bar in range(bars)]
+                values += [bars] + matrix_cells(patterns, bars, lane)
         elif tag == "TRACK_OUTPUTS" or tag == "INSTRUMENT_INPUTS" or tag == "AUDIO_PROPERTIES" or tag == "AUX_OUTPUTS":
             assert values == [1, 0] * len(project.patterns), f"unsupported customized {tag}"
             values = [1, 0] * len(patterns)
         elif tag == "MATRIX_GRID":
-            assert values == [64]
+            assert values in ([16], [64])
             values = [16]
         else:
             result.extend(original)
@@ -246,7 +303,7 @@ def save(project, patterns, bars, bpm):
         for row in pattern["rows"]:
             values += [len(row), *row]
         records += [record(value) for value in values]
-    records += [record(bars)] + [record((bar // 4) * 4 + 1 if bar % 4 == 0 else 0) for bar in range(bars)]
+    records += [record(bars)] + [record(value) for value in matrix_cells(patterns, bars, 0)]
     records += extensions(project, patterns, bars)
     def encode(item):
         kind, value = item
@@ -264,10 +321,18 @@ def main():
     for name, (step, bpm) in CONFIG.items():
         project = Project(args.root / f"examples/shadow_of_the_beast_{name}.mlaproj/Project.mlack")
         if project.view[0] == bpm and " bars " in project.patterns[0]["name"]:
-            print(f"{name}: already aligned")
+            expected = [end - start for start, end in phrase_ranges(len(project.song), name)]
+            if [len(pattern["rows"]) for pattern in project.patterns[::4]] == expected:
+                print(f"{name}: already aligned to beats and phrases")
+                continue
+            patterns, bars = rephrase(project, name)
+            extensions(project, patterns, bars)
+            print(f"{name}: regrouped into {len(patterns)} channel patterns; 4/4, {bars} bars")
+            if not args.check:
+                save(project, patterns, bars, bpm)
             continue
         assert project.view[0] == 125, "expected the original fixed 125 BPM capture"
-        patterns, bars, frames = build_patterns(project, step, bpm)
+        patterns, bars, frames = build_patterns(project, step, bpm, name)
         extensions(project, patterns, bars)
         print(f"{name}: {bpm} BPM, {len(patterns)} patterns, {bars} bars; {frames} captured frames per channel")
         if not args.check:
