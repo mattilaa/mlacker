@@ -140,6 +140,17 @@ impl AudioSystem {
         }
         return system;
     }
+    /// Command-line startup uses the same device setup as File > Settings.
+    /// Offline/snapshot runs retain the requests without opening hardware.
+    pub fn start_configured(hardware: bool, output_id: i64, frames: i64, rate: i64) -> result<AudioSystem, str8> {
+        var system: AudioSystem = AudioSystem { hardware_requested: hardware, output_id: output_id,
+            requested_buffer_frames: frames, requested_sample_rate: rate };
+        if hardware {
+            let applied: result<i32, str8> = system.configure_audio(-1, output_id, frames, rate, []);
+            if applied.is_err() { return Err<AudioSystem, str8>(clone(applied.unwrap_err())); }
+        }
+        return Ok<AudioSystem, str8>(system);
+    }
     /// Prepare new output before retiring old resources. Failure leaves old output.
     /// `samples` is the session sample list; sampler pads live inside their
     /// plugin instances and are re-sent after the instruments reload.

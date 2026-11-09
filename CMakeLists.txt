@@ -73,6 +73,8 @@ target_link_libraries(mlacker_vst3_tests PRIVATE mlacker_host)
 add_dependencies(mlacker_vst3_tests MlackerTestInstrument MlackerTestEffect)
 add_test(NAME vst3_host COMMAND mlacker_vst3_tests "$<TARGET_BUNDLE_DIR:MlackerTestInstrument>" "$<TARGET_BUNDLE_DIR:MlackerTestEffect>")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME startup_cli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_cli_smoke.py" "$<TARGET_FILE:mlacker>")
+set_tests_properties(startup_cli PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 90)
 add_test(NAME beast_alignment COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "test_beast_alignment.py")
 add_test(NAME versioning COMMAND "${Python3_EXECUTABLE}" -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p "test_*version*.py")
 # Sampler-pad end to end runs when mla_drum has been built (./build.sh --plugins).

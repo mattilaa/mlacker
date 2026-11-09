@@ -186,3 +186,17 @@ fn settings_tab_focus_and_buttons_stay_visible_when_resized() {
     verify(!settings.active && settings.result == 2);
     settings.release();
 }
+
+#[test]
+fn settings_startup_requests_survive_session_loading() {
+    let opened: result<AudioSystem, str8> = AudioSystem::start_configured(false, -2, 512, 96000);
+    verify(opened.is_ok());
+    var audio: AudioSystem = opened.unwrap();
+    verify(audio.output.handle == 0 && audio.output_id == -2 && !audio.hardware_requested);
+    verify(audio.requested_buffer_frames == 512 && audio.requested_sample_rate == 96000);
+    let session: SessionData = SessionData {};
+    let prepared: result<AudioSystem, str8> = session.prepare_audio(audio); verify(prepared.is_ok());
+    let next: AudioSystem = prepared.unwrap();
+    verify(next.output_id == -2 && next.output.buffer_frames() == 512 && next.output.sample_rate() == 96000);
+    audio.adopt(next); audio.release();
+}

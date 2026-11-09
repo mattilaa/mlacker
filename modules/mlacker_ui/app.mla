@@ -133,7 +133,8 @@ use mlacker_ui::session::is_project_path;
 use mlacker_ui::session::project_folder;
 use mlacker_ui::session::project_group_folder;
 use mlacker_ui::midi_controller::MidiController;
-use std::env::detail::__env_args;
+mod mlacker_ui::startup;
+use mlacker_ui::startup::StartupOptions;
 use std::strbuf::clone;
 use std::strbuf::free;
 use std::strbuf::starts_with;
@@ -424,10 +425,22 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
     transport.paint(surface, Rect::new(0, surface.height - 1, surface.width, 1), theme, document);
 }
 
-pub fn run() -> i32 {
+pub fn run(options: &StartupOptions) -> i32 {
     let fixture_env: str8 = __env_get_var("MLACKER_DEMO");
     let fixture: bool = fixture_env == "1" || !AudioController::processor_support(); free(fixture_env);
     var terminal: Terminal = Terminal::begin();
+    let no_hardware: str8 = __env_get_var("MLANG_TUI_NO_HARDWARE");
+    let hardware: bool = terminal.active && no_hardware != "1"; free(no_hardware);
+    var midi: AudioSystem = AudioSystem {};
+    if options.audio_configured {
+        let started: result<AudioSystem, str8> = AudioSystem::start_configured(hardware, options.output_id, options.buffer_frames, options.sample_rate);
+        if started.is_err() {
+            terminal.finish(); let error: str8 = started.unwrap_err();
+            println!("mlacker: Cannot start audio: {}", error); free(error); return 1;
+        }
+        midi = started.unwrap();
+    } else { midi = AudioSystem::start(hardware); }
+
     // Browsing or playing the matrix shows that pattern: editor, sidebar and
     // the mixer's channels. Pattern > Follow matrix patterns turns it off.
     var follow_matrix: bool = true;
@@ -512,9 +525,8 @@ pub fn run() -> i32 {
     // The pad-file dialog loads into a Sampler zone: several files become a
     // round-robin set on it.
     var pad_file_zone: bool = false;
-    if !fixture {
-        let arguments: list<str8> = __env_args();
-        if arguments.len() == 2 { free(request_path); request_path = clone(arguments[1]); session_request = 1; }
+    if !fixture && options.path != "" {
+        free(request_path); request_path = clone(options.path); session_request = 1;
     }
     var transport: TransportStatus = TransportStatus {};
     var bpm_dialog: BpmDialog = BpmDialog::new();
@@ -627,9 +639,6 @@ pub fn run() -> i32 {
     var master_headroom: i32 = default_headroom_db();
     var last_processor_errors: i64 = 0;
     var prev_sample_row: i32 = -1;
-    let no_hardware: str8 = __env_get_var("MLANG_TUI_NO_HARDWARE");
-    var midi: AudioSystem = AudioSystem::start(terminal.active && no_hardware != "1");
-    free(no_hardware);
     var master_meter_clock: i64 = now_ms();
     let cpu_meter_env: str8 = __env_get_var("MLACKER_CPU_METER");
     var cpu_meter: CpuMeter = CpuMeter { enabled: cpu_meter_env != "0" }; free(cpu_meter_env);

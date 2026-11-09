@@ -256,6 +256,33 @@ MLACKER_STATIC_OPENSSL=1 ./build.sh --all     # with MLANG_TOOLCHAIN="yes"
 packaging/macos/build_pkg.sh                  # uses the built binary's exact version
 ```
 
+## Command-line audio options
+
+Choose an output and buffer size when launching, without opening Settings:
+
+```sh
+mlacker --help
+mlacker --list-outputs
+mlacker --output 0 --latency 64 examples/shadow_of_the_beast_intro.mlaproj
+mlacker --output default --buffer-size 256 --sample-rate 48000
+```
+
+`--list-outputs` (also `--list-devices`) prints the available zero-based output
+indices used by File → Settings. Pass an index with `--output` / `-o`;
+`default` or `-1` selects the system default, and `disabled` or `-2` disables
+output. Listing devices exits without entering the editor.
+
+`--latency` is an alias for `--buffer-size` / `-b`: it requests **buffer frames,
+not milliseconds**, from 32 to 4096 (default 128). For example, 128 frames at
+48 kHz is about 2.67 ms per buffer; total input/output latency also includes
+the device and driver. The device may choose a different buffer size.
+`--sample-rate` accepts `default` / `0`, `44100`, `48000`, or `96000`.
+
+Options can precede or follow the session/project path, and `--output=0` style
+arguments are supported. Use `--` before a path starting with a dash.
+The selected audio settings apply to this launch and survive opening a session
+or project. File → Settings shows them and can change them during the run.
+
 ## Sessions (.mlack 1.2)
 
 Launching mlacker without a filename starts one empty, 64-row **Untitled**

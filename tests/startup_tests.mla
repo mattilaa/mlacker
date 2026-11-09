@@ -1,0 +1,45 @@
+mod mlacker_ui::startup;
+mod std::testing;
+use mlacker_ui::startup::*;
+use std::testing::verify;
+
+#[test]
+fn startup_defaults_and_combined_project_options() {
+    var defaults: StartupOptions = parse_startup(["mlacker"]);
+    verify(defaults.error == "" && defaults.path == "" && !defaults.audio_configured);
+    verify(defaults.output_id == -1 && defaults.buffer_frames == 128 && defaults.sample_rate == 0);
+    defaults.release();
+    var options: StartupOptions = parse_startup(["mlacker", "--output=2", "--latency", "64", "a project.mlaproj", "--sample-rate=48000"]);
+    verify(options.error == "" && options.path == "a project.mlaproj" && options.audio_configured);
+    verify(options.output_id == 2 && options.buffer_frames == 64 && options.sample_rate == 48000);
+    options.release();
+    options = parse_startup(["mlacker", "song.mlack", "-o", "disabled", "-b", "4096", "--sample-rate", "default"]);
+    verify(options.error == "" && options.path == "song.mlack" && options.output_id == -2 && options.buffer_frames == 4096 && options.sample_rate == 0);
+    options.release();
+}
+
+#[test]
+fn startup_help_lists_selectors_and_escaped_path() {
+    var options: StartupOptions = parse_startup(["mlacker", "--help", "--version", "--list-devices"]);
+    verify(options.error == "" && options.help && options.version && options.list_outputs);
+    options.release();
+    options = parse_startup(["mlacker", "--output", "-1", "--buffer-size", "256", "--", "--a-song.mlack"]);
+    verify(options.error == "" && options.path == "--a-song.mlack" && options.output_id == -1 && options.buffer_frames == 256);
+    options.release();
+    options = parse_startup(["mlacker", "--output=-2"]);
+    verify(options.error == "" && options.output_id == -2); options.release();
+}
+
+#[test]
+fn startup_rejects_invalid_or_ambiguous_arguments() {
+    let arguments: list<list<str8>> = [
+        ["mlacker", "--output"], ["mlacker", "--latency"], ["mlacker", "--sample-rate"],
+        ["mlacker", "--output=-3"], ["mlacker", "--output=abc"], ["mlacker", "--output="],
+        ["mlacker", "--latency=0"], ["mlacker", "--latency=4097"], ["mlacker", "--latency=1.5"],
+        ["mlacker", "--sample-rate=22050"], ["mlacker", "--wat"], ["mlacker", "--help=true"],
+        ["mlacker", "a.mlack", "b.mlack"], ["mlacker", "--latency=999999999999999999999999"]
+    ];
+    for args in arguments {
+        var options: StartupOptions = parse_startup(args); verify(options.error != ""); options.release();
+    }
+}
