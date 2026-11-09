@@ -160,6 +160,13 @@ mlang pkg --config plugins/mla_paula/mlang.toml run test
   without interpolation, A1200 model (no audible filter), LED filter off,
   75 % separation. A credits and rights notice shows on opening; the music
   is not covered by mlacker's license.
+- [`examples/shadow_of_the_beast_level_1.mlaproj`](../../examples/shadow_of_the_beast_level_1.mlaproj):
+  the music when a game starts, on the first level (disk 2's music bank
+  `00007340`, song 2), built the same way: four lanes, each played by its
+  own Mla Paula instance, 19 matrix rows (2:26: 35.40 s, then the 103.04 s
+  section the game loops, from matrix row 5, row 39), 6 instruments, raw
+  Paula output. The tune runs at speed 7 (seven frames a beat step); rows
+  stay six frames, so every register write keeps its exact frame.
 - [`examples/amiga_beast_intro.mlaproj`](../../examples/amiga_beast_intro.mlaproj):
   an original tune in that style on four instances in note mode, one per
   channel, with synthesized 8-bit samples.
