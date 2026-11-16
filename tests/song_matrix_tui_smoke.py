@@ -53,6 +53,20 @@ def main():
         assert b"lane 2" in frame, frame[-4000:]
         # Ctrl+P plays the matrix from the cursor row; the status bar runs.
         frame = expect(tui.send(b"\x10", 0.9), b"Playing the matrix from row", b"PLAY")
+        # Tab from the matrix to the mixer: both vim keys and arrows select
+        # channels in the merged row and follow the channel's owning pattern.
+        tui.send(b"m", 0.3)                      # show the mixer
+        tui.send(b"\t", 0.3)
+        expect(tui.send(b"l", 0.3), b"Pattern 1: Untitled", b"PLAY")
+        expect(tui.send(b"h", 0.3), b"Pattern 2: Untitled copy", b"PLAY")
+        expect(tui.send(b"\x1b[C", 0.3), b"Pattern 1: Untitled", b"PLAY")
+        expect(tui.send(b"\x1b[D", 0.3), b"Pattern 2: Untitled copy", b"PLAY")
+        frame = expect(tui.send(b"\x1b[Z", 0.3), b"Song matrix", b"ROW", b"L1")
+        assert b"NOTE" not in frame, "returning to the matrix showed pattern cells"
+        # Forward Tab also returns through the sidebar without changing views.
+        frame = expect(tui.send(b"\t\t\t", 0.3), b"Song matrix", b"ROW", b"L1")
+        assert b"NOTE" not in frame, "cycling panes replaced the matrix"
+        tui.send(b"m", 0.3)                      # restore the inspector
         # In the matrix, Space stops and starts the matrix too: every lane of
         # the row plays, not just the pattern under the cursor.
         expect(tui.send(b" ", 0.9), b"Matrix stopped", b"STOP")

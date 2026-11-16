@@ -374,8 +374,10 @@ fn paint_demo(surface: Surface, menus: &MenuBar, focus: PaneFocus, panes: &list<
     if show_sample {
         sample_title = clone(" Sample ");
     }
-    let details: Panel = Panel { title: show_sampler ? sampler_title : show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? " Mixer " : " Inspector ")) )};
+    let mixer_title: str8 = merged_channels ? format!(" Mixer / Pattern {}: {} ", patterns.active_id, patterns.active_name()) : clone(" Mixer ");
+    let details: Panel = Panel { title: show_sampler ? sampler_title : show_keyboard ? keyboard_title : (show_spectrum ? " Spectrum / Master " : (show_sample ? sample_title : (mixer.visible ? mixer_title : " Inspector ")) )};
     let bottom: Rect = details.paint_focused(surface, inspector.bounds, theme, focus.is_active(2));
+    free(mixer_title);
     let label: Label = Label { text: patterns.error != "" ? patterns.error : (patterns.table.error != "" ? patterns.table.error : (patterns.table.editing && patterns.table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels": message)) };
     if show_keyboard {
         keyboard.paint(surface, bottom, theme, patterns.table.editing && patterns.table.edit_mode == 0 ? "Editing: Enter saves | Esc cancels" : message);
@@ -448,6 +450,7 @@ pub fn run(options: &StartupOptions) -> i32 {
     // Channels of the playing song row, one strip per channel even when
     // parallel patterns share it. Only the mixer reads it.
     var mixer_table: SequenceTable = SequenceTable {};
+    var song_mixer_channel: i32 = 0;
     var play_metronome: bool = true; var extend_recording: bool = true; var metronome_always: bool = false;
     var bounce_options: BounceOptions = BounceOptions {};
     // Audio > Always open sample editor full screen (a project setting).
@@ -852,6 +855,8 @@ pub fn run(options: &StartupOptions) -> i32 {
                 }
                 song_table = library.merge_song_row(song_row, terminal_bounds(), false);
                 mixer_table.release(); mixer_table = library.merge_song_row(song_row, terminal_bounds(), true);
+                song_mixer_channel = 0;
+                if mixer_table.tracks.len() > 0 { mixer_table.selected_column = mixer_table.track_start(0); }
                 song_signature = library.song_row_signature(song_row);
                 if follow_matrix && !matrix_recording { if library.follow_pattern(library.song_row_pattern(song_row)) { play_pattern = library.active_id; } }
                 if song_table.rows.len() == 0 {
@@ -1399,7 +1404,15 @@ pub fn run(options: &StartupOptions) -> i32 {
                     song_signature = library.song_row_signature(song_row); song_stale = false;
                     // The editor, sidebar and mixer move to the row that plays,
                     // unless an edit or a selection is open in the editor.
-                    if follow_matrix && !matrix_recording && !cursor_held { if library.follow_pattern(library.song_row_pattern(song_row)) { play_pattern = library.active_id; } }
+                    if mixer_table.tracks.len() > 0 {
+                        if song_mixer_channel >= mixer_table.tracks.len() { song_mixer_channel = i32(mixer_table.tracks.len()) - 1; }
+                        mixer_table.selected_column = mixer_table.track_start(song_mixer_channel);
+                    }
+                    if follow_matrix && !matrix_recording && !cursor_held {
+                        if mixer_table.tracks.len() > 0 {
+                            if library.follow_song_channel(song_row, mixer_table.tracks[song_mixer_channel]) { play_pattern = library.active_id; }
+                        }
+                    }
                     // Notes still sounding from the last row end at their own
                     // length: dropping them left their note-offs unsent.
                     upcoming.carry_voices(note_playback);
@@ -2603,10 +2616,19 @@ pub fn run(options: &StartupOptions) -> i32 {
                 } else { region.release(); message = clone("Waveform selection is empty."); }
                 dirty = true;
             } else if focus.selected == 2 && mixer.visible && follow_matrix && song_playing && mixer_table.tracks.len() > 0 {
-                // The strips belong to the playing song row, not to one
-                // pattern, so they are a view of the mix, not a place to edit.
-                free(message);
-                message = clone("Mixer follows the matrix; stop it or turn off Pattern > Follow matrix patterns to mix");
+                // Navigate the merged strips and show the owning pattern.
+                // Fader edits still need the editable pattern's own tracks.
+                if event.kind == InputKind::Menu && (event.key == Key::Left || event.key == Key::Right) && !matrix_recording {
+                    if mixer_table.mixer_event(event, panes[1].bounds.inset(1)) {
+                        song_mixer_channel = mixer_table.active_track();
+                        library.follow_song_channel(song_row, mixer_table.tracks[song_mixer_channel]);
+                        play_pattern = library.active_id;
+                        free(message); message = format!("Pattern {}: {}", library.active_id, library.active_name());
+                    }
+                } else {
+                    free(message);
+                    message = clone("Mixer follows the matrix; stop it or turn off Pattern > Follow matrix patterns to mix");
+                }
                 dirty = true;
             } else if focus.selected == 2 && mixer.visible && !(sample.visible && library.table.audio_under_cursor()) {
                 if mixer.send_navigation(event, library.table.active_track()) { dirty = true; }

@@ -554,6 +554,13 @@ pub fn active_track(self: &Self) -> i32 {
     }
     return i32(self.tracks.len()) - 1;
 }
+/// Match the channel identity used by the merged song-row mixer.
+pub fn channel_track(self: &Self, channel: &SequenceTrack) -> i32 {
+    for i in 0..self.tracks.len() {
+        if self.tracks[i].audio == channel.audio && self.tracks[i].instrument_id == channel.instrument_id && self.tracks[i].name == channel.name { return i32(i); }
+    }
+    return -1;
+}
 /// Mixer controls are separate from the pattern's cell-editing shortcuts.
 pub fn mixer_event(self: &mut Self, event: InputEvent, area: Rect) -> bool {
     let index: i32 = self.active_track(); if index < 0 { return false; }

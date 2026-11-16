@@ -194,6 +194,22 @@ impl PatternLibrary {
     pub fn follow_matrix_cell(self: &mut Self, row: i32, lane: i32) -> bool {
         return self.follow_pattern(self.song_at(row, lane));
     }
+    /// Find the playing pattern that owns a merged mixer strip, then select
+    /// its local track. Use the same channel identity as merge_song_row.
+    pub fn follow_song_channel(self: &mut Self, row: i32, channel: &SequenceTrack) -> bool {
+        for lane in 0..self.song_lanes() {
+            let cover: SongCover = self.song_cover(row, i32(lane));
+            let index: i32 = self.index_of(cover.id);
+            if index < 0 || cover.id == self.recording_pattern { continue; }
+            let track: i32 = cover.id == self.active_id ? self.table.channel_track(channel) : self.patterns[index].data.channel_track(channel);
+            if track >= 0 {
+                let changed: bool = self.follow_pattern(cover.id);
+                self.table.selected_column = self.table.track_start(track);
+                return changed;
+            }
+        }
+        return false;
+    }
     /// Show a pattern everywhere: editor, sidebar highlight and mixer channels.
     /// False when it is already shown or does not exist.
     pub fn follow_pattern(self: &mut Self, id: i32) -> bool {

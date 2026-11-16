@@ -3774,6 +3774,15 @@ fn tui_merged_row_shows_each_channel_once() {
     let first: SequenceTrack = shown.tracks[0].copy(); verify(first.name == "Drums");
     let second: SequenceTrack = shown.tracks[1].copy(); verify(second.name == "Bass");
     let third: SequenceTrack = shown.tracks[2].copy(); verify(third.name == "Lead");
+    // Mixer navigation follows the pattern containing the selected channel,
+    // including channels shared by both patterns.
+    verify(library.follow_song_channel(0, shown.tracks[0]));
+    verify(library.active_id == 1 && library.table.active_track() == 0);
+    verify(!library.follow_song_channel(0, shown.tracks[1]));
+    verify(library.table.active_track() == 1);
+    verify(library.follow_song_channel(0, shown.tracks[2]));
+    verify(library.active_id == 2 && library.table.active_track() == 2);
+    verify(!library.follow_song_channel(9, shown.tracks[2]));
     // A channel that only looks alike, on another instrument, is its own strip.
     played.release(); shown.release();
     library.select(2);
@@ -3782,6 +3791,33 @@ fn tui_merged_row_shows_each_channel_once() {
     var mixed: SequenceTable = library.merge_song_row(0, area, true);
     verify(mixed.tracks.len() == 4);
     mixed.release(); library.release();
+}
+
+#[test]
+fn tui_mixer_channel_follows_its_local_track_and_continuation() {
+    var library: PatternLibrary = PatternLibrary::empty();
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    library.table.create_instrument_track(1, area);
+    library.table.rename_track("Drums");
+    library.add(true);
+    library.table.rename_track("Bass");
+    library.matrix_steps = 32;
+    library.song.push(0);
+    verify(library.set_song_at(0, 0, 1) && library.set_song_at(0, 1, 2));
+    var shown: SequenceTable = library.merge_song_row(0, area, true);
+    verify(shown.tracks.len() == 2);
+    shown.selected_column = shown.track_start(0);
+    verify(library.follow_song_channel(0, shown.tracks[0]));
+    verify(library.active_id == 1 && library.table.active_track() == 0);
+    verify(shown.mixer_event(decode_input("l"), area));
+    verify(shown.active_track() == 1);
+    verify(library.follow_song_channel(0, shown.tracks[1]));
+    verify(library.active_id == 2 && library.table.active_track() == 0);
+    // Both long patterns continue on the next matrix row.
+    library.follow_song_channel(0, shown.tracks[0]);
+    verify(library.follow_song_channel(1, shown.tracks[1]));
+    verify(library.active_id == 2 && library.table.active_track() == 0);
+    shown.release(); library.release();
 }
 
 #[test]
