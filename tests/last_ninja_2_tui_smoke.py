@@ -13,6 +13,22 @@ import time
 from session_tui_smoke import Terminal, F1
 
 
+def wait_for_credits(tui, timeout=20.0):
+    """Project parsing and the first plugin load can exceed two seconds in CI."""
+    credits = (b"Copyright notice", b"Central Park (in-game)", b"Matt Gray", b"1988 System 3", b"CoGFV_xxR64")
+    frame = bytearray()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame.extend(tui.read(min(0.2, max(0, deadline - time.monotonic()))))
+        if all(credit in frame for credit in credits):
+            return
+        assert tui.process.poll() is None, (
+            "mlacker exited before showing project credits", tui.process.returncode, frame[-6000:]
+        )
+    missing = [credit.decode() for credit in credits if credit not in frame]
+    raise AssertionError((f"Project credits did not appear within {timeout}s", missing, frame[-6000:]))
+
+
 def inspect_score(document):
     records = document["records"]
     assert records[3] == ["integer", 188]
@@ -91,7 +107,7 @@ def inspect_score(document):
 
 
 def main():
-    source = Path(__file__).resolve().parents[1] / "examples/last_ninja_2_loading.mlaproj"
+    source = Path(__file__).resolve().parents[1] / "examples/last_ninja_2_central_park.mlaproj"
     with tempfile.TemporaryDirectory(prefix="mlacker-last-ninja-reference-") as folder:
         project = Path(folder) / source.name
         shutil.copytree(source, project)
@@ -108,9 +124,7 @@ def main():
         for repeat in range(2):
             tui = Terminal(str(project))
             try:
-                frame = tui.read(2.0)
-                for credit in (b"Copyright notice", b"Central Park (in-game)", b"Matt Gray", b"1988 System 3", b"CoGFV_xxR64"):
-                    assert credit in frame, frame[-6000:]
+                wait_for_credits(tui)
                 tui.send(b"\x1b", 0.3)
                 if repeat == 0:
                     tui.send(b"M", 0.3)
