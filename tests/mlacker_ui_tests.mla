@@ -15,6 +15,17 @@ mod tui::table;
 mod tui::slider;
 mod mlacker_ui::instrument_editor;
 mod mlacker_ui::spectrum;
+mod mlacker_ui::analyzer;
+mod std::ascii;
+use std::ascii::UnicodeBoxGlyph;
+use mlacker_ui::analyzer::AnalyzerView;
+use mlacker_ui::analyzer::ScopeRange;
+use mlacker_ui::analyzer::analyzer_scope_mask;
+use mlacker_ui::analyzer::analyzer_trace_range;
+use mlacker_ui::analyzer::analyzer_background;
+use mlacker_ui::analyzer::analyzer_blend;
+use mlacker_ui::analyzer::analyzer_bar_glyph;
+use mlacker_ui::spectrum::SpectrumView;
 use mlacker_ui::spectrum::spectrum_color;
 use mlacker_ui::spectrum::MasterBus;
 use mlacker_ui::spectrum::apply_headroom;
@@ -4478,6 +4489,66 @@ fn spectrum_green(color: i32) -> i32 { return (color >> 8) & 255; }
 fn spectrum_blue(color: i32) -> i32 { return color & 255; }
 
 #[test]
+fn tui_large_analyzer_controls_and_seek_bounds() {
+    var analyzer: AnalyzerView = AnalyzerView {};
+    var spectrum: SpectrumView = SpectrumView::new();
+    var audio: AudioController = AudioController {};
+    verify(analyzer.show_scope && analyzer.show_spectrum && spectrum.show_peaks);
+    analyzer.on_event(decode_input("f"), &mut spectrum, audio); verify(spectrum.flat);
+    analyzer.on_event(decode_input("m"), &mut spectrum, audio); verify(!spectrum.flat);
+    analyzer.on_event(decode_input("x"), &mut spectrum, audio); verify(analyzer.dots && spectrum.detail == 0);
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio); verify(analyzer.detail == 2);
+    analyzer.on_event(decode_input("D"), &mut spectrum, audio); verify(!spectrum.show_peaks);
+    analyzer.on_event(decode_input("b"), &mut spectrum, audio); verify(analyzer.black);
+    analyzer.on_event(decode_input("p"), &mut spectrum, audio); verify(analyzer.palette == 0);
+    analyzer.on_event(decode_input("s"), &mut spectrum, audio); verify(!analyzer.show_spectrum);
+    analyzer.on_event(decode_input("c"), &mut spectrum, audio); verify(!analyzer.show_scope);
+    analyzer.on_event(decode_input("v"), &mut spectrum, audio); verify(analyzer.flash);
+    for _i in 0..40 { analyzer.on_event(decode_input("+"), &mut spectrum, audio); }
+    verify(analyzer.threshold == 240);
+    for _i in 0..40 { analyzer.on_event(decode_input("-"), &mut spectrum, audio); }
+    verify(analyzer.threshold == 0);
+    verify(analyzer.on_event(decode_input("h"), &mut spectrum, audio) == -5);
+    verify(analyzer.on_event(decode_input("l"), &mut spectrum, audio) == 5);
+    verify(analyzer.on_event(decode_input("q"), &mut spectrum, audio) == 100);
+    verify(AnalyzerView::seek_row(0, 64, 120, 5) == 40);
+    verify(AnalyzerView::seek_row(1, 64, 120, -5) == 0);
+    verify(AnalyzerView::seek_row(40, 64, 120, 5) == 63);
+    verify(AnalyzerView::seek_row(0, 0, 120, 5) == 0);
+    let surface: Surface = Surface::new(40, 8);
+    analyzer.show_scope = true;
+    analyzer.black = false; analyzer.palette = 0; analyzer.detail = 0; analyzer.grainy = false;
+    for _i in 0..1024 { analyzer.left.push(0.5); analyzer.right.push(-0.5); }
+    analyzer.paint(surface, Rect::new(0, 0, 40, 8), Theme::dark_blue(), spectrum, true, 0, 0);
+    var trace: bool = false;
+    for y in 0..6 { for x in 0..40 {
+        let cell: Cell = surface.cell(i32(x), i32(y));
+        if cell.glyph == i32(UnicodeBoxGlyph::BlackSmallSquare) || cell.glyph == i32(UnicodeBoxGlyph::Bullet) { trace = true; }
+    } }
+    verify(trace);
+    let left: Cell = surface.cell(0, 1); let right: Cell = surface.cell(0, 4);
+    verify(left.glyph == i32(UnicodeBoxGlyph::BlackSmallSquare) && left.foreground == 0x63BE71);
+    verify(right.glyph == i32(UnicodeBoxGlyph::BlackSmallSquare) && right.foreground == 0xEF6C55);
+    surface.release();
+}
+
+#[test]
+fn tui_analyzer_uses_mlang_demo_palette_and_glyphs() {
+    verify(analyzer_background(0, 1001) == 0x10142E);
+    verify(analyzer_background(350, 1001) == 0x402248);
+    verify(analyzer_background(700, 1001) == 0xA44C58);
+    verify(analyzer_background(1000, 1001) == 0xFFA45C);
+    verify(analyzer_background(0, 1) == 0x10142E);
+    verify(analyzer_blend(0x000000, 0xFFFFFF, 150) == 0x262626);
+    verify(analyzer_bar_glyph(0, 9, 0, false) == i32(UnicodeBoxGlyph::DarkShade));
+    verify(analyzer_bar_glyph(4, 9, 0, false) == i32(UnicodeBoxGlyph::MediumShade));
+    verify(analyzer_bar_glyph(8, 9, 0, false) == i32(UnicodeBoxGlyph::LightShade));
+    verify(cell_glyph(i32(UnicodeBoxGlyph::BlackSmallSquare)) == i32(UnicodeBoxGlyph::BlackSmallSquare));
+    verify(cell_glyph(i32(UnicodeBoxGlyph::Bullet)) == i32(UnicodeBoxGlyph::Bullet));
+    verify(cell_glyph(i32(UnicodeBoxGlyph::Dot)) == i32(UnicodeBoxGlyph::Dot));
+}
+
+#[test]
 fn test_spectrum_gradient_stops() {
     verify(spectrum_color(0) == 0x4B32C8);     // indigo floor
     verify(spectrum_color(430) == 0x28DC8C);   // green in the middle
@@ -5375,4 +5446,100 @@ fn tui_beast_intro_matrix_row_19_starts_after_short_phrase() {
         verify(later.id == 25 + i32(lane) && later.offset == 0);
     }
     data.release();
+}
+
+#[test]
+fn tui_analyzer_retains_subcolumn_impulses() {
+    let samples: list<f64> = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+    let range: ScopeRange = analyzer_trace_range(samples, 0, 6, 20, 16);
+    verify(range.low == 0 && range.high == 159);
+    verify(AnalyzerView::scope_capture_size(80) == 1024);
+    verify(AnalyzerView::scope_capture_size(1000) == 4096);
+    verify(AnalyzerView::scope_capture_size(100000) == 8192);
+    var analyzer: AnalyzerView = AnalyzerView {};
+    var spectrum: SpectrumView = SpectrumView::new();
+    let audio: AudioController = AudioController {};
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio);
+    verify(analyzer.detail == 2);
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio);
+    verify(analyzer.detail == 0);
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio);
+    verify(analyzer.detail == 1);
+}
+
+#[test]
+fn tui_analyzer_uses_sample_view_braille_resolution() {
+    let top: ScopeRange = ScopeRange { low: 0, high: 0 };
+    let bottom: ScopeRange = ScopeRange { low: 3, high: 3 };
+    // Different half-columns must retain different vertical dots in one cell.
+    verify(analyzer_scope_mask(top, bottom, 0) == 129);
+    verify(analyzer_scope_mask(bottom, top, 0) == 72);
+    verify(analyzer_scope_mask(top, bottom, 1) == 0);
+    let surface: Surface = Surface::new(8, 6);
+    var analyzer: AnalyzerView = AnalyzerView { show_spectrum: false };
+    var spectrum: SpectrumView = SpectrumView::new();
+    let audio: AudioController = AudioController {};
+    verify(analyzer.grainy);
+    for _i in 0..128 { analyzer.left.push(1.0); analyzer.right.push(-1.0); }
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    // Four graph rows (16 subpixels): positive and negative stereo extremes.
+    let left: Cell = surface.cell(0, 0); let right: Cell = surface.cell(0, 3);
+    verify(left.glyph == 0x2809);
+    verify(right.glyph == 0x28C0);
+    verify(left.foreground == analyzer_blend(analyzer_background(0, 4), 0x78F884, 740));
+    verify(right.foreground == analyzer_blend(analyzer_background(3, 4), 0xFF6E54, 740));
+    verify(left.background == analyzer_background(0, 4));
+    analyzer.on_event(decode_input("g"), &mut spectrum, audio);
+    verify(!analyzer.grainy);
+    analyzer.on_event(decode_input("g"), &mut spectrum, audio);
+    verify(analyzer.grainy);
+    // Both stereo channels in the same cell retain their combined dot mask.
+    analyzer.right = [];
+    for _i in 0..128 { analyzer.right.push(1.0); }
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    let both: Cell = surface.cell(0, 0);
+    verify(both.glyph == 0x2809);
+    verify(both.foreground == analyzer_blend(analyzer_background(0, 4), 0xF8D684, 740));
+    // A descending segment occupies different dot rows in each half-cell.
+    analyzer.left = [1.0, 0.5, 0.0]; analyzer.right = [];
+    for _i in 0..14 { analyzer.left.push(0.0); }
+    for _i in 0..17 { analyzer.right.push(-1.0); }
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    let slope: Cell = surface.cell(0, 0);
+    verify(slope.glyph == 0x28C7);
+    analyzer.show_scope = false;
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    let hidden: Cell = surface.cell(0, 0);
+    verify(hidden.glyph == 32);
+    surface.release();
+}
+
+#[test]
+fn tui_analyzer_shares_master_eq_keys_with_lower_pane() {
+    var analyzer: AnalyzerView = AnalyzerView {};
+    var large: SpectrumView = SpectrumView::new();
+    var lower: SpectrumView = SpectrumView::new();
+    let audio: AudioController = AudioController {};
+    let keys: list<str8> = ["k", "K", "j", "J", "0", "\r", "k", "\r", "k", "\x1b[101;2u", "E", "\x1b[C", "k", "\x1b[D", "0"];
+    for text in keys {
+        let event: InputEvent = decode_input(text);
+        analyzer.on_event(event, &mut large, audio);
+        lower.on_event(event, audio);
+        verify(analyzer.controls);
+        verify(large.selected == lower.selected && large.part == lower.part);
+        verify(large.bus.eq_on == lower.bus.eq_on);
+        verify(large.bus.volume == lower.bus.volume && large.bus.hp_hz == lower.bus.hp_hz);
+        for band in 0..4 {
+            verify(large.bus.band_gain(i32(band)) == lower.bus.band_gain(i32(band)));
+            verify(large.bus.band_hz(i32(band)) == lower.bus.band_hz(i32(band)));
+            verify(large.bus.band_q(i32(band)) == lower.bus.band_q(i32(band)));
+        }
+    }
+    analyzer.on_event(decode_input("s"), &mut large, audio);
+    verify(!analyzer.show_spectrum && analyzer.show_scope);
+    analyzer.on_event(decode_input("s"), &mut large, audio);
+    analyzer.on_event(decode_input("c"), &mut large, audio);
+    verify(analyzer.show_spectrum && !analyzer.show_scope);
+    analyzer.on_event(decode_input("c"), &mut large, audio);
+    verify(analyzer.show_spectrum && analyzer.show_scope);
 }

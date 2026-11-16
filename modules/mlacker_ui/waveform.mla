@@ -75,3 +75,9 @@ pub fn paint_mono_wave(surface: Surface, area: Rect, clip: Rect, peak: i32, body
         surface.put(x, area.y, Cell { glyph: glyph, foreground: fg, background: bg });
     }
 }
+
+/// Shared 2-by-4 Braille pixel layout for sample waveforms and live traces.
+pub fn wave_dot_bit(x: i32, y: i32) -> i32 {
+    let bits: array<i32, 8> = {1, 8, 2, 16, 4, 32, 64, 128};
+    return bits[(y % 4) * 2 + x % 2];
+}

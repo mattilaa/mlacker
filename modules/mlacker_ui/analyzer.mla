@@ -1,0 +1,303 @@
+/// Large pattern-pane analyzer. The FFT controls and colored spectrum follow
+/// ../mlang/examples/fft_example; the stereo segment/glow trace follows its
+/// companion package_manager_oscilloscope_demo. Paint into Surface rather
+/// than writing ANSI, so menus, dialogs, resizing and focus stay with mlacker.
+mod mlacker_ui::spectrum;
+mod mlacker_ui::waveform;
+use mlacker_ui::waveform::wave_dot_bit;
+mod std::audio::controller;
+mod std::ascii;
+mod std::math;
+use std::ascii::UnicodeBoxGlyph;
+use std::math::exp;
+use std::math::log;
+use mlacker_ui::spectrum::SpectrumView;
+use std::audio::controller::AudioController;
+use tui::geometry::*;
+use tui::surface::*;
+use tui::theme::*;
+use tui::input::*;
+use std::strbuf::free;
+
+extern fn __mlacker_audio_scope_capture(handle: i64, frames: i64) -> i32;
+extern fn __mlacker_audio_scope_sample(handle: i64, frame: i64, channel: i64) -> f64;
+
+pub struct AnalyzerView {
+    var active: bool; var show_spectrum: bool{true}; var show_scope: bool{true};
+    var black: bool; var palette: i32{1}; var flash: bool; var threshold: i32{64};
+    var help: bool; var controls: bool; var clock: i64;
+    var detail: i32{1}; var dots: bool; var grainy: bool{true};
+    var left: list<f64>; var right: list<f64>;
+};
+
+fn scope_y(value: f64, height: i32, grid: i32) -> i32 {
+    let bounded: f64 = value < -1.0 ? -1.0 : (value > 1.0 ? 1.0 : value);
+    return i32((1.0 - bounded) * f64(height * grid - 1) / 2.0);
+}
+fn scope_distance(point: i32, a: i32, b: i32) -> i32 {
+    let lo: i32 = a < b ? a : b; let hi: i32 = a > b ? a : b;
+    return point < lo ? lo - point : (point > hi ? point - hi : 0);
+}
+/// Includes every sample between neighboring display columns, preserving transients.
+pub struct ScopeRange { var low: i32; var high: i32; };
+pub fn analyzer_trace_range(samples: &list<f64>, first: i32, last: i32, height: i32, grid: i32) -> ScopeRange {
+    var result: ScopeRange = ScopeRange { low: scope_y(0.0, height, grid), high: scope_y(0.0, height, grid) };
+    if samples.len() == 0 { return result; }
+    let begin: i32 = first < 0 ? 0 : (first >= samples.len() ? i32(samples.len()) - 1 : first);
+    let end: i32 = last >= samples.len() ? i32(samples.len()) - 1 : (last < begin ? begin : last);
+    result.low = scope_y(samples[begin], height, grid); result.high = result.low;
+    for i in begin..end + 1 {
+        let y: i32 = scope_y(samples[i], height, grid);
+        if y < result.low { result.low = y; }
+        if y > result.high { result.high = y; }
+    }
+    return result;
+}
+/// Two independent horizontal samples, each with four vertical dot positions.
+pub fn analyzer_scope_mask(first: ScopeRange, second: ScopeRange, row: i32) -> i32 {
+    var mask: i32 = 0;
+    for dot in 0..4 {
+        let y: i32 = row * 4 + i32(dot);
+        if y >= first.low && y <= first.high { mask = mask | wave_dot_bit(0, i32(dot)); }
+        if y >= second.low && y <= second.high { mask = mask | wave_dot_bit(1, i32(dot)); }
+    }
+    return mask;
+}
+/// Exact four-stop background from MLang's oscilloscope demo.
+pub fn analyzer_background(row: i32, height: i32) -> i32 {
+    let t: i32 = height > 1 ? row * 1000 / (height - 1) : 0;
+    let first: i32 = t < 350 ? 0x10142E : (t < 700 ? 0x402248 : 0xA44C58);
+    let last: i32 = t < 350 ? 0x402248 : (t < 700 ? 0xA44C58 : 0xFFA45C);
+    let local: i32 = t < 350 ? t * 1000 / 350 : (t < 700 ? (t - 350) * 1000 / 350 : (t - 700) * 1000 / 300);
+    return analyzer_lerp(first, last, local);
+}
+fn analyzer_lerp(first: i32, last: i32, t: i32) -> i32 {
+    var color: i32 = 0;
+    for channel in 0..3 {
+        let shift: i32 = i32(channel) * 8;
+        let a: i32 = (first >> shift) & 255; let b: i32 = (last >> shift) & 255;
+        color = color + ((a + (b - a) * t / 1000) << shift);
+    }
+    return color;
+}
+/// The demo blends spectrum into the gradient at 15%, trace ink at 74%.
+pub fn analyzer_blend(background: i32, foreground: i32, alpha: i32) -> i32 {
+    var color: i32 = 0;
+    for channel in 0..3 {
+        let shift: i32 = i32(channel) * 8;
+        let a: i32 = (background >> shift) & 255; let b: i32 = (foreground >> shift) & 255;
+        color = color + ((a * (1000 - alpha) + b * alpha) / 1000 << shift);
+    }
+    return color;
+}
+fn analyzer_spectrum_color(row: i32, height: i32, col: i32, width: i32, palette: i32) -> i32 {
+    let t: i32 = height > 1 ? row * 1000 / (height - 1) : 0;
+    if palette == 0 { return analyzer_lerp(0xD25F64, 0x5FD264, t); }
+    let x: i32 = width > 1 ? col * 1000 / (width - 1) : 0;
+    return x < 500 ? analyzer_lerp(0xC86464, 0x64C86E, x * 2) : analyzer_lerp(0x64C86E, 0x6482DC, (x - 500) * 2);
+}
+pub fn analyzer_bar_glyph(from_bottom: i32, full: i32, fraction: i32, partial: bool) -> i32 {
+    if partial { return 0x2580 + fraction; }
+    if full <= 1 { return i32(UnicodeBoxGlyph::MediumShade); }
+    let first: i32 = full / 3; let second: i32 = full * 2 / 3;
+    if first < 1 { return i32(from_bottom == 0 ? UnicodeBoxGlyph::DarkShade : UnicodeBoxGlyph::MediumShade); }
+    if from_bottom < first { return i32(UnicodeBoxGlyph::DarkShade); }
+    if from_bottom < second { return i32(UnicodeBoxGlyph::MediumShade); }
+    return i32(UnicodeBoxGlyph::LightShade);
+}
+fn analyzer_height(db: f64, maximum: f64, height: i32) -> i32 {
+    if maximum <= -150.0 || db <= -180.0 { return 0; }
+    let ratio: f64 = exp((db - maximum) * log(10.0) / 20.0);
+    let raw: f64 = (ratio - 0.03125) / 0.96875;
+    let value: f64 = raw < 0.0 ? 0.0 : (raw > 1.0 ? 1.0 : raw);
+    // The original compresses relative magnitudes into half the graph height.
+    return i32((1.0 - (1.0 - value) * (1.0 - value)) * f64(height * 4));
+}
+impl AnalyzerView {
+    pub fn scope_span(width: i32) -> i32 { return width < 32 ? 64 : (width >= 2048 ? 4096 : width * 2); }
+    pub fn scope_capture_size(width: i32) -> i32 {
+        let needed: i32 = AnalyzerView::scope_span(width) + 512;
+        var size: i32 = 1024;
+        while size < needed { size = size * 2; }
+        return size;
+    }
+    pub fn detail_name(self: Self) -> str8 { return self.detail == 0 ? "Normal 8k" : (self.detail == 1 ? "Detailed 16k" : "Ultra 32k"); }
+    pub fn seek_row(current: i32, count: i32, bpm: i32, seconds: i32) -> i32 {
+        if count <= 0 { return 0; }
+        let target: i64 = wide(current) + wide(seconds) * wide(bpm) / 15;
+        return target < 0 ? 0 : (target >= count ? count - 1 : i32(target));
+    }
+    pub fn update(self: &mut Self, output: AudioController, now: i64, fps: i32, width: i32) -> bool {
+        if !self.active || output.handle == 0 || now - self.clock < wide(1000 / (fps < 1 ? 1 : fps)) { return false; }
+        self.clock = now;
+        let count: i32 = AnalyzerView::scope_capture_size(width);
+        if __mlacker_audio_scope_capture(output.handle, wide(count)) < 0 { return false; }
+        var left: list<f64> = []; var right: list<f64> = [];
+        for i in 0..count {
+            left.push(__mlacker_audio_scope_sample(output.handle, i, 0));
+            right.push(__mlacker_audio_scope_sample(output.handle, i, 1));
+        }
+        self.left = left; self.right = right;
+        return true;
+    }
+    /// FFT-example keys belong only to this focused view. q returns to the
+    /// previous pattern/matrix; h/l request a five-second transport seek.
+    pub fn on_event(self: &mut Self, event: InputEvent, spectrum: &mut SpectrumView, output: AudioController) -> i32 {
+        let code: i32 = event.code;
+        if event.modifiers != 1 && event.modifiers != 2 { return 0; }
+        if code == 113 || code == 81 { return 100; }
+        if code == 104 || code == 72 { return -5; }
+        if code == 108 || code == 76 { return 5; }
+        // Give the shared master controls priority over view shortcuts (in
+        // particular kitty Shift+E is code e with modifier 2). Legacy h/l
+        // above remain transport seek; physical Left/Right select EQ strips.
+        if spectrum.handles(event) {
+            self.controls = true;
+            spectrum.on_event(event, output);
+            return 0;
+        }
+        if code == 63 { self.help = !self.help; }
+        else if code == 102 || code == 70 { spectrum.flat = true; spectrum.levels = []; spectrum.peaks = []; }
+        else if code == 109 { spectrum.flat = false; spectrum.levels = []; spectrum.peaks = []; }
+        else if code == 120 || code == 88 { self.dots = !self.dots; }
+        else if code == 98 || code == 66 { self.black = !self.black; }
+        else if code == 68 || (code == 100 && event.modifiers == 2) { spectrum.show_peaks = !spectrum.show_peaks; }
+        else if code == 100 { self.detail = (self.detail + 1) % 3; spectrum.levels = []; spectrum.peaks = []; spectrum.clock = 0; self.clock = 0; }
+        else if code == 118 || code == 86 { self.flash = !self.flash; }
+        else if code == 43 || code == 61 { self.threshold = self.threshold < 232 ? self.threshold + 8 : 240; }
+        else if code == 45 || code == 95 { self.threshold = self.threshold > 8 ? self.threshold - 8 : 0; }
+        else if code == 115 { self.show_spectrum = !self.show_spectrum; }
+        else if code == 99 { self.show_scope = !self.show_scope; }
+        else if code == 103 { self.grainy = !self.grainy; }
+        else if code == 112 { self.palette = (self.palette + 1) % 2; }
+        else if code == 101 && event.modifiers == 1 { self.controls = !self.controls; }
+        return 0;
+    }
+    pub fn status(self: AnalyzerView, spectrum: &SpectrumView) -> str8 {
+        return format!("FFT {} {} | Scope {} | {} | {} | shade {} | flash {} {} | palette {}",
+            self.show_spectrum ? "on" : "off", self.detail_name(), self.show_scope ? "on" : "off",
+            spectrum.flat ? "Flat" : "Music", self.dots ? "Dot glyphs" : "Shaded bars", spectrum.show_peaks ? "on" : "off",
+            self.flash ? "on" : "off", self.threshold, self.palette + 1);
+    }
+    pub fn paint(self: &Self, surface: Surface, area: Rect, theme: Theme, spectrum: &SpectrumView, focused: bool, master_left: i32, master_right: i32) -> void {
+        if area.width <= 0 || area.height <= 0 { return; }
+        var colors: Theme = theme; colors.panel = self.black ? 0x000000 : 0x0C1226;
+        surface.fill(area, Cell { glyph: 32, foreground: colors.foreground, background: colors.panel });
+        let controls: i32 = self.controls && area.height >= 14 ? 7 : 0;
+        let footer: i32 = area.height >= 3 ? (self.controls && area.height >= 4 ? 3 : 2) : 0;
+        let graph: Rect = Rect::new(area.x, area.y, area.width, area.height - controls - footer);
+        self.paint_plot(surface, graph, spectrum);
+        if controls > 0 {
+            let row: Rect = Rect::new(area.x, area.y + graph.height, area.width, controls);
+            spectrum.paint_controls(surface, row, colors, master_left, master_right, focused);
+        }
+        if footer > 0 {
+            if footer == 3 {
+                let eq_status: str8 = spectrum.status();
+                surface.text(Rect::new(area.x, area.y + area.height - 3, area.width, 1), eq_status, colors.foreground, colors.panel);
+                free(eq_status);
+            }
+            let status: str8 = self.status(spectrum);
+            surface.text(Rect::new(area.x, area.y + area.height - 2, area.width, 1), status, colors.accent, colors.panel); free(status);
+            surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), self.controls ? "s FFT  c scope  Left/Right EQ  Enter field  Up/Down adjust  K/J coarse  0 reset  E bypass  e hide EQ  ?" : "s FFT  c scope  e EQ  g trace  ? help  Space song  Tab pane  Shift+M matrix  q return", colors.muted, colors.panel);
+        }
+        if self.help {
+            surface.fill(area, Cell { glyph: 32, foreground: colors.foreground, background: colors.panel });
+            let lines: list<str8> = ["FFT / Oscilloscope controls", "f / m   Flat / music spectrum", "x       Shaded bars / dots", "b       Blue / black background", "d       Detail: 8k / 16k / 32k FFT", "D       Top shading", "v       Flash on / off", "+ / -   Flash threshold", "s / c   Spectrum / oscilloscope", "g       Braille / demo trace", "p       Trace palette", "h / l   Seek -/+ 5 seconds", "e       Show / hide master EQ", "Left/Right  Select HP / EQ1-4 / master", "Enter   Gain / frequency / Q", "Up/Down k/j Adjust; K/J coarse", "0       Reset selected EQ field", "Shift+E Bypass / enable master EQ", "Space   Play / stop song", "Tab     Next pane", "Shift+M Matrix view", "q / ?   Return / close help"];
+            for i in 0..lines.len() {
+                if i >= area.height { break; }
+                surface.text(Rect::new(area.x, area.y + i32(i), area.width, 1), lines[i], colors.foreground, colors.panel);
+            }
+        }
+    }
+    fn paint_plot(self: &Self, surface: Surface, area: Rect, spectrum: &SpectrumView) -> void {
+        if area.width <= 0 || area.height <= 0 { return; }
+        let rows: i32 = area.height - (self.show_spectrum && area.height > 1 ? 1 : 0);
+        var start: i32 = 0;
+        for i in 0..256 {
+            if i + 1 >= self.left.len() { break; }
+            if self.left[i] <= 0.0 && self.left[i + 1] > 0.0 { start = i32(i); break; }
+        }
+        var maximum: f64 = -180.0;
+        for i in 0..spectrum.levels.len() {
+            if spectrum.levels[i] > maximum { maximum = spectrum.levels[i]; }
+        }
+        let grid: i32 = self.detail == 0 ? 4 : (self.detail == 1 ? 8 : 16);
+        let requested: i32 = AnalyzerView::scope_span(area.width);
+        let available: i32 = i32(self.left.len() < self.right.len() ? self.left.len() : self.right.len()) - start - 1;
+        let span: i32 = available < requested ? (available > 0 ? available : 0) : requested;
+        for x in 0..area.width {
+            let a: i32 = start + i32(x) * span / area.width;
+            let b: i32 = start + (i32(x) + 1) * span / area.width;
+            let left: ScopeRange = analyzer_trace_range(self.left, a, b, rows, grid);
+            let right: ScopeRange = analyzer_trace_range(self.right, a, b, rows, grid);
+            // Match the sample view's actual 2x4 pixel grid. Each half-cell
+            // retains its own sample interval and joins to the next dot.
+            let mid: i32 = start + (i32(x) * 2 + 1) * span / (area.width * 2);
+            let lfirst: ScopeRange = analyzer_trace_range(self.left, a, mid, rows, 4);
+            let lsecond: ScopeRange = analyzer_trace_range(self.left, mid, b, rows, 4);
+            let rfirst: ScopeRange = analyzer_trace_range(self.right, a, mid, rows, 4);
+            let rsecond: ScopeRange = analyzer_trace_range(self.right, mid, b, rows, 4);
+            let l0: f64 = a < self.left.len() ? self.left[a] : 0.0;
+            let bin: i32 = i32(wide(x) * spectrum.levels.len() / wide(area.width));
+            let db: f64 = bin < spectrum.levels.len() ? spectrum.levels[bin] : -180.0;
+            let height: i32 = self.show_spectrum ? analyzer_height(db, maximum, rows) : 0;
+            let full: i32 = height / 8; let fraction: i32 = height % 8;
+            for y in 0..rows {
+                let row: i32 = i32(y); let at: i32 = row * grid + grid / 4;
+                let background: i32 = self.black ? 0 : analyzer_background(row, rows);
+                let spec: i32 = analyzer_spectrum_color(row, rows, i32(x), area.width, self.palette);
+                let bottom: i32 = rows - 1 - row;
+                let partial: bool = bottom == full && fraction > 0;
+                let inside: bool = bottom < full || partial;
+                let fill: i32 = inside ? analyzer_blend(background, spec, 150) : background;
+                var glyph: i32 = 32; var color: i32 = spec;
+                if inside {
+                    glyph = self.dots ? i32(UnicodeBoxGlyph::Dot) : analyzer_bar_glyph(bottom, full, fraction, partial);
+                    if !spectrum.show_peaks && !partial && !self.dots { glyph = i32(UnicodeBoxGlyph::FullBlock); }
+                }
+                if self.show_scope && self.grainy {
+                    let left_mask: i32 = analyzer_scope_mask(lfirst, lsecond, row);
+                    let right_mask: i32 = analyzer_scope_mask(rfirst, rsecond, row);
+                    let mask: i32 = left_mask | right_mask;
+                    if mask != 0 {
+                        glyph = 0x2800 + mask;
+                        // A terminal cell has one ink color; shared cells use
+                        // the demo's warm stereo color without losing dots.
+                        let ink: i32 = left_mask != 0 && right_mask != 0 ? 0xF8D684 : (left_mask != 0 ? 0x78F884 : 0xFF6E54);
+                        color = analyzer_blend(background, ink, 740);
+                    }
+                } else if self.show_scope {
+                    let ld: i32 = scope_distance(at, left.low, left.high);
+                    let rd: i32 = scope_distance(at, right.low, right.high);
+                    let core: i32 = grid / 8;
+                    var ink: i32 = -1;
+                    if ld <= core && rd <= core { ink = 0xF8D684; glyph = i32(UnicodeBoxGlyph::BlackSmallSquare); }
+                    else if rd <= core { ink = 0xFF6E54; glyph = i32(UnicodeBoxGlyph::BlackSmallSquare); }
+                    else if ld <= core { ink = 0x78F884; glyph = i32(UnicodeBoxGlyph::BlackSmallSquare); }
+                    else if rd <= grid / 4 { ink = 0xFFA470; glyph = i32(UnicodeBoxGlyph::Bullet); }
+                    else if ld <= grid / 4 { ink = 0x96E8A6; glyph = i32(UnicodeBoxGlyph::Bullet); }
+                    else if rd <= grid * 3 / 4 { ink = 0x9C584E; glyph = i32(UnicodeBoxGlyph::Dot); }
+                    else if ld <= grid * 3 / 4 { ink = 0x4A945E; glyph = i32(UnicodeBoxGlyph::Dot); }
+                    else if row == rows / 2 { ink = 0x3A5470; glyph = i32(UnicodeBoxGlyph::LightHorizontal); }
+                    if ink >= 0 { color = analyzer_blend(background, ink, 740); }
+                }
+                // Keep the demo palette; flash only accents strong bar caps.
+                let amplitude: f64 = l0 < 0.0 ? -l0 : l0;
+                if self.flash && partial && amplitude * 240.0 > f64(self.threshold) { color = lighten(color, 8); }
+                surface.put(area.x + i32(x), area.y + row, Cell { glyph: glyph, foreground: color, background: fill });
+            }
+        }
+        if self.show_spectrum && area.height > 1 {
+            let row: Rect = Rect::new(area.x, area.y + rows, area.width, 1);
+            surface.fill(row, Cell { glyph: 32, foreground: 0x402248, background: self.black ? 0 : 0xFFA45C });
+            let labels: list<str8> = ["20Hz", "100Hz", "1kHz", "10kHz", "20k"];
+            let positions: list<i32> = [0, area.width * 23 / 100, area.width * 56 / 100, area.width * 90 / 100, area.width - 3];
+            for i in 0..labels.len() {
+                if area.width >= 45 || i == 0 || i == 2 {
+                    surface.text(Rect::new(area.x + positions[i], row.y, area.width - positions[i], 1), labels[i], self.black ? 0xC1CAD8 : 0x402248, self.black ? 0 : 0xFFA45C);
+                }
+            }
+        }
+    }
+}

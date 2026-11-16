@@ -86,6 +86,7 @@ pub fn apply_headroom(output: AudioController, db: i32) -> void {
 /// 1 kHz so music reads evenly; bars rise at once and fall at 40 dB/s.
 pub struct SpectrumView {
     var visible: bool; var detail: i32; var fps: i32{30};
+    var flat: bool; var show_peaks: bool{true};
     var bus: MasterBus;
     /// 0 = high-pass, 1-4 = EQ bands, 5 = master volume. Part 0 gain,
     /// 1 frequency, 2 Q (the high-pass and volume have one part each).
@@ -177,22 +178,31 @@ impl SpectrumView {
     }
     /// Analyse at the update rate; true when the picture changed.
     pub fn update(self: &mut Self, output: AudioController, headroom_db: i32, now: i64, area: Rect) -> bool {
+        return self.update_for(output, headroom_db, now, area, false, 0);
+    }
+    pub fn update_for(self: &mut Self, output: AudioController, headroom_db: i32, now: i64, area: Rect, large: bool, analyzer_detail: i32) -> bool {
         self.sync(output, headroom_db);
-        if !self.visible || output.handle == 0 { return false; }
+        if (!self.visible && !large) || output.handle == 0 { return false; }
         let elapsed: i64 = now - self.clock;
         if elapsed < wide(1000 / (self.fps < 1 ? 1 : self.fps)) { return false; }
         self.clock = now;
-        let graph: Rect = SpectrumView::graph_area(area);
-        let bars: i32 = self.bar_count(graph.width);
+        let graph: Rect = large ? area : SpectrumView::graph_area(area);
+        let bars: i32 = large ? graph.width : self.bar_count(graph.width);
         if bars <= 0 { return false; }
-        let size: i64 = self.detail == 1 ? 8192 : (self.detail == 2 ? 2048 : 4096);
+        let size: i64 = large ? (analyzer_detail >= 2 ? 32768 : (analyzer_detail == 1 ? 16384 : 8192))
+            : (self.detail == 1 ? 8192 : (self.detail == 2 ? 2048 : 4096));
         if output.spectrum_capture(size) < 0 { return false; }
         let fall: f64 = 40.0 * f64(elapsed > 500 ? 500 : elapsed) / 1000.0;
         var levels: list<f64> = []; var peaks: list<f64> = []; var changed: bool = bars != self.levels.len();
         for i in 0..bars {
             let low: f64 = spectrum_hz(f64(i) / f64(bars)); let high: f64 = spectrum_hz(f64(i + 1) / f64(bars));
             let centre: f64 = exp((log(low) + log(high)) / 2.0);
-            let db: f64 = output.spectrum_level(low, high) + 3.0 * log(centre / 1000.0) / log(2.0);
+            // Like fft_example's detailed mode: narrow the low-frequency
+            // neighborhood instead of smearing adjacent bass peaks together.
+            let sharpen: bool = large && analyzer_detail > 0 && i * 100 < bars * 52;
+            let span: f64 = (high - low) * (analyzer_detail >= 2 ? 0.25 : 0.375);
+            let db: f64 = output.spectrum_level(sharpen ? centre - span : low, sharpen ? centre + span : high)
+                + (self.flat ? 0.0 : 3.0 * log(centre / 1000.0) / log(2.0));
             var old: f64 = -180.0; var old_peak: f64 = -180.0;
             if i < self.levels.len() { old = self.levels[i]; }
             if i < self.peaks.len() { old_peak = self.peaks[i]; }
@@ -289,7 +299,7 @@ impl SpectrumView {
         } else { self.paint_graph(surface, graph, theme); }
         if SpectrumView::eq_width(area) > 0 { self.paint_controls(surface, area, theme, master_left, master_right, focused); }
     }
-    fn paint_graph(self: SpectrumView, surface: Surface, graph: Rect, theme: Theme) -> void {
+    pub fn paint_graph(self: SpectrumView, surface: Surface, graph: Rect, theme: Theme) -> void {
         if graph.width <= 0 || graph.height <= 0 { return; }
         // The last row names frequencies: dark text on a bright band.
         let label_y: i32 = graph.y + graph.height - 1;
@@ -312,13 +322,15 @@ impl SpectrumView {
         let rows: i32 = graph.height - 1;
         if rows <= 0 { return; }
         let bars: i32 = self.bar_count(graph.width);
+        if bars <= 0 { return; }
         // One gradient color per row, taken at the row's middle.
         var row_colors: list<i32> = [];
         for row in 0..rows { row_colors.push(spectrum_color(((rows - 1 - i32(row)) * 2 + 1) * 500 / rows)); }
         for column in 0..graph.width {
             let x: i32 = graph.x + i32(column);
             if self.detail == 1 {
-                let left: i32 = i32(column) * 2; let right: i32 = left + 1;
+                let left: i32 = i32(wide(column) * 2 * self.levels.len() / wide(bars));
+                let right: i32 = i32((wide(column) * 2 + 1) * self.levels.len() / wide(bars));
                 let left_dots: i32 = self.filled(left, rows * 4); let right_dots: i32 = self.filled(right, rows * 4);
                 let left_peak: i32 = self.peak_units(left, rows * 4); let right_peak: i32 = self.peak_units(right, rows * 4);
                 for row in 0..rows {
@@ -337,6 +349,7 @@ impl SpectrumView {
             var bar: i32 = i32(column);
             if self.detail == 2 { if i32(column) % 3 == 2 { continue; } bar = i32(column) / 3; }
             if bar >= bars { continue; }
+            bar = i32(wide(bar) * self.levels.len() / wide(bars));
             let filled: i32 = self.filled(bar, rows * 8); let peak: i32 = self.peak_units(bar, rows * 8);
             for row in 0..rows {
                 let base: i32 = (rows - 1 - i32(row)) * 8;
@@ -357,10 +370,11 @@ impl SpectrumView {
         return i32(spectrum_fraction(self.levels[bar]) * f64(units));
     }
     fn peak_units(self: SpectrumView, bar: i32, units: i32) -> i32 {
+        if !self.show_peaks { return 0; }
         if bar < 0 || bar >= self.peaks.len() { return 0; }
         return i32(spectrum_fraction(self.peaks[bar]) * f64(units));
     }
-    fn paint_controls(self: SpectrumView, surface: Surface, area: Rect, theme: Theme, master_left: i32, master_right: i32, focused: bool) -> void {
+    pub fn paint_controls(self: SpectrumView, surface: Surface, area: Rect, theme: Theme, master_left: i32, master_right: i32, focused: bool) -> void {
         let width: i32 = SpectrumView::strip_width(area);
         let start: i32 = area.x + area.width - SpectrumView::eq_width(area);
         let master_width: i32 = SpectrumView::eq_width(area) - width * 5;

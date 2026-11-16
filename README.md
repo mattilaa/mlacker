@@ -359,6 +359,7 @@ shortcut of several presses in a row is written `<C-a><C-m>`.
 | `<C-g>` | Show or hide the View sidebar |
 | `<S-m>` | Show or hide the song matrix |
 | `<C-S-m>` | Show or hide the spectrum analyzer |
+| `<C-S-a>` | Large spectrum / oscilloscope in the pattern pane |
 | `<S-p>` | Show or hide the virtual keyboard |
 | `<S-s>` | Show or hide the Sampler pane (Mla Sampler) |
 
@@ -1337,6 +1338,45 @@ While the keyboard has focus, it keeps printable keys for itself, including `q`
 F1, `Shift+M` and control shortcuts keep working as usual.
 The widget behind it is `tui::piano::PianoKeyboard`, which the drum-pad picker
 uses too.
+
+### Large spectrum and oscilloscope view
+
+**View > Spectrum / Oscilloscope view** (**Ctrl+Shift+A**) uses the main
+pattern/matrix pane for a full-width spectrum and stereo master-output trace.
+The view adapts MLang's `examples/fft_example` display and its companion
+oscilloscope example. The compact analyzer remains available in the mixer pane.
+
+With the large analyzer focused, **f/m** selects flat/music scaling, **x** toggles
+shaded/dot glyphs, **b** selects gradient/black, **d** cycles Normal (8k),
+Detailed (16k), and Ultra (32k) FFT; **D** toggles peak shading,
+**v** toggles flash and **+/-** changes its threshold. **s/c** toggles spectrum
+and oscilloscope; **g** switches Braille/demo traces; **p** changes spectrum colors; **h/l** seeks five seconds. **?**
+shows controls; **e** shows/hides the master EQ strips. EQ keys also reveal the
+strips while the analyzer runs. **Left/Right** selects HP, EQ1–4, or master
+volume; **Enter** cycles gain/frequency/Q; **Up/Down** or **k/j** adjusts the
+field, **K/J** makes coarse changes, and **0** resets it. **Shift+E** bypasses or
+enables EQ without losing its settings. The footer shows the selected field
+and value. **s** hides spectrum for scope-only monitoring; **c** hides the scope
+for spectrum-only monitoring. Each key independently restores its display.
+
+**Tab/Shift+Tab** changes pane focus. **Space** plays/stops the song; **Shift+M**
+returns to the matrix and **Ctrl+Shift+F1** to patterns. **q** returns to the
+previous view. Shift+O and Ctrl+O keep their existing row/cell insertion roles.
+
+Detailed is the default. Larger FFT windows separate nearby bass frequencies more
+clearly, with a longer analysis window. The oscilloscope captures enough samples
+for the pane width and includes every sample in each column, retaining short
+transients. The scope defaults to the sample view’s Braille pixel layout: two
+horizontal samples and four vertical dots per character, with connected stereo
+traces. **g** restores the demo’s square/bullet/dot trace, where detail increases
+positioning precision from 4 to 8 to 16 substeps. Spectrum glyph style remains
+independent of analysis detail.
+
+`build.sh` carries the stereo capture, analyzer glyph, and FFT detail patches
+from `patches/` in subproject builds. External MLang checkouts need those patches
+too before building mlacker. Capture allocation happens on the UI thread. The demo trace option
+uses MLang’s named ACS square/bullet/dot glyphs. Both trace styles retain the
+oscilloscope demo’s four-stop gradient, translucent spectrum shades, and red/green trace colors.
 
 ### Spectrum analyzer and master bus
 

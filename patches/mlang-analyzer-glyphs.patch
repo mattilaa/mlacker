@@ -1,0 +1,25 @@
+--- a/modules/tui/surface.mla
++++ b/modules/tui/surface.mla
+@@ -3,6 +3,8 @@
+ mod std::bytes;
+ mod std::strbuf;
+ mod std::esc;
++mod std::ascii;
++use std::ascii::UnicodeBoxGlyph;
+ use tui::geometry::Rect;
+ use tui::geometry::wide;
+ use tui::theme::darken;
+@@ -16,11 +18,12 @@
+ pub struct Cell { var glyph: i32; var foreground: i32; var background: i32; };
+ 
+ /// Single-cell repertoire for the first version: printable ASCII, Latin,
+-/// box-drawing, Braille, and status-light circles. Unsupported widths become '?'.
++/// box-drawing, Braille, ACS squares/bullets, and status-light circles. Unsupported widths become '?'.
+ pub fn cell_glyph(code: i32) -> i32 {
+     if code == 173 { return 63; } // soft hyphen is not reliably one cell
+     if (code >= 32 && code <= 126) || (code >= 160 && code <= 591) ||
+        (code >= 0x2500 && code <= 0x2593) || (code >= 0x2800 && code <= 0x28FF) ||
++       code == i32(UnicodeBoxGlyph::BlackSmallSquare) || code == i32(UnicodeBoxGlyph::Bullet) ||
+        code == 0x25CB || code == 0x25CF { return code; }
+     return 63;
+ }

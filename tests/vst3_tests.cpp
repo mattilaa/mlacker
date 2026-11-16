@@ -18,6 +18,11 @@ DoubleList __mlang_std_audio_controller_instrument_markers(int64_t, int64_t, int
 int32_t __mlang_std_audio_controller_instrument_set_markers(int64_t, int64_t, int64_t, DoubleList, int64_t);
 int64_t __mlang_std_audio_controller_sample_data(int64_t, FloatList, int64_t, int64_t);
 void mlacker_install_vst3_host();
+int32_t __mlang_std_audio_controller_spectrum_capture(int64_t, int64_t);
+double __mlang_std_audio_controller_spectrum_level(int64_t, double, double);
+int32_t __mlacker_audio_scope_capture(int64_t, int64_t);
+double __mlacker_audio_scope_sample(int64_t, int64_t, int64_t);
+int32_t __mlang_std_audio_controller_preview(int64_t, FloatList, int64_t, int64_t);
 int64_t __mlang_std_audio_controller_new(int64_t, int64_t);
 int64_t __mlang_std_audio_controller_open(int64_t, int64_t);
 int32_t __mlang_std_audio_controller_start(int64_t);
@@ -175,6 +180,56 @@ int main(int argc, char **argv) {
     CHECK(__mlang_std_audio_controller_post(c, 0, 1, 2, 69, 127, 2, 64, 0, 1) == 0);
     CHECK(__mlang_std_audio_controller_post(c, 0, 2, 2, 69, 0, 2, 192, 0, 1) == 0);
     CHECK(__mlang_std_audio_controller_process(c, b, 256) == 0);
+    // The oscilloscope sees actual stereo post-master samples, independently
+    // of FFT capture. Bounds and invalid handles fail without reading memory.
+    CHECK(__mlacker_audio_scope_capture(c, 256) == 256);
+    for(int channel = 0; channel < 2; ++channel) {
+        CHECK(__mlacker_audio_scope_sample(c, 0, channel) == 0.0);
+        CHECK(__mlacker_audio_scope_sample(c, 100, channel) == 0.125);
+        CHECK(__mlacker_audio_scope_sample(c, 220, channel) == 0.0);
+    }
+    CHECK(__mlacker_audio_scope_capture(0, 256) == -1);
+    CHECK(__mlacker_audio_scope_capture(c, 0) == -1);
+    CHECK(__mlacker_audio_scope_capture(c, 8193) == -1);
+    CHECK(__mlacker_audio_scope_sample(c, -1, 0) == 0.0);
+    CHECK(__mlacker_audio_scope_sample(c, 256, 0) == 0.0);
+    CHECK(__mlacker_audio_scope_sample(c, 100, 2) == 0.0);
+    {
+        const int64_t stereoController = __mlang_std_audio_controller_new(48000, 128);
+        const int64_t stereoBlock = __mlang_std_audio_pcm_block_new(256);
+        float samples[512];
+        for(int i = 0; i < 256; ++i) { samples[i * 2] = 0.25f; samples[i * 2 + 1] = -0.5f; }
+        CHECK(__mlang_std_audio_controller_preview(stereoController, FloatList{512, samples}, 2, 48000) == 0);
+        CHECK(__mlang_std_audio_controller_process(stereoController, stereoBlock, 256) == 0);
+        CHECK(__mlacker_audio_scope_capture(stereoController, 256) == 256);
+        CHECK(__mlacker_audio_scope_sample(stereoController, 100, 0) > 0);
+        CHECK(__mlacker_audio_scope_sample(stereoController, 100, 1) < 0);
+        for(int channel = 0; channel < 2; ++channel)
+            CHECK(__mlacker_audio_scope_sample(stereoController, 100, channel) ==
+                  __mlang_std_audio_pcm_block_sample(stereoBlock, 100, channel));
+        CHECK(__mlang_std_audio_controller_close(stereoController) == 0);
+        CHECK(__mlang_std_audio_pcm_block_close(stereoBlock) == 0);
+    }
+    {
+        // A 32k FFT must resolve neighboring bass tones, preserving the notch.
+        const int64_t controller = __mlang_std_audio_controller_new(48000, 128);
+        const int64_t block = __mlang_std_audio_pcm_block_new(512);
+        std::vector<float> samples(32768 * 2);
+        for(int i = 0; i < 32768; ++i) {
+            const double t = i / 48000.0;
+            samples[i * 2] = samples[i * 2 + 1] = float(0.15 * (std::sin(2 * 3.141592653589793 * 50 * t) + std::sin(2 * 3.141592653589793 * 60 * t)));
+        }
+        CHECK(__mlang_std_audio_controller_preview(controller, FloatList{int64_t(samples.size()), samples.data()}, 2, 48000) == 0);
+        for(int i = 0; i < 64; ++i) CHECK(__mlang_std_audio_controller_process(controller, block, 512) == 0);
+        CHECK(__mlang_std_audio_controller_spectrum_capture(controller, 32768) == 16385);
+        const double low = __mlang_std_audio_controller_spectrum_level(controller, 49, 51);
+        const double high = __mlang_std_audio_controller_spectrum_level(controller, 59, 61);
+        const double notch = __mlang_std_audio_controller_spectrum_level(controller, 54.5, 55.5);
+        CHECK(low > -50 && high > -50 && notch < low - 12 && notch < high - 12);
+        CHECK(__mlang_std_audio_controller_spectrum_capture(controller, 65536) == -1);
+        CHECK(__mlang_std_audio_controller_close(controller) == 0);
+        CHECK(__mlang_std_audio_pcm_block_close(block) == 0);
+    }
     for(int f = 0; f < 256; ++f) {
         float expected = f >= 64 && f < 192 ? 0.125f : 0.f;
         CHECK(__mlang_std_audio_pcm_block_sample(b, f, 0) == expected);

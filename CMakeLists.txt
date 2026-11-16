@@ -177,6 +177,8 @@ add_test(NAME bounce_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE
 set_tests_properties(bounce_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)
 add_test(NAME spectrum_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/spectrum_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(spectrum_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
+add_test(NAME analyzer_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/analyzer_tui_smoke.py" "$<TARGET_FILE:mlacker>")
+set_tests_properties(analyzer_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 90)
 add_test(NAME visual_tui COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/visual_tui_smoke.py" "$<TARGET_FILE:mlacker>")
 set_tests_properties(visual_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 60)
 set_tests_properties(session_tui PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 120)

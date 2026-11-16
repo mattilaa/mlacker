@@ -1,4 +1,6 @@
 mod mlacker_ui::audio_clip;
+mod mlacker_ui::waveform;
+use mlacker_ui::waveform::wave_dot_bit;
 mod tui::surface;
 mod tui::theme;
 mod tui::input;
@@ -403,8 +405,7 @@ fn sample_pixel(surface: Surface, area: Rect, x: i32, y: i32, grainy: bool, wave
     let old: Cell = surface.cell(col, row);
     var glyph: i32 = wave ? 0x25cf : 0x2588;
     if grainy {
-        let bits: array<i32, 8> = {1, 8, 2, 16, 4, 32, 64, 128};
-        let dot_mask: i32 = bits[(y % 4) * 2 + x % 2];
+        let dot_mask: i32 = wave_dot_bit(x, y);
         var mask: i32 = old.glyph >= 0x2800 && old.glyph <= 0x28ff ? old.glyph - 0x2800 : 0;
         if mask / dot_mask % 2 == 0 { mask = mask + dot_mask; }
         glyph = 0x2800 + mask;
