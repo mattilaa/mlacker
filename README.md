@@ -1350,7 +1350,7 @@ With the large analyzer focused, **f/m** selects flat/music scaling, **x** toggl
 shaded/dot glyphs, **b** selects gradient/black, **d** cycles Normal (8k),
 Detailed (16k), and Ultra (32k) FFT; **D** toggles peak shading,
 **v** toggles flash and **+/-** changes its threshold. **s/c** toggles spectrum
-and oscilloscope; **p** changes spectrum colors; **h/l** seeks five seconds. **?**
+and oscilloscope; **g** switches Braille/demo traces; **p** changes spectrum colors; **h/l** seeks five seconds. **?**
 shows controls; **e** shows/hides the master EQ strips. Arrow keys and Enter
 retain the master EQ controls.
 
@@ -1361,14 +1361,17 @@ previous view. Shift+O and Ctrl+O keep their existing row/cell insertion roles.
 Detailed is the default. Larger FFT windows separate nearby bass frequencies more
 clearly, with a longer analysis window. The oscilloscope captures enough samples
 for the pane width and includes every sample in each column, retaining short
-transients. Detail also increases trace precision from 4 to 8 to 16 vertical
-substeps per cell. Glyph style remains independent of analysis detail.
+transients. The scope defaults to the sample view’s Braille pixel layout: two
+horizontal samples and four vertical dots per character, with connected stereo
+traces. **g** restores the demo’s square/bullet/dot trace, where detail increases
+positioning precision from 4 to 8 to 16 substeps. Spectrum glyph style remains
+independent of analysis detail.
 
 `build.sh` carries the stereo capture, analyzer glyph, and FFT detail patches
-from `patches/` in subproject builds. External MLang checkouts need those patches too before
-building mlacker. Capture allocation happens on the UI thread. The large view
-uses MLang’s named ACS square/bullet/dot glyphs and the oscilloscope demo’s
-four-stop gradient, translucent spectrum shades, and red/green trace colors.
+from `patches/` in subproject builds. External MLang checkouts need those patches
+too before building mlacker. Capture allocation happens on the UI thread. The demo trace option
+uses MLang’s named ACS square/bullet/dot glyphs. Both trace styles retain the
+oscilloscope demo’s four-stop gradient, translucent spectrum shades, and red/green trace colors.
 
 ### Spectrum analyzer and master bus
 

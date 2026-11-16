@@ -3,6 +3,8 @@
 /// companion package_manager_oscilloscope_demo. Paint into Surface rather
 /// than writing ANSI, so menus, dialogs, resizing and focus stay with mlacker.
 mod mlacker_ui::spectrum;
+mod mlacker_ui::waveform;
+use mlacker_ui::waveform::wave_dot_bit;
 mod std::audio::controller;
 mod std::ascii;
 mod std::math;
@@ -24,7 +26,7 @@ pub struct AnalyzerView {
     var active: bool; var show_spectrum: bool{true}; var show_scope: bool{true};
     var black: bool; var palette: i32{1}; var flash: bool; var threshold: i32{64};
     var help: bool; var controls: bool; var clock: i64;
-    var detail: i32{1}; var dots: bool;
+    var detail: i32{1}; var dots: bool; var grainy: bool{true};
     var left: list<f64>; var right: list<f64>;
 };
 
@@ -50,6 +52,16 @@ pub fn analyzer_trace_range(samples: &list<f64>, first: i32, last: i32, height: 
         if y > result.high { result.high = y; }
     }
     return result;
+}
+/// Two independent horizontal samples, each with four vertical dot positions.
+pub fn analyzer_scope_mask(first: ScopeRange, second: ScopeRange, row: i32) -> i32 {
+    var mask: i32 = 0;
+    for dot in 0..4 {
+        let y: i32 = row * 4 + i32(dot);
+        if y >= first.low && y <= first.high { mask = mask | wave_dot_bit(0, i32(dot)); }
+        if y >= second.low && y <= second.high { mask = mask | wave_dot_bit(1, i32(dot)); }
+    }
+    return mask;
 }
 /// Exact four-stop background from MLang's oscilloscope demo.
 pub fn analyzer_background(row: i32, height: i32) -> i32 {
@@ -148,6 +160,7 @@ impl AnalyzerView {
         else if code == 45 || code == 95 { self.threshold = self.threshold > 8 ? self.threshold - 8 : 0; }
         else if code == 115 { self.show_spectrum = !self.show_spectrum; }
         else if code == 99 { self.show_scope = !self.show_scope; }
+        else if code == 103 { self.grainy = !self.grainy; }
         else if code == 112 { self.palette = (self.palette + 1) % 2; }
         else if code == 101 { self.controls = !self.controls; }
         else if spectrum.handles(event) { spectrum.on_event(event, output); }
@@ -174,11 +187,11 @@ impl AnalyzerView {
         if footer > 0 {
             let status: str8 = self.status(spectrum);
             surface.text(Rect::new(area.x, area.y + area.height - 2, area.width, 1), status, colors.accent, colors.panel); free(status);
-            surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), "? help  e EQ  Space song  Tab pane  Shift+M matrix  q return", colors.muted, colors.panel);
+            surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), "? help  g trace  e EQ  Space song  Tab pane  Shift+M matrix  q return", colors.muted, colors.panel);
         }
         if self.help {
             surface.fill(area, Cell { glyph: 32, foreground: colors.foreground, background: colors.panel });
-            let lines: list<str8> = ["FFT / Oscilloscope controls", "f / m   Flat / music spectrum", "x       Shaded bars / dots", "b       Blue / black background", "d       Detail: 8k / 16k / 32k FFT", "D       Top shading", "v       Flash on / off", "+ / -   Flash threshold", "s / c   Spectrum / oscilloscope", "p       Trace palette", "h / l   Seek -/+ 5 seconds", "e       Show / hide master EQ", "Arrows  Master EQ controls", "Space   Play / stop song", "Tab     Next pane", "Shift+M Matrix view", "q / ?   Return / close help"];
+            let lines: list<str8> = ["FFT / Oscilloscope controls", "f / m   Flat / music spectrum", "x       Shaded bars / dots", "b       Blue / black background", "d       Detail: 8k / 16k / 32k FFT", "D       Top shading", "v       Flash on / off", "+ / -   Flash threshold", "s / c   Spectrum / oscilloscope", "g       Braille / demo trace", "p       Trace palette", "h / l   Seek -/+ 5 seconds", "e       Show / hide master EQ", "Arrows  Master EQ controls", "Space   Play / stop song", "Tab     Next pane", "Shift+M Matrix view", "q / ?   Return / close help"];
             for i in 0..lines.len() {
                 if i >= area.height { break; }
                 surface.text(Rect::new(area.x, area.y + i32(i), area.width, 1), lines[i], colors.foreground, colors.panel);
@@ -206,6 +219,13 @@ impl AnalyzerView {
             let b: i32 = start + (i32(x) + 1) * span / area.width;
             let left: ScopeRange = analyzer_trace_range(self.left, a, b, rows, grid);
             let right: ScopeRange = analyzer_trace_range(self.right, a, b, rows, grid);
+            // Match the sample view's actual 2x4 pixel grid. Each half-cell
+            // retains its own sample interval and joins to the next dot.
+            let mid: i32 = start + (i32(x) * 2 + 1) * span / (area.width * 2);
+            let lfirst: ScopeRange = analyzer_trace_range(self.left, a, mid, rows, 4);
+            let lsecond: ScopeRange = analyzer_trace_range(self.left, mid, b, rows, 4);
+            let rfirst: ScopeRange = analyzer_trace_range(self.right, a, mid, rows, 4);
+            let rsecond: ScopeRange = analyzer_trace_range(self.right, mid, b, rows, 4);
             let l0: f64 = a < self.left.len() ? self.left[a] : 0.0;
             let bin: i32 = i32(wide(x) * spectrum.levels.len() / wide(area.width));
             let db: f64 = bin < spectrum.levels.len() ? spectrum.levels[bin] : -180.0;
@@ -224,7 +244,18 @@ impl AnalyzerView {
                     glyph = self.dots ? i32(UnicodeBoxGlyph::Dot) : analyzer_bar_glyph(bottom, full, fraction, partial);
                     if !spectrum.show_peaks && !partial && !self.dots { glyph = i32(UnicodeBoxGlyph::FullBlock); }
                 }
-                if self.show_scope {
+                if self.show_scope && self.grainy {
+                    let left_mask: i32 = analyzer_scope_mask(lfirst, lsecond, row);
+                    let right_mask: i32 = analyzer_scope_mask(rfirst, rsecond, row);
+                    let mask: i32 = left_mask | right_mask;
+                    if mask != 0 {
+                        glyph = 0x2800 + mask;
+                        // A terminal cell has one ink color; shared cells use
+                        // the demo's warm stereo color without losing dots.
+                        let ink: i32 = left_mask != 0 && right_mask != 0 ? 0xF8D684 : (left_mask != 0 ? 0x78F884 : 0xFF6E54);
+                        color = analyzer_blend(background, ink, 740);
+                    }
+                } else if self.show_scope {
                     let ld: i32 = scope_distance(at, left.low, left.high);
                     let rd: i32 = scope_distance(at, right.low, right.high);
                     let core: i32 = grid / 8;

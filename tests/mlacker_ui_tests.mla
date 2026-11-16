@@ -20,6 +20,7 @@ mod std::ascii;
 use std::ascii::UnicodeBoxGlyph;
 use mlacker_ui::analyzer::AnalyzerView;
 use mlacker_ui::analyzer::ScopeRange;
+use mlacker_ui::analyzer::analyzer_scope_mask;
 use mlacker_ui::analyzer::analyzer_trace_range;
 use mlacker_ui::analyzer::analyzer_background;
 use mlacker_ui::analyzer::analyzer_blend;
@@ -4516,7 +4517,7 @@ fn tui_large_analyzer_controls_and_seek_bounds() {
     verify(AnalyzerView::seek_row(0, 0, 120, 5) == 0);
     let surface: Surface = Surface::new(40, 8);
     analyzer.show_scope = true;
-    analyzer.black = false; analyzer.palette = 0; analyzer.detail = 0;
+    analyzer.black = false; analyzer.palette = 0; analyzer.detail = 0; analyzer.grainy = false;
     for _i in 0..1024 { analyzer.left.push(0.5); analyzer.right.push(-0.5); }
     analyzer.paint(surface, Rect::new(0, 0, 40, 8), Theme::dark_blue(), spectrum, true, 0, 0);
     var trace: bool = false;
@@ -5464,4 +5465,51 @@ fn tui_analyzer_retains_subcolumn_impulses() {
     verify(analyzer.detail == 0);
     analyzer.on_event(decode_input("d"), &mut spectrum, audio);
     verify(analyzer.detail == 1);
+}
+
+#[test]
+fn tui_analyzer_uses_sample_view_braille_resolution() {
+    let top: ScopeRange = ScopeRange { low: 0, high: 0 };
+    let bottom: ScopeRange = ScopeRange { low: 3, high: 3 };
+    // Different half-columns must retain different vertical dots in one cell.
+    verify(analyzer_scope_mask(top, bottom, 0) == 129);
+    verify(analyzer_scope_mask(bottom, top, 0) == 72);
+    verify(analyzer_scope_mask(top, bottom, 1) == 0);
+    let surface: Surface = Surface::new(8, 6);
+    var analyzer: AnalyzerView = AnalyzerView { show_spectrum: false };
+    var spectrum: SpectrumView = SpectrumView::new();
+    let audio: AudioController = AudioController {};
+    verify(analyzer.grainy);
+    for _i in 0..128 { analyzer.left.push(1.0); analyzer.right.push(-1.0); }
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    // Four graph rows (16 subpixels): positive and negative stereo extremes.
+    let left: Cell = surface.cell(0, 0); let right: Cell = surface.cell(0, 3);
+    verify(left.glyph == 0x2809);
+    verify(right.glyph == 0x28C0);
+    verify(left.foreground == analyzer_blend(analyzer_background(0, 4), 0x78F884, 740));
+    verify(right.foreground == analyzer_blend(analyzer_background(3, 4), 0xFF6E54, 740));
+    verify(left.background == analyzer_background(0, 4));
+    analyzer.on_event(decode_input("g"), &mut spectrum, audio);
+    verify(!analyzer.grainy);
+    analyzer.on_event(decode_input("g"), &mut spectrum, audio);
+    verify(analyzer.grainy);
+    // Both stereo channels in the same cell retain their combined dot mask.
+    analyzer.right = [];
+    for _i in 0..128 { analyzer.right.push(1.0); }
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    let both: Cell = surface.cell(0, 0);
+    verify(both.glyph == 0x2809);
+    verify(both.foreground == analyzer_blend(analyzer_background(0, 4), 0xF8D684, 740));
+    // A descending segment occupies different dot rows in each half-cell.
+    analyzer.left = [1.0, 0.5, 0.0]; analyzer.right = [];
+    for _i in 0..14 { analyzer.left.push(0.0); }
+    for _i in 0..17 { analyzer.right.push(-1.0); }
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    let slope: Cell = surface.cell(0, 0);
+    verify(slope.glyph == 0x28C7);
+    analyzer.show_scope = false;
+    analyzer.paint(surface, surface.bounds(), Theme::dark_blue(), spectrum, true, 0, 0);
+    let hidden: Cell = surface.cell(0, 0);
+    verify(hidden.glyph == 32);
+    surface.release();
 }
