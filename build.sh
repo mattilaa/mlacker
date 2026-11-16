@@ -231,6 +231,21 @@ if [ "$mlang_mode" = "subproject" ] && [ "$mlang_ref" = "v0.4.3" ]; then
 fi
 
 # --- MLang ---------------------------------------------------------------------------------
+# Carry the oscilloscope's stereo snapshot API with the pinned runtime. The
+# render tap is bounded and lock-free; snapshot allocation stays on the UI.
+if [ "$mlang_mode" = "subproject" ]; then
+    for analyzer_patch in "$ROOT_DIR/patches/mlang-scope-capture.patch" "$ROOT_DIR/patches/mlang-analyzer-glyphs.patch"; do
+        if git -C "$mlang_root" apply --reverse --check "$analyzer_patch" 2>/dev/null; then
+            : # Already applied.
+        elif git -C "$mlang_root" apply --check "$analyzer_patch" 2>/dev/null; then
+            run git -C "$mlang_root" apply "$analyzer_patch"
+        else
+            echo "build.sh: analyzer patch $analyzer_patch conflicts with local changes in $mlang_root" >&2
+            exit 1
+        fi
+    done
+fi
+
 echo "[mlacker] MLang checkout: $mlang_root ($mlang_mode)"
 if [ ! -f "$mlang_build/CMakeCache.txt" ]; then
     generator=""

@@ -1,0 +1,75 @@
+--- a/stdlib/src/std_audio_controller.inc
++++ b/stdlib/src/std_audio_controller.inc
+@@ -400,6 +400,11 @@
+     _Atomic uint64_t preview_serial, preview_ack, preview_done;
+     ac_sample *preview_current; /* Render-owned: the clip `preview_phase` plays. */
+     double preview_phase;
++    /* Stereo post-master oscilloscope tap. Atomic words let the UI snapshot
++     * safely while the render thread continues writing, without locks. */
++    _Atomic uint32_t scope_ring[AC_SPECTRUM_RING * 2];
++    float *scope_snapshot;
++    int scope_frames;
+     float spectrum_ring[AC_SPECTRUM_RING];
+     _Atomic uint64_t spectrum_write;
+     /* Control-thread analyzer snapshot (single UI consumer). */
+@@ -579,6 +584,7 @@
+         c->master_value[i] = ac_master_defaults[i];
+     }
+     atomic_init(&c->master_serial, 0); atomic_init(&c->spectrum_write, 0);
++    for(int i = 0; i < AC_SPECTRUM_RING * 2; ++i) atomic_init(&c->scope_ring[i], 0);
+     atomic_init(&c->transport_serial, 0); atomic_init(&c->transport_flags, 0);
+     atomic_init(&c->transport_bits[0], 0); atomic_init(&c->transport_bits[1], 0);
+     atomic_init(&c->transport_beat_out, 0);
+@@ -1271,6 +1277,9 @@
+         out[f * 2 + 1] = (float)fmax(-1, fmin(1, r));
+         master[0] = fmaxf(master[0], fabsf(out[f * 2]));
+         master[1] = fmaxf(master[1], fabsf(out[f * 2 + 1]));
++        uint32_t scope_at = (uint32_t)((tap + f) & (AC_SPECTRUM_RING - 1u)) * 2u;
++        for(int ch = 0; ch < 2; ++ch)
++            atomic_store_explicit(&c->scope_ring[scope_at + ch], ac_float_bits(out[f * 2 + ch]), memory_order_relaxed);
+         c->spectrum_ring[(tap + f) & (AC_SPECTRUM_RING - 1u)] = 0.5f * (out[f * 2] + out[f * 2 + 1]);
+         peak = fmaxf(peak, fmaxf(fabsf(out[f * 2]), fabsf(out[f * 2 + 1])));
+     }
+@@ -1440,6 +1449,7 @@
+         if(c->instruments[i].context) c->instruments[i].destroy(c->instruments[i].context);
+     for(int i = 0; i < 8; ++i) if(c->effects[i].context) c->effects[i].destroy(c->effects[i].context);
+     for(int i = 0; i < 256; ++i) if(c->inserts[i].context) c->inserts[i].destroy(c->inserts[i].context);
++    free(c->scope_snapshot);
+     free(c->spectrum_db);
+     free(c); return 0;
+ }
+@@ -1807,6 +1817,34 @@
+ }
+ /* Single UI consumer: Hann-windowed FFT of the newest `size` post-master
+  * samples (power of two, 256..8192). Returns the bin count, or -1. */
++/* Single UI consumer. Capture the newest stereo post-master frames without
++ * disturbing FFT capture or consuming audio. Allocation is UI-thread only. */
++int32_t __mlacker_audio_scope_capture(int64_t handle, int64_t frames) {
++    ac_controller *c = (ac_controller*)(intptr_t)handle;
++    if(!c || frames < 1 || frames > AC_SPECTRUM_MAX) return -1;
++    if(!c->scope_snapshot) {
++        c->scope_snapshot = calloc(AC_SPECTRUM_MAX * 2, sizeof(float));
++        if(!c->scope_snapshot) return -1;
++    }
++    uint64_t end = atomic_load_explicit(&c->spectrum_write, memory_order_acquire);
++    for(int64_t i = 0; i < frames; ++i) {
++        uint64_t at = end - (uint64_t)frames + (uint64_t)i;
++        for(int ch = 0; ch < 2; ++ch) {
++            uint32_t bits = end >= (uint64_t)(frames - i)
++                ? atomic_load_explicit(&c->scope_ring[(at & (AC_SPECTRUM_RING - 1u)) * 2u + ch], memory_order_relaxed) : 0;
++            float value; memcpy(&value, &bits, sizeof(value));
++            c->scope_snapshot[i * 2 + ch] = isfinite(value) ? value : 0.f;
++        }
++    }
++    c->scope_frames = (int)frames;
++    return (int32_t)frames;
++}
++double __mlacker_audio_scope_sample(int64_t handle, int64_t frame, int64_t channel) {
++    ac_controller *c = (ac_controller*)(intptr_t)handle;
++    if(!c || !c->scope_snapshot || frame < 0 || frame >= c->scope_frames || channel < 0 || channel > 1) return 0;
++    return c->scope_snapshot[frame * 2 + channel];
++}
++
+ int32_t __mlang_std_audio_controller_spectrum_capture(int64_t handle, int64_t size) {
+     ac_controller *c = (ac_controller*)(intptr_t)handle;
+     if(!c || size < 256 || size > AC_SPECTRUM_MAX || (size & (size - 1))) return -1;

@@ -15,6 +15,14 @@ mod tui::table;
 mod tui::slider;
 mod mlacker_ui::instrument_editor;
 mod mlacker_ui::spectrum;
+mod mlacker_ui::analyzer;
+mod std::ascii;
+use std::ascii::UnicodeBoxGlyph;
+use mlacker_ui::analyzer::AnalyzerView;
+use mlacker_ui::analyzer::analyzer_background;
+use mlacker_ui::analyzer::analyzer_blend;
+use mlacker_ui::analyzer::analyzer_bar_glyph;
+use mlacker_ui::spectrum::SpectrumView;
 use mlacker_ui::spectrum::spectrum_color;
 use mlacker_ui::spectrum::MasterBus;
 use mlacker_ui::spectrum::apply_headroom;
@@ -4476,6 +4484,66 @@ fn spectrum_red(color: i32) -> i32 { return (color >> 16) & 255; }
 fn spectrum_green(color: i32) -> i32 { return (color >> 8) & 255; }
 
 fn spectrum_blue(color: i32) -> i32 { return color & 255; }
+
+#[test]
+fn tui_large_analyzer_controls_and_seek_bounds() {
+    var analyzer: AnalyzerView = AnalyzerView {};
+    var spectrum: SpectrumView = SpectrumView::new();
+    var audio: AudioController = AudioController {};
+    verify(analyzer.show_scope && analyzer.show_spectrum && spectrum.show_peaks);
+    analyzer.on_event(decode_input("f"), &mut spectrum, audio); verify(spectrum.flat);
+    analyzer.on_event(decode_input("m"), &mut spectrum, audio); verify(!spectrum.flat);
+    analyzer.on_event(decode_input("x"), &mut spectrum, audio); verify(spectrum.detail == 1);
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio); verify(spectrum.detail == 2);
+    analyzer.on_event(decode_input("D"), &mut spectrum, audio); verify(!spectrum.show_peaks);
+    analyzer.on_event(decode_input("b"), &mut spectrum, audio); verify(analyzer.black);
+    analyzer.on_event(decode_input("p"), &mut spectrum, audio); verify(analyzer.palette == 0);
+    analyzer.on_event(decode_input("s"), &mut spectrum, audio); verify(!analyzer.show_spectrum);
+    analyzer.on_event(decode_input("c"), &mut spectrum, audio); verify(!analyzer.show_scope);
+    analyzer.on_event(decode_input("v"), &mut spectrum, audio); verify(analyzer.flash);
+    for _i in 0..40 { analyzer.on_event(decode_input("+"), &mut spectrum, audio); }
+    verify(analyzer.threshold == 240);
+    for _i in 0..40 { analyzer.on_event(decode_input("-"), &mut spectrum, audio); }
+    verify(analyzer.threshold == 0);
+    verify(analyzer.on_event(decode_input("h"), &mut spectrum, audio) == -5);
+    verify(analyzer.on_event(decode_input("l"), &mut spectrum, audio) == 5);
+    verify(analyzer.on_event(decode_input("q"), &mut spectrum, audio) == 100);
+    verify(AnalyzerView::seek_row(0, 64, 120, 5) == 40);
+    verify(AnalyzerView::seek_row(1, 64, 120, -5) == 0);
+    verify(AnalyzerView::seek_row(40, 64, 120, 5) == 63);
+    verify(AnalyzerView::seek_row(0, 0, 120, 5) == 0);
+    let surface: Surface = Surface::new(40, 8);
+    analyzer.show_scope = true;
+    analyzer.black = false; analyzer.palette = 0;
+    for _i in 0..1024 { analyzer.left.push(0.5); analyzer.right.push(-0.5); }
+    analyzer.paint(surface, Rect::new(0, 0, 40, 8), Theme::dark_blue(), spectrum, true, 0, 0);
+    var trace: bool = false;
+    for y in 0..6 { for x in 0..40 {
+        let cell: Cell = surface.cell(i32(x), i32(y));
+        if cell.glyph == i32(UnicodeBoxGlyph::BlackSmallSquare) || cell.glyph == i32(UnicodeBoxGlyph::Bullet) { trace = true; }
+    } }
+    verify(trace);
+    let left: Cell = surface.cell(0, 1); let right: Cell = surface.cell(0, 4);
+    verify(left.glyph == i32(UnicodeBoxGlyph::BlackSmallSquare) && left.foreground == 0x63BE71);
+    verify(right.glyph == i32(UnicodeBoxGlyph::BlackSmallSquare) && right.foreground == 0xEF6C55);
+    surface.release();
+}
+
+#[test]
+fn tui_analyzer_uses_mlang_demo_palette_and_glyphs() {
+    verify(analyzer_background(0, 1001) == 0x10142E);
+    verify(analyzer_background(350, 1001) == 0x402248);
+    verify(analyzer_background(700, 1001) == 0xA44C58);
+    verify(analyzer_background(1000, 1001) == 0xFFA45C);
+    verify(analyzer_background(0, 1) == 0x10142E);
+    verify(analyzer_blend(0x000000, 0xFFFFFF, 150) == 0x262626);
+    verify(analyzer_bar_glyph(0, 9, 0, false) == i32(UnicodeBoxGlyph::DarkShade));
+    verify(analyzer_bar_glyph(4, 9, 0, false) == i32(UnicodeBoxGlyph::MediumShade));
+    verify(analyzer_bar_glyph(8, 9, 0, false) == i32(UnicodeBoxGlyph::LightShade));
+    verify(cell_glyph(i32(UnicodeBoxGlyph::BlackSmallSquare)) == i32(UnicodeBoxGlyph::BlackSmallSquare));
+    verify(cell_glyph(i32(UnicodeBoxGlyph::Bullet)) == i32(UnicodeBoxGlyph::Bullet));
+    verify(cell_glyph(i32(UnicodeBoxGlyph::Dot)) == i32(UnicodeBoxGlyph::Dot));
+}
 
 #[test]
 fn test_spectrum_gradient_stops() {

@@ -24,6 +24,8 @@ use mlacker_ui::sequence::SequenceTable;
 use mlacker_ui::sequence::curve_names;
 mod mlacker_ui::mixer;
 use mlacker_ui::mixer::Mixer;
+mod mlacker_ui::analyzer;
+use mlacker_ui::analyzer::AnalyzerView;
 mod mlacker_ui::spectrum;
 use mlacker_ui::spectrum::SpectrumView;
 use mlacker_ui::spectrum::MasterBus;
@@ -206,7 +208,8 @@ fn demo_menus(fixture: bool, follow_matrix: bool, follow_row: bool, metronome: b
                                 menu_item("Show / hide View pane", Action::ToggleViewPane, true, keymap),
                                 menu_item("Reset layout", Action::ResetLayout, true, keymap),
                                 menu_item("Show details", Action::ShowDetails, true, keymap),
-                                menu_item(pads ? "[x] Show MPD218 pads" : "[ ] Show MPD218 pads", Action::TogglePadGrid, true, keymap)] },
+                                menu_item(pads ? "[x] Show MPD218 pads" : "[ ] Show MPD218 pads", Action::TogglePadGrid, true, keymap),
+                                menu_item("Spectrum / Oscilloscope view", Action::ViewAnalyzer, true, keymap)] },
                     Menu {title: "Track", items: [
                                 // Plain entries, not a submenu: a submenu as the first
                                 // item would swallow the Right key that walks the menu bar.
@@ -460,6 +463,7 @@ pub fn run(options: &StartupOptions) -> i32 {
     var menu_kept: bool = false; var kept_active: i32 = -1; var kept_selected: i32 = -1; var kept_path: list<i32> = [];
     // Spectrum analyzer and master bus (Ctrl+Shift+M), shown in the mixer's
     // pane. `spectrum_area` is where it was last painted, for the analysis.
+    var analyzer: AnalyzerView = AnalyzerView {}; var analyzer_seek: i32 = 0; var song_seek_row: i32 = 0;
     var spectrum: SpectrumView = SpectrumView::new(); var spectrum_area: Rect = Rect::new(0, 0, 0, 0);
     // Computer-keyboard piano in the same pane (View menu / Shift+P).
     var keyboard: VirtualKeyboard = VirtualKeyboard {};
@@ -709,6 +713,7 @@ pub fn run(options: &StartupOptions) -> i32 {
                             mixer = Mixer { visible: v.mixer, grainy: v.meter_grainy, bus_focus: v.effect_focus, selected_effect: v.effect_selected };
                             mixer.update_effects(midi.output, midi.effects, 0);
                             sample = SampleView { visible: v.sample, grainy: v.sample_grainy, wave: v.sample_wave, zoom: v.sample_zoom };
+                            analyzer.active = false;
                             spectrum = SpectrumView::new();
                             if v.master_saved { spectrum.visible = v.spectrum; spectrum.detail = v.spectrum_detail; spectrum.fps = v.spectrum_fps; spectrum.bus = v.master; }
                             menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap);
@@ -805,7 +810,29 @@ pub fn run(options: &StartupOptions) -> i32 {
             }
             dirty = true;
         }
+        if analyzer_seek != 0 {
+            let seconds: i32 = analyzer_seek; analyzer_seek = 0;
+            if !transport.recording && !matrix_recording && !audio_take.active() {
+                let was_playing: bool = transport.playing;
+                if library.song.len() > 0 {
+                    let unit: i32 = library.matrix_steps > 0 ? library.matrix_steps : 1;
+                    let current: i32 = (song_playing ? song_row : matrix.row) * unit + (song_playing ? transport.row : 0);
+                    let target: i32 = AnalyzerView::seek_row(current, i32(library.song.len()) * unit, transport.bpm, seconds);
+                    matrix.row = target / unit;
+                    if was_playing { song_seek_row = target % unit; song_request = 1; }
+                } else {
+                    let target: i32 = AnalyzerView::seek_row(transport.row, i32(library.table.rows.len()), transport.bpm, seconds);
+                    note_playback.update(library.table, transport.ticks, false);
+                    midi.sequencer_events(note_playback.events, library.table);
+                    transport.playing = false; library.table.selected_row = target;
+                    transport_request = was_playing;
+                }
+                free(message); message = seconds > 0 ? clone("Seek forward 5 seconds") : clone("Seek back 5 seconds");
+            } else { free(message); message = clone("Stop recording before seeking"); }
+            dirty = true;
+        }
         if song_request != 0 {
+            let song_start: i32 = song_seek_row; song_seek_row = 0;
             let start: bool = song_request == 1; song_request = 0;
             if start && follow_paused { follow_row = true; follow_paused = false; menus = demo_menus(fixture, follow_matrix, follow_row, play_metronome, extend_recording, metronome_always, spectrum.visible, keyboard.visible, sampler.visible, pads.visible, bounce_options, editor_fullscreen, keymap); }
             if prepared_row >= 0 {
@@ -863,8 +890,8 @@ pub fn run(options: &StartupOptions) -> i32 {
                     song_playing = false; song_row = -1; message = clone("Matrix row is empty");
                 } else {
                     song_playing = true;
-                    transport.toggle(now_ms(), 0, i32(song_table.rows.len()));
-                    note_playback.start_row = 0; midi.restart_samples(0);
+                    transport.toggle(now_ms(), song_start, i32(song_table.rows.len()));
+                    note_playback.start_row = song_start; midi.restart_samples(song_start);
                     message = matrix_recording ? format!("Recording into pattern {} from matrix row {}", matrix_armed_id, song_row + 1)
                         : (matrix_armed_id > 0 ? clone("The armed pattern has no MIDI track to record into")
                             : format!("Playing the matrix from row {}", song_row + 1));
@@ -1609,7 +1636,8 @@ pub fn run(options: &StartupOptions) -> i32 {
             master_meter_clock = now;
         }
         // Pushes the master bus to a new controller, then analyses at its own rate.
-        if spectrum.update(midi.output, master_headroom, now, spectrum_area) { playback_dirty = true; }
+        if spectrum.update_for(midi.output, master_headroom, now, spectrum_area, analyzer.active) { playback_dirty = true; }
+        if analyzer.update(midi.output, now, spectrum.fps) { playback_dirty = true; }
         if playback_dirty && frame_rate.ready(now) { dirty = true; }
         if sample.visible && !library.table.audio_under_cursor() { sample.visible = false; dirty = true; }
         prompt.follow(library.renaming ? 1 : (library.table.editing && library.table.edit_mode > 0 ? 2 : 0));
@@ -1834,7 +1862,7 @@ pub fn run(options: &StartupOptions) -> i32 {
             // The status bar names the open project or session file.
             let document: str8 = session_path == "" ? clone("Untitled") : base_name(session_path);
             if !matrix.visible { library.table.mark_hidden_notes(); }
-            paint_demo(surface, menus, focus, panes, message, mixer, &mut library, transport, sample, matrix.visible, mixer_table, following_channels, spectrum, keyboard, keyboard_title, sampler_title, document);
+            paint_demo(surface, menus, focus, panes, message, mixer, &mut library, transport, sample, matrix.visible || analyzer.active, mixer_table, following_channels, spectrum, keyboard, keyboard_title, sampler_title, document);
             free(document);
             if keyboard.visible { free(keyboard_title); }
             if sampler.visible || pads.visible { free(sampler_title); }
@@ -1861,7 +1889,12 @@ pub fn run(options: &StartupOptions) -> i32 {
                 for route in routes { free(route); }
             }
             let details_pane: Pane = panes[2]; spectrum_area = details_pane.bounds.inset(1);
-            matrix.paint(surface, panes[1].bounds, Theme::dark_blue(), library, focus.is_active(1), song_playing ? song_row : -1);
+            if analyzer.active {
+                let panel: Panel = Panel { title: " Spectrum analyzer / Oscilloscope " };
+                let graph: Rect = panel.paint_focused(surface, panes[1].bounds, Theme::dark_blue(), focus.is_active(1));
+                analyzer.paint(surface, graph, Theme::dark_blue(), spectrum, focus.is_active(1), mixer.master.left, mixer.master.right);
+                spectrum_area = graph;
+            } else { matrix.paint(surface, panes[1].bounds, Theme::dark_blue(), library, focus.is_active(1), song_playing ? song_row : -1); }
             instrument_editor.paint(surface, panes[1].bounds, Theme::dark_blue());
             // Menus sit above the pane contents, below the modal dialogs.
             menus.paint(surface, surface.bounds(), Theme::dark_blue());
@@ -2193,7 +2226,7 @@ pub fn run(options: &StartupOptions) -> i32 {
                 // In the song matrix, Space plays the matrix from the cursor
                 // row, every lane mixed, like Ctrl+P; it stops whatever plays.
                 // Elsewhere it plays the selected pattern.
-                if matrix.visible && focus.selected == 1 { song_request = song_playing || transport.playing ? 2 : 1; }
+                if (matrix.visible || (analyzer.active && library.song.len() > 0)) && focus.selected == 1 { song_request = song_playing || transport.playing ? 2 : 1; }
                 else { transport_request = true; }
                 dirty = true;
             }
@@ -2532,6 +2565,9 @@ pub fn run(options: &StartupOptions) -> i32 {
                 else if request == 5 { free(message); message = format!("Slot {} is a pad (one key): set its Mode to Zone first", sampler.slot + 1); }
                 dirty = true;
             }
+            else if event.kind == InputKind::Quit && event.code == 113 && analyzer.active && focus.selected == 1 && menus.active < 0 {
+                analyzer.active = false; dirty = true;
+            }
             else if event.kind == InputKind::Quit { running = false; }
             // Exclusive input ownership: never call a widget handler from a
             // boolean guard. The compiler may evaluate every operand.
@@ -2556,29 +2592,34 @@ pub fn run(options: &StartupOptions) -> i32 {
                 bpm_dialog.open(transport.bpm); dirty = true;
             }
             // Ctrl+V marks the two CC values a curve runs between; Ctrl+A draws it.
-            else if ((event.code == 22 && event.modifiers == 1) || (event.code == 118 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible && !library.table.editing {
+            else if ((event.code == 22 && event.modifiers == 1) || (event.code == 118 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible && !analyzer.active && !library.table.editing {
                 let marked: i32 = library.table.toggle_curve_point(); free(message);
                 message = marked < 0 ? clone(library.table.error)
                     : (marked == 2 ? clone("Two CC values marked: Ctrl+A draws a curve between them")
                         : (marked == 1 ? clone("CC value marked: mark the other end with Ctrl+V") : clone("Curve marks cleared")));
                 dirty = true;
             }
-            else if ((event.code == 1 && event.modifiers == 1) || (event.code == 97 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible && !library.table.editing {
+            else if ((event.code == 1 && event.modifiers == 1) || (event.code == 97 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible && !analyzer.active && !library.table.editing {
                 free(message);
                 if library.table.curve_ready() { curve_dialog.open(); message = clone("Choose the curve between the marked CC values"); }
                 else { message = clone(library.table.error); }
                 dirty = true;
             }
-            else if ((event.code == 26 && event.modifiers == 1) || (event.code == 122 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible {
+            else if ((event.code == 26 && event.modifiers == 1) || (event.code == 122 && event.modifiers == 5)) && focus.selected == 1 && !matrix.visible && !analyzer.active {
                 library.table.cycle_vertical_zoom(panes[1].bounds.inset(1)); dirty = true;
             }
             else if key.action != Action::None || key.waiting { command = key.action; dirty = true; }
-            else if event.code == 109 && event.modifiers == 1 {
+            else if event.code == 109 && event.modifiers == 1 && !(analyzer.active && focus.selected == 1) {
                 mixer.visible = !mixer.visible; dirty = true;
             }
             else if event.kind == InputKind::Menu && function_number(event.key) > 0 && event.modifiers == 1 {
                 menus.on_function_key(event.key);
                 focus.set_menu_active(menus.active >= 0);
+                dirty = true;
+            } else if focus.selected == 1 && analyzer.active {
+                let request: i32 = analyzer.on_event(event, &mut spectrum, midi.output);
+                if request == 100 { analyzer.active = false; }
+                else if request == -5 || request == 5 { analyzer_seek = request; }
                 dirty = true;
             } else if focus.selected == 2 && spectrum.visible && spectrum.handles(event) {
                 spectrum.on_event(event, midi.output);
@@ -3428,7 +3469,7 @@ pub fn run(options: &StartupOptions) -> i32 {
                     if instrument_editor.active && instrument_editor.focused { topic = 10; }
                     else if sample_editor.active { topic = 7; }
                     else if focus.selected == 0 { topic = library.audio_mode ? 2 : (library.instruments_mode ? 3 : 1); }
-                    else if focus.selected == 1 { topic = matrix.visible ? 5 : 4; }
+                    else if focus.selected == 1 { topic = analyzer.active ? 11 : (matrix.visible ? 5 : 4); }
                     else if mixer.bus_focus { topic = 6; }
                     else if sampler.visible { topic = 8; }
                     else if keyboard.visible { topic = 9; }
@@ -3439,6 +3480,7 @@ pub fn run(options: &StartupOptions) -> i32 {
                 help.open(topic, keymap); focus.set_menu_active(true); dirty = true;
             }
             else if command == Action::ViewPatterns {
+                analyzer.active = false;
                 matrix.visible = false; library.show_patterns(); view_pane_visible = true;
                 focus.selected = 0; mixer.bus_focus = false; instrument_editor.focused = false;
             }
@@ -3463,8 +3505,16 @@ pub fn run(options: &StartupOptions) -> i32 {
                 fullscreen_pane = -1; view_pane_visible = true;
                 free(message); message = clone("Pane layout reset");
             }
+            else if command == Action::ViewAnalyzer {
+                analyzer.active = !analyzer.active;
+                if analyzer.active { instrument_editor.release(); }
+                focus.selected = 1; mixer.bus_focus = false; instrument_editor.focused = false;
+                if fullscreen_pane == 2 { fullscreen_pane = -1; }
+                free(message); message = clone(analyzer.active ? "Spectrum / Oscilloscope: ? shows controls; Space plays the song" : "Analyzer closed");
+                dirty = true;
+            }
             else if command == Action::ViewSongMatrix {
-                matrix.visible = !matrix.visible;
+                matrix.visible = analyzer.active ? true : !matrix.visible; analyzer.active = false;
                 // A session with no song yet opens on one empty row to edit.
                 if matrix.visible && library.song.len() == 0 { library.matrix_insert_row(0, false); }
                 focus.selected = 1; mixer.bus_focus = false; instrument_editor.focused = false;
