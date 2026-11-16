@@ -71,7 +71,10 @@ Writes, applied in order at their frame (frame *k* sounds *k* × step after the
 packet arrives): `01 a b c` AUDxLC, a byte offset into **slot 1's sample**,
 which is chip memory here (21 bits; `1FFFFF` is outside it and reads
 silence); `02 a b c` AUDxLEN in words; `03 a b c` AUDxPER; `04 v` AUDxVOL;
-`05` DMA on; `06` DMA off. Switched on, DMA latches LC/LEN and plays that
+`05` DMA on; `06` DMA off. Two one-byte forms keep a row of frames
+within a SYSEX cell: `10`..`1F` change AUDxPER by −8..+7 (the op minus
+`18`, as vibrato does every frame; it applies to the period the channel
+holds), `20`..`5F` set AUDxVOL 0..63. Switched on, DMA latches LC/LEN and plays that
 block, then reloads whatever LC/LEN hold at its end, as Paula does. Flag 1
 stops all channels first (a song's start); flag 2 adds a snapshot of the
 channel's registers that only applies to a channel starting cold, so playback

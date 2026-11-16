@@ -398,6 +398,18 @@ void testRegisterMode(const std::string &bundle)
     if(std::fabs(measured - expected) > expected * 0.01)
         std::fprintf(stderr, "register mode: %.2f Hz, expected %.2f\n", measured, expected);
     CHECK(std::fabs(measured - expected) <= expected * 0.01);
+    // One-byte writes: the period down by 8 twice (428 to 412), volume 32.
+    plugin.sysex(packet(1, {{0x10, 0x10, 0x40}}));
+    out = plugin.render(9600);
+    for(size_t f = 0; f < out.size() / 2; ++f)
+        mono[f * 2] = out[f * 2 + 1];
+    const double stepped = 3546895.0 / 412 / 32;
+    const double heard = frequency(mono, 960, 9600);
+    if(std::fabs(heard - stepped) > stepped * 0.01)
+        std::fprintf(stderr, "period delta: %.2f Hz, expected %.2f\n", heard, stepped);
+    CHECK(std::fabs(heard - stepped) <= stepped * 0.01);
+    // Volume 32 of 64: about half the full-volume peak of 0.4.
+    CHECK(peak(out, 960, 9600, 1) > 0.15f && peak(out, 960, 9600, 1) < 0.30f);
     // A note leaves register mode: the note-mode slot plays instead.
     plugin.param(slotParam(0, kLoop), 1.0);
     plugin.param(kChannel, 0.25);

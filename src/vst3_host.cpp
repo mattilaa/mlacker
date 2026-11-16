@@ -14,6 +14,7 @@
 #include <cmath>
 #include "public.sdk/source/common/commonstringconvert.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -82,7 +83,16 @@ public:
     }
 
     bool open(const char *path, double rate, int32 frames, std::string &error, bool instrumentOnly) {
-        module = VST3::Hosting::Module::create(path, error);
+        std::string resolved = path;
+        if(resolved.compare(0, 2, "~/") == 0) {
+            const char *home = std::getenv("HOME");
+            if(!home || !*home) {
+                error = "Cannot expand plugin path: HOME is unset";
+                return false;
+            }
+            resolved.replace(0, 1, home);
+        }
+        module = VST3::Hosting::Module::create(resolved, error);
         if(!module) return false;
         const auto &factory = module->getFactory();
         factory.setHostContext(&application);

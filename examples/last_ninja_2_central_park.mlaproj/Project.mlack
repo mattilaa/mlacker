@@ -32,7 +32,7 @@
     ["integer", 0],
     ["integer", 1],
     ["integer", 1],
-    ["string", "/Users/mattilaa/.local/plugins/VST3/MlaSid.vst3"],
+    ["string", "~/.local/plugins/VST3/MlaSid.vst3"],
     ["integer", 93],
     ["integer", 100],
     ["real", 0.9696969696969697],

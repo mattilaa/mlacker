@@ -83,6 +83,7 @@ extern "C" void mlapaula_voice_raw_length__ptr_struct_PaulaVoice_i32(PaulaVoice 
 extern "C" void mlapaula_voice_raw_period__ptr_struct_PaulaVoice_i32(PaulaVoice *voice, int32_t period);
 extern "C" void mlapaula_voice_raw_volume__ptr_struct_PaulaVoice_i32(PaulaVoice *voice, int32_t volume);
 extern "C" void mlapaula_voice_raw_dma__ptr_struct_PaulaVoice_i32(PaulaVoice *voice, int32_t on);
+extern "C" int32_t mlapaula_voice_period__ptr_struct_PaulaVoice(PaulaVoice *voice);
 extern "C" int64_t mlapaula_filter_size__void();
 extern "C" void mlapaula_filter_configure__ptr_struct_PaulaFilter_f64_i32_i32(PaulaFilter *filter, double rate,
                                                                              int32_t model, int32_t led);
@@ -896,14 +897,23 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
     //   [snapshot: byte count, writes], then per frame: byte count, writes.
     // Writes, in order: 01 a b c LC (byte offset in slot 1's sample, 21
     // bits; 1FFFFF = outside it), 02 a b c LEN (words), 03 a b c PER,
-    // 04 v VOL (0-64), 05 DMA on, 06 DMA off. The snapshot (the channel's
+    // 04 v VOL (0-64), 05 DMA on, 06 DMA off; one-byte forms: 10-1F PER plus
+    // (op - 18), -8..+7 (vibrato), 20-5F VOL op - 20 (0-63). The snapshot (the channel's
     // registers and DMA at the packet's start) only applies to a channel
     // starting cold, so playback can begin on any row.
+    static int opSize(int op)
+    {
+        if(op >= 1 && op <= 3)
+            return 4;
+        if(op == 4)
+            return 2;
+        return op == 5 || op == 6 || (op >= 0x10 && op <= 0x5F) ? 1 : 0;
+    }
+
     static bool validOps(const uint8 *p, int n)
     {
         for(int i = 0; i < n;) {
-            const int op = p[i];
-            const int size = op == 1 || op == 2 || op == 3 ? 4 : op == 4 ? 2 : op == 5 || op == 6 ? 1 : 0;
+            const int size = opSize(p[i]);
             if(size == 0 || i + size > n)
                 return false;
             i += size;
@@ -1051,8 +1061,14 @@ class Processor final : public SingleComponentEffect, public IMidiMapping {
                 case 4: mlapaula_voice_raw_volume__ptr_struct_PaulaVoice_i32(voice.dsp, value); break;
                 case 5: mlapaula_voice_raw_dma__ptr_struct_PaulaVoice_i32(voice.dsp, 1); break;
                 case 6: mlapaula_voice_raw_dma__ptr_struct_PaulaVoice_i32(voice.dsp, 0); break;
+                default:
+                    if(op >= 0x10 && op <= 0x1F)
+                        mlapaula_voice_raw_period__ptr_struct_PaulaVoice_i32(
+                            voice.dsp, mlapaula_voice_period__ptr_struct_PaulaVoice(voice.dsp) + op - 0x18);
+                    else if(op >= 0x20 && op <= 0x5F)
+                        mlapaula_voice_raw_volume__ptr_struct_PaulaVoice_i32(voice.dsp, op - 0x20);
             }
-            i += op <= 3 ? 4 : op == 4 ? 2 : 1;
+            i += opSize(op);
         }
     }
 
