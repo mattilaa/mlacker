@@ -1351,8 +1351,13 @@ shaded/dot glyphs, **b** selects gradient/black, **d** cycles Normal (8k),
 Detailed (16k), and Ultra (32k) FFT; **D** toggles peak shading,
 **v** toggles flash and **+/-** changes its threshold. **s/c** toggles spectrum
 and oscilloscope; **g** switches Braille/demo traces; **p** changes spectrum colors; **h/l** seeks five seconds. **?**
-shows controls; **e** shows/hides the master EQ strips. Arrow keys and Enter
-retain the master EQ controls.
+shows controls; **e** shows/hides the master EQ strips. EQ keys also reveal the
+strips while the analyzer runs. **Left/Right** selects HP, EQ1–4, or master
+volume; **Enter** cycles gain/frequency/Q; **Up/Down** or **k/j** adjusts the
+field, **K/J** makes coarse changes, and **0** resets it. **Shift+E** bypasses or
+enables EQ without losing its settings. The footer shows the selected field
+and value. **s** hides spectrum for scope-only monitoring; **c** hides the scope
+for spectrum-only monitoring. Each key independently restores its display.
 
 **Tab/Shift+Tab** changes pane focus. **Space** plays/stops the song; **Shift+M**
 returns to the matrix and **Ctrl+Shift+F1** to patterns. **q** returns to the

@@ -148,6 +148,14 @@ impl AnalyzerView {
         if code == 113 || code == 81 { return 100; }
         if code == 104 || code == 72 { return -5; }
         if code == 108 || code == 76 { return 5; }
+        // Give the shared master controls priority over view shortcuts (in
+        // particular kitty Shift+E is code e with modifier 2). Legacy h/l
+        // above remain transport seek; physical Left/Right select EQ strips.
+        if spectrum.handles(event) {
+            self.controls = true;
+            spectrum.on_event(event, output);
+            return 0;
+        }
         if code == 63 { self.help = !self.help; }
         else if code == 102 || code == 70 { spectrum.flat = true; spectrum.levels = []; spectrum.peaks = []; }
         else if code == 109 { spectrum.flat = false; spectrum.levels = []; spectrum.peaks = []; }
@@ -162,8 +170,7 @@ impl AnalyzerView {
         else if code == 99 { self.show_scope = !self.show_scope; }
         else if code == 103 { self.grainy = !self.grainy; }
         else if code == 112 { self.palette = (self.palette + 1) % 2; }
-        else if code == 101 { self.controls = !self.controls; }
-        else if spectrum.handles(event) { spectrum.on_event(event, output); }
+        else if code == 101 && event.modifiers == 1 { self.controls = !self.controls; }
         return 0;
     }
     pub fn status(self: AnalyzerView, spectrum: &SpectrumView) -> str8 {
@@ -177,7 +184,7 @@ impl AnalyzerView {
         var colors: Theme = theme; colors.panel = self.black ? 0x000000 : 0x0C1226;
         surface.fill(area, Cell { glyph: 32, foreground: colors.foreground, background: colors.panel });
         let controls: i32 = self.controls && area.height >= 14 ? 7 : 0;
-        let footer: i32 = area.height >= 3 ? 2 : 0;
+        let footer: i32 = area.height >= 3 ? (self.controls && area.height >= 4 ? 3 : 2) : 0;
         let graph: Rect = Rect::new(area.x, area.y, area.width, area.height - controls - footer);
         self.paint_plot(surface, graph, spectrum);
         if controls > 0 {
@@ -185,13 +192,18 @@ impl AnalyzerView {
             spectrum.paint_controls(surface, row, colors, master_left, master_right, focused);
         }
         if footer > 0 {
+            if footer == 3 {
+                let eq_status: str8 = spectrum.status();
+                surface.text(Rect::new(area.x, area.y + area.height - 3, area.width, 1), eq_status, colors.foreground, colors.panel);
+                free(eq_status);
+            }
             let status: str8 = self.status(spectrum);
             surface.text(Rect::new(area.x, area.y + area.height - 2, area.width, 1), status, colors.accent, colors.panel); free(status);
-            surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), "? help  g trace  e EQ  Space song  Tab pane  Shift+M matrix  q return", colors.muted, colors.panel);
+            surface.text(Rect::new(area.x, area.y + area.height - 1, area.width, 1), self.controls ? "s FFT  c scope  Left/Right EQ  Enter field  Up/Down adjust  K/J coarse  0 reset  E bypass  e hide EQ  ?" : "s FFT  c scope  e EQ  g trace  ? help  Space song  Tab pane  Shift+M matrix  q return", colors.muted, colors.panel);
         }
         if self.help {
             surface.fill(area, Cell { glyph: 32, foreground: colors.foreground, background: colors.panel });
-            let lines: list<str8> = ["FFT / Oscilloscope controls", "f / m   Flat / music spectrum", "x       Shaded bars / dots", "b       Blue / black background", "d       Detail: 8k / 16k / 32k FFT", "D       Top shading", "v       Flash on / off", "+ / -   Flash threshold", "s / c   Spectrum / oscilloscope", "g       Braille / demo trace", "p       Trace palette", "h / l   Seek -/+ 5 seconds", "e       Show / hide master EQ", "Arrows  Master EQ controls", "Space   Play / stop song", "Tab     Next pane", "Shift+M Matrix view", "q / ?   Return / close help"];
+            let lines: list<str8> = ["FFT / Oscilloscope controls", "f / m   Flat / music spectrum", "x       Shaded bars / dots", "b       Blue / black background", "d       Detail: 8k / 16k / 32k FFT", "D       Top shading", "v       Flash on / off", "+ / -   Flash threshold", "s / c   Spectrum / oscilloscope", "g       Braille / demo trace", "p       Trace palette", "h / l   Seek -/+ 5 seconds", "e       Show / hide master EQ", "Left/Right  Select HP / EQ1-4 / master", "Enter   Gain / frequency / Q", "Up/Down k/j Adjust; K/J coarse", "0       Reset selected EQ field", "Shift+E Bypass / enable master EQ", "Space   Play / stop song", "Tab     Next pane", "Shift+M Matrix view", "q / ?   Return / close help"];
             for i in 0..lines.len() {
                 if i >= area.height { break; }
                 surface.text(Rect::new(area.x, area.y + i32(i), area.width, 1), lines[i], colors.foreground, colors.panel);

@@ -5513,3 +5513,33 @@ fn tui_analyzer_uses_sample_view_braille_resolution() {
     verify(hidden.glyph == 32);
     surface.release();
 }
+
+#[test]
+fn tui_analyzer_shares_master_eq_keys_with_lower_pane() {
+    var analyzer: AnalyzerView = AnalyzerView {};
+    var large: SpectrumView = SpectrumView::new();
+    var lower: SpectrumView = SpectrumView::new();
+    let audio: AudioController = AudioController {};
+    let keys: list<str8> = ["k", "K", "j", "J", "0", "\r", "k", "\r", "k", "\x1b[101;2u", "E", "\x1b[C", "k", "\x1b[D", "0"];
+    for text in keys {
+        let event: InputEvent = decode_input(text);
+        analyzer.on_event(event, &mut large, audio);
+        lower.on_event(event, audio);
+        verify(analyzer.controls);
+        verify(large.selected == lower.selected && large.part == lower.part);
+        verify(large.bus.eq_on == lower.bus.eq_on);
+        verify(large.bus.volume == lower.bus.volume && large.bus.hp_hz == lower.bus.hp_hz);
+        for band in 0..4 {
+            verify(large.bus.band_gain(i32(band)) == lower.bus.band_gain(i32(band)));
+            verify(large.bus.band_hz(i32(band)) == lower.bus.band_hz(i32(band)));
+            verify(large.bus.band_q(i32(band)) == lower.bus.band_q(i32(band)));
+        }
+    }
+    analyzer.on_event(decode_input("s"), &mut large, audio);
+    verify(!analyzer.show_spectrum && analyzer.show_scope);
+    analyzer.on_event(decode_input("s"), &mut large, audio);
+    analyzer.on_event(decode_input("c"), &mut large, audio);
+    verify(analyzer.show_spectrum && !analyzer.show_scope);
+    analyzer.on_event(decode_input("c"), &mut large, audio);
+    verify(analyzer.show_spectrum && analyzer.show_scope);
+}
