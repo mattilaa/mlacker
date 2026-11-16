@@ -92,6 +92,18 @@ def main():
             assert dialog_selected == [dialog_pane], dialog_selected
         return frame
 
+    def read_dialog_closed(title, expected_pane, timeout=5):
+        # The press animation may produce zero or several modal frames. A
+        # loaded runner can skip straight to the completed action's repaint.
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, f"Dialog did not close: {title!r}"
+            frame = read_until(b"\x1b[0m", timeout=remaining)
+            if title not in frame:
+                return read_frame(expected_pane, frame=frame)
+            read_frame(None, frame=frame)
+
     try:
         frame = read_frame(None)
         assert b"\x1b[?1049h" in frame and b"\x1b[?25l" in frame
@@ -305,18 +317,12 @@ def main():
         track_menu(b"jjjjjjjjjj\r")
         assert b"Delete track" in read_frame(None)
         os.write(master, b"\r")
-        read_frame(None)
-        while True:
-            frame = read_until(b"\x1b[0m")
-            if b"Delete track" not in frame:
-                assert b"Track 4 copy" not in frame
-                break
+        frame = read_dialog_closed(b"Delete track", 1)
+        assert b"Track 4 copy" not in frame
         track_menu(b"jjjjjjjjj\r")
         assert b"Clear track" in read_frame(None)
         os.write(master, b"\r")
-        read_frame(None)
-        while b"Clear track" in read_until(b"\x1b[0m"):
-            pass
+        read_dialog_closed(b"Clear track", 1)
         track_menu(b"jjjjj\r")
         assert b"[M]" in read_frame(1)
         # Automation: add a CC column, reassign it, then remove it again.
@@ -331,11 +337,7 @@ def main():
         track_menu(b"jjjjjjjj\rjj\r")
         assert b"Remove the selected CC column" in read_frame(None)
         os.write(master, b"\r")
-        read_frame(None)
-        while True:
-            frame = read_until(b"\x1b[0m")
-            if b"Remove the selected CC column" not in frame:
-                break
+        frame = read_dialog_closed(b"Remove the selected CC column", 1)
         assert b"CC: cc:1" in frame and b"cutoff" not in frame
         track_menu(b"")
         os.write(master, b"j\r")
