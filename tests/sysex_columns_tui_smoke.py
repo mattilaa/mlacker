@@ -35,13 +35,27 @@ def main():
             # F0 and F7 are added on playback, never typed.
             expect(tui.send(b"j\r\x15F0 43\r", 0.6), b"SYSEX: up to 80 hex bytes")
             tui.send(b"\x1b", 0.3)
+            # The fourth column mode hides empty note fields on a SYSEX-only
+            # track. Clearing its last data value updates visibility live.
+            frame = expect(tui.send(b"Z", 0.5), b"ID", b"SYSEX", b"4C 00 00 7E 00")
+            assert b"NOTE" not in frame and b"VEL" not in frame, frame[-4000:]
+            tui.send(b"k", 0.3)
+            tui.send(b"\r\x15\r", 0.3)
+            frame = expect(tui.send(b"j", 0.5), b"43 1A")
+            assert b"4C 00 00 7E 00" not in frame, frame[-4000:]
+            # Return to all columns, restore the message, and save data-only.
+            expect(tui.send(b"ZZZ", 0.5), b"NOTE", b"SYSEX")
+            expect(tui.send(b"kllllll\r\x154c 00 00 7e 00\r", 0.5), b"4C 00 00 7E 00")
+            frame = expect(tui.send(b"Z", 0.5), b"SYSEX")
+            assert b"NOTE" not in frame, frame[-4000:]
             assert b"Saved:" in tui.send(b"\x13" + b"\x15" + os.fsencode(path) + b"\r", 0.8)
         finally:
             tui.close()
 
         tui = Terminal(str(path))
         try:
-            expect(tui.read(1.0), b"Opened:", b"SYSEX", b"43 1A", b"4C 00 00 7E 00")
+            frame = expect(tui.read(1.0), b"Opened:", b"SYSEX", b"43 1A", b"4C 00 00 7E 00")
+            assert b"NOTE" not in frame, frame[-4000:]
             # Removing the columns drops their messages.
             expect(tui.send(TOGGLE_SYSEX, 0.6), b"SysEx columns removed")
             tui.send(b"\x13", 0.8)

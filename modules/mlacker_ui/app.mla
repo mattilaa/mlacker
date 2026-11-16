@@ -1786,6 +1786,7 @@ pub fn run(options: &StartupOptions) -> i32 {
             focus.selected = sample_editor_return; fullscreen_pane = sample_editor_fullscreen; sample_editor_return = -1;
         }
         let panes: list<Pane> = main_panes(viewport.content(), view_pane_visible, fullscreen_pane, keyboard.visible);
+        if library.table.refresh_data_columns(panes[1].bounds.inset(1)) { dirty = true; }
         focus.reconcile(panes);
         focus.set_menu_active(help.active || (instrument_editor.active && instrument_editor.focused) || sample_editor.active || clip_save.active || group_dialog.active || group_question.active || sample_dialog.active || piano.active || share_question.active || remove_question.active || clash_question.active || picker.active || outputs.active || group_picker.active || move_notice.active || menus.active >= 0 || dialog.active || question.active || paste_error.active || bpm_dialog.active || curve_dialog.active || settings.active || project_settings.active || library.table.edit_mode > 0 || library.renaming);
         if curve_pending {

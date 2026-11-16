@@ -2032,6 +2032,40 @@ pub fn rebuild_columns(self: &mut Self) -> void {
         }
     }
     self.columns = columns; self.groups = groups; self.column_titles = titles;
+    self.refresh_data_columns(Rect::new(0, 0, 0, 0));
+}
+/// True when all MIDI tracks use the live, data-only column stage.
+pub fn data_columns_only(self: &Self) -> bool {
+    var found: bool = false;
+    for i in 0..self.tracks.len() {
+        if !self.tracks[i].audio {
+            if self.tracks[i].zoom_stage != 3 { return false; }
+            found = true;
+        }
+    }
+    return found;
+}
+/// Re-evaluate data without rebuilding the table or clearing a selection.
+/// An open text field keeps its column until the edit is committed.
+pub fn refresh_data_columns(self: &mut Self, area: Rect) -> bool {
+    if self.editing { return false; }
+    var changed: bool = false;
+    for t in 0..self.tracks.len() {
+        if self.tracks[t].audio || self.tracks[t].zoom_stage != 3 { continue; }
+        let first: i32 = self.track_start(i32(t));
+        for c in first..first + self.track_columns(i32(t)) {
+            if c >= self.columns.len() { continue; }
+            var populated: bool = false;
+            for r in 0..self.rows.len() {
+                if c < self.rows[r].cells.len() && self.rows[r].cells[c] != "" { populated = true; break; }
+            }
+            if self.columns[c].hidden == populated {
+                self.columns[c].hidden = !populated; changed = true;
+            }
+        }
+    }
+    if changed && area.width > 0 { self.reconcile(area); }
+    return changed;
 }
 pub fn create_track(self: &mut Self, duplicate: bool, area: Rect) -> void {
     self.create_track_kind(duplicate, false, area);
@@ -2598,7 +2632,7 @@ pub fn zoom_tracks(self: &mut Self, stage: i32, all: bool, area: Rect) -> void {
     let selected: i32 = self.active_track();
     for i in 0..self.tracks.len() {
         if !self.tracks[i].audio && (all || i == selected) {
-            self.tracks[i].zoom_stage = stage < 0 ? (self.tracks[i].zoom_stage + 1) % 3 : stage;
+            self.tracks[i].zoom_stage = stage < 0 ? (self.tracks[i].zoom_stage + 1) % 4 : stage;
         }
     }
     self.rebuild_columns();

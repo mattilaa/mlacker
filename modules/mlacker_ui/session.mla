@@ -825,7 +825,7 @@ impl SessionCodec {
             let columns: i32 = self.number((track.comment ? 1 : 0) + (track.sysex ? 2 : 0), 0, 3);
             track.comment = columns % 2 == 1; track.sysex = columns >= 2;
             if track.audio && columns != 0 { self.failed = true; }
-            track.zoom_stage = self.number(track.zoom_stage, 0, 2);
+            track.zoom_stage = self.number(track.zoom_stage, 0, 3);
             // 1.0 documents always carry two slots.
             let slots: i32 = self.minor == 0 ? 2 : self.number(i32(track.automation.len()), 0, automation_limit());
             var automation: list<AutomationSlot> = [];

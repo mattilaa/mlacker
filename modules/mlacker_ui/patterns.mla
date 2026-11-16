@@ -179,8 +179,15 @@ impl PatternLibrary {
     }
     pub fn select(self: &mut Self, id: i32) -> void {
         if id == self.active_id || self.index_of(id) < 0 { return; }
+        let data_only: bool = self.table.data_columns_only();
         self.save_active();
         var replacement: SequenceTable = self.patterns[self.index_of(id)].data.copy_pattern();
+        if data_only {
+            for i in 0..replacement.tracks.len() {
+                if !replacement.tracks[i].audio { replacement.tracks[i].zoom_stage = 3; }
+            }
+            replacement.rebuild_columns();
+        }
         replacement.clipboard = self.table.clipboard; replacement.clipboard_kinds = self.table.clipboard_kinds;
         replacement.clipboard_rows = self.table.clipboard_rows; replacement.clipboard_spacing = self.table.clipboard_spacing;
         self.table.clipboard = []; self.table.clipboard_kinds = [];

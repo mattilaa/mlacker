@@ -314,11 +314,17 @@ restores the preview synth.
 ### Column stages
 
 MIDI tracks start collapsed to NOTE/VEL for every note line. In the Pattern view,
-`z` cycles the selected MIDI track through three column stages:
+`z` cycles the selected MIDI track through four column stages:
 
 1. NOTE / VEL (default)
 2. NOTE / VEL / LEN / OFF
-3. All columns, including the CC columns and the TEXT (comment) column
+3. All columns, including CC, ID/SYSEX and TEXT (comment)
+4. Data only: columns containing a value anywhere in the pattern
+
+Data-only mode hides empty note fields in patterns that contain only SYSEX,
+automation or text. Visibility updates as data is added or cleared, and the mode
+stays active when switching patterns, including matrix playback. Audio columns
+are unchanged. An open text edit keeps its column until it is committed.
 
 The next press returns to stage 1. Shift+Z advances every MIDI track's stage
 independently. Track → Collapse all selects stage 1; Expand all selects stage 3.

@@ -34,7 +34,8 @@ def main():
             # capitals (Shift+S is not the sampler while typing).
             expect(tui.send(b"\r\x15Hello Atari ST, 1987!\r", 0.6), b"Hello Atari ST, 1987!")
             # The column widens to its text and hides with the CC columns:
-            # z cycles NOTE/VEL, then LEN/OFF, then everything again.
+            # z cycles data-only, NOTE/VEL, LEN/OFF, then everything again.
+            tui.send(b"z")
             tui.send(b"z")
             tui.send(b"z")
             expect(tui.send(b"z", 0.5), b"TEXT", b"Hello Atari ST, 1987!")

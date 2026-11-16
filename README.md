@@ -693,6 +693,12 @@ and selects a new pattern without changing the song matrix. Instrument assignmen
 and effect routing are cleared so you can assign plugins in the current session.
 The save dialog appends `.mlapatt` when needed.
 
+In the Pattern pane, **z** cycles the selected MIDI track through four column
+modes: notes, notes with timing, all columns, and **data only**. **Shift+Z** cycles
+all MIDI tracks. Data-only mode shows columns with values anywhere in the
+pattern, so SYSEX-only tracks hide empty note fields. It refreshes after edits
+and recording, and stays active when the selected pattern changes.
+
 In the Pattern pane, **Ctrl-Z** cycles vertical detail through **1/16 → 1/32 →
 1/64 → 1/16**. Only original sixteenth-note rows have row numbers; intermediate
 lines show `.` and use alternating darker backgrounds. Up/Down (or `j`/`k`)

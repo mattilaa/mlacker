@@ -705,6 +705,66 @@ fn tui_alternating_track_text() {
 }
 
 #[test]
+fn tui_data_only_columns_refresh_after_changes() {
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var table: SequenceTable = SequenceTable::empty();
+    table.create_track(false, area); table.clear_track();
+    table.toggle_sysex(area);
+    let id: i32 = table.sysex_column(0);
+    verify(table.set_cell(0, id, clone("7D")));
+    verify(table.set_cell(0, id + 1, clone("01 02 03")));
+    table.zoom_tracks(3, true, area);
+    verify(table.data_columns_only() && table.columns[1].hidden && table.columns[5].hidden);
+    verify(!table.columns[id].hidden && !table.columns[id + 1].hidden);
+    verify(table.selected_column == id);
+    // Zero is data too. An edit can populate a previously hidden column.
+    verify(table.set_cell(2, 5, clone("0")));
+    verify(table.refresh_data_columns(area) && !table.columns[5].hidden);
+    verify(table.set_cell(2, 5, clone("")));
+    verify(table.refresh_data_columns(area) && table.columns[5].hidden);
+    // Keep an in-progress edit visible, then hide it when its last value clears.
+    table.selected_column = id;
+    verify(table.set_cell(0, id, clone("")));
+    table.editing = true; verify(!table.refresh_data_columns(area) && !table.columns[id].hidden);
+    table.editing = false; verify(table.refresh_data_columns(area));
+    verify(table.columns[id].hidden && table.selected_column == id + 1);
+    verify(table.set_cell(0, id + 1, clone("")));
+    verify(table.refresh_data_columns(area) && table.selected_column == -1);
+    // Shift+Z can leave data-only mode even when every column is empty.
+    table.edit_event(decode_input("Z"), area);
+    verify(table.tracks[0].zoom_stage == 0 && !table.columns[1].hidden && table.selected_column == 1);
+    table.release();
+}
+
+#[test]
+fn tui_data_only_columns_follow_patterns_and_survive_save() {
+    let area: Rect = Rect::new(0, 0, 120, 20);
+    var library: PatternLibrary = PatternLibrary::empty();
+    library.table.create_track(false, area); library.table.clear_track();
+    library.table.toggle_sysex(area);
+    let id: i32 = library.table.sysex_column(0);
+    verify(library.table.set_cell(0, id, clone("7D")));
+    verify(library.table.set_cell(0, id + 1, clone("01")));
+    library.add(true); library.table.clear_track();
+    verify(library.table.set_cell(0, 1, clone("C-4")));
+    library.select(1); library.table.zoom_tracks(3, true, area);
+    verify(library.table.columns[1].hidden && !library.table.columns[id + 1].hidden);
+    library.select(2);
+    verify(library.table.data_columns_only() && !library.table.columns[1].hidden && library.table.columns[id + 1].hidden);
+    library.select(1);
+    verify(library.table.data_columns_only() && library.table.columns[1].hidden && !library.table.columns[id + 1].hidden);
+    let directory: str8 = clone("/private/tmp/mlacker-data-columns-XXXXXX"); mkdtemp(directory);
+    let path: str8 = format!("{}/columns.mlack", directory);
+    var audio: AudioSystem = AudioSystem {}; var codec: SessionCodec = SessionCodec {};
+    verify(codec.save(path, library, SessionView {}, audio));
+    let loaded: result<SessionData, str8> = SessionCodec::load(path); verify(loaded.is_ok());
+    var restored: SessionData = loaded.unwrap();
+    verify(restored.library.table.data_columns_only() && restored.library.table.columns[1].hidden);
+    verify(!restored.library.table.columns[id + 1].hidden);
+    restored.release(); library.release(); audio.release(); free(path); free(directory);
+}
+
+#[test]
 fn tui_velocity_left_alignment() {
     var table: SequenceTable = SequenceTable::new();
     let area: Rect = Rect::new(0, 0, 120, 10);
@@ -808,8 +868,10 @@ fn tui_track_zoom_stages() {
     verify(table.total_width() == 49);
     let shown_length: TableColumn = table.columns[3]; let hidden_cc: TableColumn = table.columns[5]; verify(!shown_length.hidden && hidden_cc.hidden);
     table.selected_column = 4; table.edit_event(decode_input("z"), area); verify(table.total_width() == 55 && table.selected_column == 4);
+    table.edit_event(decode_input("z"), area); verify(table.tracks[0].zoom_stage == 3);
     table.edit_event(decode_input("z"), area); verify(table.total_width() == 37 && table.selected_column == 1);
     table.edit_event(decode_input("Z"), area); verify(table.total_width() == 73);
+    table.edit_event(decode_input("z"), area);
     table.edit_event(decode_input("z"), area);
     table.edit_event(decode_input("\x1b[122;2u"), area);
     let first: SequenceTrack = table.tracks[0].copy(); let second: SequenceTrack = table.tracks[1].copy();
