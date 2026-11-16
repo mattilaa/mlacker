@@ -67,6 +67,10 @@ jobs:
 
       - name: Test mlacker and plugins
         id: tests
+        env:
+          # CTest schedules independent PTY/plugin tests concurrently. Build
+          # parallelism (-j below) does not control test parallelism.
+          CTEST_PARALLEL_LEVEL: "3"
         run: ./build.sh --all --test -j 3
 
       # Only after failed tests: rerun each failure on its own and after each
@@ -75,6 +79,9 @@ jobs:
       - name: Diagnose test failures
         if: failure() && steps.tests.outcome == 'failure'
         timeout-minutes: 60
+        env:
+          # Diagnosis deliberately runs each test and predecessor pair in order.
+          CTEST_PARALLEL_LEVEL: "1"
         run: ./tests/diagnose_test_failures.sh
 
       - name: Upload test logs
