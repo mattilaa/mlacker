@@ -151,7 +151,7 @@ jobs:
           rm -f "$RUNNER_TEMP/notary.p8"
 
       - name: Upload the package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mlacker-${{ steps.version.outputs.version }}-macos-arm64
           path: build/release/*.pkg
