@@ -8,7 +8,8 @@ instruments, the [Mla Vocoder](plugins/mla_vocoder) (VP-330 style, with its
 own carrier synth), [Mla Speech](plugins/mla_speech) (an Atari ST style
 speech synthesizer that says a pattern's comment texts),
 [Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines),
-[Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write) and
+[Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write),
+[Mla Paula](plugins/mla_paula) (the Amiga's four-channel 8-bit sample chip, with the A500 filters) and
 [Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
@@ -18,6 +19,9 @@ The [Last Ninja 2 project](examples/last_ninja_2) recreates Matt Gray's Central
 Park in-game performance with the original SID register sequence, voice balance
 and percussion via Mla SID. It includes a copyright notice on opening and a
 separate MIDI adaptation for comparison.
+The [Shadow of the Beast intro](plugins/mla_paula#examples) plays David
+Whittaker's disk 1 loading music with the game's own samples and sequence as
+Paula register frames on Mla Paula, with a credits and rights notice on opening.
 
 ## Build and run
 
@@ -251,6 +255,33 @@ it does not commit, tag or push. To build the package locally:
 MLACKER_STATIC_OPENSSL=1 ./build.sh --all     # with MLANG_TOOLCHAIN="yes"
 packaging/macos/build_pkg.sh                  # uses the built binary's exact version
 ```
+
+## Command-line audio options
+
+Choose an output and buffer size when launching, without opening Settings:
+
+```sh
+mlacker --help
+mlacker --list-outputs
+mlacker --output 0 --latency 64 examples/shadow_of_the_beast_intro.mlaproj
+mlacker --output default --buffer-size 256 --sample-rate 48000
+```
+
+`--list-outputs` (also `--list-devices`) prints the available zero-based output
+indices used by File → Settings. Pass an index with `--output` / `-o`;
+`default` or `-1` selects the system default, and `disabled` or `-2` disables
+output. Listing devices exits without entering the editor.
+
+`--latency` is an alias for `--buffer-size` / `-b`: it requests **buffer frames,
+not milliseconds**, from 32 to 4096 (default 128). For example, 128 frames at
+48 kHz is about 2.67 ms per buffer; total input/output latency also includes
+the device and driver. The device may choose a different buffer size.
+`--sample-rate` accepts `default` / `0`, `44100`, `48000`, or `96000`.
+
+Options can precede or follow the session/project path, and `--output=0` style
+arguments are supported. Use `--` before a path starting with a dash.
+The selected audio settings apply to this launch and survive opening a session
+or project. File → Settings shows them and can change them during the run.
 
 ## Sessions (.mlack 1.2)
 

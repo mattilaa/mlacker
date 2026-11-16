@@ -1,22 +1,29 @@
 /// mlacker: terminal tracker with optional native VST3 hosting.
 mod mlacker_ui::app;
+mod mlacker_ui::startup;
+mod std::audio;
 use mlacker_ui::app::run;
+use mlacker_ui::startup::*;
 mod std::env::detail;
 use std::env::detail::__env_args;
 extern fn mlacker_install_vst3_host() -> void;
 extern fn mlacker_version() -> str8;
 fn main() -> i32 {
     let arguments: list<str8> = __env_args();
-    if arguments.len() > 2 { println!("Usage: mlacker [session.mlack | project.mlaproj | --version]"); return 2; }
-    if arguments.len() == 2 {
-        if arguments[1] == "--help" || arguments[1] == "-h" {
-            println!("Usage: mlacker [session.mlack | project.mlaproj | --version] | No path starts an empty editor."); return 0;
-        }
-        if arguments[1] == "--version" {
-            let version: str8 = mlacker_version();
-            println!("mlacker {}", version); return 0;
-        }
+    var options: StartupOptions = parse_startup(arguments);
+    if options.error != "" {
+        println!("mlacker: {}", options.error); println!("Run mlacker --help for usage."); options.release(); return 2;
+    }
+    if options.help { print_startup_help(); options.release(); return 0; }
+    if options.version {
+        let version: str8 = mlacker_version(); println!("mlacker {}", version); std::strbuf::free(version);
+        options.release(); return 0;
+    }
+    if options.list_outputs { print_output_devices(); options.release(); return 0; }
+    if options.output_id >= 0 && options.output_id >= std::audio::output_device_count() {
+        println!("mlacker: Output device {} is unavailable. Run mlacker --list-outputs for valid indices.", options.output_id);
+        options.release(); return 2;
     }
     mlacker_install_vst3_host();
-    return run();
+    let status: i32 = run(options); options.release(); return status;
 }

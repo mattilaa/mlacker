@@ -1,0 +1,115 @@
+/// Command-line configuration; latency is the requested buffer size in frames.
+mod std::strbuf;
+mod std::audio;
+use std::strbuf::*;
+
+pub struct StartupOptions {
+    var path: str8{""}; var error: str8{""};
+    var help: bool; var version: bool; var list_outputs: bool;
+    var audio_configured: bool;
+    var output_id: i64{-1}; var buffer_frames: i64{128}; var sample_rate: i64;
+};
+impl StartupOptions {
+    pub fn release(self: &mut Self) -> void {
+        if self.path != "" { free(self.path); } if self.error != "" { free(self.error); }
+        self.path = ""; self.error = "";
+    }
+}
+
+/// -3 means invalid; valid device selectors include -2 and -1.
+fn number(text: str8) -> i64 {
+    let length: i64 = std::strbuf::len(text); if length == 0 { return -3; }
+    let negative: bool = byte_at(text, 0) == 45;
+    var index: i64 = negative ? 1 : 0; if index == length { return -3; }
+    var value: i64 = 0;
+    while index < length {
+        let digit: i32 = byte_at(text, index) - 48;
+        if digit < 0 || digit > 9 || value > 1000000 { return -3; }
+        let decimal: i64 = digit; value = value * 10 + decimal; index = index + 1;
+    }
+    return negative ? -value : value;
+}
+
+pub fn parse_startup(arguments: &list<str8>) -> StartupOptions {
+    var options: StartupOptions = StartupOptions {};
+    var index: i64 = 1; var positional: bool = false;
+    while index < arguments.len() && options.error == "" {
+        let argument: str8 = arguments[index]; index = index + 1;
+        if !positional && argument == "--" { positional = true; continue; }
+        if positional || starts_with(argument, "-") == 0 {
+            if options.path != "" { options.error = clone("Only one session or project path may be supplied"); }
+            else { options.path = clone(argument); }
+            continue;
+        }
+        let equals: i64 = find(argument, "=");
+        let name: str8 = equals < 0 ? clone(argument) : sub(argument, 0, equals);
+        var value: str8 = equals < 0 ? clone("") : sub(argument, equals + 1, std::strbuf::len(argument) - equals - 1);
+        let output: bool = name == "--output" || name == "-o";
+        let buffer: bool = name == "--latency" || name == "--buffer-size" || name == "-b";
+        let rate: bool = name == "--sample-rate";
+        if output || buffer || rate {
+            if equals < 0 {
+                if index >= arguments.len() { options.error = format!("{} requires a value", name); }
+                else { free(value); value = clone(arguments[index]); index = index + 1; }
+            }
+            options.audio_configured = true;
+            if options.error == "" {
+                var parsed: i64 = number(value);
+                if output {
+                    if value == "default" { parsed = -1; }
+                    if value == "disabled" || value == "none" { parsed = -2; }
+                    if parsed < -2 { options.error = clone("--output requires a device index, default (-1), or disabled (-2); use --list-outputs"); }
+                    else { options.output_id = parsed; }
+                } else if buffer {
+                    if parsed < 32 || parsed > 4096 { options.error = clone("--latency / --buffer-size requires 32..4096 frames (not milliseconds)"); }
+                    else { options.buffer_frames = parsed; }
+                } else {
+                    if value == "default" { parsed = 0; }
+                    if parsed != 0 && parsed != 44100 && parsed != 48000 && parsed != 96000 { options.error = clone("--sample-rate requires default, 0, 44100, 48000, or 96000"); }
+                    else { options.sample_rate = parsed; }
+                }
+            }
+        } else if equals >= 0 {
+            options.error = format!("Unknown option: {}", argument);
+        } else if name == "--help" || name == "-h" { options.help = true; }
+        else if name == "--version" { options.version = true; }
+        else if name == "--list-outputs" || name == "--list-devices" { options.list_outputs = true; }
+        else { options.error = format!("Unknown option: {}", name); }
+        free(name); free(value);
+    }
+    return options;
+}
+
+pub fn print_startup_help() -> void {
+    println!("Usage: mlacker [OPTIONS] [session.mlack | project.mlaproj]");
+    println!("No path starts an empty editor. Options may appear before or after the path.");
+    println!("");
+    println!("  -h, --help                 Show this help and exit");
+    println!("      --version              Show the version and exit");
+    println!("      --list-outputs          List available audio output indices and exit");
+    println!("      --list-devices          Alias for --list-outputs");
+    println!("  -o, --output INDEX          Select a zero-based output index from the list");
+    println!("                             default / -1: system default; disabled / -2: no output");
+    println!("  -b, --buffer-size FRAMES    Request 32..4096 buffer frames (default 128)");
+    println!("      --latency FRAMES        Alias for --buffer-size; frames, not milliseconds");
+    println!("      --sample-rate HZ        default / 0, 44100, 48000, or 96000");
+    println!("      --                     Treat the remaining argument as a path");
+    println!("");
+    println!("Examples:");
+    println!("  mlacker --list-outputs");
+    println!("  mlacker --output 0 --latency 64 examples/shadow_of_the_beast_intro.mlaproj");
+    println!("  mlacker --output default --buffer-size 256 --sample-rate 48000");
+    println!("");
+    println!("Settings uses the same indices. These options apply to this launch, including");
+    println!("when opening a session or project. The device may use a different buffer size;");
+    println!("128 frames at 48 kHz is about 2.67 ms per buffer, not total round-trip latency.");
+}
+
+pub fn print_output_devices() -> void {
+    println!("Audio outputs (AUHAL; zero-based indices):");
+    println!("  -1  System default (--output default)");
+    println!("  -2  Disabled (--output disabled)");
+    let count: i64 = std::audio::output_device_count();
+    for index in 0..count { println!("  {}  {}", index, std::audio::output_device_name(index)); }
+    if count == 0 { println!("  No output devices available."); }
+}

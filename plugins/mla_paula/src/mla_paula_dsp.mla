@@ -1,0 +1,450 @@
+/// \file mla_paula_dsp.mla
+/// \brief C-ABI bridge: Amiga Paula channels and the A500/A1200 output stage.
+///
+/// A `PaulaVoice` is one of Paula's four DMA audio channels. It reads signed
+/// 8-bit sample words (passed in as floats, -128..127 / 128) at the rate an
+/// integer *period* sets: clock / period samples per second, the PAL clock
+/// being 3546895 Hz. Its volume is Paula's 0..64 linear register. Everything
+/// a tracker replay routine changes, volume and the period's vibrato, moves
+/// once per vertical blank (50 Hz PAL, 60 Hz NTSC), as on the machine.
+///
+/// Between sample words, Paula holds the current word until the next one
+/// (zero-order hold); this module can also interpolate linearly between them.
+/// The C++ layer owns the sample memory: MLang cannot index raw pointers, so
+/// each render call receives the word under the playhead and the next one
+/// (`mlapaula_voice_frame` and `mlapaula_voice_next_frame` say which, the
+/// next frame wrapping to the loop start at the loop end).
+///
+/// `PaulaFilter` is the analog path after Paula's DACs: the A500's fixed
+/// first-order RC low-pass (about 4.4 kHz) or the A1200's (about 34 kHz),
+/// the switchable two-pole "LED" low-pass (about 3.3 kHz, Butterworth-like),
+/// and the output coupling capacitors' high-pass (about 5 Hz).
+/// The voices and the filter run at an oversampled rate; the caller averages
+/// down to the host rate.
+
+extern fn calloc(count: i64, size: i64) -> ptr<PaulaVoice>;
+extern fn free(block: ptr<PaulaVoice>) -> void;
+extern fn floor(value: f64) -> f64;
+extern fn exp(value: f64) -> f64;
+extern fn sin(value: f64) -> f64;
+extern fn cos(value: f64) -> f64;
+
+/// @brief The lowest period Paula's audio DMA can fetch at (about 28.6 kHz
+/// PAL). Shorter periods play at this one.
+fn paula_min_period() -> i32 { return 124; }
+
+fn clamp_paula_f64(value: f64, low: f64, high: f64) -> f64 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+fn clamp_paula_i32(value: i32, low: i32, high: i32) -> i32 {
+    if value < low { return low; }
+    if value > high { return high; }
+    return value;
+}
+
+/// @brief Nearest integer period playing `rate` samples per second at
+/// `clock`, within Paula's limits (124..65535).
+fn mlapaula_period(clock: f64, rate: f64) -> i32 {
+    if rate <= 0.0 { return 65535; }
+    let period: f64 = floor(clock / rate + 0.5);
+    return i32(clamp_paula_f64(period, f64(paula_min_period()), 65535.0));
+}
+
+/// @brief One Paula audio channel.
+struct PaulaVoice {
+    /// Oversampled output rate and the video clock ticks are counted against.
+    var rate: f64;
+    var clock: f64;
+    var tick_step: f64;
+    var tick_phase: f64;
+    /// Playhead in sample words and the sample's layout.
+    var position: f64;
+    var frames: f64;
+    var loop_start: f64;
+    var loop_end: f64;
+    var looping: i32;
+    /// The note's period and the one playing (with vibrato).
+    var note_period: i32;
+    var period: i32;
+    var step: f64;
+    /// Volume register 0..64, the note's volume and the tick envelope.
+    var volume: i32;
+    var note_volume: i32;
+    var level: f64;
+    var attack_per_tick: f64;
+    var release_per_tick: f64;
+    var releasing: i32;
+    /// ProTracker-style vibrato: position 0..63, speed and depth 0..15,
+    /// and the ticks before it starts.
+    var vibrato_position: i32;
+    var vibrato_speed: i32;
+    var vibrato_depth: i32;
+    var vibrato_delay: i32;
+    var ticks: i32;
+    /// 1 interpolates linearly between sample words; 0 holds each (Paula).
+    var linear: i32;
+    var active: i32;
+    /// Register mode: the caller writes Paula's registers directly. The
+    /// playhead is a byte address in chip memory; DMA plays the block it
+    /// latched from LC/LEN, then reloads whatever LC/LEN hold at its end.
+    var raw: i32;
+    var reg_lc: f64;
+    var reg_len: f64;
+    var block_end: f64;
+};
+
+/// @brief Allocate an idle channel rendering at `rate` (the oversampled
+/// rate) against the Paula `clock` (3546895 PAL, 3579545 NTSC) with
+/// `tick_rate` vertical blanks per second.
+fn mlapaula_voice_create(rate: f64, clock: f64, tick_rate: f64) -> ptr<PaulaVoice> {
+    let voice: ptr<PaulaVoice> = calloc(1, size_of(PaulaVoice));
+    unsafe {
+        (*voice).rate = rate > 1000.0 ? rate : 1000.0;
+        (*voice).clock = clock;
+        (*voice).tick_step = tick_rate / (*voice).rate;
+        (*voice).period = 428;
+        (*voice).note_period = 428;
+        (*voice).attack_per_tick = 1.0;
+        (*voice).release_per_tick = 1.0;
+    }
+    return voice;
+}
+
+fn mlapaula_voice_destroy(voice: ptr<PaulaVoice>) {
+    unsafe { free(voice); }
+}
+
+/// @brief Paula clock, vertical-blank rate and interpolation (1 linear).
+fn mlapaula_voice_set_clock(voice: ptr<PaulaVoice>, clock: f64, tick_rate: f64, linear: i32) {
+    unsafe {
+        (*voice).clock = clock;
+        (*voice).tick_step = tick_rate / (*voice).rate;
+        (*voice).linear = linear;
+        (*voice).step = clock / f64((*voice).period) / (*voice).rate;
+    }
+}
+
+/// @brief Tick envelope: the ticks the volume takes to rise from 0 to the
+/// note's volume and to fall back after note-off (0 = at once).
+fn mlapaula_voice_set_envelope(voice: ptr<PaulaVoice>, attack_ticks: f64, release_ticks: f64) {
+    unsafe {
+        (*voice).attack_per_tick = attack_ticks > 0.0 ? 1.0 / attack_ticks : 1.0;
+        (*voice).release_per_tick = release_ticks > 0.0 ? 1.0 / release_ticks : 1.0;
+    }
+}
+
+/// @brief ProTracker vibrato (effect 4xy): `speed` and `depth` 0..15,
+/// starting `delay_ticks` after the note.
+fn mlapaula_voice_set_vibrato(voice: ptr<PaulaVoice>, speed: i32, depth: i32, delay_ticks: i32) {
+    unsafe {
+        (*voice).vibrato_speed = clamp_paula_i32(speed, 0, 15);
+        (*voice).vibrato_depth = clamp_paula_i32(depth, 0, 15);
+        (*voice).vibrato_delay = delay_ticks > 0 ? delay_ticks : 0;
+    }
+}
+
+fn paula_apply_period(voice: ptr<PaulaVoice>, period: i32) {
+    unsafe {
+        (*voice).period = clamp_paula_i32(period, paula_min_period(), 65535);
+        (*voice).step = (*voice).clock / f64((*voice).period) / (*voice).rate;
+    }
+}
+
+fn paula_apply_volume(voice: ptr<PaulaVoice>) {
+    unsafe {
+        let v: f64 = floor(f64((*voice).note_volume) * (*voice).level + 0.5);
+        (*voice).volume = clamp_paula_i32(i32(v), 0, 64);
+    }
+}
+
+/// @brief Start a sample from its first word: `frames` words long, looping
+/// over [loop_start, loop_end) when `looping` is 1, at `period`, with the
+/// volume register heading for `volume` (0..64).
+fn mlapaula_voice_start(voice: ptr<PaulaVoice>, frames: f64, looping: i32, loop_start: f64, loop_end: f64,
+                        period: i32, volume: i32) {
+    unsafe {
+        (*voice).raw = 0;
+        (*voice).frames = frames;
+        let start: f64 = clamp_paula_f64(floor(loop_start), 0.0, frames);
+        let end: f64 = clamp_paula_f64(floor(loop_end), 0.0, frames);
+        (*voice).looping = looping == 1 && end - start >= 2.0 ? 1 : 0;
+        (*voice).loop_start = start;
+        (*voice).loop_end = end;
+        (*voice).position = 0.0;
+        (*voice).note_period = period;
+        (*voice).note_volume = clamp_paula_i32(volume, 0, 64);
+        (*voice).vibrato_position = 0;
+        (*voice).ticks = 0;
+        (*voice).releasing = 0;
+        // With no attack the note starts at full volume, as a tracker plays it.
+        (*voice).level = (*voice).attack_per_tick >= 1.0 ? 1.0 : 0.0;
+        paula_apply_period(voice, period);
+        paula_apply_volume(voice);
+        (*voice).active = frames > 0.0 ? 1 : 0;
+    }
+}
+
+/// @brief Legato: a new period and volume without restarting the sample
+/// (as a tracker's arpeggio or a note slid into).
+fn mlapaula_voice_glide(voice: ptr<PaulaVoice>, period: i32, volume: i32) {
+    unsafe {
+        (*voice).note_period = period;
+        (*voice).note_volume = clamp_paula_i32(volume, 0, 64);
+        (*voice).releasing = 0;
+        paula_apply_period(voice, period);
+        paula_apply_volume(voice);
+    }
+}
+
+/// @brief Note-off: the volume falls over the release ticks (or at once).
+fn mlapaula_voice_release(voice: ptr<PaulaVoice>) {
+    unsafe {
+        if (*voice).active == 0 { return; }
+        (*voice).releasing = 1;
+        if (*voice).release_per_tick >= 1.0 { (*voice).active = 0; }
+    }
+}
+
+fn mlapaula_voice_stop(voice: ptr<PaulaVoice>) {
+    unsafe { (*voice).active = 0; }
+}
+
+fn mlapaula_voice_is_active(voice: ptr<PaulaVoice>) -> i32 {
+    unsafe { return (*voice).active; }
+}
+
+fn mlapaula_voice_period(voice: ptr<PaulaVoice>) -> i32 {
+    unsafe { return (*voice).period; }
+}
+
+fn mlapaula_voice_volume(voice: ptr<PaulaVoice>) -> i32 {
+    unsafe { return (*voice).volume; }
+}
+
+/// @brief The sample word under the playhead.
+fn mlapaula_voice_frame(voice: ptr<PaulaVoice>) -> f64 {
+    unsafe { return floor((*voice).position); }
+}
+
+/// @brief The word after it: the loop start at a loop's end, otherwise the
+/// next word (the caller's silent guard word past the sample's end). In
+/// register mode, LC at the end of the block.
+fn mlapaula_voice_next_frame(voice: ptr<PaulaVoice>) -> f64 {
+    unsafe {
+        let next: f64 = floor((*voice).position) + 1.0;
+        if (*voice).raw == 1 { return next >= (*voice).block_end ? (*voice).reg_lc : next; }
+        if (*voice).looping == 1 && next >= (*voice).loop_end { return (*voice).loop_start; }
+        return next;
+    }
+}
+
+/// @brief One vertical blank: the envelope and vibrato step.
+fn paula_tick(voice: ptr<PaulaVoice>) {
+    unsafe {
+        (*voice).ticks = (*voice).ticks + 1;
+        if (*voice).releasing == 1 {
+            (*voice).level = (*voice).level - (*voice).release_per_tick;
+            if (*voice).level <= 0.0 {
+                (*voice).level = 0.0;
+                (*voice).active = 0;
+            }
+        } else if (*voice).level < 1.0 {
+            (*voice).level = (*voice).level + (*voice).attack_per_tick;
+            if (*voice).level > 1.0 { (*voice).level = 1.0; }
+        }
+        paula_apply_volume(voice);
+        if (*voice).vibrato_depth > 0 && (*voice).vibrato_speed > 0 && (*voice).ticks > (*voice).vibrato_delay {
+            // ProTracker's sine table: 255 * sin over 64 steps, depth / 128.
+            let angle: f64 = 3.14159265358979323846 * f64((*voice).vibrato_position) / 32.0;
+            let table: f64 = floor(255.0 * sin(angle) + (sin(angle) >= 0.0 ? 0.5 : -0.5));
+            let delta: i32 = i32(table) * (*voice).vibrato_depth / 128;
+            paula_apply_period(voice, (*voice).note_period + delta);
+            (*voice).vibrato_position = ((*voice).vibrato_position + (*voice).vibrato_speed) % 64;
+        }
+    }
+}
+
+/// @brief Render one (oversampled) output sample from the word under the
+/// playhead (`word0`) and the next (`word1`), and advance. Returns the
+/// channel's output, word times volume / 64.
+fn mlapaula_voice_render(voice: ptr<PaulaVoice>, word0: f32, word1: f32) -> f32 {
+    unsafe {
+        if (*voice).active == 0 { return 0.0f; }
+        let position: f64 = (*voice).position;
+        var value: f64 = f64(word0);
+        if (*voice).linear == 1 {
+            let frac: f64 = position - floor(position);
+            value = value + (f64(word1) - value) * frac;
+        }
+        let out: f32 = f32(value * f64((*voice).volume) / 64.0);
+
+        var next: f64 = position + (*voice).step;
+        if (*voice).raw == 1 {
+            // The block ends: DMA reloads the location and length registers.
+            while next >= (*voice).block_end {
+                next = (*voice).reg_lc + (next - (*voice).block_end);
+                (*voice).block_end = (*voice).reg_lc + (*voice).reg_len * 2.0;
+            }
+            (*voice).position = next;
+            return out;
+        }
+        if (*voice).looping == 1 && next >= (*voice).loop_end {
+            let length: f64 = (*voice).loop_end - (*voice).loop_start;
+            while next >= (*voice).loop_end { next = next - length; }
+        }
+        (*voice).position = next;
+        if (*voice).looping == 0 && next >= (*voice).frames { (*voice).active = 0; }
+
+        (*voice).tick_phase = (*voice).tick_phase + (*voice).tick_step;
+        if (*voice).tick_phase >= 1.0 {
+            (*voice).tick_phase = (*voice).tick_phase - 1.0;
+            paula_tick(voice);
+        }
+        return out;
+    }
+}
+
+/// @brief The analog output stage of both stereo channels.
+struct PaulaFilter {
+    var rc_a: f64;
+    var rc_left: f64;
+    var rc_right: f64;
+    /// LED filter biquad (direct form I) coefficients and state.
+    var b0: f64; var b1: f64; var b2: f64; var a1: f64; var a2: f64;
+    var lx1: f64; var lx2: f64; var ly1: f64; var ly2: f64;
+    var rx1: f64; var rx2: f64; var ry1: f64; var ry2: f64;
+    var led: i32;
+    /// Coupling-capacitor high-pass.
+    var hp_a: f64;
+    var hp_left_x: f64; var hp_left_y: f64;
+    var hp_right_x: f64; var hp_right_y: f64;
+};
+
+/// @brief Bytes of a `PaulaFilter`: the caller allocates it zeroed (as
+/// `calloc` does), configures it and frees it.
+fn mlapaula_filter_size() -> i64 { return size_of(PaulaFilter); }
+
+/// @brief Set an output stage up for `rate` (the oversampled rate).
+/// `model` 0 = A500 (RC at 4421 Hz), 1 = A1200 (RC at 34 kHz).
+/// `led` 1 switches the LED filter in. The state is kept.
+fn mlapaula_filter_configure(filter: ptr<PaulaFilter>, rate: f64, model: i32, led: i32) {
+    let pi: f64 = 3.14159265358979323846;
+    let fs: f64 = rate > 1000.0 ? rate : 1000.0;
+    // A500: 360 ohm and 0.1 uF; A1200: 680 ohm and 6.8 nF.
+    var rc_hz: f64 = model == 1 ? 34000.0 : 4421.0;
+    if rc_hz > fs * 0.45 { rc_hz = fs * 0.45; }
+    // LED filter: Sallen-Key two-pole, about 3275 Hz, Q 0.660.
+    let w: f64 = 2.0 * pi * 3275.0 / fs;
+    let alpha: f64 = sin(w) / (2.0 * 0.660);
+    let c: f64 = cos(w);
+    let a0: f64 = 1.0 + alpha;
+    unsafe {
+        (*filter).rc_a = exp(-2.0 * pi * rc_hz / fs);
+        (*filter).b0 = (1.0 - c) / 2.0 / a0;
+        (*filter).b1 = (1.0 - c) / a0;
+        (*filter).b2 = (1.0 - c) / 2.0 / a0;
+        (*filter).a1 = -2.0 * c / a0;
+        (*filter).a2 = (1.0 - alpha) / a0;
+        (*filter).led = led;
+        (*filter).hp_a = exp(-2.0 * pi * 5.0 / fs);
+    }
+}
+
+/// @brief Clear the filter state (transport reset).
+fn mlapaula_filter_reset(filter: ptr<PaulaFilter>) {
+    unsafe {
+        (*filter).rc_left = 0.0; (*filter).rc_right = 0.0;
+        (*filter).lx1 = 0.0; (*filter).lx2 = 0.0; (*filter).ly1 = 0.0; (*filter).ly2 = 0.0;
+        (*filter).rx1 = 0.0; (*filter).rx2 = 0.0; (*filter).ry1 = 0.0; (*filter).ry2 = 0.0;
+        (*filter).hp_left_x = 0.0; (*filter).hp_left_y = 0.0;
+        (*filter).hp_right_x = 0.0; (*filter).hp_right_y = 0.0;
+    }
+}
+
+/// @brief Filter one stereo sample. Returns the left output and writes the
+/// right one through `out_right`.
+fn mlapaula_filter_process(filter: ptr<PaulaFilter>, left: f32, right: f32, out_right: ptr<f32>) -> f32 {
+    unsafe {
+        let a: f64 = (*filter).rc_a;
+        (*filter).rc_left = (1.0 - a) * f64(left) + a * (*filter).rc_left;
+        (*filter).rc_right = (1.0 - a) * f64(right) + a * (*filter).rc_right;
+        var l: f64 = (*filter).rc_left;
+        var r: f64 = (*filter).rc_right;
+        if (*filter).led == 1 {
+            let ly: f64 = (*filter).b0 * l + (*filter).b1 * (*filter).lx1 + (*filter).b2 * (*filter).lx2
+                - (*filter).a1 * (*filter).ly1 - (*filter).a2 * (*filter).ly2;
+            (*filter).lx2 = (*filter).lx1; (*filter).lx1 = l;
+            (*filter).ly2 = (*filter).ly1; (*filter).ly1 = ly;
+            let ry: f64 = (*filter).b0 * r + (*filter).b1 * (*filter).rx1 + (*filter).b2 * (*filter).rx2
+                - (*filter).a1 * (*filter).ry1 - (*filter).a2 * (*filter).ry2;
+            (*filter).rx2 = (*filter).rx1; (*filter).rx1 = r;
+            (*filter).ry2 = (*filter).ry1; (*filter).ry1 = ry;
+            l = ly; r = ry;
+        }
+        // One-pole high-pass: y = a * (y + x - x_prev).
+        let h: f64 = (*filter).hp_a;
+        let hl: f64 = h * ((*filter).hp_left_y + l - (*filter).hp_left_x);
+        (*filter).hp_left_x = l; (*filter).hp_left_y = hl;
+        let hr: f64 = h * ((*filter).hp_right_y + r - (*filter).hp_right_x);
+        (*filter).hp_right_x = r; (*filter).hp_right_y = hr;
+        *out_right = f32(hr);
+        return f32(hl);
+    }
+}
+
+/// @brief Enter (1) or leave (0) register mode. Either way the channel stops;
+/// in register mode its volume is the register, with no tick envelope or
+/// vibrato.
+fn mlapaula_voice_set_raw(voice: ptr<PaulaVoice>, raw: i32) {
+    unsafe {
+        (*voice).raw = raw;
+        (*voice).active = 0;
+        (*voice).releasing = 0;
+        (*voice).level = 1.0;
+        (*voice).reg_lc = 0.0;
+        (*voice).reg_len = 65536.0;
+        (*voice).volume = 0;
+    }
+}
+
+/// @brief AUDxLC: the byte address in chip memory the next block starts at.
+fn mlapaula_voice_raw_location(voice: ptr<PaulaVoice>, address: f64) {
+    unsafe { (*voice).reg_lc = address; }
+}
+
+/// @brief AUDxLEN in words (0 = 65536).
+fn mlapaula_voice_raw_length(voice: ptr<PaulaVoice>, words: i32) {
+    unsafe { (*voice).reg_len = words > 0 ? f64(words) : 65536.0; }
+}
+
+/// @brief AUDxPER.
+fn mlapaula_voice_raw_period(voice: ptr<PaulaVoice>, period: i32) {
+    paula_apply_period(voice, period);
+}
+
+/// @brief AUDxVOL (0..64; 64 and above are full volume).
+fn mlapaula_voice_raw_volume(voice: ptr<PaulaVoice>, volume: i32) {
+    unsafe { (*voice).volume = clamp_paula_i32(volume, 0, 64); }
+}
+
+/// @brief The channel's DMACON bit. Switched on, DMA latches LC and LEN and
+/// starts the block; switched off, the channel falls silent.
+fn mlapaula_voice_raw_dma(voice: ptr<PaulaVoice>, on: i32) {
+    unsafe {
+        if on == 1 && (*voice).active == 0 {
+            (*voice).position = (*voice).reg_lc;
+            (*voice).block_end = (*voice).reg_lc + (*voice).reg_len * 2.0;
+            (*voice).active = 1;
+        } else if on == 0 {
+            (*voice).active = 0;
+        }
+    }
+}
+
+/// @brief 1 while the channel's DMA is on.
+fn mlapaula_voice_raw_playing(voice: ptr<PaulaVoice>) -> i32 {
+    unsafe { return (*voice).raw == 1 ? (*voice).active : 0; }
+}

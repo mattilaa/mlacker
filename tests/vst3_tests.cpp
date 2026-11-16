@@ -7,6 +7,7 @@
 #include <thread>
 #include <chrono>
 #include <fstream>
+#include <filesystem>
 #include <string>
 extern "C" {
 struct FloatList { int64_t size; const float *data; };
@@ -160,6 +161,15 @@ int main(int argc, char **argv) {
     mlacker_install_vst3_host(); CHECK(__mlang_std_audio_controller_processor_support() == 1);
     int64_t c = __mlang_std_audio_controller_new(48000, 128), b = __mlang_std_audio_pcm_block_new(256);
     CHECK(c && b);
+    // Project files use home-relative plugin paths on different machines.
+    const char *home = std::getenv("HOME");
+    CHECK(home && *home);
+    if(home && *home) {
+        const std::string path = "~/" + std::filesystem::relative(argv[1], home).generic_string();
+        CHECK(__mlang_std_audio_controller_load_processor(c, path.c_str()) == 0);
+        CHECK(__mlang_std_audio_controller_load_instrument(c, 1, path.c_str()) == 0);
+        CHECK(__mlang_std_audio_controller_unload_instrument(c, 1) == 0);
+    }
     CHECK(__mlang_std_audio_controller_load_processor(c, argv[1]) == 0);
     CHECK(std::strcmp(__mlang_std_audio_controller_processor_name(c), "Mlacker Test Instrument") == 0);
     CHECK(__mlang_std_audio_controller_post(c, 0, 1, 2, 69, 127, 2, 64, 0, 1) == 0);
