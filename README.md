@@ -1347,7 +1347,8 @@ The view adapts MLang's `examples/fft_example` display and its companion
 oscilloscope example. The compact analyzer remains available in the mixer pane.
 
 With the large analyzer focused, **f/m** selects flat/music scaling, **x** toggles
-shaded/dot glyphs, **b** selects gradient/black, **d/D** changes detail/peak shading,
+shaded/dot glyphs, **b** selects gradient/black, **d** cycles Normal (8k),
+Detailed (16k), and Ultra (32k) FFT; **D** toggles peak shading,
 **v** toggles flash and **+/-** changes its threshold. **s/c** toggles spectrum
 and oscilloscope; **p** changes spectrum colors; **h/l** seeks five seconds. **?**
 shows controls; **e** shows/hides the master EQ strips. Arrow keys and Enter
@@ -1357,8 +1358,14 @@ retain the master EQ controls.
 returns to the matrix and **Ctrl+Shift+F1** to patterns. **q** returns to the
 previous view. Shift+O and Ctrl+O keep their existing row/cell insertion roles.
 
-`build.sh` carries the stereo capture and analyzer glyph patches from `patches/`
-in subproject builds. External MLang checkouts need those patches too before
+Detailed is the default. Larger FFT windows separate nearby bass frequencies more
+clearly, with a longer analysis window. The oscilloscope captures enough samples
+for the pane width and includes every sample in each column, retaining short
+transients. Detail also increases trace precision from 4 to 8 to 16 vertical
+substeps per cell. Glyph style remains independent of analysis detail.
+
+`build.sh` carries the stereo capture, analyzer glyph, and FFT detail patches
+from `patches/` in subproject builds. External MLang checkouts need those patches too before
 building mlacker. Capture allocation happens on the UI thread. The large view
 uses MLang’s named ACS square/bullet/dot glyphs and the oscilloscope demo’s
 four-stop gradient, translucent spectrum shades, and red/green trace colors.

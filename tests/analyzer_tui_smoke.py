@@ -24,7 +24,7 @@ def main():
         expect(tui.send(b"f"), b"Flat")
         expect(tui.send(b"m"), b"Music")
         expect(tui.send(b"x"), b"Dot glyphs")
-        expect(tui.send(b"d"), b"Wide bars")
+        expect(tui.send(b"d"), b"Ultra 32k")
         expect(tui.send(b"D"), b"shade off")
         expect(tui.send(b"v+"), b"flash on 72")
         expect(tui.send(b"-"), b"flash on 64")

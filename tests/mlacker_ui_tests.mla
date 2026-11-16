@@ -19,6 +19,8 @@ mod mlacker_ui::analyzer;
 mod std::ascii;
 use std::ascii::UnicodeBoxGlyph;
 use mlacker_ui::analyzer::AnalyzerView;
+use mlacker_ui::analyzer::ScopeRange;
+use mlacker_ui::analyzer::analyzer_trace_range;
 use mlacker_ui::analyzer::analyzer_background;
 use mlacker_ui::analyzer::analyzer_blend;
 use mlacker_ui::analyzer::analyzer_bar_glyph;
@@ -4493,8 +4495,8 @@ fn tui_large_analyzer_controls_and_seek_bounds() {
     verify(analyzer.show_scope && analyzer.show_spectrum && spectrum.show_peaks);
     analyzer.on_event(decode_input("f"), &mut spectrum, audio); verify(spectrum.flat);
     analyzer.on_event(decode_input("m"), &mut spectrum, audio); verify(!spectrum.flat);
-    analyzer.on_event(decode_input("x"), &mut spectrum, audio); verify(spectrum.detail == 1);
-    analyzer.on_event(decode_input("d"), &mut spectrum, audio); verify(spectrum.detail == 2);
+    analyzer.on_event(decode_input("x"), &mut spectrum, audio); verify(analyzer.dots && spectrum.detail == 0);
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio); verify(analyzer.detail == 2);
     analyzer.on_event(decode_input("D"), &mut spectrum, audio); verify(!spectrum.show_peaks);
     analyzer.on_event(decode_input("b"), &mut spectrum, audio); verify(analyzer.black);
     analyzer.on_event(decode_input("p"), &mut spectrum, audio); verify(analyzer.palette == 0);
@@ -4514,7 +4516,7 @@ fn tui_large_analyzer_controls_and_seek_bounds() {
     verify(AnalyzerView::seek_row(0, 0, 120, 5) == 0);
     let surface: Surface = Surface::new(40, 8);
     analyzer.show_scope = true;
-    analyzer.black = false; analyzer.palette = 0;
+    analyzer.black = false; analyzer.palette = 0; analyzer.detail = 0;
     for _i in 0..1024 { analyzer.left.push(0.5); analyzer.right.push(-0.5); }
     analyzer.paint(surface, Rect::new(0, 0, 40, 8), Theme::dark_blue(), spectrum, true, 0, 0);
     var trace: bool = false;
@@ -5443,4 +5445,23 @@ fn tui_beast_intro_matrix_row_19_starts_after_short_phrase() {
         verify(later.id == 25 + i32(lane) && later.offset == 0);
     }
     data.release();
+}
+
+#[test]
+fn tui_analyzer_retains_subcolumn_impulses() {
+    let samples: list<f64> = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+    let range: ScopeRange = analyzer_trace_range(samples, 0, 6, 20, 16);
+    verify(range.low == 0 && range.high == 159);
+    verify(AnalyzerView::scope_capture_size(80) == 1024);
+    verify(AnalyzerView::scope_capture_size(1000) == 4096);
+    verify(AnalyzerView::scope_capture_size(100000) == 8192);
+    var analyzer: AnalyzerView = AnalyzerView {};
+    var spectrum: SpectrumView = SpectrumView::new();
+    let audio: AudioController = AudioController {};
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio);
+    verify(analyzer.detail == 2);
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio);
+    verify(analyzer.detail == 0);
+    analyzer.on_event(decode_input("d"), &mut spectrum, audio);
+    verify(analyzer.detail == 1);
 }

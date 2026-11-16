@@ -1636,8 +1636,8 @@ pub fn run(options: &StartupOptions) -> i32 {
             master_meter_clock = now;
         }
         // Pushes the master bus to a new controller, then analyses at its own rate.
-        if spectrum.update_for(midi.output, master_headroom, now, spectrum_area, analyzer.active) { playback_dirty = true; }
-        if analyzer.update(midi.output, now, spectrum.fps) { playback_dirty = true; }
+        if spectrum.update_for(midi.output, master_headroom, now, spectrum_area, analyzer.active, analyzer.detail) { playback_dirty = true; }
+        if analyzer.update(midi.output, now, spectrum.fps, spectrum_area.width) { playback_dirty = true; }
         if playback_dirty && frame_rate.ready(now) { dirty = true; }
         if sample.visible && !library.table.audio_under_cursor() { sample.visible = false; dirty = true; }
         prompt.follow(library.renaming ? 1 : (library.table.editing && library.table.edit_mode > 0 ? 2 : 0));

@@ -178,25 +178,31 @@ impl SpectrumView {
     }
     /// Analyse at the update rate; true when the picture changed.
     pub fn update(self: &mut Self, output: AudioController, headroom_db: i32, now: i64, area: Rect) -> bool {
-        return self.update_for(output, headroom_db, now, area, false);
+        return self.update_for(output, headroom_db, now, area, false, 0);
     }
-    pub fn update_for(self: &mut Self, output: AudioController, headroom_db: i32, now: i64, area: Rect, large: bool) -> bool {
+    pub fn update_for(self: &mut Self, output: AudioController, headroom_db: i32, now: i64, area: Rect, large: bool, analyzer_detail: i32) -> bool {
         self.sync(output, headroom_db);
         if (!self.visible && !large) || output.handle == 0 { return false; }
         let elapsed: i64 = now - self.clock;
         if elapsed < wide(1000 / (self.fps < 1 ? 1 : self.fps)) { return false; }
         self.clock = now;
         let graph: Rect = large ? area : SpectrumView::graph_area(area);
-        let bars: i32 = self.bar_count(graph.width);
+        let bars: i32 = large ? graph.width : self.bar_count(graph.width);
         if bars <= 0 { return false; }
-        let size: i64 = self.detail == 1 ? 8192 : (self.detail == 2 ? 2048 : 4096);
+        let size: i64 = large ? (analyzer_detail >= 2 ? 32768 : (analyzer_detail == 1 ? 16384 : 8192))
+            : (self.detail == 1 ? 8192 : (self.detail == 2 ? 2048 : 4096));
         if output.spectrum_capture(size) < 0 { return false; }
         let fall: f64 = 40.0 * f64(elapsed > 500 ? 500 : elapsed) / 1000.0;
         var levels: list<f64> = []; var peaks: list<f64> = []; var changed: bool = bars != self.levels.len();
         for i in 0..bars {
             let low: f64 = spectrum_hz(f64(i) / f64(bars)); let high: f64 = spectrum_hz(f64(i + 1) / f64(bars));
             let centre: f64 = exp((log(low) + log(high)) / 2.0);
-            let db: f64 = output.spectrum_level(low, high) + (self.flat ? 0.0 : 3.0 * log(centre / 1000.0) / log(2.0));
+            // Like fft_example's detailed mode: narrow the low-frequency
+            // neighborhood instead of smearing adjacent bass peaks together.
+            let sharpen: bool = large && analyzer_detail > 0 && i * 100 < bars * 52;
+            let span: f64 = (high - low) * (analyzer_detail >= 2 ? 0.25 : 0.375);
+            let db: f64 = output.spectrum_level(sharpen ? centre - span : low, sharpen ? centre + span : high)
+                + (self.flat ? 0.0 : 3.0 * log(centre / 1000.0) / log(2.0));
             var old: f64 = -180.0; var old_peak: f64 = -180.0;
             if i < self.levels.len() { old = self.levels[i]; }
             if i < self.peaks.len() { old_peak = self.peaks[i]; }

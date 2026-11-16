@@ -1,0 +1,30 @@
+--- a/stdlib/src/std_audio_controller.inc
++++ b/stdlib/src/std_audio_controller.inc
+@@ -15,12 +15,13 @@
+ #define AC_MASTER_PARAMS 15
+ #define AC_MASTER_FILTERS 6
+ /* Post-master mono tap for the analyzer: power of two, >= largest FFT. */
+-#define AC_SPECTRUM_RING 16384u
++#define AC_SPECTRUM_RING 65536u
+ /* Live audio input ring: interleaved stereo frames at the input's rate. */
+ #define AC_INPUT_RING 131072u
+ /* Recording ring (stereo frames) the control thread drains while a take runs. */
+ #define AC_RECORD_RING 524288u
+-#define AC_SPECTRUM_MAX 8192
++#define AC_SPECTRUM_MAX 32768
++#define AC_SCOPE_MAX 8192
+ #ifndef M_PI
+ #define M_PI 3.14159265358979323846
+ #endif
+@@ -1821,9 +1822,9 @@
+  * disturbing FFT capture or consuming audio. Allocation is UI-thread only. */
+ int32_t __mlacker_audio_scope_capture(int64_t handle, int64_t frames) {
+     ac_controller *c = (ac_controller*)(intptr_t)handle;
+-    if(!c || frames < 1 || frames > AC_SPECTRUM_MAX) return -1;
++    if(!c || frames < 1 || frames > AC_SCOPE_MAX) return -1;
+     if(!c->scope_snapshot) {
+-        c->scope_snapshot = calloc(AC_SPECTRUM_MAX * 2, sizeof(float));
++        c->scope_snapshot = calloc(AC_SCOPE_MAX * 2, sizeof(float));
+         if(!c->scope_snapshot) return -1;
+     }
+     uint64_t end = atomic_load_explicit(&c->spectrum_write, memory_order_acquire);
