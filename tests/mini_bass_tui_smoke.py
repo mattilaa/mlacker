@@ -21,6 +21,10 @@ def check_reference(records):
         assert math.isclose(4 ** params[141], 1.4, rel_tol=1e-5)
         assert math.isclose(20 * 1000 ** params[113], 1000 if slot == 2 else 600, rel_tol=1e-5)
         assert math.isclose(params[115] * 8, 2 if slot == 2 else 3, rel_tol=1e-5)
+        assert math.isclose(params[142], .3, rel_tol=1e-5)
+        assert math.isclose(params[143] * 8, 1.2, rel_tol=1e-5)
+        assert math.isclose(params[144], .6 if slot == 0 else 0, rel_tol=1e-5)
+        assert math.isclose(-96 + params[145] * 48, -54, rel_tol=1e-5)
         at += 3 + count * 2
     assert 1 <= records[at][1] <= 10
     at += 2

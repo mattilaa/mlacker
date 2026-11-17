@@ -11,6 +11,7 @@ extern fn tanf(x: f32) -> f32;
 extern fn expf(x: f32) -> f32;
 extern fn exp2f(x: f32) -> f32;
 extern fn fabsf(x: f32) -> f32;
+extern fn sqrtf(x: f32) -> f32;
 
 fn clamp(x: f32, lo: f32, hi: f32) -> f32 { return x < lo ? lo : (x > hi ? hi : x); }
 fn wrap(x: f32) -> f32 { return x >= 1.0f ? x - 1.0f : x; }
@@ -49,6 +50,15 @@ struct Mini {
     var cutoff: f32; var smooth_cutoff: f32; var resonance: f32; var env_depth: f32; var follow: f32;
     var drive: f32; var feedback: f32; var glide: f32; var glide_coeff: f32;
     var osc_drive: f32; var osc_makeup: f32;
+    var analog_target: f32; var analog_mix: f32; var analog_slew: f32;
+    var analog_aa1: f32; var analog_aa2: f32; var analog_dc_in: f32; var analog_dc_out: f32;
+    var drift_amount: f32; var drift_target_amount: f32; var drift_seed: i64; var drift_wait: i32; var drift_slew: f32;
+    var drift1: f32; var drift2: f32; var drift3: f32;
+    var drift_target1: f32; var drift_target2: f32; var drift_target3: f32;
+    var hiss_target_mix: f32; var hiss_mix: f32; var hiss_seed: i64;
+    var hiss_level: f32; var hiss_target_level: f32;
+    var hiss_lp: f32; var hiss_a: f32; var hiss_normalization: f32;
+    var hiss_hp_in: f32; var hiss_hp_out: f32; var hiss_hp_coeff: f32;
     var bend: f32; var bend_range: f32; var wheel: f32; var mod_pitch: f32; var mod_filter: f32;
     var osc3_low: bool; var osc3_keys: bool; var velocity_amp: f32; var velocity_filter: f32;
     var g: f32; var s1: f32; var s2: f32; var s3: f32; var s4: f32;
@@ -65,16 +75,33 @@ fn mlamini_create(sample_rate: f32) -> ptr<Mini> {
         (*m).pitch = 36.0f; (*m).target = 36.0f;
         (*m).cutoff = 600.0f; (*m).smooth_cutoff = 600.0f;
         (*m).dc_coeff = expf(-6.2831853f * 8.0f / sample_rate);
+        (*m).analog_slew = 1.0f - expf(-1.0f / (0.005f * sample_rate));
+        (*m).drift_slew = 1.0f - expf(-1.0f / (0.2f * sample_rate));
+        (*m).drift_seed = 170917;
+        (*m).hiss_seed = 275646;
+        (*m).hiss_a = 1.0f - expf(-6.2831853f * clamp(8000.0f, 1.0f, sample_rate * 0.4f) / sample_rate);
+        (*m).hiss_normalization = sqrtf(3.0f * (2.0f - (*m).hiss_a) / (*m).hiss_a);
+        (*m).hiss_hp_coeff = expf(-6.2831853f * 80.0f / sample_rate);
     }
     return m;
 }
 fn mlamini_destroy(m: ptr<Mini>) -> void { unsafe { free(m); } }
+fn mlamini_seed(m: ptr<Mini>, seed: i64) -> void {
+    unsafe {
+        (*m).drift_seed = seed;
+        (*m).hiss_seed = (seed + 104729) % 4294967296;
+    }
+}
 fn mlamini_reset(m: ptr<Mini>) -> void {
     unsafe {
         (*m).amp.reset(); (*m).fenv.reset();
         (*m).s1 = 0.0f; (*m).s2 = 0.0f; (*m).s3 = 0.0f; (*m).s4 = 0.0f;
         (*m).aa1 = 0.0f; (*m).aa2 = 0.0f; (*m).last = 0.0f;
         (*m).dc_in = 0.0f; (*m).dc_out = 0.0f;
+        (*m).analog_aa1 = 0.0f; (*m).analog_aa2 = 0.0f;
+        (*m).analog_dc_in = 0.0f; (*m).analog_dc_out = 0.0f;
+        (*m).analog_mix = 0.0f;
+        // Oscillator phase, pitch wander and RNG state continue through panic.
     }
 }
 /// Physical values, indexed by the stable VST parameter ID minus 100.
@@ -105,6 +132,10 @@ fn mlamini_set(m: ptr<Mini>, i: i32, v: f32) -> void {
         else if i == 36 { (*m).osc3_keys = v > 0.5f; }
         else if i == 37 { (*m).velocity_amp = v; } else if i == 38 { (*m).velocity_filter = v; }
         else if i == 41 { (*m).osc_drive = v; (*m).osc_makeup = v <= 1.0f ? 1.0f : 1.0f / tanhf(v - 1.0f); }
+        else if i == 42 { (*m).analog_target = v; }
+        else if i == 43 { (*m).drift_target_amount = v; }
+        else if i == 44 { (*m).hiss_target_mix = v / 10.0f; }
+        else if i == 45 { (*m).hiss_target_level = exp2f(v / 6.0206f); }
         (*m).counter = 0;
     }
 }
@@ -119,6 +150,41 @@ fn mlamini_off(m: ptr<Mini>) -> void { unsafe { (*m).amp.gate_off(); (*m).fenv.g
 fn mlamini_active(m: ptr<Mini>) -> i32 { unsafe { return (*m).amp.is_active() ? 1 : 0; } }
 
 impl Mini {
+    fn background_hiss(self: &mut Self) -> f32 {
+        // A separate post-VCA noise floor, not the oscillator mixer noise.
+        // Shape white noise gently (80 Hz HP / 8 kHz LP), then normalize its
+        // RMS level across sample rates. Independent RNG preserves both the
+        // existing mixer-noise sequence and oscillator drift when switched.
+        self.hiss_seed = (self.hiss_seed * 1664525 + 1013904223) % 4294967296;
+        let white: f32 = f32(self.hiss_seed) / 2147483648.0f - 1.0f;
+        self.hiss_lp = self.hiss_lp + self.hiss_a * (white - self.hiss_lp);
+        let high: f32 = self.hiss_lp - self.hiss_hp_in + self.hiss_hp_coeff * self.hiss_hp_out;
+        self.hiss_hp_in = self.hiss_lp; self.hiss_hp_out = high;
+        self.hiss_mix = self.hiss_mix + self.analog_slew * (self.hiss_target_mix - self.hiss_mix);
+        self.hiss_level = self.hiss_level + self.analog_slew * (self.hiss_target_level - self.hiss_level);
+        if self.hiss_target_mix == 0.0f && self.hiss_mix < 0.000001f { self.hiss_mix = 0.0f; }
+        return high * self.hiss_normalization * self.hiss_mix * self.hiss_level;
+    }
+    fn drift_random(self: &mut Self) -> f32 {
+        self.drift_seed = (self.drift_seed * 1664525 + 1013904223) % 4294967296;
+        return f32(self.drift_seed) / 2147483648.0f - 1.0f;
+    }
+    fn drift_update(self: &mut Self) -> void {
+        // Bounded, independent random targets with irregular 0.4..1.2 s
+        // intervals. Slew over 200 ms: no pitch steps, periodic vibrato or
+        // per-note reseeding. This runs even while the VCA is silent.
+        if self.drift_wait <= 0 {
+            self.drift_target1 = self.drift_random();
+            self.drift_target2 = self.drift_random();
+            self.drift_target3 = self.drift_random();
+            let interval: f32 = 0.8f + 0.4f * self.drift_random();
+            self.drift_wait = i32(self.rate * interval);
+        }
+        self.drift_wait = self.drift_wait - 1;
+        self.drift1 = self.drift1 + self.drift_slew * (self.drift_target1 - self.drift1);
+        self.drift2 = self.drift2 + self.drift_slew * (self.drift_target2 - self.drift2);
+        self.drift3 = self.drift3 + self.drift_slew * (self.drift_target3 - self.drift3);
+    }
     fn ladder(self: &mut Self, input: f32) -> f32 {
         let g: f32 = self.g; let h: f32 = 1.0f - g;
         let g2: f32 = g * g; let g4: f32 = g2 * g2;
@@ -139,15 +205,21 @@ impl Mini {
         return d;
     }
     fn process(self: &mut Self) -> f32 {
+        self.drift_update();
+        self.analog_mix = self.analog_mix + self.analog_slew * (self.analog_target - self.analog_mix);
+        self.drift_amount = self.drift_amount + self.analog_slew * (self.drift_target_amount - self.drift_amount);
         self.gain = self.gain + 0.002f * (self.gain_target - self.gain);
+        if self.gain_target == 0.0f && self.gain < 0.000000001f { self.gain = 0.0f; }
+        let hiss: f32 = self.background_hiss();
         self.pitch = self.target + (self.pitch - self.target) * self.glide_coeff;
         self.smooth_cutoff = self.smooth_cutoff + 0.004f * (self.cutoff - self.smooth_cutoff);
         let amp: f32 = self.amp.process(); let env: f32 = self.fenv.process();
-        let dt3: f32 = clamp((self.osc3_low ? 0.5f : 440.0f) * exp2f(((self.osc3_keys ? self.pitch - 69.0f : 0.0f) + 12.0f * self.range3 + self.fine3 + self.bend * self.bend_range) / 12.0f) / (self.rate * 4.0f), 0.00000001f, 0.45f);
+        let drift: f32 = self.drift_amount / 100.0f;
+        let dt3: f32 = clamp((self.osc3_low ? 0.5f : 440.0f) * exp2f(((self.osc3_keys ? self.pitch - 69.0f : 0.0f) + 12.0f * self.range3 + self.fine3 + self.bend * self.bend_range + self.drift3 * drift) / 12.0f) / (self.rate * 4.0f), 0.00000001f, 0.45f);
         let modulation: f32 = wave(self.p3, dt3, self.w3) * self.wheel;
         let pitch: f32 = self.pitch - 69.0f + self.bend * self.bend_range + modulation * self.mod_pitch;
-        let dt1: f32 = clamp(440.0f * exp2f(pitch / 12.0f + self.range1) / (self.rate * 4.0f), 0.00000001f, 0.45f);
-        let dt2: f32 = clamp(440.0f * exp2f((pitch + self.fine2) / 12.0f + self.range2) / (self.rate * 4.0f), 0.00000001f, 0.45f);
+        let dt1: f32 = clamp(440.0f * exp2f((pitch + self.drift1 * drift) / 12.0f + self.range1) / (self.rate * 4.0f), 0.00000001f, 0.45f);
+        let dt2: f32 = clamp(440.0f * exp2f((pitch + self.fine2 + self.drift2 * drift) / 12.0f + self.range2) / (self.rate * 4.0f), 0.00000001f, 0.45f);
         if self.counter == 0 {
             let vel: f32 = 1.0f - self.velocity_filter * (1.0f - self.velocity);
             let hz: f32 = clamp(self.smooth_cutoff * exp2f(self.env_depth * env * vel + self.follow * (self.pitch - 36.0f) / 12.0f + modulation * self.mod_filter), 15.0f, self.rate * 0.42f);
@@ -156,6 +228,8 @@ impl Mini {
         }
         self.counter = (self.counter + 1) % 8;
         var out: f32 = 0.0f;
+        var analog: f32 = 0.0f;
+        let velocity: f32 = 1.0f - self.velocity_amp * (1.0f - self.velocity);
         for sub in 0..4 {
             self.seed = (self.seed * 1664525 + 1013904223) % 4294967296;
             let noise: f32 = f32(self.seed) / 2147483648.0f - 1.0f;
@@ -170,16 +244,30 @@ impl Mini {
                 self.aa1 = self.aa1 + 0.4665f * (self.last - self.aa1);
                 self.aa2 = self.aa2 + 0.4665f * (self.aa1 - self.aa2);
                 out = out + self.aa2 * 0.25f;
+                // A gently asymmetric line-amplifier approximation AFTER the
+                // VCA, before master volume. Subtract its bias at zero input,
+                // compensate its small-signal gain, then anti-alias at 4x.
+                let vca: f32 = tanhf(self.last * 1.8f) * amp * velocity;
+                let colored: f32 = (tanhf(vca * 5.0f + 0.18f) - tanhf(0.18f)) * 0.2065503f;
+                self.analog_aa1 = self.analog_aa1 + 0.4665f * (colored - self.analog_aa1);
+                self.analog_aa2 = self.analog_aa2 + 0.4665f * (self.analog_aa1 - self.analog_aa2);
+                analog = analog + self.analog_aa2 * 0.25f;
             }
         }
         if !self.amp.is_active() {
             self.s1 = 0.0f; self.s2 = 0.0f; self.s3 = 0.0f; self.s4 = 0.0f;
             self.last = 0.0f; self.aa1 = 0.0f; self.aa2 = 0.0f;
-            self.dc_in = 0.0f; self.dc_out = 0.0f; return 0.0f;
+            self.dc_in = 0.0f; self.dc_out = 0.0f;
+            self.analog_aa1 = 0.0f; self.analog_aa2 = 0.0f;
+            self.analog_dc_in = 0.0f; self.analog_dc_out = 0.0f;
+            return hiss * self.gain;
         }
         let dc: f32 = out - self.dc_in + self.dc_coeff * self.dc_out;
         self.dc_in = out; self.dc_out = dc;
-        return tanhf(dc * 1.8f) * amp * self.gain * (1.0f - self.velocity_amp * (1.0f - self.velocity));
+        let clean: f32 = tanhf(dc * 1.8f) * amp * velocity;
+        let analog_dc: f32 = analog - self.analog_dc_in + self.dc_coeff * self.analog_dc_out;
+        self.analog_dc_in = analog; self.analog_dc_out = analog_dc;
+        return (clean + self.analog_mix * (analog_dc - clean) + hiss) * self.gain;
     }
 }
 fn mlamini_process(m: ptr<Mini>) -> f32 { unsafe { return (*m).process(); } }

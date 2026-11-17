@@ -17,6 +17,23 @@ not an exact Model D circuit recreation or a verified identical match.
 - **OSC Drive** soft-clips each oscillator before its mixer level, with
   peak compensation. The default 1.4 adds a little grit; 1 bypasses shaping.
   This control is separate from the existing mixer/filter **Drive**.
+- **Analog Output** blends in an asymmetric line-amplifier approximation
+  after the VCA. It adds even harmonics and gentle compression before master
+  volume, with small-signal gain compensation and DC removal. The nonlinear
+  stage runs at 4x sample rate before decimation; default amount is 30%.
+- **OSC Drift** adds independent slow tuning wander to all three oscillators.
+  The default is bounded to ±1.2 cents; the control ranges from 0 to ±8 cents.
+  Random targets arrive at irregular intervals and slew over 200 ms. Each
+  instance has its own seed; note gates and transport do not restart the
+  oscillator phases or wander. This control introduces no per-note pitch jumps.
+- **Background Hiss** is a separate, continuous output-noise floor, audible
+  during rests as well as notes. It has **eleven settings, 0–10**, with
+  **0 = Off**, **10 = maximum**, and a default of **6**.
+  **Hiss Level** fine-trims the full-amount level from −96 to −48 dBFS;
+  its default is −54 dBFS. Together the defaults give about −58.4 dBFS RMS
+  before master Output and host faders. Amount and level changes
+  fade smoothly; master Output also controls the hiss. This is independent
+  of the existing **Noise** control, which feeds the filter and VCA.
 - A 24 dB/octave TPT ladder. A Newton solve places input saturation inside
   its instantaneous resonance loop. Resonance reduces bass gain, with a
   little compensation. Drive saturates the mixer/filter input; Feedback
@@ -56,6 +73,11 @@ giving the notes a longer, brighter tail than the initial version.
 Its low-pass is more open: 600 Hz base cutoff, three octaves of filter
 envelope and 35% keyboard tracking, preserving more high harmonics than
 the previous 130 Hz / 1.8 octave / 20% patch.
+Use **Analog Output** for extra roughness after the amp envelope, and **OSC
+Drift** for a little changing oscillator beating. Setting both to zero
+recovers the previous output path and stable oscillator tuning. These are
+musical approximations of output-stage coloration and VCO drift, rather
+than a measured transistor-by-transistor Model D model.
 
 MIDI CCs: 1 wheel, 5 glide, 7 output, 64 sustain, 71 resonance, 74 cutoff,
 73 amp attack, 72 amp release, 120/123 immediate all-notes-off. MIDI pitch
@@ -81,10 +103,23 @@ Stable IDs are 100 plus the index in `src/parameters.h`:
 | 135–138 | OSC 3 Low / OSC 3 Keyboard / Velocity > Amp / Velocity > Filter | off/on / off/on / 0 .. 1 / 0 .. 1 |
 | 139–140 | Sustain Pedal / All Notes Off | MIDI performance controls |
 | 141 | OSC Drive | 1 .. 4×; 1 = clean bypass |
+| 142 | Analog Output | 0 .. 1; default 0.3 |
+| 143 | OSC Drift | 0 .. 8 ct maximum deviation per oscillator; default 1.2 |
+| 144 | Background Hiss | 0 .. 10; 0 = Off, default 6 |
+| 145 | Hiss Level | −96 .. −48 dBFS RMS at amount 10, before master Output; default −54 |
 
 Cutoff, envelope times and Drive use logarithmic normalized mappings. Other
 continuous controls are linear. Bend, wheel, pedal and panic return to neutral
 when restoring binary VST state; the host can restore performance automation.
+Older binary states that lack the new controls restore with Analog Output
+and OSC Drift at zero. New states save the control amounts, not the ongoing
+random drift trajectory.
+Older binary states also load with Background Hiss off. Noise shaping rolls
+off low rumble below 80 Hz and gently softens the hiss above 8 kHz. Its
+nominal RMS level is normalized across sample rates; this is an analog-style
+approximation rather than a measured Minimoog noise specification.
+The former On/Off control's saved normalized values remain compatible:
+old Off restores as 0 and old On as 10, retaining the saved Hiss Level.
 
 ## Example and preview
 
@@ -99,8 +134,14 @@ build/cmake/bin/mlacker examples/mini_bass.mlaproj
 The generator also writes `build/mini_bass/preview.wav` through mlacker's
 actual sequencer and VST3 host. It follows the estimated ten-bar bass sequence
 from the reference at 121 BPM. `build/mini_bass/baseline.wav` plays the same
-score with the previous darker bass filter for comparison.
+score with Analog Output and OSC Drift disabled for comparison, preserving
+the same bright filter, envelopes and oscillator drive.
 `build/mini_bass/sixteenths.wav` auditions eight bars of sixteenth notes.
+`build/mini_bass/clean_sixteenths.wav` auditions the same notes with the new
+output stage and drift disabled.
+The comparison renders also disable Background Hiss. The updated project
+enables one quiet noise floor on the bass instance, with hiss off on the
+other instances so the arrangement does not stack several noise floors.
 The project opens on **Free OSC 16ths**; the reference arrangement also
 includes the short upper sixteenth-note phrases that begin around four seconds.
 The bass and upper line occupy independent patterns in parallel song lanes,
@@ -126,6 +167,11 @@ They also check that detached fast notes preserve oscillator phase and that
 the brighter low-pass patch has more upper-frequency energy. Simultaneous
 keys are checked for a single selected fundamental, and the project test
 verifies that the parallel lanes use separate monophonic instrument channels.
+Output-stage tests check extra even harmonics, DC removal, master-volume
+independence and silent tails. Held-note tests check stable tuning with
+Drift at zero and smooth, bounded wander on each oscillator with it enabled.
+Hiss tests check the idle noise floor, level adjustment, sample-rate
+consistency, silent Off/mute states, saved settings and legacy-state defaults.
 The app's `vst3_host` and `mini_bass_tui` tests also
 exercise the plugin and example in mlacker.
 Steinberg's SDK validator also passes all 47 tests for the built macOS bundle.

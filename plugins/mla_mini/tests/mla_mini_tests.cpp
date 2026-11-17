@@ -265,6 +265,8 @@ void plainPatch(Instance& i) {
     set(i, Cutoff, 15000); set(i, EnvDepth, 0); set(i, Resonance, 0); set(i, Feedback, 0);
     set(i, Drive, 1); set(i, KeyFollow, 0); set(i, VelocityAmp, 0); set(i, Glide, 0);
     set(i, OscDrive, 1);
+    set(i, AnalogOutput, 0); set(i, OscDrift, 0);
+    set(i, BackgroundHiss, 0);
     set(i, AmpAttack, .001); set(i, AmpSustain, 1); set(i, AmpRelease, .05);
 }
 double pitch(const Stereo& s) { return zeroCrossingHz(s.left, at(.2), s.left.size()); }
@@ -289,11 +291,52 @@ int main(int argc, char** argv) {
         CHECK(i.component->getBusCount(kAudio, kInput) == 0);
         CHECK(i.component->getBusCount(kAudio, kOutput) == 1);
         CHECK(i.processor->canProcessSampleSize(kSample64) == kResultFalse);
+        set(i, BackgroundHiss, 0);
         auto silence = i.render(.1); CHECK(peak(silence.left) == 0); CHECK(i.lastSilenceFlags == 3);
         i.noteOn(36, 1, 100);
         auto s = i.render(.5); CHECK(peak(s.left, 0, 100) == 0); CHECK(rms(s.left) > .03);
         CHECK(s.left == s.right); CHECK(finite(s)); CHECK(peak(s.left) <= 1);
         i.noteOff(36); i.render(.8); CHECK(peak(i.render(.1).left) == 0);
+    }
+    // Hardware-style hiss continues without notes, with a calibrated quiet
+    // level. Switching it off fades to exact zeros and a silent output flag.
+    {
+        Instance i; CHECK(i.open(path));
+        ParameterInfo info{};
+        CHECK(i.provider->getControllerPtr()->getParameterInfo(BackgroundHiss, info) == kResultOk);
+        CHECK(info.stepCount == 10);
+        auto initial = i.render(.5);
+        const double initialDb = 20 * std::log10(rms(initial.left, at(.1)));
+        CHECK(initialDb > -59.5 && initialDb < -57.5);
+        set(i, BackgroundHiss, 10); set(i, HissLevel, -78);
+        auto hiss = i.render(.8);
+        const double db = 20 * std::log10(rms(hiss.left, at(.1)));
+        CHECK(db > -79 && db < -77); CHECK(i.lastSilenceFlags == 0);
+        CHECK(hiss.left == hiss.right); CHECK(finite(hiss));
+        CHECK(i.processor->getTailSamples() == kInfiniteTail);
+        set(i, HissLevel, -66); auto louder = i.render(.5);
+        const double ratio = rms(louder.left, at(.1)) / rms(hiss.left, at(.1));
+        CHECK(ratio > 3.7 && ratio < 4.3);
+        double prior = 0;
+        for(int amount = 1; amount <= 10; ++amount) {
+            set(i, BackgroundHiss, amount); auto adjusted = i.render(.3);
+            const double level = rms(adjusted.left, at(.1));
+            const double expected = std::pow(10., -66. / 20) * amount / 10.;
+            CHECK(std::abs(20 * std::log10(level / expected)) < .8);
+            CHECK(level > prior); prior = level;
+        }
+        set(i, BackgroundHiss, 0); auto faded = i.render(.2);
+        CHECK(peak(faded.left, at(.1)) == 0); CHECK(i.lastSilenceFlags == 3);
+        CHECK(i.processor->getTailSamples() != kInfiniteTail);
+        set(i, BackgroundHiss, 10); CHECK(rms(i.render(.2).left, at(.1)) > .0003);
+        set(i, Output, -60); CHECK(peak(i.render(.4).left, at(.3)) == 0);
+    }
+    // Hiss level is comparable at common sample rates, not tied to 48 kHz.
+    for(double rate : {44100., 96000., 192000.}) {
+        Instance i; CHECK(i.open(path, rate)); set(i, BackgroundHiss, 10); set(i, HissLevel, -78);
+        auto s = i.renderFrames(static_cast<int>(rate / kBlock) * kBlock);
+        const double db = 20 * std::log10(rms(s.left, static_cast<size_t>(rate * .1)));
+        CHECK(db > -79 && db < -77);
     }
     // Pitch and octave switches for every oscillator, independent mixer levels.
     for(int osc = 0; osc < 3; ++osc) for(int octave = -1; octave <= 1; ++octave) {
@@ -400,6 +443,45 @@ int main(int argc, char** argv) {
         distortion[driven] = harmonics / (fundamental * fundamental);
     }
     CHECK(distortion[1] > distortion[0] * 2);
+    // Output coloration adds even harmonics to a symmetric triangle. Compare
+    // harmonic/fundamental ratios so a loudness change cannot pass the test.
+    double evenHarmonic[3]{};
+    for(int mode = 0; mode < 3; ++mode) {
+        Instance i; CHECK(i.open(path)); plainPatch(i);
+        set(i, AnalogOutput, mode == 0 ? 0 : 1);
+        if(mode == 2) set(i, Output, -12);
+        i.noteOn(45, 1); auto s = i.render(.7);
+        evenHarmonic[mode] = tone(s.left, at(.2), at(.6), 220) / tone(s.left, at(.2), at(.6), 110);
+        double dc = 0;
+        for(size_t f = at(.2); f < at(.6); ++f) dc += s.left[f];
+        CHECK(std::abs(dc / at(.4)) < .002);
+        CHECK(finite(s));
+        i.noteOff(45); CHECK(peak(i.render(.3).left, at(.2)) == 0);
+    }
+    CHECK(evenHarmonic[1] > .002);
+    CHECK(evenHarmonic[1] > evenHarmonic[0] * 10);
+    CHECK(std::abs(evenHarmonic[1] - evenHarmonic[2]) < .001);
+    // Each oscillator wanders gently within its cents limit. With Drift at
+    // zero the same held pitch stays stable; random targets never jump phase.
+    for(int oscillator = -1; oscillator < 3; ++oscillator) {
+        Instance i; CHECK(i.open(path)); plainPatch(i);
+        const int selected = std::max(0, oscillator);
+        set(i, Level1, selected == 0); set(i, Level2, selected == 1); set(i, Level3, selected == 2);
+        set(i, Wave2, 0); set(i, Wave3, 0); set(i, Range3, 0); set(i, Fine2, 0); set(i, Fine3, 0);
+        set(i, OscDrift, oscillator < 0 ? 0 : 8); i.noteOn(45, 1); auto s = i.render(8);
+        double lowest = 1e6, highest = 0;
+        for(int window = 0; window < 16; ++window) {
+            const auto from = at(.3 + window * .45), to = from + at(.3);
+            const double hz = zeroCrossingHz(s.left, from, to);
+            CHECK(hz > 110 * std::pow(2., -8.2 / 1200));
+            CHECK(hz < 110 * std::pow(2., 8.2 / 1200));
+            lowest = std::min(lowest, hz); highest = std::max(highest, hz);
+        }
+        const double span = 1200 * std::log2(highest / lowest);
+        CHECK(oscillator < 0 ? span < .05 : span > .5);
+        for(size_t f = at(.2) + 1; f < s.left.size(); ++f)
+            CHECK(std::abs(s.left[f] - s.left[f - 1]) < .03);
+    }
     // Repeated detached notes around sixteenth-note speed do not restart
     // oscillator phase. The same key/velocity has a different waveform on
     // the next gate, even after the preceding amp envelope reached silence.
@@ -442,11 +524,13 @@ int main(int argc, char** argv) {
     }
     {
         Instance a, b; CHECK(a.open(path)); CHECK(b.open(path));
-        set(a, Cutoff, 720); set(a, Wave2, 4); a.render(.01);
+        set(a, Cutoff, 720); set(a, Wave2, 4); set(a, BackgroundHiss, 0); set(a, HissLevel, -70); a.render(.01);
         MemoryStream state; CHECK(a.component->getState(&state) == kResultOk);
         state.seek(0, IBStream::kIBSeekSet, nullptr); CHECK(b.component->setState(&state) == kResultOk);
         MemoryStream again; CHECK(b.component->getState(&again) == kResultOk);
         CHECK(state.getSize() == again.getSize()); CHECK(std::memcmp(state.getData(), again.getData(), state.getSize()) == 0);
+        CHECK(b.provider->getControllerPtr()->getParamNormalized(144) == 0);
+        CHECK(std::abs(physical(HissLevel, b.provider->getControllerPtr()->getParamNormalized(145)) + 70) < .001);
         MemoryStream bad; IBStreamer s(&bad, kLittleEndian); s.writeInt32u(0x494E494D); s.writeInt32u(1); s.writeInt32(1); s.writeInt32(113);
         s.writeDouble(NAN); bad.seek(0, IBStream::kIBSeekSet, nullptr);
         CHECK(b.component->setState(&bad) != kResultOk);
@@ -462,10 +546,45 @@ int main(int argc, char** argv) {
         legacy.seek(0, IBStream::kIBSeekSet, nullptr);
         CHECK(i.component->setState(&legacy) == kResultOk);
         CHECK(i.provider->getControllerPtr()->getParamNormalized(141) == 0);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(142) == 0);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(143) == 0);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(144) == 0);
+        MemoryStream previous; IBStreamer previousWriter(&previous, kLittleEndian);
+        previousWriter.writeInt32u(0x494E494D); previousWriter.writeInt32u(1); previousWriter.writeInt32(42);
+        for(int p = 0; p < 42; ++p) { previousWriter.writeInt32(100 + p); previousWriter.writeDouble(normalized(p, specs[p].initial)); }
+        previous.seek(0, IBStream::kIBSeekSet, nullptr);
+        CHECK(i.component->setState(&previous) == kResultOk);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(142) == 0);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(143) == 0);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(144) == 0);
+        MemoryStream withAnalog; IBStreamer analogWriter(&withAnalog, kLittleEndian);
+        analogWriter.writeInt32u(0x494E494D); analogWriter.writeInt32u(1); analogWriter.writeInt32(44);
+        for(int p = 0; p < 44; ++p) { analogWriter.writeInt32(100 + p); analogWriter.writeDouble(normalized(p, specs[p].initial)); }
+        withAnalog.seek(0, IBStream::kIBSeekSet, nullptr);
+        CHECK(i.component->setState(&withAnalog) == kResultOk);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(144) == 0);
+        // A saved On from the old binary switch is normalized 1. It now
+        // means amount 10, retaining its saved -78 dB noise floor exactly.
+        MemoryStream oldToggle; IBStreamer toggleWriter(&oldToggle, kLittleEndian);
+        toggleWriter.writeInt32u(0x494E494D); toggleWriter.writeInt32u(1); toggleWriter.writeInt32(46);
+        for(int p = 0; p < 46; ++p) {
+            double value = normalized(p, specs[p].initial);
+            if(p == BackgroundHiss) value = 1;
+            if(p == HissLevel) value = normalized(HissLevel, -78);
+            toggleWriter.writeInt32(100 + p); toggleWriter.writeDouble(value);
+        }
+        oldToggle.seek(0, IBStream::kIBSeekSet, nullptr);
+        CHECK(i.component->setState(&oldToggle) == kResultOk);
+        CHECK(physical(BackgroundHiss, i.provider->getControllerPtr()->getParamNormalized(144)) == 10);
+        auto restoredHiss = i.render(.8);
+        const double restoredDb = 20 * std::log10(rms(restoredHiss.left, at(.1)));
+        CHECK(restoredDb > -79 && restoredDb < -77);
     }
     for(int note : {0, 36, 96, 127}) {
         Instance i; CHECK(i.open(path)); set(i, Drive, 8); set(i, Feedback, 1); set(i, Resonance, 1); set(i, Cutoff, 20000);
-        set(i, Noise, 1); set(i, Output, 0); set(i, OscDrive, 4); i.noteOn(note, 1); auto s = i.render(.5);
+        set(i, BackgroundHiss, 0);
+        set(i, Noise, 1); set(i, Output, 0); set(i, OscDrive, 4);
+        set(i, AnalogOutput, 1); set(i, OscDrift, 8); i.noteOn(note, 1); auto s = i.render(.5);
         CHECK(finite(s)); CHECK(peak(s.left) <= 1.001);
         i.noteOff(note); CHECK(peak(i.render(.9).left, at(.8)) == 0);
     }

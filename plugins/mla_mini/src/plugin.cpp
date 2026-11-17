@@ -11,10 +11,12 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 
 struct Mini;
 extern "C" Mini* mlamini_create__f32(float);
+extern "C" void mlamini_seed__ptr_struct_Mini_i64(Mini*, int64_t);
 extern "C" void mlamini_destroy__ptr_struct_Mini(Mini*);
 extern "C" void mlamini_reset__ptr_struct_Mini(Mini*);
 extern "C" void mlamini_set__ptr_struct_Mini_i32_f32(Mini*, int32_t, float);
@@ -86,13 +88,21 @@ public:
         destroy(); rate_ = setup.sampleRate;
         dsp_ = mlamini_create__f32(static_cast<float>(rate_));
         if(!dsp_) return kOutOfMemory;
+        // Seed only on setup, outside the audio callback. Separate instances
+        // wander independently; MIDI gates and transport never reseed them.
+        static std::atomic<uint64_t> sequence{0};
+        const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto seed = (static_cast<uint64_t>(ticks) ^ (++sequence * 0x9E3779B97F4A7C15ULL)) & 0xffffffffULL;
+        mlamini_seed__ptr_struct_Mini_i64(dsp_, static_cast<int64_t>(seed ? seed : 1));
         clearNotes(); pushAll(); return kResultOk;
     }
     tresult PLUGIN_API setActive(TBool state) override {
         clearNotes(); if(dsp_) mlamini_reset__ptr_struct_Mini(dsp_);
         return SingleComponentEffect::setActive(state);
     }
-    uint32 PLUGIN_API getTailSamples() override { return static_cast<uint32>(rate_ * 14); }
+    uint32 PLUGIN_API getTailSamples() override {
+        return plain(BackgroundHiss) != 0 ? kInfiniteTail : static_cast<uint32>(rate_ * 14);
+    }
     tresult PLUGIN_API getMidiControllerAssignment(int32 bus, int16 channel, CtrlNumber cc, ParamID& id) override {
         if(bus != 0 || channel < 0 || channel > 15) return kResultFalse;
         int i;
@@ -174,6 +184,9 @@ public:
         for(int i = 0; i < Count; ++i) values[i] = normalized(i, specs[i].initial);
         // States predating OSC Drive retain their original clean oscillators.
         values[OscDrive] = 0;
+        values[AnalogOutput] = 0;
+        values[OscDrift] = 0;
+        values[BackgroundHiss] = 0;
         for(int n = 0; n < count; ++n) {
             int32 id; double value;
             if(!s.readInt32(id) || !s.readDouble(value) || !std::isfinite(value) || value < 0 || value > 1) return kResultFalse;

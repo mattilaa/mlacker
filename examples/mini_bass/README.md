@@ -14,7 +14,9 @@ build/cmake/bin/mlacker examples/mini_bass.mlaproj
 The script builds the plugin, generates the project with embedded parameter
 settings, and renders `build/mini_bass/sixteenths.wav` (the free-oscillator
 audition), `build/mini_bass/preview.wav` (the reference arrangement), and
-`build/mini_bass/baseline.wav` (the previous dark bass tone). It also writes
+`build/mini_bass/baseline.wav` (the previous bright tone with Analog Output,
+OSC Drift and Background Hiss disabled). `clean_sixteenths.wav` offers the same comparison
+for the fast bass audition. It also writes
 `bass.wav` and `upper_sixteenths.wav` as separate solo renders of the two
 parallel parts. It uses the existing
 MLang compiler and fetched SDK from the normal mlacker build. No installation
@@ -56,11 +58,24 @@ recording, as are gate lengths and velocities. Drums are not included.
 
 The brighter startup preset has **600 Hz Cutoff**, **3 octaves Filter Env
 Depth**, **35% Key Follow**, **480 ms Amp Release**, **450 ms Filter
-Release**, and **OSC Drive 1.4**. The envelope can open the filter to about
-4.8 kHz before keyboard tracking. The baseline preview uses the previous
-130 Hz / 1.8 octave / 20% filter settings, with the same notes, releases and
-oscillator drive, to compare brightness. The separate upper instance uses
-a 1 kHz cutoff and a two-octave envelope.
+Release**, and **OSC Drive 1.4**, with **30% Analog Output** and **1.2-cent
+OSC Drift**. The output coloration adds mild roughness after the amp
+envelope; the oscillators wander independently without restarting phase
+on each note. The envelope can open the filter to about 4.8 kHz before
+keyboard tracking. The baseline previews use the same bright filter,
+notes, releases and oscillator drive, with output coloration, drift and
+background hiss disabled. The separate upper instance uses a 1 kHz cutoff
+and a two-octave envelope.
+
+The bass instance has **Background Hiss 6** with **Hiss Level −54 dBFS**,
+giving a more audible noise floor during rests. In the VST parameters,
+**Background Hiss** now has eleven settings: **0 = Off**, then **1–10**
+for increasing amounts. **Hiss Level** provides fine adjustment. The default
+is about 20 dB louder than the initial very quiet hiss setting.
+Hiss is off on the other two instances to avoid stacking background noise.
+The existing **Noise** mixer knob remains independent. The noisy previews
+include a short hiss-only tail after the last note; the render tail limit
+keeps these exports finite.
 
 The original demonstration patterns remain available separately:
 

@@ -906,6 +906,16 @@ int main(int argc, char **argv) {
         int64_t d = __mlang_std_audio_controller_new(48000, 128);
         CHECK(__mlang_std_audio_controller_load_instrument(d, 1, mini) == 0);
         CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Mini") == 0);
+        // Background hiss is intentional at idle; disable it for exact note
+        // onset and MIDI-panic silence assertions.
+        bool foundHiss = false;
+        const int count = static_cast<int>(__mlang_std_audio_controller_parameter_info(d, 1, 0, 0));
+        for(int p = 0; p < count; ++p) if(__mlang_std_audio_controller_parameter_info(d, 1, p, 4) == 144) {
+            CHECK(__mlang_std_audio_controller_parameter_info(d, 1, p, 1) == 10);
+            CHECK(__mlang_std_audio_controller_restore_parameter(d, 1, p, 0) == 0);
+            foundHiss = true;
+        }
+        CHECK(foundHiss);
         CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
         const int64_t at = __mlang_std_audio_controller_info(d, 2);
         CHECK(__mlang_std_audio_controller_post(d, 2, 6, 0, 41, 110, 3, at + 96, 1, 1) == 0);

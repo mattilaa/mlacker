@@ -200,12 +200,24 @@ fn main() -> i32 {
     library.song = [1, 1, 1, 1, 2];
     library.extra_lanes = [SongLane { slots: [3, 4, 5, 4, 6] }];
     library.matrix_steps = 32; library.select(7); library.refresh();
-    // Compare against the previous dark filter on the very same arrangement.
-    ok = set_named(audio, 1, "Cutoff", log(130.0 / 20.0) / log(1000.0));
-    ok = ok && set_named(audio, 1, "Filter Env Depth", 1.8 / 8.0) && set_named(audio, 1, "Key Follow", 0.2);
+    // Compare the previous bright tone with the new output stage and drift.
+    // Keep cutoff, envelopes, oscillator drive and every note identical.
+    ok = true;
+    for slot in 1..4 {
+        ok = ok && set_named(audio, slot, "Analog Output", 0.0);
+        ok = ok && set_named(audio, slot, "OSC Drift", 0.0);
+        ok = ok && set_named(audio, slot, "Background Hiss", 0.0);
+    }
     if !ok || !render(&mut audio, library, library.table, "build/mini_bass/baseline.wav", false, -1) { return 1; }
-    ok = set_named(audio, 1, "Cutoff", log(600.0 / 20.0) / log(1000.0));
-    ok = ok && set_named(audio, 1, "Filter Env Depth", 3.0 / 8.0) && set_named(audio, 1, "Key Follow", 0.35);
+    if !render(&mut audio, library, library.table, "build/mini_bass/clean_sixteenths.wav", true, -1) { return 1; }
+    for slot in 1..4 {
+        ok = ok && set_named(audio, slot, "Analog Output", 0.3);
+        ok = ok && set_named(audio, slot, "OSC Drift", 1.2 / 8.0);
+        // One quiet noise floor for the arrangement, rather than stacking
+        // hiss from the unused glide and parallel upper instances.
+        ok = ok && set_named(audio, slot, "Background Hiss", slot == 1 ? 6.0 : 0.0);
+        ok = ok && set_named(audio, slot, "Hiss Level", 42.0 / 48.0);
+    }
     if !ok || !render(&mut audio, library, library.table, "build/mini_bass/preview.wav", false, -1) { return 1; }
     if !render(&mut audio, library, library.table, "build/mini_bass/bass.wav", false, 0) { return 1; }
     if !render(&mut audio, library, library.table, "build/mini_bass/upper_sixteenths.wav", false, 1) { return 1; }
