@@ -31,6 +31,13 @@ fn wave(t: f32, dt: f32, kind: i32) -> f32 {
     return (t < width ? 1.0f : -1.0f) + blep(t, dt) - blep(shifted, dt) - (2.0f * width - 1.0f);
 }
 
+/// Peak-matched oscillator saturation, separate from mixer/filter Drive.
+/// Unity bypass preserves old patches exactly. Run at the internal 4x rate.
+fn osc_saturate(x: f32, drive: f32, makeup: f32) -> f32 {
+    if drive <= 1.0f { return x; }
+    return tanhf(x * (drive - 1.0f)) * makeup;
+}
+
 struct Mini {
     var rate: f32; var counter: i32; var seed: i64;
     var p1: f32; var p2: f32; var p3: f32;
@@ -41,6 +48,7 @@ struct Mini {
     var target: f32; var pitch: f32; var velocity: f32; var gain: f32; var gain_target: f32;
     var cutoff: f32; var smooth_cutoff: f32; var resonance: f32; var env_depth: f32; var follow: f32;
     var drive: f32; var feedback: f32; var glide: f32; var glide_coeff: f32;
+    var osc_drive: f32; var osc_makeup: f32;
     var bend: f32; var bend_range: f32; var wheel: f32; var mod_pitch: f32; var mod_filter: f32;
     var osc3_low: bool; var osc3_keys: bool; var velocity_amp: f32; var velocity_filter: f32;
     var g: f32; var s1: f32; var s2: f32; var s3: f32; var s4: f32;
@@ -55,7 +63,7 @@ fn mlamini_create(sample_rate: f32) -> ptr<Mini> {
         (*m).amp = Adsr::new(sample_rate); (*m).fenv = Adsr::new(sample_rate);
         (*m).p2 = 0.371f; (*m).p3 = 0.719f;
         (*m).pitch = 36.0f; (*m).target = 36.0f;
-        (*m).cutoff = 180.0f; (*m).smooth_cutoff = 180.0f;
+        (*m).cutoff = 600.0f; (*m).smooth_cutoff = 600.0f;
         (*m).dc_coeff = expf(-6.2831853f * 8.0f / sample_rate);
     }
     return m;
@@ -96,6 +104,7 @@ fn mlamini_set(m: ptr<Mini>, i: i32, v: f32) -> void {
         else if i == 34 { (*m).mod_filter = v; } else if i == 35 { (*m).osc3_low = v > 0.5f; }
         else if i == 36 { (*m).osc3_keys = v > 0.5f; }
         else if i == 37 { (*m).velocity_amp = v; } else if i == 38 { (*m).velocity_filter = v; }
+        else if i == 41 { (*m).osc_drive = v; (*m).osc_makeup = v <= 1.0f ? 1.0f : 1.0f / tanhf(v - 1.0f); }
         (*m).counter = 0;
     }
 }
@@ -150,7 +159,10 @@ impl Mini {
         for sub in 0..4 {
             self.seed = (self.seed * 1664525 + 1013904223) % 4294967296;
             let noise: f32 = f32(self.seed) / 2147483648.0f - 1.0f;
-            let mixed: f32 = (wave(self.p1, dt1, self.w1) * self.level1 + wave(self.p2, dt2, self.w2) * self.level2 + (self.osc3_low ? 0.0f : wave(self.p3, dt3, self.w3) * self.level3) + noise * self.noise) * 0.45f;
+            let one: f32 = osc_saturate(wave(self.p1, dt1, self.w1), self.osc_drive, self.osc_makeup);
+            let two: f32 = osc_saturate(wave(self.p2, dt2, self.w2), self.osc_drive, self.osc_makeup);
+            let three: f32 = self.osc3_low ? 0.0f : osc_saturate(wave(self.p3, dt3, self.w3), self.osc_drive, self.osc_makeup);
+            let mixed: f32 = (one * self.level1 + two * self.level2 + three * self.level3 + noise * self.noise) * 0.45f;
             self.p1 = wrap(self.p1 + dt1); self.p2 = wrap(self.p2 + dt2); self.p3 = wrap(self.p3 + dt3);
             if self.amp.is_active() {
                 self.last = self.ladder(self.drive * mixed + self.feedback * self.last * 2.5f);

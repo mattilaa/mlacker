@@ -1,7 +1,7 @@
 # Mla Mini
 
 A Minimoog-inspired monophonic VST3 instrument for mlacker. The startup patch
-is a dark, slightly detuned bass shaped using the supplied `moog.wav` as a
+is a bright, slightly detuned bass shaped using the supplied `moog.wav` as a
 tonal reference. It synthesizes new notes; the recording is not embedded or
 played back. The recording alone cannot reveal the original oscillator mix,
 knob settings, processing or circuit response, so this is an approximation,
@@ -14,6 +14,9 @@ not an exact Model D circuit recreation or a verified identical match.
   Oscillators 2 and 3 have ±25-cent fine tuning. Ranges span ±2 octaves.
 - PolyBLEP saws and pulses, and four internal samples per output sample.
   A two-pole low-pass plus averaging precedes decimation.
+- **OSC Drive** soft-clips each oscillator before its mixer level, with
+  peak compensation. The default 1.4 adds a little grit; 1 bypasses shaping.
+  This control is separate from the existing mixer/filter **Drive**.
 - A 24 dB/octave TPT ladder. A Newton solve places input saturation inside
   its instantaneous resonance loop. Resonance reduces bass gain, with a
   little compensation. Drive saturates the mixer/filter input; Feedback
@@ -48,6 +51,11 @@ more bite, **Resonance** for a stronger filter peak, and **Drive** or
 **Feedback** for more growl. **OSC 2 Fine** controls the beating; raise
 **OSC 3 Level** for more weight an octave below. **Filter Decay** controls
 the initial brightness fall; **Amp Release** controls how quickly notes stop.
+The startup patch now has a 480 ms amp release and 450 ms filter release,
+giving the notes a longer, brighter tail than the initial version.
+Its low-pass is more open: 600 Hz base cutoff, three octaves of filter
+envelope and 35% keyboard tracking, preserving more high harmonics than
+the previous 130 Hz / 1.8 octave / 20% patch.
 
 MIDI CCs: 1 wheel, 5 glide, 7 output, 64 sustain, 71 resonance, 74 cutoff,
 73 amp attack, 72 amp release, 120/123 immediate all-notes-off. MIDI pitch
@@ -72,6 +80,7 @@ Stable IDs are 100 plus the index in `src/parameters.h`:
 | 130–134 | Pitch Bend / Bend Range / Mod Wheel / Mod > Pitch / Mod > Filter | ±1 / 0 .. 24 st / 0 .. 1 / 0 .. 12 st / 0 .. 6 oct |
 | 135–138 | OSC 3 Low / OSC 3 Keyboard / Velocity > Amp / Velocity > Filter | off/on / off/on / 0 .. 1 / 0 .. 1 |
 | 139–140 | Sustain Pedal / All Notes Off | MIDI performance controls |
+| 141 | OSC Drive | 1 .. 4×; 1 = clean bypass |
 
 Cutoff, envelope times and Drive use logarithmic normalized mappings. Other
 continuous controls are linear. Bend, wheel, pedal and panic return to neutral
@@ -88,7 +97,16 @@ build/cmake/bin/mlacker examples/mini_bass.mlaproj
 ```
 
 The generator also writes `build/mini_bass/preview.wav` through mlacker's
-actual sequencer and VST3 host.
+actual sequencer and VST3 host. It follows the estimated ten-bar bass sequence
+from the reference at 121 BPM. `build/mini_bass/baseline.wav` plays the same
+score with the previous darker bass filter for comparison.
+`build/mini_bass/sixteenths.wav` auditions eight bars of sixteenth notes.
+The project opens on **Free OSC 16ths**; the reference arrangement also
+includes the short upper sixteenth-note phrases that begin around four seconds.
+The bass and upper line occupy independent patterns in parallel song lanes,
+each with its own monophonic instance. Every saved pattern has just one
+instrument track and one note column. `bass.wav` and `upper_sixteenths.wav`
+render the parts individually.
 
 ## Verification
 
@@ -102,6 +120,12 @@ all six wave shapes, filter cutoff/envelope spectra, release, legato versus
 retrigger, glide, key priority/fallback, channels, repeated keys, velocity-zero
 note-offs, sustain, bend, automation offsets, panic, state round trips,
 malformed-state rejection, sample rates, and finite output under maximum
-drive/resonance/feedback. The app's `vst3_host` and `mini_bass_tui` tests also
+drive/resonance/feedback, relative harmonic energy from OSC Drive, longer
+release tails, and clean oscillator restoration from legacy binary states.
+They also check that detached fast notes preserve oscillator phase and that
+the brighter low-pass patch has more upper-frequency energy. Simultaneous
+keys are checked for a single selected fundamental, and the project test
+verifies that the parallel lanes use separate monophonic instrument channels.
+The app's `vst3_host` and `mini_bass_tui` tests also
 exercise the plugin and example in mlacker.
 Steinberg's SDK validator also passes all 47 tests for the built macOS bundle.

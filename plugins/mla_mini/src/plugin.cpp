@@ -172,6 +172,8 @@ public:
         if(!s.readInt32u(magic) || magic != kMagic || !s.readInt32u(version) || version != kVersion || !s.readInt32(count) || count < 0 || count > 4096) return kResultFalse;
         std::array<double, Count> values{};
         for(int i = 0; i < Count; ++i) values[i] = normalized(i, specs[i].initial);
+        // States predating OSC Drive retain their original clean oscillators.
+        values[OscDrive] = 0;
         for(int n = 0; n < count; ++n) {
             int32 id; double value;
             if(!s.readInt32(id) || !s.readDouble(value) || !std::isfinite(value) || value < 0 || value > 1) return kResultFalse;

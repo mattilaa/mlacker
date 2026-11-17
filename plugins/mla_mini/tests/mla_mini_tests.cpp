@@ -264,6 +264,7 @@ void plainPatch(Instance& i) {
     set(i, Wave1, 0); set(i, Level1, 1); set(i, Level2, 0); set(i, Level3, 0);
     set(i, Cutoff, 15000); set(i, EnvDepth, 0); set(i, Resonance, 0); set(i, Feedback, 0);
     set(i, Drive, 1); set(i, KeyFollow, 0); set(i, VelocityAmp, 0); set(i, Glide, 0);
+    set(i, OscDrive, 1);
     set(i, AmpAttack, .001); set(i, AmpSustain, 1); set(i, AmpRelease, .05);
 }
 double pitch(const Stereo& s) { return zeroCrossingHz(s.left, at(.2), s.left.size()); }
@@ -292,7 +293,7 @@ int main(int argc, char** argv) {
         i.noteOn(36, 1, 100);
         auto s = i.render(.5); CHECK(peak(s.left, 0, 100) == 0); CHECK(rms(s.left) > .03);
         CHECK(s.left == s.right); CHECK(finite(s)); CHECK(peak(s.left) <= 1);
-        i.noteOff(36); i.render(.4); CHECK(peak(i.render(.1).left) == 0);
+        i.noteOff(36); i.render(.8); CHECK(peak(i.render(.1).left) == 0);
     }
     // Pitch and octave switches for every oscillator, independent mixer levels.
     for(int osc = 0; osc < 3; ++osc) for(int octave = -1; octave <= 1; ++octave) {
@@ -375,6 +376,64 @@ int main(int argc, char** argv) {
         legatoLevel[legato] = rms(i.render(.05).left);
     }
     CHECK(legatoLevel[0] > legatoLevel[1] * 3);
+    // The revised release keeps the tail audible after the old patch has faded.
+    double releaseLevel[2]{};
+    for(int longTail = 0; longTail < 2; ++longTail) {
+        Instance i; CHECK(i.open(path)); plainPatch(i); set(i, AmpRelease, longTail ? .48 : .12);
+        i.noteOn(45, 1); i.render(.3); i.noteOff(45); auto s = i.render(.8);
+        releaseLevel[longTail] = rms(s.left, at(.10), at(.12));
+        CHECK(peak(s.left, at(.7)) == 0);
+    }
+    CHECK(releaseLevel[1] > releaseLevel[0] * 20);
+    // Oscillator saturation adds upper harmonics before the mixer/filter.
+    // Compare relative harmonic energy so a gain change cannot pass the test.
+    double distortion[2]{};
+    for(int driven = 0; driven < 2; ++driven) {
+        Instance i; CHECK(i.open(path)); plainPatch(i); set(i, OscDrive, driven ? 4 : 1);
+        i.noteOn(45, 1); auto s = i.render(.7);
+        const double fundamental = tone(s.left, at(.2), at(.6), 110);
+        double harmonics = 0;
+        for(int h = 3; h <= 11; h += 2) {
+            const double amplitude = tone(s.left, at(.2), at(.6), h * 110);
+            harmonics += amplitude * amplitude;
+        }
+        distortion[driven] = harmonics / (fundamental * fundamental);
+    }
+    CHECK(distortion[1] > distortion[0] * 2);
+    // Repeated detached notes around sixteenth-note speed do not restart
+    // oscillator phase. The same key/velocity has a different waveform on
+    // the next gate, even after the preceding amp envelope reached silence.
+    {
+        Instance i; CHECK(i.open(path)); plainPatch(i); set(i, AmpRelease, .005);
+        i.noteOn(41, 1); auto first = i.renderFrames(4096);
+        i.noteOff(41); auto gap = i.renderFrames(2048);
+        CHECK(peak(gap.left, 1024) == 0);
+        i.noteOn(41, 1); auto second = i.renderFrames(4096);
+        double difference = 0, energy = 0;
+        for(size_t n = at(.04); n < at(.075); ++n) {
+            double delta = first.left[n] - second.left[n];
+            difference += delta * delta; energy += first.left[n] * first.left[n];
+        }
+        CHECK(difference > energy * .25);
+    }
+    // The revised bass restores upper harmonics compared with the dark patch.
+    double patchBrightness[2]{};
+    for(int old = 0; old < 2; ++old) {
+        Instance i; CHECK(i.open(path));
+        if(old) { set(i, Cutoff, 130); set(i, EnvDepth, 1.8); set(i, KeyFollow, .2); }
+        i.noteOn(41, 1); auto s = i.render(.3);
+        patchBrightness[old] = highShare(s.left, at(.01), at(.12), 600);
+    }
+    CHECK(patchBrightness[0] > patchBrightness[1] * 2);
+    // Simultaneous keys still produce one voice: only the selected key's
+    // fundamental remains. Parallel musical lines need separate instances.
+    {
+        Instance i; CHECK(i.open(path)); plainPatch(i);
+        i.noteOn(45, 1); i.noteOn(57, 1); auto s = i.render(.6);
+        const double selected = tone(s.left, at(.2), at(.5), 220);
+        const double other = tone(s.left, at(.2), at(.5), 110);
+        CHECK(selected > .03); CHECK(other < selected * .01);
+    }
     // Sample rate changes preserve pitch and produce finite audio.
     for(double rate : {44100., 96000., 192000.}) {
         Instance i; CHECK(i.open(path, rate)); plainPatch(i); i.noteOn(45, 1);
@@ -395,11 +454,20 @@ int main(int argc, char** argv) {
         CHECK(std::abs(rms(x.left) - rms(y.left)) < .03);
     }
     // Extreme drive/feedback/resonance stays finite at low and high notes.
+    {
+        Instance i; CHECK(i.open(path));
+        MemoryStream legacy; IBStreamer s(&legacy, kLittleEndian);
+        s.writeInt32u(0x494E494D); s.writeInt32u(1); s.writeInt32(41);
+        for(int p = 0; p < 41; ++p) { s.writeInt32(100 + p); s.writeDouble(normalized(p, specs[p].initial)); }
+        legacy.seek(0, IBStream::kIBSeekSet, nullptr);
+        CHECK(i.component->setState(&legacy) == kResultOk);
+        CHECK(i.provider->getControllerPtr()->getParamNormalized(141) == 0);
+    }
     for(int note : {0, 36, 96, 127}) {
         Instance i; CHECK(i.open(path)); set(i, Drive, 8); set(i, Feedback, 1); set(i, Resonance, 1); set(i, Cutoff, 20000);
-        set(i, Noise, 1); set(i, Output, 0); i.noteOn(note, 1); auto s = i.render(.5);
+        set(i, Noise, 1); set(i, Output, 0); set(i, OscDrive, 4); i.noteOn(note, 1); auto s = i.render(.5);
         CHECK(finite(s)); CHECK(peak(s.left) <= 1.001);
-        i.noteOff(note); CHECK(peak(i.render(.5).left, at(.4)) == 0);
+        i.noteOff(note); CHECK(peak(i.render(.9).left, at(.8)) == 0);
     }
     if(argc > 2) {
         Instance i; CHECK(i.open(path)); std::vector<float> song;

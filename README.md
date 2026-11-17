@@ -1537,8 +1537,12 @@ samples.
 - `examples/atmosphere_pad.mlaproj`: "Atmosphere", "Dawn 2 Dusk" and
   "Footprint 97" pads in a short trance song at 136 BPM.
 - `examples/mini_bass.mlaproj`: [Mla Mini bass demo](examples/mini_bass), with
-  a dry bass riff, an automated ladder-filter sweep and overlapping legato
-  glides. Run `examples/mini_bass/build.sh` to build it and render a WAV preview.
+  a reference-based ten-bar bass sequence at 121 BPM, plus optional ladder
+  sweeps and legato patterns. It opens on a free-running oscillator
+  sixteenth-note audition, and includes the reference's short fast phrases.
+  Bass and upper phrases have independent patterns and mono instances in
+  parallel song lanes. Run `examples/mini_bass/build.sh` to build it and
+  render the full mix and each part separately.
 - `examples/mla8000_demo.mlaproj`: the same kind of song played on the
   [Mla 8000](plugins/mla_8000) plugin instead of samples: a mono bass, a
   gated Super Saw stab, a Super Saw pad and a Super Saw lead, each with the

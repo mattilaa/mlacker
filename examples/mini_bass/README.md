@@ -1,7 +1,8 @@
 # Mla Mini bass example
 
-An original F-minor bass riff for [Mla Mini](../../plugins/mla_mini), at
-112 BPM. Only the new synth is needed; all sounds are synthesized.
+A synthesis reconstruction of the bass and short upper phrases in `moog.wav` for
+[Mla Mini](../../plugins/mla_mini), at approximately **121 BPM**. Only the
+new synth is needed; all sounds are synthesized.
 
 From the repository root:
 
@@ -11,15 +12,57 @@ build/cmake/bin/mlacker examples/mini_bass.mlaproj
 ```
 
 The script builds the plugin, generates the project with embedded parameter
-settings, and renders `build/mini_bass/preview.wav`. It uses the existing
+settings, and renders `build/mini_bass/sixteenths.wav` (the free-oscillator
+audition), `build/mini_bass/preview.wav` (the reference arrangement), and
+`build/mini_bass/baseline.wav` (the previous dark bass tone). It also writes
+`bass.wav` and `upper_sixteenths.wav` as separate solo renders of the two
+parallel parts. It uses the existing
 MLang compiler and fetched SDK from the normal mlacker build. No installation
 is needed. Plugin paths in the project point into `build/plugins/`, so open
 the checked-in project from the repository root. Set `NO_OPEN=0` to open it
 automatically after generation.
 
-The song order is **Classic bass → Classic bass → Ladder sweep → Legato
-glide**, about 34 seconds. Press Space to play the selected pattern, or open
-the song matrix with M to play the arrangement.
+The project opens on **Free OSC 16ths**. Press **Space** to play it: the
+first bar repeats F-2 on all sixteen rows; the second has octave and pitch
+changes, again with a note on every row. The 60% gates retrigger the
+envelopes while the oscillator phases keep moving through the gaps.
+The separate `sixteenths.wav` repeats this two-bar pattern four times, so
+you can hear the detuned oscillators beating over a longer stretch.
+
+Open the song matrix with **M**, then press **Space** for the reference
+arrangement: **eight bars of F octave pulses, one bar of C♯ pulses, and
+one bar of D♯ pulses**, about 20 seconds, including the short upper
+sixteenth-note phrases starting around four seconds and recurring every
+two bars. The two matrix lanes contain independent patterns and channels:
+
+| Matrix lane | Patterns | Instrument channel |
+| --- | --- | --- |
+| 1 | Bass - F / Bass - ending | Mini bass, instance 1 |
+| 2 | Upper - pickup / 16ths A / 16ths B / ending | Mini upper 16ths, instance 3 |
+
+Each pattern has one track with one note column, and each instance is
+monophonic. The two parts sound together only when the parallel lanes play.
+Select either pattern to hear or edit that part alone. The upper part's last
+sixteenth in the preceding pattern supplies each pickup.
+The main oscillator alternates F-2/F-3 (about 87/175 Hz), then C#2/C#3 and
+D#2/D#3; oscillator 3 supplies the sub-octave.
+
+Timing and pitch were estimated from short-window spectra and attack
+spacing in the recording. Bass notes fall every eighth note, starting about
+112 ms into the cropped reference. The saved score uses a 0.90-row offset
+and short gates, with release tails continuing toward the next pulse.
+The fast phrases and their octave placements are estimates from the mixed
+recording, as are gate lengths and velocities. Drums are not included.
+
+The brighter startup preset has **600 Hz Cutoff**, **3 octaves Filter Env
+Depth**, **35% Key Follow**, **480 ms Amp Release**, **450 ms Filter
+Release**, and **OSC Drive 1.4**. The envelope can open the filter to about
+4.8 kHz before keyboard tracking. The baseline preview uses the previous
+130 Hz / 1.8 octave / 20% filter settings, with the same notes, releases and
+oscillator drive, to compare brightness. The separate upper instance uses
+a 1 kHz cutoff and a two-octave envelope.
+
+The original demonstration patterns remain available separately:
 
 - **Classic bass:** detached notes around F-2, C-2 and their upper octaves,
   using the startup bass patch and short, plucky filter articulation.
@@ -29,6 +72,5 @@ the song matrix with M to play the arrangement.
   and sliding between pitches. A second Mini uses oscillator 3 as a fixed
   LFO; CC1 adds a little pitch and filter movement.
 
-The preview contains the first four-bar pattern, rendered dry by mlacker's
-offline bounce. The reference recording is not included, and the score is
-an original demonstration rather than a transcription of the recording.
+The reference previews contain the full ten-bar parallel arrangement, rendered dry by
+mlacker's offline bounce. The reference recording is not included.
