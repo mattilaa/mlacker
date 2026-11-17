@@ -43,6 +43,25 @@ def main():
             assert b"Saved project:" in frame, frame[-5000:]
             # Ctrl+S saves the open project in place.
             assert b"Saved project:" in tui.send(b"\x13", 0.9)
+            # Save from File while the plugin editor still has focus. The
+            # editor must let the menu open and execute its command, rather
+            # than consuming the menu keys as parameter navigation.
+            tui.send(EDIT_INSTRUMENT)
+            assert b"0.4" in tui.send(b"\r\x150.4\r")
+            frame = tui.send(SAVE_PROJECT, 0.9)
+            assert b"Saved project:" in frame, frame[-5000:]
+            tui.send(b"\x1b")
+            tui.send(EDIT_EFFECT)
+            assert b"0.6" in tui.send(b"\r\x150.6\r")
+            frame = tui.send(SAVE_PROJECT, 0.9)
+            assert b"Saved project:" in frame, frame[-5000:]
+            # Esc dismisses an open menu first, leaving the editor open.
+            tui.send(F1)
+            tui.send(b"\x1b")
+            frame = tui.send(b"\r\x150.65\r")
+            assert b"0.65" in frame, frame[-5000:]
+            assert b"Saved project:" in tui.send(SAVE_PROJECT, 0.9)
+            tui.send(b"\x1b")
         finally:
             tui.close()
 
@@ -66,9 +85,9 @@ def main():
             frame = tui.read(1.2)
             assert b"Opened project:" in frame and b"stereo_tone" in frame, frame[-5000:]
             frame = tui.send(EDIT_INSTRUMENT)
-            assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.25" in frame, frame[-5000:]
+            assert b"VST3 editor: Mlacker Test Instrument" in frame and b"0.4" in frame, frame[-5000:]
             tui.send(b"\x1b")
-            assert b"0.75" in tui.send(EDIT_EFFECT)
+            assert b"0.65" in tui.send(EDIT_EFFECT)
             tui.send(b"\x1b")
             assert b"Saved project:" in tui.send(b"\x13", 0.9)
             # Open project from the menu; a missing sample is named and the

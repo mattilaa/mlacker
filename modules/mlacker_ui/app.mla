@@ -2259,7 +2259,11 @@ pub fn run(options: &StartupOptions) -> i32 {
                 }
                 dirty = true;
             }
-            else if instrument_editor.active && instrument_editor.focused && !dialog.active && key.action == Action::None && !key.waiting {
+            // The plugin editor shares the main view: function keys still
+            // open menus, and an open menu owns its navigation and commands.
+            else if instrument_editor.active && instrument_editor.focused && !dialog.active && menus.active < 0 &&
+                    !(event.kind == InputKind::Menu && function_number(event.key) > 0 && event.modifiers == 1) &&
+                    key.action == Action::None && !key.waiting {
                 instrument_editor.on_event(event, midi.output, panes[1].bounds); dirty = true;
             }
             else if sample_editor.active {
@@ -3832,7 +3836,7 @@ pub fn run(options: &StartupOptions) -> i32 {
                 library.audio.view.cancel_pending();
                 library.instruments.cancel_pending();
                 if paste_error.active { paste_error.on_event(event); dirty = true; }
-                else if instrument_editor.active && instrument_editor.focused && !dialog.active { instrument_editor.on_event(event, midi.output, panes[1].bounds); dirty = true; }
+                else if instrument_editor.active && instrument_editor.focused && !dialog.active && menus.active < 0 { instrument_editor.on_event(event, midi.output, panes[1].bounds); dirty = true; }
                 else if clip_save.active { clip_save.on_event(event); dirty = true; }
                 else if group_dialog.active { group_dialog.on_event(event); dirty = true; }
                 else if group_question.active { group_question.on_event(event); if !group_question.active { free(message); message = clone("Cancelled."); } dirty = true; }

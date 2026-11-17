@@ -14,14 +14,10 @@ def check_score(records):
     assert records[28][1] == 1  # One monophonic Mini for the entire bass line.
     count = records[31][1]
     params = {records[32 + i * 2][1]: records[33 + i * 2][1] for i in range(count)}
-    assert params[101] == params[104] == .4  # Two saws.
-    assert params[102] == .5 and params[105] == .25  # Supporting saw one octave below.
-    assert math.isclose(20 * 1000 ** params[113], 260, rel_tol=1e-5)
-    assert math.isclose(params[114], .7, rel_tol=1e-5)
-    assert math.isclose(params[115] * 8, 3, rel_tol=1e-5)
-    assert math.isclose(.01 * 1000 ** params[118], .3, rel_tol=1e-5)
-    assert math.isclose(.005 * 2000 ** params[124], .22, rel_tol=1e-5)
-    assert params[127] == params[128] == 0  # No glide, envelope retrigger.
+    # The saved example can carry an edited preset. Validate its complete
+    # parameter layout here, then compare every value after save/reopen.
+    assert set(params) == set(range(100, 146))
+    assert all(0 <= value <= 1 for value in params.values())
     at = 32 + count * 2 + 2
     assert records[at][1] == 4
     at += 1
@@ -58,6 +54,7 @@ def check_score(records):
     assert records[at:at + 5] == [["integer", 4]] + [["integer", n] for n in (1, 2, 3, 4)]
     grid = records.index(["string", "MATRIX_GRID"])
     assert records[grid + 1] == ["integer", 16]
+    return params
 
 
 def main():
@@ -67,7 +64,7 @@ def main():
         shutil.copytree(source, project)
         path = project / "Project.mlack"
         doc = json.loads(path.read_text())
-        check_score(doc["records"])
+        original_params = check_score(doc["records"])
         for record in doc["records"]:
             if record[0] == "string" and record[1].endswith("MlaMini.vst3"):
                 record[1] = str(Path(sys.argv[2]).resolve())
@@ -96,7 +93,10 @@ def main():
             finally:
                 tui.close()
             saved = json.loads(path.read_text())
-            check_score(saved["records"])
+            saved_params = check_score(saved["records"])
+            changed = {key: (value, saved_params[key]) for key, value in original_params.items()
+                       if not math.isclose(saved_params[key], value, rel_tol=0, abs_tol=1e-12)}
+            assert not changed, f"Plugin settings changed on save/reopen: {changed}"
             saved_strings = [v for k, v in saved["records"] if k == "string"]
             assert saved_strings[:len(strings)] == strings
     print("PASS: Smalltown Boy notes, preset and mono song survive playback and save/reopen")
