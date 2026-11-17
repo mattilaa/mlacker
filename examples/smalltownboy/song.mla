@@ -1,0 +1,142 @@
+/// Smalltown Boy bass: a separate monophonic transcription and estimated
+/// Mini patch from the user-supplied 7.64-second recording. No source audio
+/// is embedded. Parameters are approximate, not original knob measurements.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::audio_clip::AudioClip;
+use mlacker_ui::bounce::Bounce;
+use tui::geometry::*;
+use std::strbuf::clone;
+use std::strbuf::free;
+mod std::env::detail;
+use std::env::detail::__env_get_var;
+extern fn mlacker_install_vst3_host() -> void;
+extern fn getpid() -> i32;
+extern fn rename(from: str8, to: str8) -> i32;
+extern fn log(value: f64) -> f64;
+
+fn area() -> Rect { return Rect::new(0, 0, 160, 40); }
+fn note_at(table: &mut SequenceTable, track: i32, row: i32, note: str8, velocity: i32, length: str8) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let c: i32 = t.track_start(track);
+    t.set_cell(row, c, clone(note)); t.set_cell(row, c + 1, format!("{}", velocity));
+    t.set_cell(row, c + 2, clone(length)); t.set_cell(row, c + 3, clone("0.00"));
+    table = t;
+}
+fn set_named(system: &AudioSystem, slot: i64, name: str8, value: f64) -> bool {
+    var a: AudioSystem = AudioSystem {}; a = system;
+    let count: i64 = wide(i32(a.output.parameter_info(slot, 0, 0)));
+    for i in 0..count {
+        let found: str8 = a.output.parameter_name(slot, i);
+        if found == name {
+            // Offline owner: apply immediately. bounce_begin's panic clears
+            // the pending realtime queue, including unprocessed knob changes.
+            let steps: f64 = a.output.parameter_info(slot, i, 1);
+            let normalized: f64 = steps > 0.0 ? value / steps : value;
+            let status: i32 = a.output.restore_parameter(slot, i, normalized);
+            if status != 0 { println!("Cannot set {} to {}: {}", name, value, status); }
+            return status == 0;
+        }
+    }
+    println!("Missing parameter: {}", name); return false;
+}
+
+fn normalized_log(value: f64, minimum: f64, maximum: f64) -> f64 {
+    return log(value / minimum) / log(maximum / minimum);
+}
+/// Estimates from the excerpt's harmonic balance and short note articulation.
+/// Stepped controls take their zero-based position (Range position 3 = +1 oct).
+fn bass_patch(audio: &AudioSystem) -> bool {
+    var ok: bool = set_named(audio, 1, "Output", 63.0 / 66.0);
+    ok = ok && set_named(audio, 1, "OSC 1 Wave", 2.0) && set_named(audio, 1, "OSC 1 Range", 2.0);
+    ok = ok && set_named(audio, 1, "OSC 1 Level", 0.8);
+    ok = ok && set_named(audio, 1, "OSC 2 Wave", 2.0) && set_named(audio, 1, "OSC 2 Range", 1.0);
+    ok = ok && set_named(audio, 1, "OSC 2 Level", 0.25) && set_named(audio, 1, "OSC 2 Fine", 28.0 / 50.0);
+    ok = ok && set_named(audio, 1, "OSC 3 Wave", 0.0) && set_named(audio, 1, "OSC 3 Range", 1.0);
+    ok = ok && set_named(audio, 1, "OSC 3 Level", 0.15) && set_named(audio, 1, "Noise", 0.0);
+    ok = ok && set_named(audio, 1, "Cutoff", normalized_log(260.0, 20.0, 20000.0));
+    ok = ok && set_named(audio, 1, "Resonance", 0.7) && set_named(audio, 1, "Filter Env Depth", 3.0 / 8.0);
+    ok = ok && set_named(audio, 1, "Key Follow", 0.35);
+    ok = ok && set_named(audio, 1, "Filter Attack", normalized_log(0.003, 0.001, 10.0));
+    ok = ok && set_named(audio, 1, "Filter Decay", normalized_log(0.3, 0.01, 10.0));
+    ok = ok && set_named(audio, 1, "Filter Sustain", 0.12);
+    ok = ok && set_named(audio, 1, "Filter Release", normalized_log(0.20, 0.005, 10.0));
+    ok = ok && set_named(audio, 1, "Amp Attack", normalized_log(0.004, 0.001, 10.0));
+    ok = ok && set_named(audio, 1, "Amp Decay", normalized_log(0.55, 0.01, 10.0));
+    ok = ok && set_named(audio, 1, "Amp Sustain", 0.5);
+    ok = ok && set_named(audio, 1, "Amp Release", normalized_log(0.22, 0.005, 10.0));
+    ok = ok && set_named(audio, 1, "Drive", normalized_log(1.7, 1.0, 8.0));
+    ok = ok && set_named(audio, 1, "Feedback", 0.04) && set_named(audio, 1, "Glide", 0.0);
+    ok = ok && set_named(audio, 1, "Legato", 0.0) && set_named(audio, 1, "Key Priority", 0.0);
+    ok = ok && set_named(audio, 1, "Mod Wheel", 0.0) && set_named(audio, 1, "Velocity > Amp", 0.0);
+    ok = ok && set_named(audio, 1, "Velocity > Filter", 0.0);
+    ok = ok && set_named(audio, 1, "OSC Drive", normalized_log(1.4, 1.0, 4.0));
+    ok = ok && set_named(audio, 1, "Analog Output", 0.2) && set_named(audio, 1, "OSC Drift", 0.8 / 8.0);
+    ok = ok && set_named(audio, 1, "Background Hiss", 4.0) && set_named(audio, 1, "Hiss Level", 42.0 / 48.0);
+    return ok;
+}
+
+fn bar(root: str8, upper: str8, number: i32) -> SequenceTable {
+    var t: SequenceTable = SequenceTable::empty(); t.set_length(16, area());
+    t.create_instrument_track(1, area()); t.rename_track("Smalltown mono bass");
+    for note in 0..8 {
+        note_at(&mut t, 0, i32(note) * 2, note % 2 == 0 ? root : upper, 105, "1.10");
+        // The measured pulse is ~126.47 BPM. The tracker uses integer 126;
+        // these small offsets follow the excerpt across its four-bar phrase.
+        let global: i32 = number * 8 + i32(note);
+        // Tracker note offsets accept two decimal places.
+        let hundredths: i32 = 25 - (global * 7 + 5) / 10;
+        let text: str8 = hundredths < 10 ? format!("0.0{}", hundredths) : format!("0.{}", hundredths);
+        t.set_cell(i32(note) * 2, t.track_start(0) + 3, text);
+    }
+    t.selected_row = 0; t.selected_column = t.track_start(0);
+    return t;
+}
+
+fn render(system: &mut AudioSystem, patterns: &PatternLibrary) -> bool {
+    var audio: AudioSystem = AudioSystem {}; audio = system;
+    var library: PatternLibrary = PatternLibrary {}; library = patterns;
+    var source: SequenceTable = library.merge_song_row(0, area(), false);
+    var job: Bounce = audio.bounce_begin(126);
+    if !job.ok() { println!("Bounce failed: {}", job.error); return false; }
+    for row in 0..4 {
+        source = library.merge_song_row(i32(row), area(), false);
+        audio.bounce_segment(&mut job, source, 0, 16, []);
+    }
+    let samples: list<f32> = audio.bounce_finish(job, source, 1);
+    let path: str8 = "build/smalltownboy/preview.wav";
+    let temporary: str8 = format!("build/smalltownboy/preview-{}.wav", getpid());
+    let made: result<AudioClip, str8> = AudioClip::from_pcm(temporary, samples, 2, audio.output.sample_rate(), 126);
+    system = audio;
+    if made.is_err() { println!("Render failed: {}", made.unwrap_err()); return false; }
+    let clip: AudioClip = made.unwrap();
+    let ok: bool = clip.write_wav(temporary) && rename(temporary, path) == 0;
+    clip.release(); free(temporary); return ok;
+}
+
+fn main() -> i32 {
+    mlacker_install_vst3_host();
+    var audio: AudioSystem = AudioSystem::start(false);
+    let loaded: str8 = audio.add_instrument(__env_get_var("MINI_VST3"));
+    if loaded != "" { println!("Mla Mini: {}", loaded); return 1; }
+    if !bass_patch(audio) { return 1; }
+    var library: PatternLibrary = PatternLibrary::empty();
+    library.add_instrument(1, "Smalltown Boy - Mini bass");
+    library.table.release(); library.table = bar("C-2", "C-3", 0); library.rename("Smalltown Boy - C");
+    library.import_pattern("Smalltown Boy - Bb", bar("A#1", "A#2", 1), []);
+    library.import_pattern("Smalltown Boy - F", bar("F-2", "F-3", 2), []);
+    library.import_pattern("Smalltown Boy - Eb", bar("D#2", "D#3", 3), []);
+    library.song = [1, 2, 3, 4]; library.matrix_steps = 16; library.select(1); library.refresh();
+    if !render(&mut audio, library) { return 1; }
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project("examples/smalltownboy.mlaproj", library, SessionView { bpm: 126, sidebar: 1 }, audio);
+    if saved.is_err() { println!("Save failed: {}", saved.unwrap_err()); return 1; }
+    println!("Saved {}", saved.unwrap()); println!("Rendered build/smalltownboy/preview.wav");
+    audio.release(); return 0;
+}

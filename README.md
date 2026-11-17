@@ -1536,6 +1536,10 @@ samples.
   Breakdown, Build, Peak.
 - `examples/atmosphere_pad.mlaproj`: "Atmosphere", "Dawn 2 Dusk" and
   "Footprint 97" pads in a short trance song at 136 BPM.
+- `examples/smalltownboy.mlaproj`: [Smalltown Boy bass](examples/smalltownboy),
+  a separate four-bar monophonic transcription from the supplied excerpt,
+  with an estimated Mla Mini patch. `examples/smalltownboy/build.sh` generates
+  the project and its WAV preview.
 - `examples/mini_bass.mlaproj`: [Mla Mini bass demo](examples/mini_bass), with
   a reference-based ten-bar bass sequence at 121 BPM, plus optional ladder
   sweeps and legato patterns. It opens on a free-running oscillator

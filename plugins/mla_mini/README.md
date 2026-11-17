@@ -149,6 +149,11 @@ each with its own monophonic instance. Every saved pattern has just one
 instrument track and one note column. `bass.wav` and `upper_sixteenths.wav`
 render the parts individually.
 
+[Smalltown Boy](../../examples/smalltownboy) is a separate bass example and
+estimated preset from a supplied excerpt: alternating low/high eighth notes,
+quieter lower oscillators and a darker, plucked filter on one mono Mini. It does not change the
+startup patch or the earlier bass example.
+
 ## Verification
 
 ```sh
