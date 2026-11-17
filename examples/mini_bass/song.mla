@@ -1,0 +1,126 @@
+/// Original bass riff: dry reference-inspired patch, ladder sweep, legato.
+/// No sample files or other plugins are needed. Regenerate with build.sh.
+mod mlacker_ui::app;
+mod tui::table;
+use tui::table::*;
+use mlacker_ui::patterns::PatternLibrary;
+use mlacker_ui::sequence::SequenceTable;
+use mlacker_ui::session::SessionCodec;
+use mlacker_ui::session::SessionView;
+use mlacker_ui::audio_controller::AudioSystem;
+use mlacker_ui::audio_clip::AudioClip;
+use mlacker_ui::bounce::Bounce;
+use tui::geometry::*;
+use std::strbuf::clone;
+use std::strbuf::free;
+mod std::env::detail;
+use std::env::detail::__env_get_var;
+extern fn mlacker_install_vst3_host() -> void;
+extern fn getpid() -> i32;
+extern fn rename(from: str8, to: str8) -> i32;
+
+fn area() -> Rect { return Rect::new(0, 0, 160, 40); }
+fn note_at(table: &mut SequenceTable, track: i32, row: i32, note: str8, velocity: i32, length: str8) -> void {
+    var t: SequenceTable = SequenceTable {}; t = table;
+    let c: i32 = t.track_start(track);
+    t.set_cell(row, c, clone(note)); t.set_cell(row, c + 1, format!("{}", velocity));
+    t.set_cell(row, c + 2, clone(length)); t.set_cell(row, c + 3, clone("0.00"));
+    table = t;
+}
+fn set_named(system: &AudioSystem, slot: i64, name: str8, value: f64) -> bool {
+    var a: AudioSystem = AudioSystem {}; a = system;
+    let count: i64 = wide(i32(a.output.parameter_info(slot, 0, 0)));
+    for i in 0..count {
+        let found: str8 = a.output.parameter_name(slot, i);
+        if found == name {
+            let status: i32 = a.output.set_parameter(slot, i, value);
+            if status != 0 { println!("Cannot set {} to {}: {}", name, value, status); }
+            return status == 0;
+        }
+    }
+    println!("Missing parameter: {}", name); return false;
+}
+fn pattern() -> SequenceTable {
+    var t: SequenceTable = SequenceTable::empty(); t.set_length(64, area());
+    t.create_instrument_track(1, area()); t.rename_track("Classic bass");
+    t.create_instrument_track(2, area()); t.rename_track("Legato glide");
+    t.add_automation(0, "cc:74"); t.add_automation(0, "cc:71");
+    t.selected_column = t.track_start(0); t.selected_row = 0;
+    return t;
+}
+fn riff(t: &mut SequenceTable) -> void {
+    let notes: list<str8> = ["F-2", "F-2", "C-3", "F-2", "G#2", "F-2", "D#2", "C-2",
+        "F-2", "F-3", "C-3", "G#2", "D#2", "C-2", "D#2", "E-2"];
+    for i in 0..32 {
+        note_at(&mut t, 0, i32(i) * 2, notes[i % 16], i % 4 == 0 ? 118 : 96, "1.25");
+    }
+}
+fn controls(t: &mut SequenceTable, sweep: bool) -> void {
+    var table: SequenceTable = SequenceTable {}; table = t;
+    let c: i32 = table.automation_column(0, 2);
+    let r: i32 = table.automation_column(0, 3);
+    // Default CC1 occupies slot 1. CC74 and CC71 are added after it.
+    for row in 0..64 {
+        var values: str8 = clone("");
+        for step in 0..4 {
+            let tick: i32 = i32(row) * 4 + i32(step);
+            let v: i32 = sweep ? (tick < 128 ? 28 + tick * 50 / 128 : 78 - (tick - 128) * 50 / 128) : 40;
+            let next: str8 = step == 0 ? format!("{}", v) : format!("{} {}", values, v);
+            free(values); values = next;
+        }
+        table.set_cell(i32(row), c, values);
+    }
+    table.set_cell(0, r, clone(sweep ? "64" : "28"));
+    t = table;
+}
+fn render(system: &mut AudioSystem, t: &SequenceTable) -> bool {
+    var a: AudioSystem = AudioSystem {}; a = system;
+    var source: SequenceTable = SequenceTable {}; source = t;
+    var job: Bounce = a.bounce_begin(112);
+    if !job.ok() { println!("Bounce failed: {}", job.error); return false; }
+    a.bounce_segment(&mut job, source, 0, 64, []);
+    let pcm: list<f32> = a.bounce_finish(job, source, 2);
+    let temporary: str8 = format!("build/mini_bass/preview-{}.wav", getpid());
+    let made: result<AudioClip, str8> = AudioClip::from_pcm(temporary, pcm, 2, a.output.sample_rate(), 112);
+    system = a;
+    if made.is_err() { println!("Render failed: {}", made.unwrap_err()); return false; }
+    let clip: AudioClip = made.unwrap();
+    let ok: bool = clip.write_wav(temporary) && rename(temporary, "build/mini_bass/preview.wav") == 0;
+    if !ok { println!("Cannot write preview WAV"); }
+    clip.release(); free(temporary); return ok;
+}
+fn main() -> i32 {
+    mlacker_install_vst3_host();
+    var audio: AudioSystem = AudioSystem::start(false);
+    let plugin: str8 = __env_get_var("MINI_VST3");
+    var library: PatternLibrary = PatternLibrary::empty();
+    for i in 0..2 {
+        let status: str8 = audio.add_instrument(plugin);
+        if status != "" { println!("Mla Mini: {}", status); return 1; }
+        library.add_instrument(i32(i) + 1, "Mla Mini");
+    }
+    // Slot 1 uses the startup bass patch. Slot 2 demonstrates overlapping
+    // notes and oscillator-3 LFO modulation with the mod wheel raised.
+    var ok: bool = set_named(audio, 2, "Glide", 0.18);
+    ok = ok && set_named(audio, 2, "OSC 3 Low", 1.0) && set_named(audio, 2, "OSC 3 Keyboard", 0.0);
+    ok = ok && set_named(audio, 2, "OSC 3 Range", 4.0) && set_named(audio, 2, "Mod Wheel", 0.3);
+    ok = ok && set_named(audio, 2, "Filter Sustain", 0.25);
+    if !ok { return 1; }
+    var classic: SequenceTable = pattern(); riff(&mut classic); controls(&mut classic, false);
+    var sweep: SequenceTable = pattern(); riff(&mut sweep); controls(&mut sweep, true);
+    var glide: SequenceTable = pattern();
+    glide.set_cell(0, glide.automation_column(1, 1), clone("38"));
+    let notes: list<str8> = ["F-2", "C-3", "G#2", "D#2", "C-2", "F-2", "D#2", "E-2"];
+    for i in 0..16 { note_at(&mut glide, 1, i32(i) * 4, notes[i % 8], 110, i == 15 ? "3.50" : "4.50"); }
+    println!("Rendering classic bass");
+    if !render(&mut audio, classic) { return 1; }
+    library.table.release(); library.table = classic; library.rename("Classic bass");
+    library.import_pattern("Ladder sweep", sweep, []);
+    library.import_pattern("Legato glide", glide, []);
+    library.song = [1, 1, 2, 3]; library.select(1); library.refresh();
+    var codec: SessionCodec = SessionCodec {};
+    let saved: result<str8, str8> = codec.save_project("examples/mini_bass.mlaproj", library, SessionView { bpm: 112, sidebar: 1 }, audio);
+    if saved.is_err() { println!("Save failed: {}", saved.unwrap_err()); return 1; }
+    println!("Saved {}", saved.unwrap());
+    println!("Rendered build/mini_bass/preview.wav"); audio.release(); return 0;
+}

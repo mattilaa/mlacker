@@ -901,6 +901,28 @@ int main(int argc, char **argv) {
         CHECK(__mlang_std_audio_controller_close(d) == 0);
         std::puts("PASS: Mla SID plays notes and takes register CCs");
     }
+    // Mla Mini responds to the tracker's sample-stamped notes and MIDI panic.
+    if(const char *mini = std::getenv("MLA_MINI_VST3")) {
+        int64_t d = __mlang_std_audio_controller_new(48000, 128);
+        CHECK(__mlang_std_audio_controller_load_instrument(d, 1, mini) == 0);
+        CHECK(std::strcmp(__mlang_std_audio_controller_instrument_name(d, 1), "Mla Mini") == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        const int64_t at = __mlang_std_audio_controller_info(d, 2);
+        CHECK(__mlang_std_audio_controller_post(d, 2, 6, 0, 41, 110, 3, at + 96, 1, 1) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        double before = 0, after = 0;
+        for(int f = 0; f < 96; ++f) before = std::max(before, std::fabs(static_cast<double>(__mlang_std_audio_pcm_block_sample(b, f, 0))));
+        for(int f = 96; f < 256; ++f) after = std::max(after, std::fabs(static_cast<double>(__mlang_std_audio_pcm_block_sample(b, f, 0))));
+        CHECK(before == 0 && after > 1e-3);
+        const int64_t later = __mlang_std_audio_controller_info(d, 2);
+        CHECK(__mlang_std_audio_controller_post(d, 2, 9, 0, 123, 0, 3, later + 113, 1, 1) == 0);
+        CHECK(__mlang_std_audio_controller_process(d, b, 256) == 0);
+        double rest = 0;
+        for(int f = 113; f < 256; ++f) rest = std::max(rest, std::fabs(static_cast<double>(__mlang_std_audio_pcm_block_sample(b, f, 0))));
+        CHECK(rest == 0);
+        CHECK(__mlang_std_audio_controller_close(d) == 0);
+        std::puts("PASS: Mla Mini plays bass notes and responds to MIDI panic");
+    }
     // Mla Sampler has ten output buses: Main, Out 2-8, Send A and Send B.
     // Its aux buses follow the main output until routed to master, a PCM
     // track's channel, an aux effect channel's input or nowhere.

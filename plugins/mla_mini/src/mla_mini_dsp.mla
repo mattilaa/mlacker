@@ -1,0 +1,173 @@
+/// Three free-running oscillators, nonlinear four-pole TPT ladder and two
+/// envelopes. Four internal samples per output sample reduce oscillator and
+/// saturation aliasing. This is a musical approximation, not a circuit clone.
+mod dsp::envelope;
+use dsp::envelope::Adsr;
+
+extern fn calloc(count: i64, size: i64) -> ptr<Mini>;
+extern fn free(block: ptr<Mini>) -> void;
+extern fn tanhf(x: f32) -> f32;
+extern fn tanf(x: f32) -> f32;
+extern fn expf(x: f32) -> f32;
+extern fn exp2f(x: f32) -> f32;
+extern fn fabsf(x: f32) -> f32;
+
+fn clamp(x: f32, lo: f32, hi: f32) -> f32 { return x < lo ? lo : (x > hi ? hi : x); }
+fn wrap(x: f32) -> f32 { return x >= 1.0f ? x - 1.0f : x; }
+fn blep(t: f32, dt: f32) -> f32 {
+    if t < dt { let x: f32 = t / dt; return 2.0f * x - x * x - 1.0f; }
+    if t > 1.0f - dt { let x: f32 = (t - 1.0f) / dt; return x * x + 2.0f * x + 1.0f; }
+    return 0.0f;
+}
+fn wave(t: f32, dt: f32, kind: i32) -> f32 {
+    let tri: f32 = 1.0f - 4.0f * fabsf(t - 0.5f);
+    let saw: f32 = 2.0f * t - 1.0f - blep(t, dt);
+    if kind == 0 { return tri; }
+    if kind == 1 { return (tri + saw) * 0.65f; }
+    if kind == 2 { return saw; }
+    let width: f32 = kind == 3 ? 0.5f : (kind == 4 ? 0.3f : 0.15f);
+    let shifted: f32 = wrap(t + 1.0f - width);
+    // Remove pulse DC before driving the filter.
+    return (t < width ? 1.0f : -1.0f) + blep(t, dt) - blep(shifted, dt) - (2.0f * width - 1.0f);
+}
+
+struct Mini {
+    var rate: f32; var counter: i32; var seed: i64;
+    var p1: f32; var p2: f32; var p3: f32;
+    var w1: i32; var w2: i32; var w3: i32;
+    var range1: f32; var range2: f32; var range3: f32;
+    var fine2: f32; var fine3: f32;
+    var level1: f32; var level2: f32; var level3: f32; var noise: f32;
+    var target: f32; var pitch: f32; var velocity: f32; var gain: f32; var gain_target: f32;
+    var cutoff: f32; var smooth_cutoff: f32; var resonance: f32; var env_depth: f32; var follow: f32;
+    var drive: f32; var feedback: f32; var glide: f32; var glide_coeff: f32;
+    var bend: f32; var bend_range: f32; var wheel: f32; var mod_pitch: f32; var mod_filter: f32;
+    var osc3_low: bool; var osc3_keys: bool; var velocity_amp: f32; var velocity_filter: f32;
+    var g: f32; var s1: f32; var s2: f32; var s3: f32; var s4: f32;
+    var last: f32; var aa1: f32; var aa2: f32; var dc_in: f32; var dc_out: f32; var dc_coeff: f32;
+    var amp: Adsr; var fenv: Adsr;
+};
+
+fn mlamini_create(sample_rate: f32) -> ptr<Mini> {
+    let m: ptr<Mini> = calloc(1, size_of(Mini));
+    unsafe {
+        (*m).rate = sample_rate; (*m).seed = 170917;
+        (*m).amp = Adsr::new(sample_rate); (*m).fenv = Adsr::new(sample_rate);
+        (*m).p2 = 0.371f; (*m).p3 = 0.719f;
+        (*m).pitch = 36.0f; (*m).target = 36.0f;
+        (*m).cutoff = 180.0f; (*m).smooth_cutoff = 180.0f;
+        (*m).dc_coeff = expf(-6.2831853f * 8.0f / sample_rate);
+    }
+    return m;
+}
+fn mlamini_destroy(m: ptr<Mini>) -> void { unsafe { free(m); } }
+fn mlamini_reset(m: ptr<Mini>) -> void {
+    unsafe {
+        (*m).amp.reset(); (*m).fenv.reset();
+        (*m).s1 = 0.0f; (*m).s2 = 0.0f; (*m).s3 = 0.0f; (*m).s4 = 0.0f;
+        (*m).aa1 = 0.0f; (*m).aa2 = 0.0f; (*m).last = 0.0f;
+        (*m).dc_in = 0.0f; (*m).dc_out = 0.0f;
+    }
+}
+/// Physical values, indexed by the stable VST parameter ID minus 100.
+fn mlamini_set(m: ptr<Mini>, i: i32, v: f32) -> void {
+    unsafe {
+        if i == 0 { (*m).gain_target = v <= -60.0f ? 0.0f : exp2f(v / 6.0206f); }
+        else if i == 1 { (*m).w1 = i32(v); } else if i == 2 { (*m).range1 = v; }
+        else if i == 3 { (*m).level1 = v; } else if i == 4 { (*m).w2 = i32(v); }
+        else if i == 5 { (*m).range2 = v; } else if i == 6 { (*m).fine2 = v / 100.0f; }
+        else if i == 7 { (*m).level2 = v; } else if i == 8 { (*m).w3 = i32(v); }
+        else if i == 9 { (*m).range3 = v; } else if i == 10 { (*m).fine3 = v / 100.0f; }
+        else if i == 11 { (*m).level3 = v; } else if i == 12 { (*m).noise = v; }
+        else if i == 13 { (*m).cutoff = v; } else if i == 14 { (*m).resonance = v; }
+        else if i == 15 { (*m).env_depth = v; } else if i == 16 { (*m).follow = v; }
+        else if i == 17 { (*m).fenv.set_attack_seconds(v); }
+        else if i == 18 { (*m).fenv.set_decay_seconds(v); }
+        else if i == 19 { (*m).fenv.set_sustain(v); }
+        else if i == 20 { (*m).fenv.set_release_seconds(v); }
+        else if i == 21 { (*m).amp.set_attack_seconds(v); }
+        else if i == 22 { (*m).amp.set_decay_seconds(v); }
+        else if i == 23 { (*m).amp.set_sustain(v); }
+        else if i == 24 { (*m).amp.set_release_seconds(v); }
+        else if i == 25 { (*m).drive = v; } else if i == 26 { (*m).feedback = v; }
+        else if i == 27 { (*m).glide = v; (*m).glide_coeff = v <= 0.0f ? 0.0f : expf(-6.907755f / (v * (*m).rate)); }
+        else if i == 30 { (*m).bend = v; } else if i == 31 { (*m).bend_range = v; }
+        else if i == 32 { (*m).wheel = v; } else if i == 33 { (*m).mod_pitch = v; }
+        else if i == 34 { (*m).mod_filter = v; } else if i == 35 { (*m).osc3_low = v > 0.5f; }
+        else if i == 36 { (*m).osc3_keys = v > 0.5f; }
+        else if i == 37 { (*m).velocity_amp = v; } else if i == 38 { (*m).velocity_filter = v; }
+        (*m).counter = 0;
+    }
+}
+fn mlamini_note(m: ptr<Mini>, note: f32, velocity: f32, retrigger: i32, snap: i32) -> void {
+    unsafe {
+        (*m).target = note; (*m).velocity = velocity;
+        if snap != 0 { (*m).pitch = note; }
+        if retrigger != 0 { (*m).amp.gate_on(); (*m).fenv.gate_on(); }
+    }
+}
+fn mlamini_off(m: ptr<Mini>) -> void { unsafe { (*m).amp.gate_off(); (*m).fenv.gate_off(); } }
+fn mlamini_active(m: ptr<Mini>) -> i32 { unsafe { return (*m).amp.is_active() ? 1 : 0; } }
+
+impl Mini {
+    fn ladder(self: &mut Self, input: f32) -> f32 {
+        let g: f32 = self.g; let h: f32 = 1.0f - g;
+        let g2: f32 = g * g; let g4: f32 = g2 * g2;
+        let memory: f32 = h * (g2 * g * self.s1 + g2 * self.s2 + g * self.s3 + self.s4);
+        let k: f32 = self.resonance * 3.96f;
+        // Solve the instantaneous nonlinear feedback loop with Newton steps.
+        // Saturation lives inside the loop; resonance retains analog bass loss.
+        let x: f32 = input * (1.0f + 0.15f * k);
+        var u: f32 = tanhf(x - k * memory);
+        for iteration in 0..4 {
+            let t: f32 = tanhf(x - k * (g4 * u + memory));
+            u = u - (u - t) / (1.0f + k * g4 * (1.0f - t * t));
+        }
+        let a: f32 = g * u + h * self.s1; self.s1 = 2.0f * a - self.s1;
+        let b: f32 = g * a + h * self.s2; self.s2 = 2.0f * b - self.s2;
+        let c: f32 = g * b + h * self.s3; self.s3 = 2.0f * c - self.s3;
+        let d: f32 = g * c + h * self.s4; self.s4 = 2.0f * d - self.s4;
+        return d;
+    }
+    fn process(self: &mut Self) -> f32 {
+        self.gain = self.gain + 0.002f * (self.gain_target - self.gain);
+        self.pitch = self.target + (self.pitch - self.target) * self.glide_coeff;
+        self.smooth_cutoff = self.smooth_cutoff + 0.004f * (self.cutoff - self.smooth_cutoff);
+        let amp: f32 = self.amp.process(); let env: f32 = self.fenv.process();
+        let dt3: f32 = clamp((self.osc3_low ? 0.5f : 440.0f) * exp2f(((self.osc3_keys ? self.pitch - 69.0f : 0.0f) + 12.0f * self.range3 + self.fine3 + self.bend * self.bend_range) / 12.0f) / (self.rate * 4.0f), 0.00000001f, 0.45f);
+        let modulation: f32 = wave(self.p3, dt3, self.w3) * self.wheel;
+        let pitch: f32 = self.pitch - 69.0f + self.bend * self.bend_range + modulation * self.mod_pitch;
+        let dt1: f32 = clamp(440.0f * exp2f(pitch / 12.0f + self.range1) / (self.rate * 4.0f), 0.00000001f, 0.45f);
+        let dt2: f32 = clamp(440.0f * exp2f((pitch + self.fine2) / 12.0f + self.range2) / (self.rate * 4.0f), 0.00000001f, 0.45f);
+        if self.counter == 0 {
+            let vel: f32 = 1.0f - self.velocity_filter * (1.0f - self.velocity);
+            let hz: f32 = clamp(self.smooth_cutoff * exp2f(self.env_depth * env * vel + self.follow * (self.pitch - 36.0f) / 12.0f + modulation * self.mod_filter), 15.0f, self.rate * 0.42f);
+            let g: f32 = tanf(3.14159265f * hz / (self.rate * 4.0f));
+            self.g = g / (1.0f + g);
+        }
+        self.counter = (self.counter + 1) % 8;
+        var out: f32 = 0.0f;
+        for sub in 0..4 {
+            self.seed = (self.seed * 1664525 + 1013904223) % 4294967296;
+            let noise: f32 = f32(self.seed) / 2147483648.0f - 1.0f;
+            let mixed: f32 = (wave(self.p1, dt1, self.w1) * self.level1 + wave(self.p2, dt2, self.w2) * self.level2 + (self.osc3_low ? 0.0f : wave(self.p3, dt3, self.w3) * self.level3) + noise * self.noise) * 0.45f;
+            self.p1 = wrap(self.p1 + dt1); self.p2 = wrap(self.p2 + dt2); self.p3 = wrap(self.p3 + dt3);
+            if self.amp.is_active() {
+                self.last = self.ladder(self.drive * mixed + self.feedback * self.last * 2.5f);
+                // Two anti-alias poles before decimation, then average the four steps.
+                self.aa1 = self.aa1 + 0.4665f * (self.last - self.aa1);
+                self.aa2 = self.aa2 + 0.4665f * (self.aa1 - self.aa2);
+                out = out + self.aa2 * 0.25f;
+            }
+        }
+        if !self.amp.is_active() {
+            self.s1 = 0.0f; self.s2 = 0.0f; self.s3 = 0.0f; self.s4 = 0.0f;
+            self.last = 0.0f; self.aa1 = 0.0f; self.aa2 = 0.0f;
+            self.dc_in = 0.0f; self.dc_out = 0.0f; return 0.0f;
+        }
+        let dc: f32 = out - self.dc_in + self.dc_coeff * self.dc_out;
+        self.dc_in = out; self.dc_out = dc;
+        return tanhf(dc * 1.8f) * amp * self.gain * (1.0f - self.velocity_amp * (1.0f - self.velocity));
+    }
+}
+fn mlamini_process(m: ptr<Mini>) -> f32 { unsafe { return (*m).process(); } }

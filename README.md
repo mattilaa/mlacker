@@ -10,7 +10,8 @@ speech synthesizer that says a pattern's comment texts),
 [Mla 06](plugins/mla_06) and [Mla 08](plugins/mla_08) (synthesized TR-606 and TR-808 style drum machines),
 [Mla SID](plugins/mla_sid) (a Commodore 64 SID chip synthesizer whose registers MIDI CCs write),
 [Mla Paula](plugins/mla_paula) (the Amiga's four-channel 8-bit sample chip, with the A500 filters) and
-[Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
+[Mla 8000](plugins/mla_8000) (a Roland JP-8000 style synthesizer with the Super Saw) and
+[Mla Mini](plugins/mla_mini) (a Minimoog-inspired mono bass synth with three oscillators and a ladder filter) are under `plugins/`. [docs/interface.md](docs/interface.md) describes the views,
 editing keys, transport and audio handling in detail.
 
 The [Turbo OutRun projects](examples/turbo_outrun) include the C64 loading music
@@ -1535,6 +1536,9 @@ samples.
   Breakdown, Build, Peak.
 - `examples/atmosphere_pad.mlaproj`: "Atmosphere", "Dawn 2 Dusk" and
   "Footprint 97" pads in a short trance song at 136 BPM.
+- `examples/mini_bass.mlaproj`: [Mla Mini bass demo](examples/mini_bass), with
+  a dry bass riff, an automated ladder-filter sweep and overlapping legato
+  glides. Run `examples/mini_bass/build.sh` to build it and render a WAV preview.
 - `examples/mla8000_demo.mlaproj`: the same kind of song played on the
   [Mla 8000](plugins/mla_8000) plugin instead of samples: a mono bass, a
   gated Super Saw stab, a Super Saw pad and a Super Saw lead, each with the
