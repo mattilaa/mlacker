@@ -194,9 +194,13 @@ def pattern_change_resumes_following():
     tui = Terminal()
     try:
         follow_setup(tui)
-        tui.send(b" ", .05)
+        frame = tui.send_until(b" ", b"PLAY", timeout=5)
+        assert b"PLAY" in frame, frame[-5000:]
         tui.send(b"\t", .1)
-        assert b"Esc follows playback again" in tui.send(b"j", .1)
+        # Reading the key from the PTY does not mean the UI has painted its
+        # result yet. Wait for the pause message on a loaded CI runner.
+        frame = tui.send_until(b"j", b"Esc follows playback again", timeout=5)
+        assert b"Esc follows playback again" in frame, frame[-5000:]
         tui.send(b"\x1b[Z", .1)
         frame = tui.send_until(b"j", b"Playing pattern 3", timeout=5)
         frame += tui.read(2.8)
