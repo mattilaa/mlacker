@@ -24,8 +24,8 @@ mixed recording. Other instruments in the excerpt are not recreated.
 
 ## Estimated preset
 
-The octave movement is in the played eighth notes. A main saw and two quieter
-oscillators one octave below feed a darker ladder filter. Each eighth note
+The octave movement is in the played eighth notes. The three oscillators feed the
+ladder filter and Mini’s built-in stereo chorus. Each eighth note
 retriggers both envelopes, with a falling filter sweep and a softer amplitude
 decay and release. These are approximation settings from the mixed excerpt,
 not recovered original knob positions or a claim about which hardware made
@@ -33,21 +33,34 @@ the recording.
 
 | Control | Setting |
 | --- | --- |
-| OSC 1 | Saw, 0 octaves, level 0.80 |
-| OSC 2 | Saw, −1 octave, +3 cents, level 0.25 |
-| OSC 3 | Triangle, −1 octave, level 0.15 |
+| OSC 1 | Saw, played pitch, level 0.85 |
+| OSC 2 | Triangle/saw, +1 octave, −7 cents, level 0.55 |
+| OSC 3 | Triangle, −1 octave, +3 cents, level 0.26 |
 | Mixer Noise | 0 |
-| Cutoff / Resonance | 260 Hz / 0.70 |
-| Filter envelope depth / Key Follow | +3 octaves / 35% |
-| Filter A / D / S / R | 3 ms / 300 ms / 12% / 200 ms |
-| Amp A / D / S / R | 4 ms / 550 ms / 50% / 220 ms |
-| Drive / Feedback | 1.7× / 4% |
-| OSC Drive / Analog Output | 1.4 / 20% |
+| Cutoff / Resonance | 385 Hz / 0.11 |
+| Filter envelope depth / Key Follow | +4 octaves / 61% |
+| Filter A / D / S / R | 2 ms / 205 ms / 8% / 292 ms |
+| Amp A / D / S / R | 4 ms / 550 ms / 50% / 298 ms |
+| Drive / Feedback | 5.9× / 32% |
+| OSC Drive / Analog Output | 3.2× / 84% |
 | OSC Drift | ±0.8 cents |
 | Glide / Legato | Off / Off (each note retriggers) |
 | Velocity → Amp / Filter | Both off |
-| Background Hiss / Hiss Level | 4 of 10 / −54 dBFS at full amount |
+| Background Hiss / Hiss Level | 2 of 10 / −54 dBFS at full amount |
+| Chorus | 85% |
 | Output | +3 dB |
+
+The triangle supplies a low fundamental beneath both octaves of the phrase.
+**OSC Drive** shapes the oscillators before they hit the ladder. The filter
+opens quickly on each attack, then falls back toward 385 Hz. **Analog Output**
+adds asymmetric saturation after the amp envelope and before the chorus.
+
+All four bars share one stereo **Mla EQ** in the bass track’s first insert.
+A **+4 dB low shelf at 95 Hz** supports the sub, a **+2 dB bell at 145 Hz**
+supports the upper octave, and a **+4.5 dB high shelf at 2.9 kHz** brings out
+the edge of each note. The EQ output adds 1.6 dB of makeup gain.
+In Pattern view press **f**, select the Mla EQ slot
+and press **Enter** to adjust the bands or toggle **Bypass**.
 
 Envelope decay/release times are measured to a 60 dB fall, as in the plugin.
 The project embeds every parameter, so loading it restores the preset without

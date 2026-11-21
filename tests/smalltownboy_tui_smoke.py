@@ -9,14 +9,14 @@ import tempfile
 from session_tui_smoke import Terminal
 
 
-def check_score(records, *, has_chorus=False):
+def check_score(records):
     assert records[:4] == [["string", "MLACK"], ["integer", 1], ["integer", 5], ["integer", 126]]
     assert records[28][1] == 1  # One monophonic Mini for the entire bass line.
     count = records[31][1]
     params = {records[32 + i * 2][1]: records[33 + i * 2][1] for i in range(count)}
     # The saved example can carry an edited preset. Validate its complete
     # parameter layout here, then compare every value after save/reopen.
-    assert set(params) == set(range(100, 147 if has_chorus else 146))
+    assert set(params) == set(range(100, 147))
     assert all(0 <= value <= 1 for value in params.values())
     at = 32 + count * 2 + 2
     assert records[at][1] == 4
@@ -57,6 +57,19 @@ def check_score(records, *, has_chorus=False):
     return params
 
 
+def check_eq(records):
+    at = records.index(["string", "TRACK_INSERTS"]) + 1
+    assert records[at] == ["integer", 1]
+    assert records[at + 1][1].endswith("MlaEQ.vst3")
+    count = records[at + 2][1]
+    at += 3
+    params = {records[at + 2*i][1]: records[at + 2*i + 1][1] for i in range(count)}
+    at += count * 2
+    # Each of the four patterns routes its only track through insert 1.
+    assert [value for _, value in records[at:at + 20]] == [1, 1, 0, 0, 0] * 4
+    return params
+
+
 def main():
     source = Path(__file__).resolve().parents[1] / "examples/smalltownboy.mlaproj"
     with tempfile.TemporaryDirectory(prefix="mlacker-smalltownboy-") as folder:
@@ -65,9 +78,15 @@ def main():
         path = project / "Project.mlack"
         doc = json.loads(path.read_text())
         original_params = check_score(doc["records"])
+        assert original_params[146] > .5  # Wide built-in chorus in this example.
+        assert original_params[142] > .5  # Mini's post-VCA output coloration.
+        eq = check_eq(doc["records"])
+        assert eq[102] == 0 and eq[111] > .5 and eq[123] > .5  # Enabled, both shelves boosted.
         for record in doc["records"]:
             if record[0] == "string" and record[1].endswith("MlaMini.vst3"):
                 record[1] = str(Path(sys.argv[2]).resolve())
+            elif record[0] == "string" and record[1].endswith("MlaEQ.vst3"):
+                record[1] = str(Path(sys.argv[3]).resolve())
         strings = [v for k, v in doc["records"] if k == "string"]
         assert sum(v.endswith("MlaMini.vst3") for v in strings) == 1
         assert not any("/Desktop/" in v or v.endswith(".m4a") for v in strings)
@@ -93,13 +112,28 @@ def main():
             finally:
                 tui.close()
             saved = json.loads(path.read_text())
-            saved_params = check_score(saved["records"], has_chorus=True)
-            assert saved_params[146] == 0  # A pre-chorus project opens dry.
+            saved_params = check_score(saved["records"])
+            saved_eq = check_eq(saved["records"])
+            assert saved_eq.keys() == eq.keys()
+            assert all(math.isclose(saved_eq[k], v, rel_tol=0, abs_tol=1e-12) for k, v in eq.items())
             changed = {key: (value, saved_params[key]) for key, value in original_params.items()
                        if not math.isclose(saved_params[key], value, rel_tol=0, abs_tol=1e-12)}
             assert not changed, f"Plugin settings changed on save/reopen: {changed}"
             saved_strings = [v for k, v in saved["records"] if k == "string"]
             assert saved_strings[:len(strings)] == strings
+        # Open a pre-chorus copy and verify that its missing control defaults to dry.
+        records = doc["records"]
+        chorus = records.index(["integer", 146], 32, 32 + 2 * records[31][1])
+        del records[chorus:chorus + 2]
+        records[31][1] -= 1
+        path.write_text(json.dumps(doc))
+        tui = Terminal(str(project))
+        try:
+            assert b"Smalltown Boy" in tui.read(1)
+            assert b"Saved project:" in tui.send_until(b"\x13", b"Saved project:")
+        finally:
+            tui.close()
+        assert check_score(json.loads(path.read_text())["records"])[146] == 0
     print("PASS: Smalltown Boy notes, preset and mono song survive playback and save/reopen")
 
 

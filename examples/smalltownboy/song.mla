@@ -55,36 +55,50 @@ fn normalized_log(value: f64, minimum: f64, maximum: f64) -> f64 {
 fn bass_patch(audio: &AudioSystem) -> bool {
     var ok: bool = set_named(audio, 1, "Output", 63.0 / 66.0);
     ok = ok && set_named(audio, 1, "OSC 1 Wave", 2.0) && set_named(audio, 1, "OSC 1 Range", 2.0);
-    ok = ok && set_named(audio, 1, "OSC 1 Level", 0.8);
-    ok = ok && set_named(audio, 1, "OSC 2 Wave", 2.0) && set_named(audio, 1, "OSC 2 Range", 1.0);
-    ok = ok && set_named(audio, 1, "OSC 2 Level", 0.25) && set_named(audio, 1, "OSC 2 Fine", 28.0 / 50.0);
+    ok = ok && set_named(audio, 1, "OSC 1 Level", 0.85);
+    ok = ok && set_named(audio, 1, "OSC 2 Wave", 1.0) && set_named(audio, 1, "OSC 2 Range", 3.0);
+    ok = ok && set_named(audio, 1, "OSC 2 Level", 0.55) && set_named(audio, 1, "OSC 2 Fine", 0.36);
     ok = ok && set_named(audio, 1, "OSC 3 Wave", 0.0) && set_named(audio, 1, "OSC 3 Range", 1.0);
-    ok = ok && set_named(audio, 1, "OSC 3 Level", 0.15) && set_named(audio, 1, "Noise", 0.0);
-    ok = ok && set_named(audio, 1, "Cutoff", normalized_log(260.0, 20.0, 20000.0));
-    ok = ok && set_named(audio, 1, "Resonance", 0.7) && set_named(audio, 1, "Filter Env Depth", 3.0 / 8.0);
-    ok = ok && set_named(audio, 1, "Key Follow", 0.35);
-    ok = ok && set_named(audio, 1, "Filter Attack", normalized_log(0.003, 0.001, 10.0));
-    ok = ok && set_named(audio, 1, "Filter Decay", normalized_log(0.3, 0.01, 10.0));
-    ok = ok && set_named(audio, 1, "Filter Sustain", 0.12);
-    ok = ok && set_named(audio, 1, "Filter Release", normalized_log(0.20, 0.005, 10.0));
+    ok = ok && set_named(audio, 1, "OSC 3 Level", 0.26) && set_named(audio, 1, "OSC 3 Fine", 0.56) && set_named(audio, 1, "Noise", 0.0);
+    ok = ok && set_named(audio, 1, "Cutoff", normalized_log(385.0, 20.0, 20000.0));
+    ok = ok && set_named(audio, 1, "Resonance", 0.11) && set_named(audio, 1, "Filter Env Depth", 4.0 / 8.0);
+    ok = ok && set_named(audio, 1, "Key Follow", 0.61);
+    ok = ok && set_named(audio, 1, "Filter Attack", normalized_log(0.002, 0.001, 10.0));
+    ok = ok && set_named(audio, 1, "Filter Decay", normalized_log(0.205, 0.01, 10.0));
+    ok = ok && set_named(audio, 1, "Filter Sustain", 0.08);
+    ok = ok && set_named(audio, 1, "Filter Release", normalized_log(0.29247012, 0.005, 10.0));
     ok = ok && set_named(audio, 1, "Amp Attack", normalized_log(0.004, 0.001, 10.0));
     ok = ok && set_named(audio, 1, "Amp Decay", normalized_log(0.55, 0.01, 10.0));
     ok = ok && set_named(audio, 1, "Amp Sustain", 0.5);
-    ok = ok && set_named(audio, 1, "Amp Release", normalized_log(0.22, 0.005, 10.0));
-    ok = ok && set_named(audio, 1, "Drive", normalized_log(1.7, 1.0, 8.0));
-    ok = ok && set_named(audio, 1, "Feedback", 0.04) && set_named(audio, 1, "Glide", 0.0);
+    ok = ok && set_named(audio, 1, "Amp Release", normalized_log(0.29816996, 0.005, 10.0));
+    ok = ok && set_named(audio, 1, "Drive", normalized_log(5.9, 1.0, 8.0));
+    ok = ok && set_named(audio, 1, "Feedback", 0.32) && set_named(audio, 1, "Glide", 0.0);
     ok = ok && set_named(audio, 1, "Legato", 0.0) && set_named(audio, 1, "Key Priority", 0.0);
     ok = ok && set_named(audio, 1, "Mod Wheel", 0.0) && set_named(audio, 1, "Velocity > Amp", 0.0);
     ok = ok && set_named(audio, 1, "Velocity > Filter", 0.0);
-    ok = ok && set_named(audio, 1, "OSC Drive", normalized_log(1.4, 1.0, 4.0));
-    ok = ok && set_named(audio, 1, "Analog Output", 0.2) && set_named(audio, 1, "OSC Drift", 0.8 / 8.0);
-    ok = ok && set_named(audio, 1, "Background Hiss", 4.0) && set_named(audio, 1, "Hiss Level", 42.0 / 48.0);
+    ok = ok && set_named(audio, 1, "OSC Drive", normalized_log(3.2, 1.0, 4.0));
+    ok = ok && set_named(audio, 1, "Analog Output", 0.84) && set_named(audio, 1, "OSC Drift", 0.8 / 8.0);
+    ok = ok && set_named(audio, 1, "Background Hiss", 2.0) && set_named(audio, 1, "Hiss Level", 42.0 / 48.0);
+    ok = ok && set_named(audio, 1, "Chorus", 0.85);
+    return ok;
+}
+
+fn bass_eq(audio: &AudioSystem) -> bool {
+    // The stock four-band EQ has a low shelf, two bells and a high shelf.
+    var ok: bool = set_named(audio, 41, "Band 1 Freq", normalized_log(95.0, 20.0, 20000.0));
+    ok = ok && set_named(audio, 41, "Band 1 Gain", (24.0 + 4.0) / 48.0);
+    ok = ok && set_named(audio, 41, "Band 2 Freq", normalized_log(145.0, 20.0, 20000.0));
+    ok = ok && set_named(audio, 41, "Band 2 Gain", (24.0 + 2.0) / 48.0);
+    ok = ok && set_named(audio, 41, "Band 4 Freq", normalized_log(2900.0, 20.0, 20000.0));
+    ok = ok && set_named(audio, 41, "Band 4 Gain", (24.0 + 4.5) / 48.0);
+    ok = ok && set_named(audio, 41, "Output", (24.0 + 1.6) / 48.0);
     return ok;
 }
 
 fn bar(root: str8, upper: str8, number: i32) -> SequenceTable {
     var t: SequenceTable = SequenceTable::empty(); t.set_length(16, area());
     t.create_instrument_track(1, area()); t.rename_track("Smalltown mono bass");
+    t.set_insert(0, 0, 1);
     for note in 0..8 {
         note_at(&mut t, 0, i32(note) * 2, note % 2 == 0 ? root : upper, 105, "1.10");
         // The measured pulse is ~126.47 BPM. The tracker uses integer 126;
@@ -125,7 +139,8 @@ fn main() -> i32 {
     var audio: AudioSystem = AudioSystem::start(false);
     let loaded: str8 = audio.add_instrument(__env_get_var("MINI_VST3"));
     if loaded != "" { println!("Mla Mini: {}", loaded); return 1; }
-    if !bass_patch(audio) { return 1; }
+    if audio.add_insert(__env_get_var("EQ_VST3"), 1) != 1 { println!("Cannot load Mla EQ bass insert"); return 1; }
+    if !bass_patch(audio) || !bass_eq(audio) { return 1; }
     var library: PatternLibrary = PatternLibrary::empty();
     library.add_instrument(1, "Smalltown Boy - Mini bass");
     library.table.release(); library.table = bar("C-2", "C-3", 0); library.rename("Smalltown Boy - C");
