@@ -15,7 +15,7 @@ not an exact Model D circuit recreation or a verified identical match.
 - PolyBLEP saws and pulses, and four internal samples per output sample.
   A two-pole low-pass plus averaging precedes decimation.
 - **OSC Drive** soft-clips each oscillator before its mixer level, with
-  peak compensation. The default 1.4 adds a little grit; 1 bypasses shaping.
+  peak compensation. The default 2.1 adds a little grit; 1 bypasses shaping.
   This control is separate from the existing mixer/filter **Drive**.
 - **Analog Output** blends in an asymmetric line-amplifier approximation
   after the VCA. It adds even harmonics and gentle compression before master
@@ -68,11 +68,10 @@ more bite, **Resonance** for a stronger filter peak, and **Drive** or
 **Feedback** for more growl. **OSC 2 Fine** controls the beating; raise
 **OSC 3 Level** for more weight an octave below. **Filter Decay** controls
 the initial brightness fall; **Amp Release** controls how quickly notes stop.
-The startup patch now has a 480 ms amp release and 450 ms filter release,
-giving the notes a longer, brighter tail than the initial version.
-Its low-pass is more open: 600 Hz base cutoff, three octaves of filter
-envelope and 35% keyboard tracking, preserving more high harmonics than
-the previous 130 Hz / 1.8 octave / 20% patch.
+The startup bass uses a saw at the played pitch with a detuned triangle/saw
+blend and triangle one octave below. A 480 Hz cutoff and 4.5-octave envelope
+give the attack its edge. The filter closes with a 180 ms release while the
+amplitude falls away over 550 ms.
 Use **Analog Output** for extra roughness after the amp envelope, and **OSC
 Drift** for a little changing oscillator beating. Setting both to zero
 recovers the previous output path and stable oscillator tuning. These are

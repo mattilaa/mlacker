@@ -262,6 +262,7 @@ void set(Instance& i, int index, double value, int offset = 0) { i.param(100 + i
 void plainPatch(Instance& i) {
     using namespace mla_mini;
     set(i, Wave1, 0); set(i, Level1, 1); set(i, Level2, 0); set(i, Level3, 0);
+    set(i, Range2, 0); // Pitch tests use concert pitch when they isolate OSC 2.
     set(i, Cutoff, 15000); set(i, EnvDepth, 0); set(i, Resonance, 0); set(i, Feedback, 0);
     set(i, Drive, 1); set(i, KeyFollow, 0); set(i, VelocityAmp, 0); set(i, Glide, 0);
     set(i, OscDrive, 1);

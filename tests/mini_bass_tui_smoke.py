@@ -16,15 +16,16 @@ def check_reference(records):
     for slot in range(3):
         count = records[at + 2][1]
         params = {records[at + 3 + i * 2][1]: records[at + 4 + i * 2][1] for i in range(count)}
-        assert math.isclose(.005 * 2000 ** params[124], .28 if slot == 2 else .48, rel_tol=1e-5)
-        assert math.isclose(.005 * 2000 ** params[120], .45, rel_tol=1e-5)
-        assert math.isclose(4 ** params[141], 1.4, rel_tol=1e-5)
-        assert math.isclose(20 * 1000 ** params[113], 1000 if slot == 2 else 600, rel_tol=1e-5)
-        assert math.isclose(params[115] * 8, 2 if slot == 2 else 3, rel_tol=1e-5)
+        assert math.isclose(.005 * 2000 ** params[124], .28 if slot == 2 else .55, rel_tol=1e-5)
+        assert math.isclose(.005 * 2000 ** params[120], .18, rel_tol=1e-5)
+        assert math.isclose(4 ** params[141], 2.1, rel_tol=1e-5)
+        assert math.isclose(20 * 1000 ** params[113], 1000 if slot == 2 else 480, rel_tol=1e-5)
+        assert math.isclose(params[115] * 8, 2 if slot == 2 else 4.5, rel_tol=1e-5)
         assert math.isclose(params[142], .3, rel_tol=1e-5)
         assert math.isclose(params[143] * 8, 1.2, rel_tol=1e-5)
         assert math.isclose(params[144], .6 if slot == 0 else 0, rel_tol=1e-5)
         assert math.isclose(-96 + params[145] * 48, -54, rel_tol=1e-5)
+        assert params[105] == (.75 if slot == 2 else .25)
         at += 3 + count * 2
     assert 1 <= records[at][1] <= 10
     at += 2
@@ -67,7 +68,7 @@ def check_reference(records):
                 high = row % 4 == 2
                 root = ("C#" if row < 16 else "D#") if name.endswith("ending") else "F-"
                 assert tracks[0][0] == root + ("3" if high else "2")
-                assert tracks[0][2:] == ["0.75", "0.90"]
+                assert tracks[0][2:] == ["0.69" if high else "0.56", "0.90"]
     for name in ("Upper - pickup", "Upper - 16ths A", "Upper - 16ths B", "Upper - ending"):
         assert slots[name] == 3 and len(patterns[name]) == 32
     phrase = patterns["Upper - 16ths A"]

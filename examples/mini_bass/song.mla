@@ -67,10 +67,11 @@ fn riff(t: &mut SequenceTable) -> void {
 /// cropped recording: 0.90 of a tracker row at this tempo.
 fn reference_bass(ending: bool) -> SequenceTable {
     var t: SequenceTable = pattern(1, "Mini bass"); t.set_length(32, area());
+    let accents: list<i32> = [118, 96, 108, 90, 110, 94, 100, 90];
     for i in 0..16 {
         let high: bool = i % 2 == 1;
         let note: str8 = ending ? (i < 8 ? (high ? "C#3" : "C#2") : (high ? "D#3" : "D#2")) : (high ? "F-3" : "F-2");
-        note_at(&mut t, 0, i32(i) * 2, note, high ? 100 : 110, "0.75");
+        note_at(&mut t, 0, i32(i) * 2, note, accents[i % 8], high ? "0.69" : "0.56");
         t.set_cell(i32(i) * 2, t.track_start(0) + 3, clone("0.90"));
     }
     return t;
@@ -81,9 +82,9 @@ fn reference_upper(phrase: i32, pickup: bool) -> SequenceTable {
     // F is the pickup in the preceding pattern; the remaining notes follow
     // on consecutive rows. Pitches are estimates from the mixed recording.
     if phrase > 0 {
-        let fast: list<str8> = phrase == 1 ? ["G#4", "F-4", "A#4", "F-4", "C-5"] : ["G#4", "F-4", "F-5", "F-4", "D#5"];
+        let fast: list<str8> = phrase == 1 ? ["G#4", "F-4", "A#4", "F-4", "C-5"] : ["G#4", "F-4", "A#4", "F-4", "D#5"];
         for i in 0..5 {
-            note_at(&mut t, 0, i32(i), fast[i], 100, i == 4 ? "1.65" : "0.65");
+            note_at(&mut t, 0, i32(i), fast[i], i % 2 == 0 ? 110 : 88, i == 4 ? "1.65" : "0.65");
             t.set_cell(i32(i), t.track_start(0) + 3, clone("0.90"));
         }
     }
@@ -167,7 +168,9 @@ fn main() -> i32 {
     ok = ok && set_named(audio, 2, "OSC 3 Low", 1.0) && set_named(audio, 2, "OSC 3 Keyboard", 0.0);
     ok = ok && set_named(audio, 2, "OSC 3 Range", 4.0) && set_named(audio, 2, "Mod Wheel", 0.3);
     ok = ok && set_named(audio, 2, "Filter Sustain", 0.25);
-    // Separate monophonic instance for the higher line in its own channel.
+    // The pickup and answering sixteenths have a strong upper octave.
+    ok = ok && set_named(audio, 3, "OSC 2 Range", 3.0) && set_named(audio, 3, "OSC 2 Wave", 2.0);
+    ok = ok && set_named(audio, 3, "OSC 3 Level", 0.08);
     ok = ok && set_named(audio, 3, "Cutoff", log(1000.0 / 20.0) / log(1000.0));
     ok = ok && set_named(audio, 3, "Key Follow", 0.35);
     ok = ok && set_named(audio, 3, "Filter Env Depth", 2.0 / 8.0);

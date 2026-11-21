@@ -1,6 +1,6 @@
 # Mla Mini bass example
 
-A synthesis reconstruction of the bass and short upper phrases in `moog.wav` for
+A synthesis reconstruction of the bass and short upper phrases in the supplied excerpt of Tobias Bernstrup’s *27 (Laser Mix)* for
 [Mla Mini](../../plugins/mla_mini), at approximately **121 BPM**. Only the
 new synth is needed; all sounds are synthesized.
 
@@ -14,7 +14,7 @@ build/cmake/bin/mlacker examples/mini_bass.mlaproj
 The script builds the plugin, generates the project with embedded parameter
 settings, and renders `build/mini_bass/sixteenths.wav` (the free-oscillator
 audition), `build/mini_bass/preview.wav` (the reference arrangement), and
-`build/mini_bass/baseline.wav` (the previous bright tone with Analog Output,
+`build/mini_bass/baseline.wav` (the current patch with Analog Output,
 OSC Drift and Background Hiss disabled). `clean_sixteenths.wav` offers the same comparison
 for the fast bass audition. It also writes
 `bass.wav` and `upper_sixteenths.wav` as separate solo renders of the two
@@ -56,16 +56,17 @@ and short gates, with release tails continuing toward the next pulse.
 The fast phrases and their octave placements are estimates from the mixed
 recording, as are gate lengths and velocities. Drums are not included.
 
-The brighter startup preset has **600 Hz Cutoff**, **3 octaves Filter Env
-Depth**, **35% Key Follow**, **480 ms Amp Release**, **450 ms Filter
-Release**, and **OSC Drive 1.4**, with **30% Analog Output** and **1.2-cent
-OSC Drift**. The output coloration adds mild roughness after the amp
-envelope; the oscillators wander independently without restarting phase
-on each note. The envelope can open the filter to about 4.8 kHz before
-keyboard tracking. The baseline previews use the same bright filter,
-notes, releases and oscillator drive, with output coloration, drift and
-background hiss disabled. The separate upper instance uses a 1 kHz cutoff
-and a two-octave envelope.
+The bass pairs a saw at the played pitch with a triangle/saw blend and a
+triangle one octave below. Their slight detuning changes the low harmonics
+across repeated notes. The filter starts at **480 Hz**, opens by up to **4.5
+octaves**, and closes quickly after key-off (**180 ms filter release**).
+The **550 ms amp release** lets the low end continue as the brighter edge
+fades. Oscillator drive is **2.1×**. The low eighth notes have shorter gates
+(about 69 ms) and stronger accents than the upper answers (about 86 ms).
+
+The separate upper voice doubles the pickup an octave up. Both sixteenth
+phrases answer F with G♯ and A♯, then land on C or E♭. The first pickup is
+about four seconds into the preview.
 
 The bass instance has **Background Hiss 6** with **Hiss Level −54 dBFS**,
 giving a more audible noise floor during rests. In the VST parameters,
