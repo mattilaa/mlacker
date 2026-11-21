@@ -49,7 +49,7 @@ not an exact Model D circuit recreation or a verified identical match.
 - Oscillator 3 can become a low-frequency modulation source. Turn off its
   keyboard tracking for a fixed rate. The wheel controls its pitch/filter
   modulation depths. In Low mode it is removed from the audio mixer.
-- Mono sound on both stereo output channels; no chorus or reverb.
+- **Chorus** adds stereo movement after the monophonic voice. Two filtered delay taps sweep in opposite directions at about 0.51 Hz. The control fades from dry at 0% to equal dry and wet at 100%.
 
 The DSP is in `src/mla_mini_dsp.mla`; C++ supplies VST3 parameters, MIDI,
 sample-offset scheduling and versioned preset state. No audio-thread allocation.
@@ -106,6 +106,7 @@ Stable IDs are 100 plus the index in `src/parameters.h`:
 | 143 | OSC Drift | 0 .. 8 ct maximum deviation per oscillator; default 1.2 |
 | 144 | Background Hiss | 0 .. 10; 0 = Off, default 6 |
 | 145 | Hiss Level | −96 .. −48 dBFS RMS at amount 10, before master Output; default −54 |
+| 146 | Chorus | 0–100% amount, default 0% |
 
 Cutoff, envelope times and Drive use logarithmic normalized mappings. Other
 continuous controls are linear. Bend, wheel, pedal and panic return to neutral

@@ -9,14 +9,14 @@ import tempfile
 from session_tui_smoke import Terminal
 
 
-def check_score(records):
+def check_score(records, *, has_chorus=False):
     assert records[:4] == [["string", "MLACK"], ["integer", 1], ["integer", 5], ["integer", 126]]
     assert records[28][1] == 1  # One monophonic Mini for the entire bass line.
     count = records[31][1]
     params = {records[32 + i * 2][1]: records[33 + i * 2][1] for i in range(count)}
     # The saved example can carry an edited preset. Validate its complete
     # parameter layout here, then compare every value after save/reopen.
-    assert set(params) == set(range(100, 146))
+    assert set(params) == set(range(100, 147 if has_chorus else 146))
     assert all(0 <= value <= 1 for value in params.values())
     at = 32 + count * 2 + 2
     assert records[at][1] == 4
@@ -93,7 +93,8 @@ def main():
             finally:
                 tui.close()
             saved = json.loads(path.read_text())
-            saved_params = check_score(saved["records"])
+            saved_params = check_score(saved["records"], has_chorus=True)
+            assert saved_params[146] == 0  # A pre-chorus project opens dry.
             changed = {key: (value, saved_params[key]) for key, value in original_params.items()
                        if not math.isclose(saved_params[key], value, rel_tol=0, abs_tol=1e-12)}
             assert not changed, f"Plugin settings changed on save/reopen: {changed}"

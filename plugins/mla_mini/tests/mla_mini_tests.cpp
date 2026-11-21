@@ -349,6 +349,18 @@ int main(int argc, char** argv) {
         const double expected = 110 * std::pow(2., octave);
         CHECK(std::abs(pitch(s) - expected) < expected * .005);
     }
+    // Stereo movement comes from delayed copies of one voice. Automating
+    // the amount back to zero restores sample-identical left and right.
+    {
+        Instance i; CHECK(i.open(path)); plainPatch(i); i.noteOn(45, 1);
+        set(i, Chorus, 50); auto wet = i.render(.6);
+        double side = 0;
+        for(size_t f = at(.05); f < wet.left.size(); ++f)
+            side += std::abs(wet.left[f] - wet.right[f]);
+        CHECK(finite(wet)); CHECK(side / wet.left.size() > .005);
+        set(i, Chorus, 0); i.render(.03); auto dry = i.render(.1);
+        CHECK(dry.left == dry.right); CHECK(rms(dry.left) > .01);
+    }
     // Six wave shapes should all sound; detune changes pitch in cents.
     for(int wave = 0; wave < 6; ++wave) {
         Instance i; CHECK(i.open(path)); plainPatch(i); set(i, Wave1, wave); i.noteOn(45, 1);
@@ -525,12 +537,13 @@ int main(int argc, char** argv) {
     }
     {
         Instance a, b; CHECK(a.open(path)); CHECK(b.open(path));
-        set(a, Cutoff, 720); set(a, Wave2, 4); set(a, BackgroundHiss, 0); set(a, HissLevel, -70); a.render(.01);
+        set(a, Chorus, 42); set(a, Cutoff, 720); set(a, Wave2, 4); set(a, BackgroundHiss, 0); set(a, HissLevel, -70); a.render(.01);
         MemoryStream state; CHECK(a.component->getState(&state) == kResultOk);
         state.seek(0, IBStream::kIBSeekSet, nullptr); CHECK(b.component->setState(&state) == kResultOk);
         MemoryStream again; CHECK(b.component->getState(&again) == kResultOk);
         CHECK(state.getSize() == again.getSize()); CHECK(std::memcmp(state.getData(), again.getData(), state.getSize()) == 0);
         CHECK(b.provider->getControllerPtr()->getParamNormalized(144) == 0);
+        CHECK(std::abs(b.provider->getControllerPtr()->getParamNormalized(146) - .42) < 1e-6);
         CHECK(std::abs(physical(HissLevel, b.provider->getControllerPtr()->getParamNormalized(145)) + 70) < .001);
         MemoryStream bad; IBStreamer s(&bad, kLittleEndian); s.writeInt32u(0x494E494D); s.writeInt32u(1); s.writeInt32(1); s.writeInt32(113);
         s.writeDouble(NAN); bad.seek(0, IBStream::kIBSeekSet, nullptr);

@@ -164,7 +164,8 @@ impl SessionData {
                 next.instrument_paths = paths;
             }
             let count: i32 = i32(next.output.parameter_info(plugin.slot, 0, 0));
-            if count != plugin.ids.len() { next.release(); return Err<AudioSystem, str8>("VST3 parameter layout changed; session retained"); }
+            // New controls retain their startup values when loading an older project.
+            if count < plugin.ids.len() { next.release(); return Err<AudioSystem, str8>("VST3 parameter layout changed; session retained"); }
             for i in 0..plugin.ids.len() {
                 var found: i32 = i32(i);
                 if next.output.parameter_info(plugin.slot, i, 4) != f64(plugin.ids[i]) {
@@ -359,7 +360,8 @@ impl SessionCodec {
         let name: str8 = codec.text(plugin_name);
         if name != plugin_name { codec.failed = true; } if !saving { free(name); }
         let count: i32 = codec.number(i32(parameters), 0, 16384);
-        if count != parameters { codec.failed = true; }
+        let old_mini: bool = !saving && plugin_name == "Mla Mini" && count == 46 && parameters == 47 && output.parameter_info(slot, 46, 4) == 146.0;
+        if count != parameters && !old_mini { codec.failed = true; }
         var ids: list<i64> = []; var indices: list<i64> = []; var values: list<f64> = []; var previous: list<f64> = [];
         for i in 0..count {
             if codec.failed { break; }
@@ -373,6 +375,10 @@ impl SessionCodec {
                 if found < 0 { codec.failed = true; }
                 ids.push(id); indices.push(found); values.push(value); previous.push(output.parameter_info(slot, found, 2));
             }
+        }
+        if old_mini && !codec.failed {
+            for id in ids { if id == 146 { codec.failed = true; } }
+            indices.push(46); values.push(0.0); previous.push(output.parameter_info(slot, 46, 2));
         }
         // 1.1: tagged sampler pads, strictly increasing pad numbers, session clip encoding.
         if minor == 1 && !codec.failed {

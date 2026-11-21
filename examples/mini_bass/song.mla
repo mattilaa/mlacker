@@ -221,6 +221,8 @@ fn main() -> i32 {
         ok = ok && set_named(audio, slot, "Background Hiss", slot == 1 ? 6.0 : 0.0);
         ok = ok && set_named(audio, slot, "Hiss Level", 42.0 / 48.0);
     }
+    if !ok || !render(&mut audio, library, library.table, "build/mini_bass/chorus_off.wav", false, -1) { return 1; }
+    ok = set_named(audio, 1, "Chorus", 0.20) && set_named(audio, 3, "Chorus", 0.50);
     if !ok || !render(&mut audio, library, library.table, "build/mini_bass/preview.wav", false, -1) { return 1; }
     if !render(&mut audio, library, library.table, "build/mini_bass/bass.wav", false, 0) { return 1; }
     if !render(&mut audio, library, library.table, "build/mini_bass/upper_sixteenths.wav", false, 1) { return 1; }

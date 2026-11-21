@@ -10,7 +10,7 @@ enum Index {
     AmpAttack, AmpDecay, AmpSustain, AmpRelease, Drive, Feedback, Glide,
     Legato, Priority, Bend, BendRange, Wheel, ModPitch, ModFilter, Osc3Low,
     Osc3Keys, VelocityAmp, VelocityFilter, Sustain, Panic, OscDrive,
-    AnalogOutput, OscDrift, BackgroundHiss, HissLevel, Count
+    AnalogOutput, OscDrift, BackgroundHiss, HissLevel, Chorus, Count
 };
 struct Spec { const char* name; const char* unit; double lo, hi, initial; int steps; bool log; };
 inline constexpr Spec specs[Count] = {
@@ -60,6 +60,7 @@ inline constexpr Spec specs[Count] = {
     {"OSC Drift", "ct", 0, 8, 1.2, 0, false},
     {"Background Hiss", "", 0, 10, 6, 10, false},
     {"Hiss Level", "dB", -96, -48, -54, 0, false},
+    {"Chorus", "%", 0, 100, 0, 0, false},
 };
 inline double normalized(int i, double plain) {
     const auto& s = specs[i];

@@ -68,6 +68,11 @@ The separate upper voice doubles the pickup an octave up. Both sixteenth
 phrases answer F with G♯ and A♯, then land on C or E♭. The first pickup is
 about four seconds into the preview.
 
+The demo uses Mini’s built-in **Chorus** at **20% on the bass** and **50% on
+the upper sixteenths**. In the mlacker parameter editor the corresponding
+values are 0.20 and 0.50. Compare `preview.wav` with `chorus_off.wav` in
+`build/mini_bass/` to hear the same arrangement with and without the effect.
+
 The bass instance has **Background Hiss 6** with **Hiss Level −54 dBFS**,
 giving a more audible noise floor during rests. In the VST parameters,
 **Background Hiss** now has eleven settings: **0 = Off**, then **1–10**

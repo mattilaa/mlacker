@@ -1,6 +1,9 @@
 /// Three free-running oscillators, nonlinear four-pole TPT ladder and two
 /// envelopes. Four internal samples per output sample reduce oscillator and
 /// saturation aliasing. This is a musical approximation, not a circuit clone.
+mod dsp::chorus;
+use dsp::chorus::JunoChorus;
+use dsp::chorus::ChorusFrame;
 mod dsp::envelope;
 use dsp::envelope::Adsr;
 
@@ -63,6 +66,7 @@ struct Mini {
     var osc3_low: bool; var osc3_keys: bool; var velocity_amp: f32; var velocity_filter: f32;
     var g: f32; var s1: f32; var s2: f32; var s3: f32; var s4: f32;
     var last: f32; var aa1: f32; var aa2: f32; var dc_in: f32; var dc_out: f32; var dc_coeff: f32;
+    var chorus: JunoChorus; var chorus_mix: f32; var chorus_target: f32; var chorus_step: f32;
     var amp: Adsr; var fenv: Adsr;
 };
 
@@ -70,6 +74,9 @@ fn mlamini_create(sample_rate: f32) -> ptr<Mini> {
     let m: ptr<Mini> = calloc(1, size_of(Mini));
     unsafe {
         (*m).rate = sample_rate; (*m).seed = 170917;
+        var chorus: JunoChorus = JunoChorus::new(sample_rate);
+        chorus.set_mix(1.0f); (*m).chorus = chorus;
+        (*m).chorus_step = 1.0f / (0.020f * sample_rate);
         (*m).amp = Adsr::new(sample_rate); (*m).fenv = Adsr::new(sample_rate);
         (*m).p2 = 0.371f; (*m).p3 = 0.719f;
         (*m).pitch = 36.0f; (*m).target = 36.0f;
@@ -85,7 +92,7 @@ fn mlamini_create(sample_rate: f32) -> ptr<Mini> {
     }
     return m;
 }
-fn mlamini_destroy(m: ptr<Mini>) -> void { unsafe { free(m); } }
+fn mlamini_destroy(m: ptr<Mini>) -> void { unsafe { (*m).chorus.line = []; free(m); } }
 fn mlamini_seed(m: ptr<Mini>, seed: i64) -> void {
     unsafe {
         (*m).drift_seed = seed;
@@ -94,6 +101,7 @@ fn mlamini_seed(m: ptr<Mini>, seed: i64) -> void {
 }
 fn mlamini_reset(m: ptr<Mini>) -> void {
     unsafe {
+        (*m).chorus.reset();
         (*m).amp.reset(); (*m).fenv.reset();
         (*m).s1 = 0.0f; (*m).s2 = 0.0f; (*m).s3 = 0.0f; (*m).s4 = 0.0f;
         (*m).aa1 = 0.0f; (*m).aa2 = 0.0f; (*m).last = 0.0f;
@@ -136,6 +144,7 @@ fn mlamini_set(m: ptr<Mini>, i: i32, v: f32) -> void {
         else if i == 43 { (*m).drift_target_amount = v; }
         else if i == 44 { (*m).hiss_target_mix = v / 10.0f; }
         else if i == 45 { (*m).hiss_target_level = exp2f(v / 6.0206f); }
+        else if i == 46 { (*m).chorus_target = v * 0.005f; }
         (*m).counter = 0;
     }
 }
@@ -260,14 +269,26 @@ impl Mini {
             self.dc_in = 0.0f; self.dc_out = 0.0f;
             self.analog_aa1 = 0.0f; self.analog_aa2 = 0.0f;
             self.analog_dc_in = 0.0f; self.analog_dc_out = 0.0f;
-            return hiss * self.gain;
+            return hiss;
         }
         let dc: f32 = out - self.dc_in + self.dc_coeff * self.dc_out;
         self.dc_in = out; self.dc_out = dc;
         let clean: f32 = tanhf(dc * 1.8f) * amp * velocity;
         let analog_dc: f32 = analog - self.analog_dc_in + self.dc_coeff * self.analog_dc_out;
         self.analog_dc_in = analog; self.analog_dc_out = analog_dc;
-        return (clean + self.analog_mix * (analog_dc - clean) + hiss) * self.gain;
+        return clean + self.analog_mix * (analog_dc - clean) + hiss;
     }
 }
-fn mlamini_process(m: ptr<Mini>) -> f32 { unsafe { return (*m).process(); } }
+/// Sweep two delay taps around the mono voice before master gain. Keep the
+/// delay running through rests so automating Chorus can fade in mid-note.
+fn mlamini_process(m: ptr<Mini>, right: ptr<f32>) -> f32 {
+    unsafe {
+        let dry: f32 = (*m).process();
+        let delta: f32 = (*m).chorus_target - (*m).chorus_mix;
+        (*m).chorus_mix = (*m).chorus_mix + clamp(delta, -(*m).chorus_step, (*m).chorus_step);
+        let mix: f32 = (*m).chorus_mix;
+        let wet: ChorusFrame = (*m).chorus.process_stereo(dry, dry);
+        *right = (dry + mix * (wet.right() - dry)) * (*m).gain;
+        return (dry + mix * (wet.left() - dry)) * (*m).gain;
+    }
+}

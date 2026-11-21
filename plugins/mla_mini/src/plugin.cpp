@@ -23,7 +23,7 @@ extern "C" void mlamini_set__ptr_struct_Mini_i32_f32(Mini*, int32_t, float);
 extern "C" void mlamini_note__ptr_struct_Mini_f32_f32_i32_i32(Mini*, float, float, int32_t, int32_t);
 extern "C" void mlamini_off__ptr_struct_Mini(Mini*);
 extern "C" int32_t mlamini_active__ptr_struct_Mini(Mini*);
-extern "C" float mlamini_process__ptr_struct_Mini(Mini*);
+extern "C" float mlamini_process__ptr_struct_Mini_ptr_f32(Mini*, float*);
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -159,9 +159,10 @@ public:
                 handle(event);
                 have = ++ei < ne && data.inputEvents->getEvent(ei, event) == kResultOk;
             }
-            const float sample = mlamini_process__ptr_struct_Mini(dsp_);
-            out.channelBuffers32[0][frame] = out.channelBuffers32[1][frame] = sample;
-            silent = silent && sample == 0;
+            auto& right = out.channelBuffers32[1][frame];
+            const float left = mlamini_process__ptr_struct_Mini_ptr_f32(dsp_, &right);
+            out.channelBuffers32[0][frame] = left;
+            silent = silent && left == 0 && right == 0;
         }
         out.silenceFlags = silent ? 3 : 0;
         return kResultOk;
